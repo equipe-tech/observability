@@ -6,7 +6,7 @@ import { telemetryConfigFromEnv, type TelemetryConfig } from "./TelemetryConfig.
 
 export const layer = (config: TelemetryConfig): Layer.Layer<never> =>
   Otlp.layerJson({
-    baseUrl: config.otlpEndpoint,
+    baseUrl: config.otlpEndpoint.toString(),
     resource: {
       serviceName: config.serviceName,
       serviceVersion: config.serviceVersion,

@@ -12,6 +12,7 @@
         "@types/bun": "1.4.0",
         "effect": "4.0.0-rc.111",
         "oxlint": "1.79.0",
+        "typescript": "7.0.2",
         "vite": "npm:@voidzero-dev/vite-plus-core@0.3.0",
         "vite-plus": "0.3.0",
         "vitest": "4.1.11",

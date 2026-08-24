@@ -60,9 +60,8 @@ O Collector roda como accessory do [Kamal](https://kamal-deploy.org), com fila p
 ```text
 packages/
   telemetry/          @equipe-tech/observability: config validada, layer OTLP (traces, logs, métricas) e wide events sobre Effect
-  cli/                observability dev up|down|status: ciclo de vida da stack local
-collector/            configurações do OTel Collector (local.yaml, production.yaml)
-compose/              stack local (collector 0.159.0 + otel-desktop-viewer v0.4.1)
+  cli/                observability dev up|down|status: CLI e assets da stack local
+collector/            configuração do OTel Collector para produção
 docs/                 padrões de código, erros, testes e workflow
 tools/oxlint/         plugins de lint do projeto (anti-slop, effect)
 repos/                repositórios vendorados para agentes (gitignored)
@@ -78,7 +77,9 @@ Requisitos: Bun `1.4+` e [Vite+](https://viteplus.dev) `0.3.0`.
 bun install         # instala e habilita os hooks de git
 bun repos:sync      # clona os repositórios vendorados em repos/
 bun check           # lint (type-aware) + format + type-check
-bun test            # testes
+bun run build       # compila os pacotes e gera as declarações
+bun run test        # testes
+bun run test:package # valida os pacotes instalados fora do repositório
 ```
 
 ### Stack local
@@ -89,7 +90,9 @@ bun packages/cli/src/main.ts dev status   # estado da stack
 bun packages/cli/src/main.ts dev down     # derruba a stack
 ```
 
-Com a stack no ar, o canário valida o pipeline completo (app -> collector -> destino):
+A CLI copia os assets versionados para `OBSERVABILITY_HOME`. O diretório padrão é `~/.local/state/observability`.
+
+Com a stack no ar, o canário valida traces, logs e métricas no pipeline completo:
 
 ```sh
 OBSERVABILITY_E2E=1 bun test:canary

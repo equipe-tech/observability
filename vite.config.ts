@@ -32,7 +32,7 @@ export default defineConfig({
     "*.{css,html,json,jsonc,md,mdx,toml,yaml,yml}": "vp fmt --write",
   },
   test: {
-    exclude: ["**/node_modules/**", "repos/**"],
+    exclude: ["**/node_modules/**", "**/*.bun.test.ts", "repos/**"],
   },
   run: {
     cache: {

@@ -5,6 +5,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 export class DockerComposeError extends Schema.TaggedError<DockerComposeError>()(
   "DockerComposeError",
   {
+    code: Schema.Literal("OBS_CLI_COMPOSE_FAILED"),
     command: Schema.String,
     message: Schema.String,
     cause: Schema.Defect(),
@@ -32,22 +33,28 @@ export class DockerCompose extends Context.Service<
           Effect.mapError(
             (cause) =>
               new DockerComposeError({
+                code: "OBS_CLI_COMPOSE_FAILED",
                 command,
-                message: `Failed to start "${command}". Check that Docker is installed and the daemon is running, then retry.`,
+                message:
+                  "Docker Compose could not start. Check that Docker is installed and the daemon is available, then retry.",
                 cause,
               }),
           ),
         );
 
-        yield* handle.all.pipe(
+        const output = yield* handle.all.pipe(
           Stream.decodeText(),
           Stream.splitLines,
-          Stream.runForEach((line) => Console.log(line)),
+          Stream.runFold(
+            () => "",
+            (text, line) => (text === "" ? line : `${text}\n${line}`),
+          ),
           Effect.mapError(
             (cause) =>
               new DockerComposeError({
+                code: "OBS_CLI_COMPOSE_FAILED",
                 command,
-                message: `Lost the output stream of "${command}". Retry the command.`,
+                message: "Docker Compose output stopped unexpectedly. Retry the command.",
                 cause,
               }),
           ),
@@ -57,8 +64,9 @@ export class DockerCompose extends Context.Service<
           Effect.mapError(
             (cause) =>
               new DockerComposeError({
+                code: "OBS_CLI_COMPOSE_FAILED",
                 command,
-                message: `Could not read the exit code of "${command}". Retry the command.`,
+                message: "Docker Compose did not return an exit code. Retry the command.",
                 cause,
               }),
           ),
@@ -66,10 +74,16 @@ export class DockerCompose extends Context.Service<
 
         if (exitCode !== ChildProcessSpawner.ExitCode(0)) {
           return yield* new DockerComposeError({
+            code: "OBS_CLI_COMPOSE_FAILED",
             command,
-            message: `"${command}" exited with code ${exitCode}. Inspect the output above, fix the compose file or the Docker state, then retry.`,
+            message:
+              "Docker Compose rejected the stack configuration or runtime state. Check the configuration and Docker state, then retry.",
             cause: exitCode,
           });
+        }
+
+        if (output !== "") {
+          yield* Console.log(output);
         }
       }, Effect.scoped);
 

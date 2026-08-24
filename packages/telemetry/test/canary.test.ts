@@ -1,11 +1,17 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Option, Schema } from "effect";
+import { Effect, Metric, Option, Schema } from "effect";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { Telemetry } from "../src/index.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 import * as WideEvent from "../src/WideEvent.ts";
 
-const telemetryExportPath = new URL("../../../compose/data/otlp.jsonl", import.meta.url);
+const observabilityHome =
+  process.env["OBSERVABILITY_HOME"] ?? join(homedir(), ".local", "state", "observability");
+const telemetryExportPath =
+  process.env["OBSERVABILITY_EXPORT_PATH"] ??
+  join(observabilityHome, "0.1.0", "data", "otlp.jsonl");
 
 const AttributeValue = Schema.Struct({
   stringValue: Schema.String.pipe(Schema.optionalKey),
@@ -45,21 +51,53 @@ const ExportedLogRecord = Schema.Struct({
 const LogExport = Schema.Struct({
   resourceLogs: Schema.Array(
     Schema.Struct({
+      resource: ExportedResource,
       scopeLogs: Schema.Array(Schema.Struct({ logRecords: Schema.Array(ExportedLogRecord) })),
+    }),
+  ),
+});
+
+const MetricDataPoint = Schema.Struct({
+  attributes: Schema.Array(Attribute).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  asDouble: Schema.Number.pipe(Schema.optionalKey),
+  asInt: Schema.Number.pipe(Schema.optionalKey),
+});
+
+const ExportedMetric = Schema.Struct({
+  name: Schema.String,
+  sum: Schema.Struct({ dataPoints: Schema.Array(MetricDataPoint) }).pipe(Schema.optionalKey),
+});
+
+const MetricExport = Schema.Struct({
+  resourceMetrics: Schema.Array(
+    Schema.Struct({
+      resource: ExportedResource,
+      scopeMetrics: Schema.Array(Schema.Struct({ metrics: Schema.Array(ExportedMetric) })),
     }),
   ),
 });
 
 const decodeSpanExport = Schema.decodeUnknownEffect(SpanExport);
 const decodeLogExport = Schema.decodeUnknownEffect(LogExport);
+const decodeMetricExport = Schema.decodeUnknownEffect(MetricExport);
 
 type CanarySpan = typeof ExportedSpan.Type;
 type CanaryResource = typeof ExportedResource.Type;
 type CanaryLogRecord = typeof ExportedLogRecord.Type;
+type CanaryMetric = typeof ExportedMetric.Type;
+type CanaryMetricDataPoint = typeof MetricDataPoint.Type;
 
 type CanaryExport = {
   readonly spans: ReadonlyArray<{ readonly span: CanarySpan; readonly resource: CanaryResource }>;
-  readonly logs: ReadonlyArray<CanaryLogRecord>;
+  readonly logs: ReadonlyArray<{
+    readonly log: CanaryLogRecord;
+    readonly resource: CanaryResource;
+  }>;
+  readonly metrics: ReadonlyArray<{
+    readonly metric: CanaryMetric;
+    readonly dataPoint: CanaryMetricDataPoint;
+    readonly resource: CanaryResource;
+  }>;
 };
 
 const attributeValue = (
@@ -78,7 +116,12 @@ const readTelemetryExport = Effect.fn("readTelemetryExport")(function* (): Effec
     Effect.catch(() => Effect.succeed("")),
   );
   const spans: Array<{ span: CanarySpan; resource: CanaryResource }> = [];
-  const logs: Array<CanaryLogRecord> = [];
+  const logs: Array<{ log: CanaryLogRecord; resource: CanaryResource }> = [];
+  const metrics: Array<{
+    metric: CanaryMetric;
+    dataPoint: CanaryMetricDataPoint;
+    resource: CanaryResource;
+  }> = [];
   for (const line of content.split("\n")) {
     if (line === "") continue;
     const parsed = yield* Effect.try((): unknown => JSON.parse(line)).pipe(Effect.option);
@@ -97,12 +140,26 @@ const readTelemetryExport = Effect.fn("readTelemetryExport")(function* (): Effec
     if (Option.isSome(logExport)) {
       for (const resourceLogs of logExport.value.resourceLogs) {
         for (const scopeLogs of resourceLogs.scopeLogs) {
-          logs.push(...scopeLogs.logRecords);
+          for (const log of scopeLogs.logRecords) {
+            logs.push({ log, resource: resourceLogs.resource });
+          }
+        }
+      }
+    }
+    const metricExport = yield* decodeMetricExport(parsed.value).pipe(Effect.option);
+    if (Option.isSome(metricExport)) {
+      for (const resourceMetrics of metricExport.value.resourceMetrics) {
+        for (const scopeMetrics of resourceMetrics.scopeMetrics) {
+          for (const metric of scopeMetrics.metrics) {
+            for (const dataPoint of metric.sum?.dataPoints ?? []) {
+              metrics.push({ metric, dataPoint, resource: resourceMetrics.resource });
+            }
+          }
         }
       }
     }
   }
-  return { spans, logs };
+  return { spans, logs, metrics };
 });
 
 const findRun = Effect.fn("findRun")(function* (runId: string) {
@@ -119,23 +176,30 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
           candidate.span.traceId === root.span.traceId,
       );
       const log = telemetryExport.logs.find(
-        (record) =>
-          Option.getOrUndefined(attributeValue(record.attributes, "canary.run_id")) === runId,
+        (candidate) =>
+          Option.getOrUndefined(attributeValue(candidate.log.attributes, "canary.run_id")) ===
+          runId,
       );
-      if (child !== undefined && log !== undefined) {
-        return { root, child, log };
+      const metric = telemetryExport.metrics.find(
+        (candidate) =>
+          candidate.metric.name === "canary.operations" &&
+          Option.getOrUndefined(attributeValue(candidate.dataPoint.attributes, "canary.run_id")) ===
+            runId,
+      );
+      if (child !== undefined && log !== undefined && metric !== undefined) {
+        return { root, child, log, metric };
       }
     }
     yield* Effect.sleep("500 millis");
   }
-  return yield* Effect.die(`canary run ${runId} not found in ${telemetryExportPath.pathname}`);
+  return yield* Effect.die(`canary run ${runId} not found in ${telemetryExportPath}`);
 });
 
 const canaryEnabled = process.env["OBSERVABILITY_E2E"] === "1";
 
 describe.runIf(canaryEnabled)("pipeline canary", () => {
   it.live(
-    "exports a trace, parentage, resource attributes and a wide event through the collector",
+    "exports correlated traces, logs and metrics through the collector",
     () =>
       Effect.gen(function* () {
         const runId = `canary-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -143,12 +207,16 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
           serviceName: "observability-canary",
           serviceVersion: "0.1.0",
           environment: "test",
-          otlpEndpoint: "http://localhost:4318",
+          otlpEndpoint: new URL("http://localhost:4318"),
         });
 
         yield* Effect.gen(function* () {
+          const operationCounter = Metric.counter("canary.operations", {
+            attributes: { "canary.run_id": runId },
+          });
           yield* Effect.sleep("10 millis").pipe(Effect.withSpan("canary.child"));
           yield* WideEvent.emit("canary.completed", { "canary.run_id": runId });
+          yield* Metric.update(operationCounter, 1);
         }).pipe(
           Effect.withSpan("canary.operation", {
             attributes: { "canary.run_id": runId },
@@ -177,11 +245,34 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
           "test",
         );
 
-        assert.strictEqual(run.log.traceId, run.root.span.traceId);
+        assert.strictEqual(run.log.log.traceId, run.root.span.traceId);
         assert.strictEqual(
-          Option.getOrUndefined(attributeValue(run.log.attributes, "event.kind")),
+          Option.getOrUndefined(attributeValue(run.log.log.attributes, "event.kind")),
           "wide",
         );
+        assert.strictEqual(
+          Option.getOrUndefined(attributeValue(run.log.log.attributes, "event.name")),
+          "canary.completed",
+        );
+        assert.strictEqual(run.metric.metric.name, "canary.operations");
+        assert.strictEqual(run.metric.dataPoint.asDouble, 1);
+
+        for (const signalResource of [run.log.resource, run.metric.resource]) {
+          assert.strictEqual(
+            Option.getOrUndefined(attributeValue(signalResource.attributes, "service.name")),
+            "observability-canary",
+          );
+          assert.strictEqual(
+            Option.getOrUndefined(attributeValue(signalResource.attributes, "service.version")),
+            "0.1.0",
+          );
+          assert.strictEqual(
+            Option.getOrUndefined(
+              attributeValue(signalResource.attributes, "deployment.environment.name"),
+            ),
+            "test",
+          );
+        }
       }),
     60_000,
   );

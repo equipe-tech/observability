@@ -7,8 +7,8 @@ export type WideEventFields = {
 export const emit = (name: string, fields: WideEventFields): Effect.Effect<void> =>
   Effect.logInfo(name).pipe(
     Effect.annotateLogs({
+      ...fields,
       "event.name": name,
       "event.kind": "wide",
-      ...fields,
     }),
   );

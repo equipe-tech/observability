@@ -11,8 +11,11 @@
   "scripts": {
     "prepare": "vp config --no-agent",
     "check": "vp check",
-    "test": "vp test run",
+    "build": "bun scripts/build-packages.ts",
+    "test": "vp test run && bun run test:bun",
+    "test:bun": "bun test packages/cli/test --timeout 30000",
     "test:canary": "vp test run packages/telemetry/test/canary.test.ts",
+    "test:package": "bun scripts/package-smoke.ts",
     "lint": "vp lint .",
     "fix": "vp check --fix",
     "format": "vp fmt --write .",
@@ -27,6 +30,7 @@
     "@types/bun": "1.4.0",
     "effect": "4.0.0-rc.111",
     "oxlint": "1.79.0",
+    "typescript": "7.0.2",
     "vite": "npm:@voidzero-dev/vite-plus-core@0.3.0",
     "vite-plus": "0.3.0",
     "vitest": "4.1.11"

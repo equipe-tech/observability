@@ -16,7 +16,7 @@ vp lint .         # somente lint
 
 ## Hooks de git
 
-Os hooks vivem em `.vite-hooks/` e são versionados. O dispatcher é instalado por `vp config --no-agent` no `prepare` do `bun install`. `vp hooks status` mostra o estado.
+Os hooks vivem em `.vite-hooks/` e são versionados. O `bun install` executa `vp config --no-agent` e instala o dispatcher. Use `git config --get core.hooksPath` para verificar o caminho ativo.
 
 - `pre-commit` roda `vp staged` (configurado na chave `staged` do `vite.config.ts`).
 - `commit-msg` roda o commitlint (conventional commits).

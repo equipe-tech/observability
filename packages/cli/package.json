@@ -4,11 +4,15 @@
   "description": "CLI da plataforma de observabilidade: ciclo de vida da stack local de desenvolvimento",
   "license": "Apache-2.0",
   "bin": {
-    "observability": "./src/main.ts"
+    "observability": "./dist/main.js"
   },
+  "files": [
+    "dist"
+  ],
   "type": "module",
-  "exports": {
-    ".": "./src/Cli.ts"
+  "scripts": {
+    "build": "bun ../../scripts/build-packages.ts",
+    "prepack": "bun run build"
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.0-rc.111",

@@ -3,9 +3,19 @@
   "version": "0.1.0",
   "description": "Contrato OpenTelemetry da Equipe Tech: configuracao, layer OTLP e wide events sobre Effect",
   "license": "Apache-2.0",
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "bun ../../scripts/build-packages.ts",
+    "prepack": "bun run build"
   },
   "dependencies": {
     "effect": "4.0.0-rc.111"
