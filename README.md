@@ -66,16 +66,11 @@ compose/              stack local (collector + viewer)
 docs/                 ADRs, runbooks e guias de adoção
 ```
 
-## Modelo de propriedade
+## Propriedade e transferência
 
-Todo projeto declara o dono da telemetria desde a primeira versão:
+Não existe modo de propriedade. As credenciais e os endpoints definem o dono: os recursos vivem na org Axiom, Sentry e Cloudflare que as envs do projeto apontam. Para transferir um projeto, troque as credenciais. O código não muda.
 
-```text
-ownership.mode = agency | client
-```
-
-- `agency`: Axiom, Sentry e Cloudflare pertencem à Equipe Tech.
-- `client`: os recursos pertencem ao cliente. O CLI provisiona com credenciais do cliente.
+Quando a transferência para o cliente é um cenário previsto, provisione na org do cliente desde o início. A transferência vira revogação de acesso, sem migração de dados.
 
 ## Licença
 
