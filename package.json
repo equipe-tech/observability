@@ -12,6 +12,7 @@
     "prepare": "vp config --no-agent",
     "check": "vp check",
     "test": "vp test run",
+    "test:canary": "vp test run packages/telemetry/test/canary.test.ts",
     "lint": "vp lint .",
     "fix": "vp check --fix",
     "format": "vp fmt --write .",
@@ -21,12 +22,14 @@
   "devDependencies": {
     "@commitlint/cli": "^21.2.2",
     "@commitlint/config-conventional": "^21.2.2",
+    "@effect/vitest": "4.0.0-rc.111",
     "@oxlint/plugins": "1.79.0",
     "@types/bun": "1.4.0",
     "effect": "4.0.0-rc.111",
     "oxlint": "1.79.0",
     "vite": "npm:@voidzero-dev/vite-plus-core@0.3.0",
-    "vite-plus": "0.3.0"
+    "vite-plus": "0.3.0",
+    "vitest": "4.1.11"
   },
   "packageManager": "bun@1.4.0"
 }

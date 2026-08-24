@@ -31,6 +31,9 @@ export default defineConfig({
     "*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}": "vp check --fix",
     "*.{css,html,json,jsonc,md,mdx,toml,yaml,yml}": "vp fmt --write",
   },
+  test: {
+    exclude: ["**/node_modules/**", "repos/**"],
+  },
   run: {
     cache: {
       scripts: false,

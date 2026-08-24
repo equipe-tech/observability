@@ -2,7 +2,7 @@
 
 Plataforma de observabilidade da Equipe Tech. Um contrato OpenTelemetry, um Collector por stack e adapters para cada runtime. O mesmo pipeline roda no desenvolvimento local e na produção.
 
-> Status: bootstrap. A estrutura abaixo descreve o alvo do projeto.
+> Status: pipeline local implementado. Pacote de telemetria, CLI e stack local funcionam de ponta a ponta; adapters por runtime e provisionamento vêm em seguida.
 
 ## Princípios
 
@@ -59,16 +59,16 @@ O Collector roda como accessory do [Kamal](https://kamal-deploy.org), com fila p
 
 ```text
 packages/
-  telemetry/          contrato, redação, contexto, adapters (core, node, nestjs, browser, testing)
-  cli/                observability dev|test|kamal|verify e provisionamento de assets
-collector/            configurações do OTel Collector por perfil
-compose/              stack local (collector + viewer)
+  telemetry/          @equipe-tech/observability: config validada, layer OTLP (traces, logs, métricas) e wide events sobre Effect
+  cli/                observability dev up|down|status: ciclo de vida da stack local
+collector/            configurações do OTel Collector (local.yaml, production.yaml)
+compose/              stack local (collector 0.159.0 + otel-desktop-viewer v0.4.1)
 docs/                 padrões de código, erros, testes e workflow
 tools/oxlint/         plugins de lint do projeto (anti-slop, effect)
 repos/                repositórios vendorados para agentes (gitignored)
 ```
 
-Os diretórios `packages/`, `collector/` e `compose/` descrevem o alvo do projeto.
+Alvos seguintes: adapters por runtime (node, nestjs, browser, testing) e provisionamento de assets no CLI.
 
 ## Desenvolvimento
 
@@ -79,6 +79,20 @@ bun install         # instala e habilita os hooks de git
 bun repos:sync      # clona os repositórios vendorados em repos/
 bun check           # lint (type-aware) + format + type-check
 bun test            # testes
+```
+
+### Stack local
+
+```sh
+bun packages/cli/src/main.ts dev up       # sobe collector + viewer (UI em http://localhost:8000)
+bun packages/cli/src/main.ts dev status   # estado da stack
+bun packages/cli/src/main.ts dev down     # derruba a stack
+```
+
+Com a stack no ar, o canário valida o pipeline completo (app -> collector -> destino):
+
+```sh
+OBSERVABILITY_E2E=1 bun test:canary
 ```
 
 O projeto usa [Effect](https://effect.website) v4 e conventional commits.

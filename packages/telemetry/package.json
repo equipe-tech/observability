@@ -1,0 +1,13 @@
+{
+  "name": "@equipe-tech/observability",
+  "version": "0.1.0",
+  "description": "Contrato OpenTelemetry da Equipe Tech: configuracao, layer OTLP e wide events sobre Effect",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "effect": "4.0.0-rc.111"
+  }
+}

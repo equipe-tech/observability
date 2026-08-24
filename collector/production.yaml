@@ -1,0 +1,75 @@
+extensions:
+  file_storage/queue:
+    directory: /var/lib/otelcol/queue
+    create_directory: true
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+  batch:
+    send_batch_size: 2048
+    timeout: 5s
+
+exporters:
+  otlphttp/traces:
+    endpoint: https://api.axiom.co
+    compression: zstd
+    headers:
+      Authorization: Bearer ${env:AXIOM_TOKEN}
+      X-Axiom-Dataset: ${env:AXIOM_DATASET_TRACES}
+    sending_queue:
+      enabled: true
+      storage: file_storage/queue
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 0
+  otlphttp/logs:
+    endpoint: https://api.axiom.co
+    compression: zstd
+    headers:
+      Authorization: Bearer ${env:AXIOM_TOKEN}
+      X-Axiom-Dataset: ${env:AXIOM_DATASET_LOGS}
+    sending_queue:
+      enabled: true
+      storage: file_storage/queue
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 0
+  otlphttp/metrics:
+    endpoint: https://api.axiom.co
+    compression: zstd
+    headers:
+      Authorization: Bearer ${env:AXIOM_TOKEN}
+      X-Axiom-Metrics-Dataset: ${env:AXIOM_DATASET_METRICS}
+    sending_queue:
+      enabled: true
+      storage: file_storage/queue
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 0
+
+service:
+  extensions: [file_storage/queue]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/traces]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/logs]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/metrics]
