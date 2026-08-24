@@ -1,0 +1,40 @@
+# Design de erros
+
+Erros fazem parte da interface do produto e do modelo de observabilidade. Um erro deve permitir que um humano ou um agente entenda o que aconteceu, decida o próximo passo e correlacione uma falha pública com os traces internos, sem expor detalhes privados de implementação.
+
+## Princípios de mensagem
+
+### Diga o que aconteceu e por quê
+
+Nomeie a operação que falhou e dê a razão mais específica que é segura de expor. Não use mensagens genéricas como "Algo deu errado" quando a aplicação classificou a causa.
+
+Bom:
+
+```text
+Dataset "hibou-production-logs" não foi encontrado. Verifique o nome do dataset e tente de novo.
+```
+
+Ruim:
+
+```text
+Algo deu errado.
+```
+
+### Diga ao chamador o que fazer
+
+Quando o chamador pode corrigir a falha, declare a ação corretiva. Quando repetir pode funcionar, diga isso e indique se a mesma operação lógica é segura de repetir. Quando o chamador não pode resolver, direcione ao suporte com um identificador de requisição.
+
+Não sugira repetir quando a operação pode ter completado parcialmente, ou quando repetir criaria uma segunda operação lógica. O campo `retryable` deve refletir a idempotência real da operação.
+
+## Estrutura
+
+- Modele erros como tipos com tag no canal de erro do Effect. Cada erro carrega um código estável, a mensagem pública e os campos de contexto seguros.
+- Separe a mensagem pública do diagnóstico interno. O diagnóstico completo vai para a telemetria; a resposta pública carrega o código, a mensagem e o identificador de correlação.
+- Preserve a causa original em um campo `cause`. O campo `cause` é a única exceção permitida para `unknown`.
+- Todo erro público inclui o identificador de correlação (`trace_id` ou id da requisição) para permitir a busca nos traces.
+
+## Contratos públicos
+
+- Cada código de erro alcançável pelo chamador é parte do contrato e tem cobertura de teste.
+- Não mude o significado de um código publicado. Adicione um código novo.
+- Não vaze stack traces, caminhos de arquivo, queries ou configurações em respostas públicas.

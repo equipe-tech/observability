@@ -29,13 +29,13 @@ API + Workers + Jobs
 Backend exceptions --> Sentry backend (SDK nativo)
 ```
 
-| Componente | Responsabilidade |
-| --- | --- |
-| Pacote | Instrumentação, contrato de eventos, contexto e adapters |
-| Collector | Redação, batch, retry, roteamento e enriquecimento |
-| Axiom | Logs, traces, métricas, dashboards e monitores |
-| Sentry | Exceções, releases, source maps e Session Replay |
-| Cloudflare | Tunnel, WAF, rate limit e correlação via `CF-Ray` |
+| Componente | Responsabilidade                                         |
+| ---------- | -------------------------------------------------------- |
+| Pacote     | Instrumentação, contrato de eventos, contexto e adapters |
+| Collector  | Redação, batch, retry, roteamento e enriquecimento       |
+| Axiom      | Logs, traces, métricas, dashboards e monitores           |
+| Sentry     | Exceções, releases, source maps e Session Replay         |
+| Cloudflare | Tunnel, WAF, rate limit e correlação via `CF-Ray`        |
 
 ## Ambientes
 
@@ -55,7 +55,7 @@ app -> otel-collector (Kamal accessory) -> Axiom
 
 O Collector roda como accessory do [Kamal](https://kamal-deploy.org), com fila persistente e sem porta OTLP pública.
 
-## Estrutura planejada
+## Estrutura
 
 ```text
 packages/
@@ -63,8 +63,25 @@ packages/
   cli/                observability dev|test|kamal|verify e provisionamento de assets
 collector/            configurações do OTel Collector por perfil
 compose/              stack local (collector + viewer)
-docs/                 ADRs, runbooks e guias de adoção
+docs/                 padrões de código, erros, testes e workflow
+tools/oxlint/         plugins de lint do projeto (anti-slop, effect)
+repos/                repositórios vendorados para agentes (gitignored)
 ```
+
+Os diretórios `packages/`, `collector/` e `compose/` descrevem o alvo do projeto.
+
+## Desenvolvimento
+
+Requisitos: Bun `1.4+` e [Vite+](https://viteplus.dev) `0.3.0`.
+
+```sh
+bun install         # instala e habilita os hooks de git
+bun repos:sync      # clona os repositórios vendorados em repos/
+bun check           # lint (type-aware) + format + type-check
+bun test            # testes
+```
+
+O projeto usa [Effect](https://effect.website) v4 e conventional commits.
 
 ## Propriedade e transferência
 

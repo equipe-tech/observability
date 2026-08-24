@@ -1,0 +1,17 @@
+node_modules
+dist
+*.local
+*.log
+logs
+.DS_Store
+
+.env
+.env.*
+!.env.example
+
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea
+
+/repos/
