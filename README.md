@@ -2,7 +2,7 @@
 
 Plataforma de observabilidade da Equipe Tech. Um contrato OpenTelemetry, um Collector por stack e adapters para cada runtime. O mesmo pipeline roda no desenvolvimento local e na produção.
 
-> Status: pipeline local, adapters por runtime e provisionamento implementados. Pacote de telemetria, adapters (node, nestjs, browser, testing), CLI, stack local e provisionamento dos assets de produção funcionam de ponta a ponta.
+> Status: pipeline local, adapters por runtime e provisionamento implementados. A CLI também cria datasets, tokens Axiom e projetos Sentry por ambiente.
 
 ## Princípios
 
@@ -116,6 +116,16 @@ O comando escreve no projeto alvo:
 - `observability/kamal.accessory.yml`: trecho de accessory para mesclar em `config/deploy.yml`, com os datasets `<name>-traces|logs|metrics`
 
 O comando é idempotente. Um arquivo provisionado que foi modificado localmente gera o erro `OBS_CLI_PROVISION_CONFLICT`; use `--force` para sobrescrever. Depois do merge do accessory, defina o secret `AXIOM_TOKEN` no Kamal.
+
+### Ambientes remotos
+
+A CLI autentica com Axiom e Sentry, cria recursos isolados por ambiente e salva as credenciais com modo `0600`.
+
+Consulte estes documentos:
+
+- [Ambientes isolam dados sem acoplar a aplicação](docs/environment-management.md)
+- [Configurar um projeto com ambientes remotos](docs/setup-project-environments.md)
+- [Referência da CLI](docs/cli-reference.md)
 
 Com a stack no ar, o canário valida traces, logs e métricas no pipeline completo:
 

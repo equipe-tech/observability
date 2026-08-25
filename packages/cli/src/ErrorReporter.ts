@@ -13,7 +13,10 @@ export const publicErrorFromCause = (cause: Cause.Cause<unknown>): Option.Option
       (Predicate.hasProperty(value, "_tag") &&
         (value._tag === "DockerComposeError" ||
           value._tag === "StackAssetsError" ||
-          value._tag === "ProvisionError"))
+          value._tag === "ProvisionError" ||
+          value._tag === "CredentialsError" ||
+          value._tag === "RemoteApiError" ||
+          value._tag === "RemoteEnvironmentError"))
     ) {
       return Option.none();
     }
