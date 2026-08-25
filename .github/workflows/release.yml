@@ -160,8 +160,8 @@ jobs:
             exit 0
           fi
           for tarball in \
-            "dist-release/equipe-tech-observability-${VERSION}.tgz" \
-            "dist-release/equipe-tech-observability-cli-${VERSION}.tgz"; do
+            "./dist-release/equipe-tech-observability-${VERSION}.tgz" \
+            "./dist-release/equipe-tech-observability-cli-${VERSION}.tgz"; do
             [[ -f "$tarball" ]] || { echo "Missing tarball: $tarball"; exit 1; }
             set +e
             output="$(npm publish "$tarball" --access public --tag "$NPM_TAG" 2>&1)"
