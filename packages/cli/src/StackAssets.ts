@@ -23,10 +23,11 @@ export const prepareStackAssets = Effect.fn("prepareStackAssets")(
     const path = yield* Path.Path;
     const composeFile = path.join(stateDirectory, "docker-compose.yml");
 
-    yield* fs.makeDirectory(path.join(stateDirectory, "data"), {
+    const dataDirectory = path.join(stateDirectory, "data");
+    yield* fs.makeDirectory(dataDirectory, {
       recursive: true,
-      mode: 0o700,
     });
+    yield* fs.chmod(dataDirectory, 0o777);
 
     for (const file of ["docker-compose.yml", "local.yaml"]) {
       const content = yield* fs.readFileString(path.join(sourceDirectory, file));
