@@ -1,3 +1,4 @@
+export * as BrowserEvents from "./BrowserEvents.ts";
 export * as Telemetry from "./Telemetry.ts";
 export {
   InvalidTelemetryEnvironment,

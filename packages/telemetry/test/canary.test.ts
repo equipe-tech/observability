@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Telemetry } from "../src/index.ts";
+import { ingestBrowserEvents } from "../src/node/index.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 import * as WideEvent from "../src/WideEvent.ts";
 
@@ -178,7 +179,16 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
       const log = telemetryExport.logs.find(
         (candidate) =>
           Option.getOrUndefined(attributeValue(candidate.log.attributes, "canary.run_id")) ===
-          runId,
+            runId &&
+          Option.getOrUndefined(attributeValue(candidate.log.attributes, "event.name")) ===
+            "canary.completed",
+      );
+      const browserLog = telemetryExport.logs.find(
+        (candidate) =>
+          Option.getOrUndefined(attributeValue(candidate.log.attributes, "canary.run_id")) ===
+            runId &&
+          Option.getOrUndefined(attributeValue(candidate.log.attributes, "event.name")) ===
+            "canary.browser",
       );
       const metric = telemetryExport.metrics.find(
         (candidate) =>
@@ -186,8 +196,13 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
           Option.getOrUndefined(attributeValue(candidate.dataPoint.attributes, "canary.run_id")) ===
             runId,
       );
-      if (child !== undefined && log !== undefined && metric !== undefined) {
-        return { root, child, log, metric };
+      if (
+        child !== undefined &&
+        log !== undefined &&
+        browserLog !== undefined &&
+        metric !== undefined
+      ) {
+        return { root, child, log, browserLog, metric };
       }
     }
     yield* Effect.sleep("500 millis");
@@ -216,6 +231,17 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
           });
           yield* Effect.sleep("10 millis").pipe(Effect.withSpan("canary.child"));
           yield* WideEvent.emit("canary.completed", { "canary.run_id": runId });
+          yield* ingestBrowserEvents({
+            version: 1,
+            events: [
+              {
+                id: `browser-${runId}`,
+                name: "canary.browser",
+                occurredAt: Date.now(),
+                fields: { "canary.run_id": runId },
+              },
+            ],
+          }).pipe(Effect.orDie);
           yield* Metric.update(operationCounter, 1);
         }).pipe(
           Effect.withSpan("canary.operation", {
@@ -253,6 +279,14 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
         assert.strictEqual(
           Option.getOrUndefined(attributeValue(run.log.log.attributes, "event.name")),
           "canary.completed",
+        );
+        assert.strictEqual(
+          Option.getOrUndefined(attributeValue(run.browserLog.log.attributes, "event.source")),
+          "browser",
+        );
+        assert.strictEqual(
+          Option.getOrUndefined(attributeValue(run.browserLog.log.attributes, "browser.event.id")),
+          `browser-${runId}`,
         );
         assert.strictEqual(run.metric.metric.name, "canary.operations");
         assert.strictEqual(run.metric.dataPoint.asDouble, 1);

@@ -51,7 +51,19 @@ try {
     {
       directory: join(root, "packages/telemetry"),
       archive: "telemetry.tgz",
-      required: ["package/dist/LICENSE", "package/dist/index.js", "package/dist/index.d.ts"],
+      required: [
+        "package/dist/LICENSE",
+        "package/dist/index.js",
+        "package/dist/index.d.ts",
+        "package/dist/node/index.js",
+        "package/dist/node/index.d.ts",
+        "package/dist/nestjs/index.js",
+        "package/dist/nestjs/index.d.ts",
+        "package/dist/browser/index.js",
+        "package/dist/browser/index.d.ts",
+        "package/dist/testing/index.js",
+        "package/dist/testing/index.d.ts",
+      ],
     },
     {
       directory: join(root, "packages/cli"),
@@ -119,7 +131,7 @@ try {
       [
         "bun",
         "-e",
-        "import { Telemetry, WideEvent } from '@equipe-tech/observability'; if (!Telemetry.layer || !WideEvent.emit) process.exit(1);",
+        "import { Telemetry, WideEvent } from '@equipe-tech/observability'; import { runMain, ingestBrowserEvents } from '@equipe-tech/observability/node'; import { BrowserTelemetry } from '@equipe-tech/observability/browser'; import { run } from '@equipe-tech/observability/testing'; if (!Telemetry.layer || !WideEvent.emit || !runMain || !ingestBrowserEvents || !BrowserTelemetry.layer || !run) process.exit(1);",
       ],
       consumer,
     ),
@@ -127,7 +139,7 @@ try {
   );
   await writeFile(
     join(consumer, "index.ts"),
-    "import { TelemetryConfig } from '@equipe-tech/observability';\nconst config = new TelemetryConfig({ serviceName: 'test', serviceVersion: '1.0.0', environment: 'test', otlpEndpoint: new URL('http://localhost:4318') });\nvoid config;\n",
+    "import { TelemetryConfig } from '@equipe-tech/observability';\nimport { layer } from '@equipe-tech/observability/node';\nimport { BrowserTelemetry } from '@equipe-tech/observability/browser';\nimport { run } from '@equipe-tech/observability/testing';\nconst config = new TelemetryConfig({ serviceName: 'test', serviceVersion: '1.0.0', environment: 'test', otlpEndpoint: new URL('http://localhost:4318') });\nvoid config;\nvoid layer;\nvoid BrowserTelemetry;\nvoid run;\n",
   );
   await writeFile(
     join(consumer, "tsconfig.json"),

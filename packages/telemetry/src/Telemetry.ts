@@ -1,10 +1,12 @@
 import { Effect, Layer } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 import { Otlp } from "effect/unstable/observability";
 import type { EnvironmentVariables, InvalidTelemetryEnvironment } from "./TelemetryConfig.ts";
 import { telemetryConfigFromEnv, type TelemetryConfig } from "./TelemetryConfig.ts";
 
-export const layer = (config: TelemetryConfig): Layer.Layer<never> =>
+export const layerOtlp = (
+  config: TelemetryConfig,
+): Layer.Layer<never, never, HttpClient.HttpClient> =>
   Otlp.layerJson({
     baseUrl: config.otlpEndpoint.toString(),
     resource: {
@@ -14,7 +16,10 @@ export const layer = (config: TelemetryConfig): Layer.Layer<never> =>
         "deployment.environment.name": config.environment,
       },
     },
-  }).pipe(Layer.provide(FetchHttpClient.layer));
+  });
+
+export const layer = (config: TelemetryConfig): Layer.Layer<never> =>
+  layerOtlp(config).pipe(Layer.provide(FetchHttpClient.layer));
 
 export const layerFromEnv = (
   env: EnvironmentVariables,

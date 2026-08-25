@@ -2,7 +2,7 @@
 
 Plataforma de observabilidade da Equipe Tech. Um contrato OpenTelemetry, um Collector por stack e adapters para cada runtime. O mesmo pipeline roda no desenvolvimento local e na produção.
 
-> Status: pipeline local implementado. Pacote de telemetria, CLI e stack local funcionam de ponta a ponta; adapters por runtime e provisionamento vêm em seguida.
+> Status: pipeline local e adapters por runtime implementados. Pacote de telemetria, adapters (node, nestjs, browser, testing), CLI e stack local funcionam de ponta a ponta; o provisionamento de assets vem em seguida.
 
 ## Princípios
 
@@ -59,7 +59,7 @@ O Collector roda como accessory do [Kamal](https://kamal-deploy.org), com fila p
 
 ```text
 packages/
-  telemetry/          @equipe-tech/observability: config validada, layer OTLP (traces, logs, métricas) e wide events sobre Effect
+  telemetry/          @equipe-tech/observability: config validada, layer OTLP (traces, logs, métricas), wide events e adapters sobre Effect
   cli/                observability dev up|down|status: CLI e assets da stack local
 collector/            configuração do OTel Collector para produção
 docs/                 padrões de código, erros, testes e workflow
@@ -67,7 +67,20 @@ tools/oxlint/         plugins de lint do projeto (anti-slop, effect)
 repos/                repositórios vendorados para agentes (gitignored)
 ```
 
-Alvos seguintes: adapters por runtime (node, nestjs, browser, testing) e provisionamento de assets no CLI.
+### Adapters
+
+O pacote `@equipe-tech/observability` publica um subpath por runtime:
+
+| Subpath     | Conteúdo                                                                                                                     |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `./node`    | `runMain` (telemetria do ambiente, interrupção em `SIGINT`/`SIGTERM`, flush no shutdown) e ingestão de eventos do browser    |
+| `./nestjs`  | `TelemetryInterceptor` (spans de fronteira HTTP) e `withRequestSpan` para propagar o span da requisição a effects do handler |
+| `./browser` | `BrowserTelemetry` (fila limitada, batch e flush de wide events para `/_telemetry/events`) com transporte `fetch` injetável  |
+| `./testing` | Captura em memória dos exports OTLP reais (`run`, `makeCapture`) para asserts de spans, logs e métricas em testes            |
+
+O contrato do endpoint `/_telemetry/events` vive em `BrowserEvents` no entrypoint raiz. O servidor faz o parse com `parseBrowserEventBatch` e re-emite os eventos como wide events com atributos de servidor (`event.source`, `browser.event.id`).
+
+Alvos seguintes: provisionamento de assets no CLI.
 
 ## Desenvolvimento
 
