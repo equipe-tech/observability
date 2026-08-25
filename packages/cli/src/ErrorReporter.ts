@@ -11,7 +11,9 @@ export const publicErrorFromCause = (cause: Cause.Cause<unknown>): Option.Option
     if (
       CliError.isCliError(value) ||
       (Predicate.hasProperty(value, "_tag") &&
-        (value._tag === "DockerComposeError" || value._tag === "StackAssetsError"))
+        (value._tag === "DockerComposeError" ||
+          value._tag === "StackAssetsError" ||
+          value._tag === "ProvisionError"))
     ) {
       return Option.none();
     }

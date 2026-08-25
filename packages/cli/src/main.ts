@@ -5,11 +5,14 @@ import { Command } from "effect/unstable/cli";
 import { observability } from "./Cli.ts";
 import { DockerCompose } from "./DockerCompose.ts";
 import { publicErrorFromCause } from "./ErrorReporter.ts";
+import { ProvisionAssets } from "./ProvisionAssets.ts";
 import { StackAssets } from "./StackAssets.ts";
 
-const MainLayer = Layer.merge(DockerCompose.layer, StackAssets.layer).pipe(
-  Layer.provideMerge(BunServices.layer),
-);
+const MainLayer = Layer.mergeAll(
+  DockerCompose.layer,
+  StackAssets.layer,
+  ProvisionAssets.layer,
+).pipe(Layer.provideMerge(BunServices.layer));
 
 observability.pipe(
   Command.run({ version: "0.1.0" }),
@@ -18,6 +21,8 @@ observability.pipe(
     DockerComposeError: (error) =>
       Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
     StackAssetsError: (error) =>
+      Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
+    ProvisionError: (error) =>
       Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
   }),
   Effect.catchCause((cause) =>

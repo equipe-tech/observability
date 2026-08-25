@@ -1,6 +1,7 @@
-import { Effect, Option, Path } from "effect";
+import { Console, Effect, Option, Path } from "effect";
 import { Command, Flag } from "effect/unstable/cli";
 import { DockerCompose } from "./DockerCompose.ts";
+import { ProvisionAssets } from "./ProvisionAssets.ts";
 import { StackAssets } from "./StackAssets.ts";
 
 const composeFile = Flag.string("file").pipe(
@@ -53,7 +54,43 @@ const dev = Command.make("dev").pipe(
   Command.withDescription("Ciclo de vida da stack local de observabilidade"),
 );
 
+const provisionDirectory = Flag.string("dir").pipe(
+  Flag.withAlias("d"),
+  Flag.withDescription("Diretório do projeto alvo (padrão: diretório atual)"),
+  Flag.withDefault("."),
+);
+
+const provisionName = Flag.string("name").pipe(
+  Flag.withAlias("n"),
+  Flag.withDescription("Nome do projeto usado nos datasets (padrão: nome do diretório alvo)"),
+  Flag.optional,
+);
+
+const provisionForce = Flag.boolean("force").pipe(
+  Flag.withDescription("Sobrescreve arquivos provisionados que foram modificados"),
+  Flag.withDefault(false),
+);
+
+const provision = Command.make(
+  "provision",
+  { dir: provisionDirectory, name: provisionName, force: provisionForce },
+  Effect.fn(function* ({ dir, force, name }) {
+    const assets = yield* ProvisionAssets;
+    const files = yield* assets.provision(dir, name, force);
+    for (const file of files) {
+      yield* Console.log(`${file.action}  ${file.relativePath}`);
+    }
+    yield* Console.log(
+      "Merge observability/kamal.accessory.yml into config/deploy.yml and set the AXIOM_TOKEN secret.",
+    );
+  }),
+).pipe(
+  Command.withDescription(
+    "Provisiona os assets do Collector de produção (config + accessory Kamal) no projeto",
+  ),
+);
+
 export const observability = Command.make("observability").pipe(
-  Command.withSubcommands([dev]),
+  Command.withSubcommands([dev, provision]),
   Command.withDescription("Plataforma de observabilidade da Equipe Tech"),
 );

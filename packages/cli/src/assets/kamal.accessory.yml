@@ -1,0 +1,17 @@
+accessories:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.159.0
+    roles:
+      - web
+    cmd: --config=/etc/otelcol/collector.yaml
+    files:
+      - observability/collector.yaml:/etc/otelcol/collector.yaml
+    volumes:
+      - otel-collector-queue:/var/lib/otelcol/queue
+    env:
+      secret:
+        - AXIOM_TOKEN
+      clear:
+        AXIOM_DATASET_TRACES: "{{name}}-traces"
+        AXIOM_DATASET_LOGS: "{{name}}-logs"
+        AXIOM_DATASET_METRICS: "{{name}}-metrics"

@@ -2,7 +2,7 @@
 
 Plataforma de observabilidade da Equipe Tech. Um contrato OpenTelemetry, um Collector por stack e adapters para cada runtime. O mesmo pipeline roda no desenvolvimento local e na produção.
 
-> Status: pipeline local e adapters por runtime implementados. Pacote de telemetria, adapters (node, nestjs, browser, testing), CLI e stack local funcionam de ponta a ponta; o provisionamento de assets vem em seguida.
+> Status: pipeline local, adapters por runtime e provisionamento implementados. Pacote de telemetria, adapters (node, nestjs, browser, testing), CLI, stack local e provisionamento dos assets de produção funcionam de ponta a ponta.
 
 ## Princípios
 
@@ -60,8 +60,7 @@ O Collector roda como accessory do [Kamal](https://kamal-deploy.org), com fila p
 ```text
 packages/
   telemetry/          @equipe-tech/observability: config validada, layer OTLP (traces, logs, métricas), wide events e adapters sobre Effect
-  cli/                observability dev up|down|status: CLI e assets da stack local
-collector/            configuração do OTel Collector para produção
+  cli/                observability dev|provision: CLI, assets da stack local e do Collector de produção
 docs/                 padrões de código, erros, testes e workflow
 tools/oxlint/         plugins de lint do projeto (anti-slop, effect)
 repos/                repositórios vendorados para agentes (gitignored)
@@ -79,8 +78,6 @@ O pacote `@equipe-tech/observability` publica um subpath por runtime:
 | `./testing` | Captura em memória dos exports OTLP reais (`run`, `makeCapture`) para asserts de spans, logs e métricas em testes            |
 
 O contrato do endpoint `/_telemetry/events` vive em `BrowserEvents` no entrypoint raiz. O servidor faz o parse com `parseBrowserEventBatch` e re-emite os eventos como wide events com atributos de servidor (`event.source`, `browser.event.id`).
-
-Alvos seguintes: provisionamento de assets no CLI.
 
 ## Desenvolvimento
 
@@ -104,6 +101,19 @@ bun packages/cli/src/main.ts dev down     # derruba a stack
 ```
 
 A CLI copia os assets versionados para `OBSERVABILITY_HOME`. O diretório padrão é `~/.local/state/observability`.
+
+### Provisionamento de produção
+
+```sh
+bun packages/cli/src/main.ts provision --dir ~/projeto --name meu-app
+```
+
+O comando escreve no projeto alvo:
+
+- `observability/collector.yaml`: configuração do OTel Collector de produção (fila persistente e exporters Axiom)
+- `observability/kamal.accessory.yml`: trecho de accessory para mesclar em `config/deploy.yml`, com os datasets `<name>-traces|logs|metrics`
+
+O comando é idempotente. Um arquivo provisionado que foi modificado localmente gera o erro `OBS_CLI_PROVISION_CONFLICT`; use `--force` para sobrescrever. Depois do merge do accessory, defina o secret `AXIOM_TOKEN` no Kamal.
 
 Com a stack no ar, o canário valida traces, logs e métricas no pipeline completo:
 

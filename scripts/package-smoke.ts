@@ -74,6 +74,8 @@ try {
         "package/dist/main.d.ts",
         "package/dist/assets/docker-compose.yml",
         "package/dist/assets/local.yaml",
+        "package/dist/assets/production.yaml",
+        "package/dist/assets/kamal.accessory.yml",
       ],
     },
   ];
@@ -180,6 +182,27 @@ try {
   const copiedCompose = await readFile(join(state, "0.1.0", "docker-compose.yml"), "utf8");
   if (!copiedCompose.includes("observability-local")) {
     throw new Error("The packed CLI did not prepare the local stack assets.");
+  }
+
+  const provisionTarget = join(temporaryDirectory, "provision target");
+  await mkdir(provisionTarget, { recursive: true });
+  requireSuccess(
+    await run([executable, "provision", "--dir", provisionTarget, "--name", "smoke-app"], consumer),
+    "Provisioning the production assets with the packed CLI",
+  );
+  const provisionedCollector = await readFile(
+    join(provisionTarget, "observability", "collector.yaml"),
+    "utf8",
+  );
+  if (!provisionedCollector.includes("file_storage/queue")) {
+    throw new Error("The packed CLI did not provision the production collector config.");
+  }
+  const provisionedAccessory = await readFile(
+    join(provisionTarget, "observability", "kamal.accessory.yml"),
+    "utf8",
+  );
+  if (!provisionedAccessory.includes("smoke-app-traces")) {
+    throw new Error("The packed CLI did not render the Kamal accessory template.");
   }
 } finally {
   await rm(temporaryDirectory, { recursive: true, force: true });
