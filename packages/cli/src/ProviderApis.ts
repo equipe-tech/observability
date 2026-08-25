@@ -61,7 +61,7 @@ const remoteRequest = Effect.fn("remoteRequest")(function* (
   init: RequestInit,
 ): Effect.fn.Return<RemoteResponse, RemoteApiError> {
   const response = yield* Effect.tryPromise({
-    try: () => fetch(url, init),
+    try: (signal) => fetch(url, { ...init, signal }),
     catch: (cause) =>
       new RemoteApiError({
         code: "OBS_CLI_REMOTE_FAILED",
