@@ -32,3 +32,26 @@ jobs:
       - run: OBSERVABILITY_E2E=1 bun test:canary
       - if: always()
         run: bun packages/cli/src/main.ts dev down
+      - name: deployed canary
+        env:
+          AXIOM_TOKEN: ${{ secrets.AXIOM_TOKEN }}
+          AXIOM_DATASET_TRACES: ${{ vars.AXIOM_DATASET_TRACES }}
+          AXIOM_DATASET_LOGS: ${{ vars.AXIOM_DATASET_LOGS }}
+          AXIOM_DATASET_METRICS: ${{ vars.AXIOM_DATASET_METRICS }}
+        run: |
+          if [ -z "$AXIOM_TOKEN" ]; then
+            echo "Deployed canary skipped: the AXIOM_TOKEN secret is not configured."
+            exit 0
+          fi
+          docker run -d --name otel-production \
+            -p 127.0.0.1:24318:4318 \
+            -e AXIOM_TOKEN -e AXIOM_DATASET_TRACES -e AXIOM_DATASET_LOGS -e AXIOM_DATASET_METRICS \
+            -v "$PWD/packages/cli/src/assets/production.yaml:/etc/otelcol/config.yaml:ro" \
+            otel/opentelemetry-collector-contrib:0.159.0 --config=/etc/otelcol/config.yaml
+          for attempt in $(seq 1 30); do
+            if curl -s -o /dev/null http://127.0.0.1:24318; then break; fi
+            sleep 1
+          done
+          OBSERVABILITY_E2E_DEPLOYED=1 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:24318 bun test:canary:deployed
+      - if: always()
+        run: docker rm -f otel-production 2>/dev/null || true

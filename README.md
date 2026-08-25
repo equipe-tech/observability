@@ -123,6 +123,16 @@ Com a stack no ar, o canário valida traces, logs e métricas no pipeline comple
 OBSERVABILITY_E2E=1 bun test:canary
 ```
 
+### Canário deployed (Axiom)
+
+O alvo `deployed` roda o mesmo canário contra a fronteira de aceitação real: aplicação -> Collector com a configuração de produção -> Axiom -> consulta APL. Requisitos: um Collector local com `production.yaml` apontado para datasets E2E dedicados e as variáveis `AXIOM_TOKEN`, `AXIOM_DATASET_TRACES` e `AXIOM_DATASET_LOGS`.
+
+```sh
+OBSERVABILITY_E2E_DEPLOYED=1 bun test:canary:deployed
+```
+
+Na CI, o passo roda somente quando o secret `AXIOM_TOKEN` está configurado, junto com as variables `AXIOM_DATASET_*`. Use datasets E2E dedicados com retenção curta (1 dia); a limpeza dos dados de teste é feita pela retenção. Não aponte o canário para datasets de produção.
+
 O projeto usa [Effect](https://effect.website) v4 e conventional commits.
 
 ## Propriedade e transferência

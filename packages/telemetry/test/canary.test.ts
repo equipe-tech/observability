@@ -1,12 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Metric, Option, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Telemetry } from "../src/index.ts";
-import { ingestBrowserEvents } from "../src/node/index.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
-import * as WideEvent from "../src/WideEvent.ts";
+import { canaryRunId, emitCanary } from "./support/canary.ts";
 
 const observabilityHome =
   process.env["OBSERVABILITY_HOME"] ?? join(homedir(), ".local", "state", "observability");
@@ -217,7 +215,7 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
     "exports correlated traces, logs and metrics through the collector",
     () =>
       Effect.gen(function* () {
-        const runId = `canary-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        const runId = canaryRunId();
         const config = new TelemetryConfig({
           serviceName: "observability-canary",
           serviceVersion: "0.1.0",
@@ -225,30 +223,7 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
           otlpEndpoint: new URL("http://localhost:4318"),
         });
 
-        yield* Effect.gen(function* () {
-          const operationCounter = Metric.counter("canary.operations", {
-            attributes: { "canary.run_id": runId },
-          });
-          yield* Effect.sleep("10 millis").pipe(Effect.withSpan("canary.child"));
-          yield* WideEvent.emit("canary.completed", { "canary.run_id": runId });
-          yield* ingestBrowserEvents({
-            version: 1,
-            events: [
-              {
-                id: `browser-${runId}`,
-                name: "canary.browser",
-                occurredAt: Date.now(),
-                fields: { "canary.run_id": runId },
-              },
-            ],
-          }).pipe(Effect.orDie);
-          yield* Metric.update(operationCounter, 1);
-        }).pipe(
-          Effect.withSpan("canary.operation", {
-            attributes: { "canary.run_id": runId },
-          }),
-          Effect.provide(Telemetry.layer(config)),
-        );
+        yield* emitCanary(config, runId);
 
         const run = yield* findRun(runId);
 
