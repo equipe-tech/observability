@@ -73,6 +73,9 @@ export class DockerCompose extends Context.Service<
         );
 
         if (exitCode !== ChildProcessSpawner.ExitCode(0)) {
+          if (output !== "") {
+            yield* Console.error(output);
+          }
           return yield* new DockerComposeError({
             code: "OBS_CLI_COMPOSE_FAILED",
             command,
