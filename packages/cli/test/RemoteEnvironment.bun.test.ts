@@ -33,7 +33,10 @@ const makeRemoteLayer = () => {
   const store = CredentialsStore.of({
     path: "/private/credentials.json",
     load: () => Effect.succeed(Option.some(credentials)),
-    save: (next) => Effect.sync(() => void (credentials = next)),
+    save: (next) =>
+      Effect.sync(() => {
+        credentials = next;
+      }),
   });
   const axiom = AxiomApi.of({
     identity: () => Effect.succeed("owner@example.com"),

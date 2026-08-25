@@ -18,6 +18,14 @@ export class BrowserEventsRejection extends Schema.Class<BrowserEventsRejection>
   correlationId: Schema.String,
 }) {}
 
+class BrowserEventsWiringDefect extends Schema.TaggedError<BrowserEventsWiringDefect>()(
+  "BrowserEventsWiringDefect",
+  {
+    code: Schema.Literal("OBS_BROWSER_EVENTS_WIRING_FAILED"),
+    message: Schema.String,
+  },
+) {}
+
 const RequestWithBody = Schema.Struct({ body: Schema.Unknown });
 
 const decodeRequestWithBody = Schema.decodeUnknownOption(RequestWithBody);
@@ -66,7 +74,10 @@ export const createBrowserEventsController = <RuntimeError>(
   const prototype = BrowserEventsController.prototype;
   const descriptor = Object.getOwnPropertyDescriptor(prototype, "events");
   if (descriptor === undefined) {
-    throw new Error("The events handler is missing on the controller prototype.");
+    throw new BrowserEventsWiringDefect({
+      code: "OBS_BROWSER_EVENTS_WIRING_FAILED",
+      message: "The events handler is missing on the controller prototype.",
+    });
   }
   Controller()(BrowserEventsController);
   Post(options?.path ?? defaultBrowserEventsPath)(prototype, "events", descriptor);
