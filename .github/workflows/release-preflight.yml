@@ -1,0 +1,47 @@
+name: Release Preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  readiness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - name: Validate the release configuration
+        run: |
+          set -euo pipefail
+          telemetry_version="$(jq -r .version packages/telemetry/package.json)"
+          cli_version="$(jq -r .version packages/cli/package.json)"
+          [[ "$telemetry_version" == "$cli_version" ]] \
+            || { echo "The package versions diverge: $telemetry_version vs $cli_version."; exit 1; }
+          bun scripts/release.ts patch --dry-run
+          bun scripts/release-notes.ts --tag "v$telemetry_version" > release-notes.md
+          test -s release-notes.md
+          cat release-notes.md
+      - name: Validate the packed artifacts
+        run: bun run test:package
+      - name: Validate npm credentials
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$NODE_AUTH_TOKEN" ]]; then
+            echo "The NPM_TOKEN secret is not configured. The release will skip the npm publish."
+            exit 0
+          fi
+          npm config set //registry.npmjs.org/:_authToken '${NODE_AUTH_TOKEN}'
+          npm whoami --registry https://registry.npmjs.org

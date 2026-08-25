@@ -135,6 +135,22 @@ Na CI, o passo roda somente quando o secret `AXIOM_TOKEN` está configurado, jun
 
 O projeto usa [Effect](https://effect.website) v4 e conventional commits.
 
+### Release
+
+```sh
+bun scripts/release.ts patch          # ou minor, major, x.y.z, x.y.z-rc.1
+git push origin master --follow-tags
+```
+
+O script alinha as versões dos dois pacotes, cria o commit `chore: release vX.Y.Z` e a tag anotada. O push da tag dispara o workflow `release`:
+
+1. `tag-check` valida o formato da tag e a igualdade com os manifests.
+2. `verify` roda o CI completo, incluindo o canário local e, com secrets, o deployed.
+3. `release` empacota os tarballs, gera as notas a partir dos conventional commits e cria o GitHub Release com os assets.
+4. `publish-npm` baixa os tarballs do release e publica no npm com o dist-tag correto (`latest`, ou `alpha`/`beta`/`rc` para pré-releases). Sem o secret `NPM_TOKEN`, o passo é pulado com aviso.
+
+O workflow `release-preflight` (manual) valida a configuração antes de criar a tag: versões alinhadas, notas, empacotamento e credenciais npm.
+
 ## Propriedade e transferência
 
 Não existe modo de propriedade. As credenciais e os endpoints definem o dono: os recursos vivem na org Axiom, Sentry e Cloudflare que as envs do projeto apontam. Para transferir um projeto, troque as credenciais. O código não muda.

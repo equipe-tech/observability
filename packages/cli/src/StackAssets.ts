@@ -1,8 +1,8 @@
 import { Context, Effect, FileSystem, Layer, Path, Schema } from "effect";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { packageVersion } from "./PackageVersion.ts";
 
-const packageVersion = "0.1.0";
 const packagedAssetsDirectory = fileURLToPath(new URL("./assets", import.meta.url));
 
 const StackEnvironment = Schema.Struct({

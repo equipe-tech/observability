@@ -6,11 +6,18 @@ import { join } from "node:path";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 import { canaryRunId, emitCanary } from "./support/canary.ts";
 
+const cliManifest: unknown = JSON.parse(
+  await readFile(new URL("../../cli/package.json", import.meta.url).pathname, "utf8"),
+);
+const cliVersion = Schema.decodeUnknownSync(Schema.Struct({ version: Schema.NonEmptyString }))(
+  cliManifest,
+).version;
+
 const observabilityHome =
   process.env["OBSERVABILITY_HOME"] ?? join(homedir(), ".local", "state", "observability");
 const telemetryExportPath =
   process.env["OBSERVABILITY_EXPORT_PATH"] ??
-  join(observabilityHome, "0.1.0", "data", "otlp.jsonl");
+  join(observabilityHome, cliVersion, "data", "otlp.jsonl");
 
 const AttributeValue = Schema.Struct({
   stringValue: Schema.String.pipe(Schema.optionalKey),

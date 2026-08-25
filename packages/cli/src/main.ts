@@ -4,6 +4,7 @@ import { Console, Effect, Layer, Option } from "effect";
 import { Command } from "effect/unstable/cli";
 import { observability } from "./Cli.ts";
 import { DockerCompose } from "./DockerCompose.ts";
+import { packageVersion } from "./PackageVersion.ts";
 import { publicErrorFromCause } from "./ErrorReporter.ts";
 import { ProvisionAssets } from "./ProvisionAssets.ts";
 import { StackAssets } from "./StackAssets.ts";
@@ -15,7 +16,7 @@ const MainLayer = Layer.mergeAll(
 ).pipe(Layer.provideMerge(BunServices.layer));
 
 observability.pipe(
-  Command.run({ version: "0.1.0" }),
+  Command.run({ version: packageVersion }),
   Effect.provide(MainLayer),
   Effect.catchTags({
     DockerComposeError: (error) =>

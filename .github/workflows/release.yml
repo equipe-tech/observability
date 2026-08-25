@@ -1,0 +1,178 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag existente para reprocessar (exemplo: v0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  tag-check:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      npm_tag: ${{ steps.meta.outputs.npm_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Validate tag against the package manifests
+        id: meta
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="$INPUT_TAG"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]] \
+            || { echo "The tag $tag does not match the release tag format."; exit 1; }
+          version="${tag#v}"
+          for manifest in packages/telemetry/package.json packages/cli/package.json; do
+            manifest_version="$(jq -r .version "$manifest")"
+            [[ "$manifest_version" == "$version" ]] \
+              || { echo "The tag $tag does not match $manifest ($manifest_version)."; exit 1; }
+          done
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then
+            suffix="${version#*-}"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=${suffix%%.*}" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+  verify:
+    needs: tag-check
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  release:
+    needs:
+      - tag-check
+      - verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag-check.outputs.tag }}
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - name: Pack release tarballs
+        env:
+          VERSION: ${{ needs.tag-check.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-release
+          (cd packages/telemetry && bun pm pack --ignore-scripts --quiet \
+            --filename "$PWD/../../dist-release/equipe-tech-observability-${VERSION}.tgz")
+          (cd packages/cli && bun pm pack --ignore-scripts --quiet \
+            --filename "$PWD/../../dist-release/equipe-tech-observability-cli-${VERSION}.tgz")
+          ls -l dist-release
+      - name: Generate release notes
+        env:
+          TAG: ${{ needs.tag-check.outputs.tag }}
+        run: bun scripts/release-notes.ts --tag "$TAG" > release-notes.md
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag-check.outputs.tag }}
+          PRERELEASE: ${{ needs.tag-check.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft \
+            | grep -q false; then
+            echo "The release $TAG is already published. Assets are re-uploaded with --clobber only."
+          else
+            create_args=(release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" --notes-file release-notes.md --verify-tag)
+            if [[ "$PRERELEASE" == "true" ]]; then
+              create_args+=(--prerelease)
+            fi
+            gh "${create_args[@]}"
+          fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" dist-release/* --clobber
+      - name: Verify the release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag-check.outputs.tag }}
+          VERSION: ${{ needs.tag-check.outputs.version }}
+        run: |
+          set -euo pipefail
+          assets="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          for expected in \
+            "equipe-tech-observability-${VERSION}.tgz" \
+            "equipe-tech-observability-cli-${VERSION}.tgz"; do
+            grep -qx "$expected" <<< "$assets" \
+              || { echo "The release is missing the asset $expected."; exit 1; }
+          done
+
+  publish-npm:
+    needs:
+      - tag-check
+      - release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+      - name: Download the release tarballs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag-check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-release
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "*.tgz" --dir dist-release
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ needs.tag-check.outputs.version }}
+          NPM_TAG: ${{ needs.tag-check.outputs.npm_tag }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$NODE_AUTH_TOKEN" ]]; then
+            echo "npm publish skipped: the NPM_TOKEN secret is not configured."
+            exit 0
+          fi
+          for tarball in \
+            "dist-release/equipe-tech-observability-${VERSION}.tgz" \
+            "dist-release/equipe-tech-observability-cli-${VERSION}.tgz"; do
+            [[ -f "$tarball" ]] || { echo "Missing tarball: $tarball"; exit 1; }
+            set +e
+            output="$(npm publish "$tarball" --access public --tag "$NPM_TAG" 2>&1)"
+            status=$?
+            set -e
+            echo "$output"
+            if [[ $status -ne 0 ]]; then
+              if grep -qiE "previously published|cannot publish over|version already exists" <<< "$output"; then
+                echo "Skipping the already published version in $tarball."
+                continue
+              fi
+              exit $status
+            fi
+          done

@@ -1,3 +1,4 @@
+import { Schema } from "effect";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,6 +6,12 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const temporaryDirectory = await mkdtemp(join(tmpdir(), "observability-package-"));
+const cliManifest: unknown = JSON.parse(
+  await readFile(join(root, "packages/cli/package.json"), "utf8"),
+);
+const cliVersion = Schema.decodeUnknownSync(Schema.Struct({ version: Schema.NonEmptyString }))(
+  cliManifest,
+).version;
 
 type CommandResult = {
   readonly exitCode: number;
@@ -179,7 +186,7 @@ try {
     }),
     "Executing the packed CLI outside the repository",
   );
-  const copiedCompose = await readFile(join(state, "0.1.0", "docker-compose.yml"), "utf8");
+  const copiedCompose = await readFile(join(state, cliVersion, "docker-compose.yml"), "utf8");
   if (!copiedCompose.includes("observability-local")) {
     throw new Error("The packed CLI did not prepare the local stack assets.");
   }
