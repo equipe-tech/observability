@@ -73,11 +73,13 @@ O pacote `@equipe-tech/observability` publica um subpath por runtime:
 | Subpath     | Conteúdo                                                                                                                     |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `./node`    | `runMain` (telemetria do ambiente, interrupção em `SIGINT`/`SIGTERM`, flush no shutdown) e ingestão de eventos do browser    |
-| `./nestjs`  | `TelemetryInterceptor` (spans de fronteira HTTP) e `withRequestSpan` para propagar o span da requisição a effects do handler |
+| `./nestjs`  | `TelemetryInterceptor` (spans de fronteira HTTP), `withRequestSpan` e `createBrowserEventsController` (`/_telemetry/events`) |
 | `./browser` | `BrowserTelemetry` (fila limitada, batch e flush de wide events para `/_telemetry/events`) com transporte `fetch` injetável  |
 | `./testing` | Captura em memória dos exports OTLP reais (`run`, `makeCapture`) para asserts de spans, logs e métricas em testes            |
 
 O contrato do endpoint `/_telemetry/events` vive em `BrowserEvents` no entrypoint raiz. O servidor faz o parse com `parseBrowserEventBatch` e re-emite os eventos como wide events com atributos de servidor (`event.source`, `browser.event.id`).
+
+O adapter `./nestjs` publica o endpoint pronto: registre `createBrowserEventsController(runtime)` nos controllers do módulo. O controller responde `202 { accepted }` e rejeita batches inválidos com `400 { code, message, correlationId }`, onde `correlationId` é o `trace_id` do span da requisição. O limite de corpo bruto pertence ao transporte HTTP; o Express responde `413` acima do limite configurado.
 
 ## Desenvolvimento
 
