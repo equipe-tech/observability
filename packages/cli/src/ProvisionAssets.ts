@@ -134,6 +134,10 @@ export const provisionAssets = Effect.fn("provisionAssets")(function* (
 export class ProvisionAssets extends Context.Service<
   ProvisionAssets,
   {
+    resolveName(
+      directory: string,
+      name: Option.Option<string>,
+    ): Effect.Effect<string, ProvisionError>;
     provision(
       directory: string,
       name: Option.Option<string>,
@@ -147,14 +151,23 @@ export class ProvisionAssets extends Context.Service<
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
 
+      const resolveName = Effect.fn("ProvisionAssets.resolveName")(function* (
+        directory: string,
+        name: Option.Option<string>,
+      ) {
+        const resolved = path.resolve(directory);
+        return yield* Option.match(name, {
+          onNone: () => projectNameFromDirectory(path.basename(resolved)),
+          onSome: parseProjectName,
+        });
+      });
+
       return ProvisionAssets.of({
+        resolveName,
         provision: (directory, name, force) =>
           Effect.gen(function* () {
             const resolved = path.resolve(directory);
-            const projectName = yield* Option.match(name, {
-              onNone: () => projectNameFromDirectory(path.basename(resolved)),
-              onSome: parseProjectName,
-            });
+            const projectName = yield* resolveName(directory, name);
             return yield* provisionAssets(packagedAssetsDirectory, resolved, projectName, force);
           }).pipe(
             Effect.provideService(FileSystem.FileSystem, fs),

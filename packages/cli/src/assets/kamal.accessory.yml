@@ -12,6 +12,6 @@ accessories:
       secret:
         - AXIOM_TOKEN
       clear:
-        AXIOM_DATASET_TRACES: "{{name}}-traces"
-        AXIOM_DATASET_LOGS: "{{name}}-logs"
-        AXIOM_DATASET_METRICS: "{{name}}-metrics"
+        AXIOM_DATASET_TRACES: <%= ENV.fetch("AXIOM_DATASET_TRACES", "{{name}}-traces") %>
+        AXIOM_DATASET_LOGS: <%= ENV.fetch("AXIOM_DATASET_LOGS", "{{name}}-logs") %>
+        AXIOM_DATASET_METRICS: <%= ENV.fetch("AXIOM_DATASET_METRICS", "{{name}}-metrics") %>

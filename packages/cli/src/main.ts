@@ -3,16 +3,25 @@ import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Console, Effect, Layer, Option } from "effect";
 import { Command } from "effect/unstable/cli";
 import { observability } from "./Cli.ts";
+import { CredentialsStore } from "./CredentialsStore.ts";
 import { DockerCompose } from "./DockerCompose.ts";
 import { packageVersion } from "./PackageVersion.ts";
 import { publicErrorFromCause } from "./ErrorReporter.ts";
 import { ProvisionAssets } from "./ProvisionAssets.ts";
+import { AxiomApi, SentryApi } from "./ProviderApis.ts";
+import { Authentication, RemoteEnvironment } from "./RemoteEnvironment.ts";
 import { StackAssets } from "./StackAssets.ts";
 
+const ProviderLayer = Layer.mergeAll(CredentialsStore.layer, AxiomApi.layer, SentryApi.layer);
+const RemoteLayer = Layer.mergeAll(Authentication.layer, RemoteEnvironment.layer).pipe(
+  Layer.provide(ProviderLayer),
+);
 const MainLayer = Layer.mergeAll(
   DockerCompose.layer,
   StackAssets.layer,
   ProvisionAssets.layer,
+  ProviderLayer,
+  RemoteLayer,
 ).pipe(Layer.provideMerge(BunServices.layer));
 
 observability.pipe(
@@ -24,6 +33,12 @@ observability.pipe(
     StackAssetsError: (error) =>
       Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
     ProvisionError: (error) =>
+      Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
+    CredentialsError: (error) =>
+      Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
+    RemoteApiError: (error) =>
+      Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
+    RemoteEnvironmentError: (error) =>
       Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
   }),
   Effect.catchCause((cause) =>

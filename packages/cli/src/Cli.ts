@@ -1,7 +1,8 @@
-import { Console, Effect, Option, Path } from "effect";
-import { Command, Flag } from "effect/unstable/cli";
+import { Console, Effect, Option, Path, Redacted } from "effect";
+import { Command, Flag, Prompt } from "effect/unstable/cli";
 import { DockerCompose } from "./DockerCompose.ts";
 import { ProvisionAssets } from "./ProvisionAssets.ts";
+import { Authentication, RemoteEnvironment } from "./RemoteEnvironment.ts";
 import { StackAssets } from "./StackAssets.ts";
 
 const composeFile = Flag.string("file").pipe(
@@ -54,6 +55,72 @@ const dev = Command.make("dev").pipe(
   Command.withDescription("Ciclo de vida da stack local de observabilidade"),
 );
 
+const axiomOrganization = Flag.string("organization-id").pipe(
+  Flag.withDescription("Identificador da organização Axiom"),
+);
+
+const authLoginAxiom = Command.make(
+  "axiom",
+  { organizationId: axiomOrganization },
+  Effect.fn(function* ({ organizationId }) {
+    const token = yield* Prompt.run(Prompt.password({ message: "Axiom personal access token" }));
+    const authentication = yield* Authentication;
+    const identity = yield* authentication.loginAxiom(Redacted.value(token), organizationId);
+    yield* Console.log(`Authenticated with Axiom as ${identity}.`);
+  }),
+).pipe(Command.withDescription("Autentica com Axiom e salva as credenciais locais"));
+
+const sentryOrganization = Flag.string("organization").pipe(
+  Flag.withDescription("Slug da organização Sentry"),
+);
+const sentryTeam = Flag.string("team").pipe(Flag.withDescription("Slug do time Sentry"));
+const sentryUrl = Flag.string("url").pipe(
+  Flag.withDescription("URL base do Sentry"),
+  Flag.withDefault("https://sentry.io"),
+  Flag.mapTryCatch(
+    (value) => new URL(value),
+    () => "Expected an absolute Sentry URL",
+  ),
+);
+
+const authLoginSentry = Command.make(
+  "sentry",
+  { organization: sentryOrganization, team: sentryTeam, url: sentryUrl },
+  Effect.fn(function* ({ organization, team, url }) {
+    const token = yield* Prompt.run(Prompt.password({ message: "Sentry organization auth token" }));
+    const authentication = yield* Authentication;
+    const identity = yield* authentication.loginSentry(
+      Redacted.value(token),
+      organization,
+      team,
+      url,
+    );
+    yield* Console.log(`Authenticated with Sentry organization ${identity}.`);
+  }),
+).pipe(Command.withDescription("Autentica com Sentry e salva as credenciais locais"));
+
+const authLogin = Command.make("login").pipe(
+  Command.withSubcommands([authLoginAxiom, authLoginSentry]),
+  Command.withDescription("Salva credenciais após validar o acesso ao provider"),
+);
+
+const authStatus = Command.make(
+  "status",
+  {},
+  Effect.fn(function* () {
+    const authentication = yield* Authentication;
+    const result = yield* authentication.status();
+    yield* Console.log(`Axiom: ${result.axiom}`);
+    yield* Console.log(`Sentry: ${result.sentry}`);
+    yield* Console.log(`Credentials: ${result.credentialsPath}`);
+  }),
+).pipe(Command.withDescription("Valida as credenciais salvas"));
+
+const auth = Command.make("auth").pipe(
+  Command.withSubcommands([authLogin, authStatus]),
+  Command.withDescription("Gerencia autenticação com os providers"),
+);
+
 const provisionDirectory = Flag.string("dir").pipe(
   Flag.withAlias("d"),
   Flag.withDescription("Diretório do projeto alvo (padrão: diretório atual)"),
@@ -71,26 +138,116 @@ const provisionForce = Flag.boolean("force").pipe(
   Flag.withDefault(false),
 );
 
+const provisionEnvironments = Flag.string("environment").pipe(
+  Flag.withAlias("e"),
+  Flag.withDescription("Ambiente remoto. Repita a flag para configurar vários ambientes"),
+  Flag.atMost(10),
+);
+
+const provisionPlatform = Flag.string("sentry-platform").pipe(
+  Flag.withDescription("Plataforma do projeto Sentry"),
+  Flag.withDefault("node"),
+);
+
+const provisionRotateToken = Flag.boolean("rotate-token").pipe(
+  Flag.withDescription("Regenera o token de ingestão Axiom de cada ambiente"),
+  Flag.withDefault(false),
+);
+
 const provision = Command.make(
   "provision",
-  { dir: provisionDirectory, name: provisionName, force: provisionForce },
-  Effect.fn(function* ({ dir, force, name }) {
+  {
+    dir: provisionDirectory,
+    name: provisionName,
+    force: provisionForce,
+    environments: provisionEnvironments,
+    platform: provisionPlatform,
+    rotateToken: provisionRotateToken,
+  },
+  Effect.fn(function* ({ dir, environments, force, name, platform, rotateToken }) {
     const assets = yield* ProvisionAssets;
-    const files = yield* assets.provision(dir, name, force);
+    const projectName = yield* assets.resolveName(dir, name);
+    const files = yield* assets.provision(dir, Option.some(projectName), force);
     for (const file of files) {
       yield* Console.log(`${file.action}  ${file.relativePath}`);
     }
     yield* Console.log(
       "Merge observability/kamal.accessory.yml into config/deploy.yml and set the AXIOM_TOKEN secret.",
     );
+
+    const uniqueEnvironments = [...new Set(environments)];
+    if (uniqueEnvironments.length > 0) {
+      const remote = yield* RemoteEnvironment;
+      const configured = yield* remote.provision(
+        projectName,
+        uniqueEnvironments,
+        platform,
+        rotateToken,
+      );
+      for (const environment of configured) {
+        yield* Console.log(
+          `configured  ${environment.project}/${environment.environment} (${environment.tracesDataset}, ${environment.logsDataset}, ${environment.metricsDataset})`,
+        );
+      }
+      yield* Console.log(
+        `Run observability env export --name ${projectName} --environment <environment> to print deploy variables.`,
+      );
+    }
   }),
 ).pipe(
   Command.withDescription(
-    "Provisiona os assets do Collector de produção (config + accessory Kamal) no projeto",
+    "Provisiona os assets locais e, com --environment, os recursos Axiom e Sentry",
   ),
 );
 
+const environmentProject = Flag.string("name").pipe(
+  Flag.withAlias("n"),
+  Flag.withDescription("Nome do projeto"),
+  Flag.optional,
+);
+
+const environmentList = Command.make(
+  "list",
+  { name: environmentProject },
+  Effect.fn(function* ({ name }) {
+    const remote = yield* RemoteEnvironment;
+    const environments = yield* remote.list(name);
+    if (environments.length === 0) {
+      yield* Console.log("No configured environments.");
+      return;
+    }
+    for (const environment of environments) {
+      yield* Console.log(
+        `${environment.project}/${environment.environment}  axiom=${environment.tracesDataset},${environment.logsDataset},${environment.metricsDataset}  sentry=${environment.sentryProject}`,
+      );
+    }
+  }),
+).pipe(Command.withDescription("Lista os ambientes configurados por esta CLI"));
+
+const environmentExportName = Flag.string("name").pipe(
+  Flag.withAlias("n"),
+  Flag.withDescription("Nome do projeto"),
+);
+const environmentExportEnvironment = Flag.string("environment").pipe(
+  Flag.withAlias("e"),
+  Flag.withDescription("Nome do ambiente"),
+);
+
+const environmentExport = Command.make(
+  "export",
+  { name: environmentExportName, environment: environmentExportEnvironment },
+  Effect.fn(function* ({ environment, name }) {
+    const remote = yield* RemoteEnvironment;
+    yield* Console.log(yield* remote.export(name, environment));
+  }),
+).pipe(Command.withDescription("Imprime variáveis de deploy no formato dotenv"));
+
+const environment = Command.make("env").pipe(
+  Command.withSubcommands([environmentList, environmentExport]),
+  Command.withDescription("Inspeciona e exporta ambientes configurados"),
+);
+
 export const observability = Command.make("observability").pipe(
-  Command.withSubcommands([dev, provision]),
+  Command.withSubcommands([dev, auth, provision, environment]),
   Command.withDescription("Plataforma de observabilidade da Equipe Tech"),
 );
