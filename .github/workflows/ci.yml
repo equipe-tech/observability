@@ -14,10 +14,10 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      OBSERVABILITY_HOME: ${{ runner.temp }}/observability
     steps:
       - uses: actions/checkout@v4
+      - name: Configure the observability state directory
+        run: echo "OBSERVABILITY_HOME=${RUNNER_TEMP}/observability" >> "$GITHUB_ENV"
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
@@ -49,7 +49,7 @@ jobs:
             -e AXIOM_TOKEN -e AXIOM_DATASET_TRACES -e AXIOM_DATASET_LOGS -e AXIOM_DATASET_METRICS \
             -v "$PWD/packages/cli/src/assets/production.yaml:/etc/otelcol/config.yaml:ro" \
             otel/opentelemetry-collector-contrib:0.159.0 --config=/etc/otelcol/config.yaml
-          for attempt in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -s -o /dev/null http://127.0.0.1:24318; then break; fi
             sleep 1
           done
