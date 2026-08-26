@@ -61,6 +61,20 @@ const ExportedLogRecord = Schema.Struct({
   attributes: Schema.Array(Attribute).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
 
+const RedactedLogBody = Schema.Struct({
+  authorization: Schema.String,
+  password: Schema.String,
+  token: Schema.String,
+  email: Schema.String,
+  accessToken: Schema.String,
+  userPassword: Schema.String,
+  phoneNumber: Schema.String,
+  tokenizer: Schema.String,
+  documentation: Schema.String,
+});
+
+const decodeRedactedLogBody = Schema.decodeUnknownSync(RedactedLogBody);
+
 const LogExport = Schema.Struct({
   resourceLogs: Schema.Array(
     Schema.Struct({
@@ -101,6 +115,7 @@ type CanaryMetric = typeof ExportedMetric.Type;
 type CanaryMetricDataPoint = typeof MetricDataPoint.Type;
 
 type CanaryExport = {
+  readonly content: string;
   readonly spans: ReadonlyArray<{ readonly span: CanarySpan; readonly resource: CanaryResource }>;
   readonly logs: ReadonlyArray<{
     readonly log: CanaryLogRecord;
@@ -172,7 +187,7 @@ const readTelemetryExport = Effect.fn("readTelemetryExport")(function* (): Effec
       }
     }
   }
-  return { spans, logs, metrics };
+  return { content, spans, logs, metrics };
 });
 
 const findRun = Effect.fn("findRun")(function* (runId: string) {
@@ -228,7 +243,16 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
         redactionLog !== undefined &&
         metric !== undefined
       ) {
-        return { root, redactionSpanEvent, child, log, browserLog, redactionLog, metric };
+        return {
+          exportContent: telemetryExport.content,
+          root,
+          redactionSpanEvent,
+          child,
+          log,
+          browserLog,
+          redactionLog,
+          metric,
+        };
       }
     }
     yield* Effect.sleep("500 millis");
@@ -295,31 +319,47 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
         assert.strictEqual(run.metric.dataPoint.asDouble, 1);
 
         const sensitive = canarySensitiveValues(runId);
-        const redactedValues = [
-          sensitive.authorization,
-          sensitive.password,
-          sensitive.token,
-          sensitive.email,
-        ];
+        for (const marker of sensitive.leakMarkers) {
+          assert.notInclude(run.exportContent, marker);
+        }
+        for (const preservedValue of sensitive.preservedValues) {
+          assert.include(run.exportContent, preservedValue);
+        }
+
         const redactedBody = Option.getOrThrow(
           Option.fromNullishOr(run.redactionLog.log.body.stringValue),
         );
-        const redactedRecords = [
-          redactedBody,
-          run.redactionSpanEvent.name,
-          Option.getOrThrow(attributeValue(run.root.span.attributes, "authorization")),
-          Option.getOrThrow(attributeValue(run.root.span.attributes, "password")),
-          Option.getOrThrow(attributeValue(run.root.span.attributes, "safe.message")),
-          Option.getOrThrow(attributeValue(run.redactionLog.log.attributes, "authorization")),
-          Option.getOrThrow(attributeValue(run.redactionLog.log.attributes, "password")),
-          Option.getOrThrow(attributeValue(run.redactionLog.log.attributes, "safe.message")),
-          Option.getOrThrow(attributeValue(run.metric.dataPoint.attributes, "authorization")),
-          Option.getOrThrow(attributeValue(run.metric.dataPoint.attributes, "password")),
-          Option.getOrThrow(attributeValue(run.metric.dataPoint.attributes, "safe.message")),
+        const decodedRedactedBody = decodeRedactedLogBody(JSON.parse(redactedBody));
+        for (const value of [
+          decodedRedactedBody.authorization,
+          decodedRedactedBody.password,
+          decodedRedactedBody.token,
+          decodedRedactedBody.email,
+          decodedRedactedBody.accessToken,
+          decodedRedactedBody.userPassword,
+          decodedRedactedBody.phoneNumber,
+        ]) {
+          assert.strictEqual(value, "[REDACTED]");
+        }
+        assert.strictEqual(decodedRedactedBody.tokenizer, sensitive.tokenizerValue);
+        assert.strictEqual(decodedRedactedBody.documentation, sensitive.documentationValue);
+
+        const redactedAttributeKeys: ReadonlyArray<string> = [
+          "authorization",
+          "password",
+          "accessToken",
+          "userPassword",
+          "phoneNumber",
         ];
-        for (const record of redactedRecords) {
-          for (const value of redactedValues) {
-            assert.notInclude(record, value);
+        const redactedAttributeSets = [
+          run.root.span.attributes,
+          run.redactionSpanEvent.attributes,
+          run.redactionLog.log.attributes,
+          run.metric.dataPoint.attributes,
+        ];
+        for (const attributes of redactedAttributeSets) {
+          for (const key of redactedAttributeKeys) {
+            assert.strictEqual(Option.getOrThrow(attributeValue(attributes, key)), "****");
           }
         }
         assert.include(redactedBody, "[REDACTED]");

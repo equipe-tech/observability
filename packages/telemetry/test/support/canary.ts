@@ -18,16 +18,54 @@ export const canaryRunId = (): string => {
 };
 
 export const canarySensitiveValues = (runId: string) => {
-  const authorization = `Bearer auth-${runId}`;
-  const password = `password-${runId}`;
-  const token = `sk-${runId}`;
-  const email = `${runId}@example.test`;
+  const compactRunId = runId.replaceAll("-", "");
+  const authorizationMarker = `authorizationmarker${compactRunId}`;
+  const passwordMarker = `passwordmarker${compactRunId}`;
+  const tokenMarker = `tokenmarker${compactRunId}`;
+  const emailMarker = `emailmarker${compactRunId}`;
+  const accessTokenMarker = `accesstokenmarker${compactRunId}`;
+  const userPasswordMarker = `userpasswordmarker${compactRunId}`;
+  const phoneNumberMarker = `phonenumbermarker${compactRunId}`;
+  const authorization = `Bearer ${authorizationMarker}`;
+  const password = `opaque-${passwordMarker}-value`;
+  const token = `sk-${tokenMarker}`;
+  const email = `${emailMarker}@example.test`;
+  const accessToken = `opaque-${accessTokenMarker}-value`;
+  const userPassword = `prefix"${userPasswordMarker}`;
+  const phoneNumber = `opaque-${phoneNumberMarker}-value`;
+  const tokenizerValue = `tokenizercontrol${compactRunId}`;
+  const documentationValue = `documentationcontrol${compactRunId}`;
   return {
     authorization,
     password,
     token,
     email,
-    serializedBody: JSON.stringify({ authorization, password, token, email }),
+    accessToken,
+    userPassword,
+    phoneNumber,
+    leakMarkers: [
+      authorizationMarker,
+      passwordMarker,
+      tokenMarker,
+      emailMarker,
+      accessTokenMarker,
+      userPasswordMarker,
+      phoneNumberMarker,
+    ],
+    tokenizerValue,
+    documentationValue,
+    preservedValues: [tokenizerValue, documentationValue],
+    serializedBody: JSON.stringify({
+      authorization,
+      password,
+      token,
+      email,
+      accessToken,
+      userPassword,
+      phoneNumber,
+      tokenizer: tokenizerValue,
+      documentation: documentationValue,
+    }),
   };
 };
 
@@ -37,6 +75,11 @@ export const emitCanary = (config: TelemetryConfig, runId: string): Effect.Effec
     "canary.run_id": runId,
     authorization: sensitive.authorization,
     password: sensitive.password,
+    accessToken: sensitive.accessToken,
+    userPassword: sensitive.userPassword,
+    phoneNumber: sensitive.phoneNumber,
+    tokenizer: sensitive.tokenizerValue,
+    documentation: sensitive.documentationValue,
     "safe.message": `token=${sensitive.token} email=${sensitive.email}`,
   };
   return Effect.gen(function* () {
