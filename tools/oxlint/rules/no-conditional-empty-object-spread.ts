@@ -1,33 +1,46 @@
 import { defineRule } from "@oxlint/plugins";
+import type { ESTree } from "@oxlint/plugins";
+
+function unwrapParentheses(node: ESTree.Expression): ESTree.Expression {
+  let current = node;
+  while (current.type === "ParenthesizedExpression") {
+    current = current.expression;
+  }
+  return current;
+}
+
+function isEmptyObjectExpression(node: ESTree.Expression): boolean {
+  return node.type === "ObjectExpression" && node.properties.length === 0;
+}
+
+function isConditionalEmptyObjectSpread(node: ESTree.Expression): boolean {
+  const conditional = unwrapParentheses(node);
+  return (
+    conditional.type === "ConditionalExpression" &&
+    (isEmptyObjectExpression(conditional.consequent) ||
+      isEmptyObjectExpression(conditional.alternate))
+  );
+}
 
 export const noConditionalEmptyObjectSpreadRule = defineRule({
   meta: {
-    type: "problem",
+    type: "suggestion",
     docs: {
       description:
         "Disallow object spreads that conditionally spread an empty object to omit fields.",
     },
     messages: {
       avoid:
-        "Do not spread a conditional whose branch is an empty object. Assign the property directly, or build the object in separate statements so each field has one clear origin.",
+        "This conditional spread hides property omission behind an empty object. Build the object in separate statements and add the property only when present.",
     },
   },
-  create(context) {
+  createOnce(context) {
     return {
       SpreadElement(node) {
-        const argument = node.argument;
-        if (argument.type === "ConditionalExpression") {
-          const consequentEmpty =
-            argument.consequent.type === "ObjectExpression" &&
-            argument.consequent.properties.length === 0;
-          const alternateEmpty =
-            argument.alternate.type === "ObjectExpression" &&
-            argument.alternate.properties.length === 0;
-          if (consequentEmpty || alternateEmpty) {
-            context.report({ node, messageId: "avoid" });
-          }
+        if (node.parent.type !== "ObjectExpression") {
+          return;
         }
-        if (argument.type === "LogicalExpression" && argument.operator === "&&") {
+        if (isConditionalEmptyObjectSpread(node.argument)) {
           context.report({ node, messageId: "avoid" });
         }
       },

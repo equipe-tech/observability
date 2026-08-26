@@ -23,12 +23,14 @@ Construa cada parser de schema uma vez, no escopo do módulo, ao lado do schema 
 As regras de lint em `tools/oxlint/` aplicam estes padrões:
 
 - Não use `Record`. Modele os campos como um tipo de domínio nomeado.
+- Não use valores `unknown`, `any`, `object` ou `{}` em assinaturas de índice e tipos mapeados. Modele o valor com um tipo dono.
 - Não use parâmetros `object` ou `unknown`. A exceção é `cause` em erros. Decodifique o valor com um schema na fronteira.
 - Não use asserções de tipo (`as`). Não encadeie asserções (`as unknown as T`). Faça o parse.
 - Não crie aliases que só renomeiam `unknown`.
 - Não use `typeof` em runtime para estreitar valores. Decodifique na fronteira.
 - Não nomeie símbolos com "shape". Nomeie o conceito de domínio.
 - Não use spread condicional de objeto vazio (`...(cond ? { x } : {})`). Construa o objeto em etapas claras.
+- Não use `Reflect.apply` ou `Reflect.get`. Use chamadas e acessos tipados.
 
 ## Effect
 
@@ -39,6 +41,10 @@ O projeto usa Effect v4. Antes de escrever código Effect, inspecione `repos/eff
 - Modele falhas como erros tipados no canal de erro. Reserve defeitos para bugs.
 - Use `Schema` para toda fronteira de I/O.
 - Não deixe promises soltas. Integre código assíncrono externo com os construtores do Effect.
+
+## Testes
+
+Não use mocks de módulo do Vitest ou do Jest. Substitua dependências por interfaces, services, Layers ou implementações de teste.
 
 ## Nomeação
 

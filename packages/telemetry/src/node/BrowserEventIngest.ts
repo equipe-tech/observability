@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect, flow, Schema } from "effect";
 import { BrowserEventBatch, type BrowserEventFields } from "../BrowserEvents.ts";
 import type { WideEventFields } from "../WideEvent.ts";
 import * as WideEvent from "../WideEvent.ts";
@@ -14,20 +14,18 @@ export class InvalidBrowserEventBatch extends Schema.TaggedError<InvalidBrowserE
 
 const decodeBrowserEventBatch = Schema.decodeUnknownEffect(BrowserEventBatch);
 
-export const parseBrowserEventBatch: (
-  input: unknown,
-) => Effect.Effect<BrowserEventBatch, InvalidBrowserEventBatch> = (input) =>
-  decodeBrowserEventBatch(input).pipe(
-    Effect.mapError(
-      (cause) =>
-        new InvalidBrowserEventBatch({
-          code: "OBS_BROWSER_EVENTS_INVALID_BATCH",
-          message:
-            "The browser event batch is invalid. Send a version 1 batch with bounded events and scalar fields.",
-          cause,
-        }),
-    ),
-  );
+export const parseBrowserEventBatch = flow(
+  decodeBrowserEventBatch,
+  Effect.mapError(
+    (cause) =>
+      new InvalidBrowserEventBatch({
+        code: "OBS_BROWSER_EVENTS_INVALID_BATCH",
+        message:
+          "The browser event batch is invalid. Send a version 1 batch with bounded events and scalar fields.",
+        cause,
+      }),
+  ),
+);
 
 const reservedFieldPrefixes = ["event.", "browser."];
 
@@ -60,7 +58,7 @@ export const ingestBrowserEventBatch = Effect.fn("ingestBrowserEventBatch")(func
   return { accepted: batch.events.length };
 });
 
-export const ingestBrowserEvents: (
-  input: unknown,
-) => Effect.Effect<BrowserEventIngestReceipt, InvalidBrowserEventBatch> = (input) =>
-  parseBrowserEventBatch(input).pipe(Effect.flatMap(ingestBrowserEventBatch));
+export const ingestBrowserEvents = flow(
+  parseBrowserEventBatch,
+  Effect.flatMap(ingestBrowserEventBatch),
+);
