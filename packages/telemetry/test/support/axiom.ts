@@ -7,6 +7,7 @@ const AxiomEnvironment = Schema.Struct({
   AXIOM_TOKEN: Schema.NonEmptyString,
   AXIOM_DATASET_TRACES: Schema.NonEmptyString,
   AXIOM_DATASET_LOGS: Schema.NonEmptyString,
+  AXIOM_DATASET_METRICS: Schema.NonEmptyString,
 });
 
 export type AxiomEnvironment = typeof AxiomEnvironment.Type;
@@ -20,8 +21,10 @@ const QueryResponse = Schema.Struct({
 });
 
 const decodeQueryResponse = Schema.decodeUnknownEffect(QueryResponse);
+const decodeMetricsResponse = Schema.decodeUnknownEffect(Schema.Json);
 
 const queryStartTime = (): string => new Date(Date.now() - 30 * 60 * 1000).toISOString();
+const queryEndTime = (): string => new Date().toISOString();
 
 const runQuery = (env: AxiomEnvironment, apl: string): Effect.Effect<ReadonlyArray<unknown>> =>
   Effect.gen(function* () {
@@ -46,7 +49,70 @@ const runQuery = (env: AxiomEnvironment, apl: string): Effect.Effect<ReadonlyArr
     return decoded.matches.map((match) => match.data);
   });
 
+const runMetricsQuery = (env: AxiomEnvironment, mpl: string): Effect.Effect<string> =>
+  Effect.gen(function* () {
+    const response = yield* Effect.promise((signal) =>
+      fetch(`${env.AXIOM_URL}/v1/query/_mpl?format=metrics-v2`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${env.AXIOM_TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ mpl, startTime: queryStartTime(), endTime: queryEndTime() }),
+        signal,
+      }),
+    );
+    const payload: unknown = yield* Effect.promise(() => response.json());
+    if (!response.ok) {
+      return yield* Effect.die(
+        `Axiom metrics query failed with status ${response.status}: ${JSON.stringify(payload).slice(0, 500)}`,
+      );
+    }
+    const decoded = yield* decodeMetricsResponse(payload).pipe(Effect.orDie);
+    return JSON.stringify(decoded);
+  });
+
 const OptionalString = Schema.NullOr(Schema.String).pipe(Schema.optionalKey);
+
+const AxiomRedactionRowFields = {
+  authorization: OptionalString,
+  password: OptionalString,
+  access_token: OptionalString,
+  user_password: OptionalString,
+  phone_number: OptionalString,
+  tokenizer: OptionalString,
+  documentation: OptionalString,
+  safe_message: OptionalString,
+};
+
+const AxiomRedactionRow = Schema.Struct(AxiomRedactionRowFields);
+
+type AxiomRedactionRow = typeof AxiomRedactionRow.Type;
+
+export type AxiomRedactionAttributes = {
+  readonly authorization: Option.Option<string>;
+  readonly password: Option.Option<string>;
+  readonly accessToken: Option.Option<string>;
+  readonly userPassword: Option.Option<string>;
+  readonly phoneNumber: Option.Option<string>;
+  readonly tokenizer: Option.Option<string>;
+  readonly documentation: Option.Option<string>;
+  readonly safeMessage: Option.Option<string>;
+};
+
+const toAxiomRedactionAttributes = (row: AxiomRedactionRow): AxiomRedactionAttributes => ({
+  authorization: Option.fromNullishOr(row.authorization),
+  password: Option.fromNullishOr(row.password),
+  accessToken: Option.fromNullishOr(row.access_token),
+  userPassword: Option.fromNullishOr(row.user_password),
+  phoneNumber: Option.fromNullishOr(row.phone_number),
+  tokenizer: Option.fromNullishOr(row.tokenizer),
+  documentation: Option.fromNullishOr(row.documentation),
+  safeMessage: Option.fromNullishOr(row.safe_message),
+});
+
+const redactionProjection =
+  "authorization = tostring(['attributes.custom']['authorization']), password = tostring(['attributes.custom']['password']), access_token = tostring(['attributes.custom']['accessToken']), user_password = tostring(['attributes.custom']['userPassword']), phone_number = tostring(['attributes.custom']['phoneNumber']), tokenizer = tostring(['attributes.custom']['tokenizer']), documentation = tostring(['attributes.custom']['documentation']), safe_message = tostring(['attributes.custom']['safe.message'])";
 
 const AxiomSpanRow = Schema.Struct({
   trace_id: Schema.NonEmptyString,
@@ -57,6 +123,7 @@ const AxiomSpanRow = Schema.Struct({
   service_version: OptionalString,
   environment: OptionalString,
   events: OptionalString,
+  ...AxiomRedactionRowFields,
 });
 
 const decodeAxiomSpanRow = Schema.decodeUnknownOption(AxiomSpanRow);
@@ -70,6 +137,7 @@ export type AxiomSpan = {
   readonly serviceVersion: Option.Option<string>;
   readonly environment: Option.Option<string>;
   readonly events: Option.Option<string>;
+  readonly redaction: AxiomRedactionAttributes;
 };
 
 const toAxiomSpan = (row: typeof AxiomSpanRow.Type): AxiomSpan => ({
@@ -83,10 +151,10 @@ const toAxiomSpan = (row: typeof AxiomSpanRow.Type): AxiomSpan => ({
   serviceVersion: Option.fromNullishOr(row.service_version),
   environment: Option.fromNullishOr(row.environment),
   events: Option.fromNullishOr(row.events),
+  redaction: toAxiomRedactionAttributes(row),
 });
 
-const spanProjection =
-  "project trace_id, span_id, parent_span_id, name, service_name = ['service.name'], service_version = ['service.version'], environment = tostring(['resource.custom']['deployment.environment.name']), events = tostring(events)";
+const spanProjection = `project trace_id, span_id, parent_span_id, name, service_name = ['service.name'], service_version = ['service.version'], environment = tostring(['resource.custom']['deployment.environment.name']), events = tostring(events), ${redactionProjection}`;
 
 export const findRootSpan = (
   env: AxiomEnvironment,
@@ -127,9 +195,7 @@ const AxiomLogRow = Schema.Struct({
   event_source: OptionalString,
   service_name: OptionalString,
   body: OptionalString,
-  authorization: OptionalString,
-  password: OptionalString,
-  safe_message: OptionalString,
+  ...AxiomRedactionRowFields,
 });
 
 const decodeAxiomLogRow = Schema.decodeUnknownOption(AxiomLogRow);
@@ -141,9 +207,7 @@ export type AxiomLog = {
   readonly eventSource: Option.Option<string>;
   readonly serviceName: Option.Option<string>;
   readonly body: Option.Option<string>;
-  readonly authorization: Option.Option<string>;
-  readonly password: Option.Option<string>;
-  readonly safeMessage: Option.Option<string>;
+  readonly redaction: AxiomRedactionAttributes;
 };
 
 const toAxiomLog = (row: typeof AxiomLogRow.Type): AxiomLog => ({
@@ -153,9 +217,7 @@ const toAxiomLog = (row: typeof AxiomLogRow.Type): AxiomLog => ({
   eventSource: Option.fromNullishOr(row.event_source),
   serviceName: Option.fromNullishOr(row.service_name),
   body: Option.fromNullishOr(row.body),
-  authorization: Option.fromNullishOr(row.authorization),
-  password: Option.fromNullishOr(row.password),
-  safeMessage: Option.fromNullishOr(row.safe_message),
+  redaction: toAxiomRedactionAttributes(row),
 });
 
 export const findLogs = (
@@ -164,7 +226,7 @@ export const findLogs = (
 ): Effect.Effect<ReadonlyArray<AxiomLog>> =>
   runQuery(
     env,
-    `['${env.AXIOM_DATASET_LOGS}'] | where ['attributes.custom']['canary.run_id'] == '${runId}' | project trace_id, event_name = tostring(['attributes.custom']['event.name']), event_kind = tostring(['attributes.custom']['event.kind']), event_source = tostring(['attributes.custom']['event.source']), service_name = ['service.name'], body = tostring(body), authorization = tostring(['attributes.custom']['authorization']), password = tostring(['attributes.custom']['password']), safe_message = tostring(['attributes.custom']['safe.message'])`,
+    `['${env.AXIOM_DATASET_LOGS}'] | where ['attributes.custom']['canary.run_id'] == '${runId}' | project trace_id, event_name = tostring(['attributes.custom']['event.name']), event_kind = tostring(['attributes.custom']['event.kind']), event_source = tostring(['attributes.custom']['event.source']), service_name = ['service.name'], body = tostring(body), ${redactionProjection}`,
   ).pipe(
     Effect.map((rows) =>
       rows.flatMap((row) =>
@@ -173,5 +235,22 @@ export const findLogs = (
           Option.match({ onNone: () => [], onSome: (log) => [log] }),
         ),
       ),
+    ),
+  );
+
+export type AxiomMetric = {
+  readonly content: string;
+};
+
+export const findMetric = (
+  env: AxiomEnvironment,
+  runId: string,
+): Effect.Effect<Option.Option<AxiomMetric>> =>
+  runMetricsQuery(
+    env,
+    `\`${env.AXIOM_DATASET_METRICS}\`:\`canary.operations\` | where \`canary.run_id\` == "${runId}"`,
+  ).pipe(
+    Effect.map((content) =>
+      content.includes(runId) ? Option.some({ content }) : Option.none<AxiomMetric>(),
     ),
   );
