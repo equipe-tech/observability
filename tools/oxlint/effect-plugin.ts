@@ -1,11 +1,11 @@
-import { definePlugin } from "@oxlint/plugins";
+import { eslintCompatPlugin } from "@oxlint/plugins";
 import { noAmbientEnvReadRule } from "./rules/no-ambient-env-read.ts";
 import { noBareErrorRule } from "./rules/no-bare-error.ts";
 import { noServiceConstructorImportsRule } from "./rules/no-service-constructor-imports.ts";
 import { requireFetchAbortSignalRule } from "./rules/require-fetch-abort-signal.ts";
 import { taggedErrorRequiresMessageRule } from "./rules/tagged-error-requires-message.ts";
 
-const effectPlugin = definePlugin({
+const effectPlugin = eslintCompatPlugin({
   meta: { name: "effect" },
   rules: {
     "no-ambient-env-read": noAmbientEnvReadRule,

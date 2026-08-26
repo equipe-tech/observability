@@ -1,37 +1,73 @@
 import { defineRule } from "@oxlint/plugins";
+import type { ESTree } from "@oxlint/plugins";
+
+type TypeAssertionExpression = ESTree.TSAsExpression | ESTree.TSTypeAssertion;
+
+function isTypeAssertionExpression(node: ESTree.Node): node is TypeAssertionExpression {
+  return node.type === "TSAsExpression" || node.type === "TSTypeAssertion";
+}
+
+function unwrapParenthesizedExpression(expression: ESTree.Expression): ESTree.Expression {
+  let current = expression;
+  while (current.type === "ParenthesizedExpression") {
+    current = current.expression;
+  }
+  return current;
+}
+
+function isConstAssertion(node: TypeAssertionExpression): boolean {
+  const { typeAnnotation } = node;
+  return (
+    typeAnnotation.type === "TSTypeReference" &&
+    typeAnnotation.typeName.type === "Identifier" &&
+    typeAnnotation.typeName.name === "const"
+  );
+}
+
+function isOutermostAssertionInChain(node: TypeAssertionExpression): boolean {
+  let current: ESTree.Expression = node;
+  let parent = node.parent;
+  while (parent.type === "ParenthesizedExpression" && parent.expression === current) {
+    current = parent;
+    parent = parent.parent;
+  }
+  return !isTypeAssertionExpression(parent) || parent.expression !== current;
+}
+
+function isForbiddenAssertionChain(node: TypeAssertionExpression): boolean {
+  let assertionCount = 0;
+  let hasNonConstAssertion = false;
+  let current: ESTree.Expression = node;
+  while (isTypeAssertionExpression(current)) {
+    assertionCount += 1;
+    hasNonConstAssertion ||= !isConstAssertion(current);
+    current = unwrapParenthesizedExpression(current.expression);
+  }
+  return assertionCount > 1 && hasNonConstAssertion;
+}
 
 export const noChainedTypeAssertionsRule = defineRule({
   meta: {
     type: "problem",
     docs: {
       description:
-        "Disallow chained type assertions such as `value as unknown as Target`, including parenthesized chains.",
+        "Disallow chained TypeScript as and angle-bracket assertions, including parenthesized chains.",
     },
     messages: {
       chained:
-        "A chained type assertion discards the type evidence the value already carries and fabricates the target type without a parse. Keep the precise original type, or parse the value at its I/O boundary before it flows inward.",
+        "This assertion chain discards type evidence. Keep the original precise type, or parse untrusted input at its boundary before narrowing it.",
     },
   },
-  create(context) {
+  createOnce(context) {
+    const checkTypeAssertion = (node: TypeAssertionExpression) => {
+      if (!isOutermostAssertionInChain(node) || !isForbiddenAssertionChain(node)) {
+        return;
+      }
+      context.report({ node, messageId: "chained" });
+    };
     return {
-      TSAsExpression(node) {
-        let inner = node.expression;
-        while (inner.type === "ParenthesizedExpression") {
-          inner = inner.expression;
-        }
-        if (inner.type === "TSAsExpression" || inner.type === "TSTypeAssertion") {
-          context.report({ node, messageId: "chained" });
-        }
-      },
-      TSTypeAssertion(node) {
-        let inner = node.expression;
-        while (inner.type === "ParenthesizedExpression") {
-          inner = inner.expression;
-        }
-        if (inner.type === "TSAsExpression" || inner.type === "TSTypeAssertion") {
-          context.report({ node, messageId: "chained" });
-        }
-      },
+      TSAsExpression: checkTypeAssertion,
+      TSTypeAssertion: checkTypeAssertion,
     };
   },
 });

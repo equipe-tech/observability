@@ -1,4 +1,35 @@
 import { defineRule } from "@oxlint/plugins";
+import type { Context, ESTree } from "@oxlint/plugins";
+
+type RuntimeFunction = ESTree.ArrowFunctionExpression | ESTree.Function;
+
+function isRuntimeFunction(node: ESTree.Node): node is RuntimeFunction {
+  return (
+    node.type === "ArrowFunctionExpression" ||
+    node.type === "FunctionDeclaration" ||
+    node.type === "FunctionExpression"
+  );
+}
+
+function allowsTypeGuards(option: Context["options"][number] | undefined): boolean {
+  if (option === undefined || option === null || Array.isArray(option)) {
+    return false;
+  }
+  return Object.entries(option).some(
+    ([key, value]) => key === "allowInTypeGuards" && value === true,
+  );
+}
+
+function isInsideTypeGuard(node: ESTree.Node): boolean {
+  let current: ESTree.Node | null = node.parent;
+  while (current !== null && current.type !== "Program") {
+    if (isRuntimeFunction(current)) {
+      return current.returnType?.typeAnnotation.type === "TSTypePredicate";
+    }
+    current = current.parent;
+  }
+  return false;
+}
 
 export const noRuntimeTypeofRule = defineRule({
   meta: {
@@ -9,13 +40,24 @@ export const noRuntimeTypeofRule = defineRule({
     },
     messages: {
       runtimeTypeof:
-        "A runtime `typeof` check narrows an unparsed representation without establishing its contract. Parse the value into a strongly typed domain type at the I/O boundary where it originates.",
+        "A `typeof` check narrows a representation without establishing its contract. Parse input at its I/O boundary, then branch on the domain value.",
     },
+    schema: [
+      {
+        type: "object",
+        properties: {
+          allowInTypeGuards: { type: "boolean" },
+        },
+        additionalProperties: false,
+      },
+    ],
+    defaultOptions: [{ allowInTypeGuards: false }],
   },
-  create(context) {
+  createOnce(context) {
     return {
       UnaryExpression(node) {
-        if (node.operator === "typeof") {
+        const allowInTypeGuards = allowsTypeGuards(context.options?.[0]);
+        if (node.operator === "typeof" && (!allowInTypeGuards || !isInsideTypeGuard(node))) {
           context.report({ node, messageId: "runtimeTypeof" });
         }
       },
