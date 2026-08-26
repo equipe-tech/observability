@@ -1,4 +1,21 @@
 import { describe, expect, test } from "bun:test";
+import { Schema } from "effect";
+
+const CollectorPipeline = Schema.Struct({
+  processors: Schema.Array(Schema.String),
+});
+
+const CollectorConfig = Schema.Struct({
+  service: Schema.Struct({
+    pipelines: Schema.Struct({
+      traces: CollectorPipeline,
+      logs: CollectorPipeline,
+      metrics: CollectorPipeline,
+    }),
+  }),
+});
+
+const decodeCollectorConfig = Schema.decodeUnknownSync(CollectorConfig);
 
 const redactionBlock = (config: string): string => {
   const start = config.indexOf("  transform/redact:");
@@ -6,6 +23,16 @@ const redactionBlock = (config: string): string => {
   expect(start).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
   return config.slice(start, end);
+};
+
+const expectRedactionPipelines = (config: string): void => {
+  const parsed: unknown = Bun.YAML.parse(config);
+  const pipelines = decodeCollectorConfig(parsed).service.pipelines;
+  const tracesAndLogs = ["memory_limiter", "transform/redact", "redaction/sensitive", "batch"];
+  const metrics = ["memory_limiter", "redaction/sensitive", "batch"];
+  expect(pipelines.traces.processors).toEqual(tracesAndLogs);
+  expect(pipelines.logs.processors).toEqual(tracesAndLogs);
+  expect(pipelines.metrics.processors).toEqual(metrics);
 };
 
 describe("Collector assets", () => {
@@ -16,13 +43,16 @@ describe("Collector assets", () => {
     ]);
 
     expect(redactionBlock(local)).toBe(redactionBlock(production));
-    for (const config of [local, production]) {
-      expect(config).toContain("trace_statements:");
-      expect(config).toContain("log_statements:");
-      expect(config).toContain(
-        "processors: [memory_limiter, transform/redact, redaction/sensitive, batch]",
-      );
-      expect(config).toContain("processors: [memory_limiter, redaction/sensitive, batch]");
-    }
+    expectRedactionPipelines(local);
+    expectRedactionPipelines(production);
+
+    const withoutTraceAttributeRedaction = production.replace(
+      "processors: [memory_limiter, transform/redact, redaction/sensitive, batch]",
+      "processors: [memory_limiter, transform/redact, batch]",
+    );
+    expect(withoutTraceAttributeRedaction).not.toBe(production);
+    expect(() => expectRedactionPipelines(withoutTraceAttributeRedaction)).toThrow(
+      /redaction\/sensitive/,
+    );
   });
 });
