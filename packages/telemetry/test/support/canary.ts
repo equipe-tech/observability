@@ -17,13 +17,41 @@ export const canaryRunId = (): string => {
   return `test-${user === "" ? "ci" : user}-${Date.now()}-${entropy}`;
 };
 
-export const emitCanary = (config: TelemetryConfig, runId: string): Effect.Effect<void> =>
-  Effect.gen(function* () {
+export const canarySensitiveValues = (runId: string) => {
+  const authorization = `Bearer auth-${runId}`;
+  const password = `password-${runId}`;
+  const token = `sk-${runId}`;
+  const email = `${runId}@example.test`;
+  return {
+    authorization,
+    password,
+    token,
+    email,
+    serializedBody: JSON.stringify({ authorization, password, token, email }),
+  };
+};
+
+export const emitCanary = (config: TelemetryConfig, runId: string): Effect.Effect<void> => {
+  const sensitive = canarySensitiveValues(runId);
+  const sensitiveAttributes = {
+    "canary.run_id": runId,
+    authorization: sensitive.authorization,
+    password: sensitive.password,
+    "safe.message": `token=${sensitive.token} email=${sensitive.email}`,
+  };
+  return Effect.gen(function* () {
     const operationCounter = Metric.counter("canary.operations", {
-      attributes: { "canary.run_id": runId },
+      attributes: sensitiveAttributes,
     });
     yield* Effect.sleep("10 millis").pipe(Effect.withSpan("canary.child"));
     yield* WideEvent.emit("canary.completed", { "canary.run_id": runId });
+    yield* Effect.logInfo(sensitive.serializedBody).pipe(
+      Effect.annotateLogs({
+        ...sensitiveAttributes,
+        "event.name": "canary.redaction",
+        "event.kind": "wide",
+      }),
+    );
     yield* ingestBrowserEvents({
       version: 1,
       events: [
@@ -37,8 +65,7 @@ export const emitCanary = (config: TelemetryConfig, runId: string): Effect.Effec
     }).pipe(Effect.orDie);
     yield* Metric.update(operationCounter, 1);
   }).pipe(
-    Effect.withSpan("canary.operation", {
-      attributes: { "canary.run_id": runId },
-    }),
+    Effect.withSpan("canary.operation", { attributes: sensitiveAttributes }),
     Effect.provide(Telemetry.layer(config)),
   );
+};

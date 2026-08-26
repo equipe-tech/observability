@@ -10,7 +10,7 @@ import {
   type AxiomLog,
   type AxiomSpan,
 } from "./support/axiom.ts";
-import { canaryRunId, emitCanary } from "./support/canary.ts";
+import { canaryRunId, canarySensitiveValues, emitCanary } from "./support/canary.ts";
 
 const deployedEnabled = process.env["OBSERVABILITY_E2E_DEPLOYED"] === "1";
 
@@ -19,6 +19,7 @@ type DeployedRun = {
   readonly child: AxiomSpan;
   readonly completed: AxiomLog;
   readonly browser: AxiomLog;
+  readonly redaction: AxiomLog;
 };
 
 const findDeployedRun = Effect.fn("findDeployedRun")(function* (
@@ -32,8 +33,14 @@ const findDeployedRun = Effect.fn("findDeployedRun")(function* (
       const logs = yield* findLogs(env, runId);
       const completed = logs.find((log) => log.eventName === "canary.completed");
       const browser = logs.find((log) => log.eventName === "canary.browser");
-      if (Option.isSome(child) && completed !== undefined && browser !== undefined) {
-        return { root: root.value, child: child.value, completed, browser };
+      const redaction = logs.find((log) => log.eventName === "canary.redaction");
+      if (
+        Option.isSome(child) &&
+        completed !== undefined &&
+        browser !== undefined &&
+        redaction !== undefined
+      ) {
+        return { root: root.value, child: child.value, completed, browser, redaction };
       }
     }
     yield* Effect.sleep("3 seconds");
@@ -75,6 +82,28 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
 
         assert.deepStrictEqual(run.browser.eventSource, Option.some("browser"));
         assert.deepStrictEqual(run.browser.eventKind, Option.some("wide"));
+
+        const sensitive = canarySensitiveValues(runId);
+        const redactedValues = [
+          sensitive.authorization,
+          sensitive.password,
+          sensitive.token,
+          sensitive.email,
+        ];
+        const redactedRecords = [
+          Option.getOrThrow(run.root.events),
+          Option.getOrThrow(run.redaction.body),
+          Option.getOrThrow(run.redaction.authorization),
+          Option.getOrThrow(run.redaction.password),
+          Option.getOrThrow(run.redaction.safeMessage),
+        ];
+        for (const record of redactedRecords) {
+          for (const value of redactedValues) {
+            assert.notInclude(record, value);
+          }
+        }
+        assert.include(Option.getOrThrow(run.root.events), "[REDACTED]");
+        assert.include(Option.getOrThrow(run.redaction.body), "[REDACTED]");
       }),
     240_000,
   );

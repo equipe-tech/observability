@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
-import { canaryRunId, emitCanary } from "./support/canary.ts";
+import { canaryRunId, canarySensitiveValues, emitCanary } from "./support/canary.ts";
 
 const cliManifest: unknown = JSON.parse(
   await readFile(new URL("../../cli/package.json", import.meta.url).pathname, "utf8"),
@@ -28,12 +28,18 @@ const Attribute = Schema.Struct({
   value: AttributeValue,
 });
 
+const ExportedSpanEvent = Schema.Struct({
+  name: Schema.String,
+  attributes: Schema.Array(Attribute).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+});
+
 const ExportedSpan = Schema.Struct({
   traceId: Schema.String,
   spanId: Schema.String,
   parentSpanId: Schema.String.pipe(Schema.optionalKey),
   name: Schema.String,
   attributes: Schema.Array(Attribute).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  events: Schema.Array(ExportedSpanEvent).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
 
 const ExportedResource = Schema.Struct({
@@ -51,6 +57,7 @@ const SpanExport = Schema.Struct({
 
 const ExportedLogRecord = Schema.Struct({
   traceId: Schema.String.pipe(Schema.optionalKey),
+  body: Schema.Struct({ stringValue: Schema.String.pipe(Schema.optionalKey) }),
   attributes: Schema.Array(Attribute).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
 
@@ -176,6 +183,11 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
         Option.getOrUndefined(attributeValue(candidate.span.attributes, "canary.run_id")) === runId,
     );
     if (root !== undefined) {
+      const redactionSpanEvent = root.span.events.find(
+        (event) =>
+          Option.getOrUndefined(attributeValue(event.attributes, "event.name")) ===
+          "canary.redaction",
+      );
       const child = telemetryExport.spans.find(
         (candidate) =>
           candidate.span.parentSpanId === root.span.spanId &&
@@ -195,6 +207,13 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
           Option.getOrUndefined(attributeValue(candidate.log.attributes, "event.name")) ===
             "canary.browser",
       );
+      const redactionLog = telemetryExport.logs.find(
+        (candidate) =>
+          Option.getOrUndefined(attributeValue(candidate.log.attributes, "canary.run_id")) ===
+            runId &&
+          Option.getOrUndefined(attributeValue(candidate.log.attributes, "event.name")) ===
+            "canary.redaction",
+      );
       const metric = telemetryExport.metrics.find(
         (candidate) =>
           candidate.metric.name === "canary.operations" &&
@@ -202,12 +221,14 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
             runId,
       );
       if (
+        redactionSpanEvent !== undefined &&
         child !== undefined &&
         log !== undefined &&
         browserLog !== undefined &&
+        redactionLog !== undefined &&
         metric !== undefined
       ) {
-        return { root, child, log, browserLog, metric };
+        return { root, redactionSpanEvent, child, log, browserLog, redactionLog, metric };
       }
     }
     yield* Effect.sleep("500 millis");
@@ -272,6 +293,37 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
         );
         assert.strictEqual(run.metric.metric.name, "canary.operations");
         assert.strictEqual(run.metric.dataPoint.asDouble, 1);
+
+        const sensitive = canarySensitiveValues(runId);
+        const redactedValues = [
+          sensitive.authorization,
+          sensitive.password,
+          sensitive.token,
+          sensitive.email,
+        ];
+        const redactedBody = Option.getOrThrow(
+          Option.fromNullishOr(run.redactionLog.log.body.stringValue),
+        );
+        const redactedRecords = [
+          redactedBody,
+          run.redactionSpanEvent.name,
+          Option.getOrThrow(attributeValue(run.root.span.attributes, "authorization")),
+          Option.getOrThrow(attributeValue(run.root.span.attributes, "password")),
+          Option.getOrThrow(attributeValue(run.root.span.attributes, "safe.message")),
+          Option.getOrThrow(attributeValue(run.redactionLog.log.attributes, "authorization")),
+          Option.getOrThrow(attributeValue(run.redactionLog.log.attributes, "password")),
+          Option.getOrThrow(attributeValue(run.redactionLog.log.attributes, "safe.message")),
+          Option.getOrThrow(attributeValue(run.metric.dataPoint.attributes, "authorization")),
+          Option.getOrThrow(attributeValue(run.metric.dataPoint.attributes, "password")),
+          Option.getOrThrow(attributeValue(run.metric.dataPoint.attributes, "safe.message")),
+        ];
+        for (const record of redactedRecords) {
+          for (const value of redactedValues) {
+            assert.notInclude(record, value);
+          }
+        }
+        assert.include(redactedBody, "[REDACTED]");
+        assert.include(run.redactionSpanEvent.name, "[REDACTED]");
 
         for (const signalResource of [run.log.resource, run.metric.resource]) {
           assert.strictEqual(

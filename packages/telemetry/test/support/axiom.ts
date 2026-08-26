@@ -56,6 +56,7 @@ const AxiomSpanRow = Schema.Struct({
   service_name: OptionalString,
   service_version: OptionalString,
   environment: OptionalString,
+  events: OptionalString,
 });
 
 const decodeAxiomSpanRow = Schema.decodeUnknownOption(AxiomSpanRow);
@@ -68,6 +69,7 @@ export type AxiomSpan = {
   readonly serviceName: Option.Option<string>;
   readonly serviceVersion: Option.Option<string>;
   readonly environment: Option.Option<string>;
+  readonly events: Option.Option<string>;
 };
 
 const toAxiomSpan = (row: typeof AxiomSpanRow.Type): AxiomSpan => ({
@@ -80,10 +82,11 @@ const toAxiomSpan = (row: typeof AxiomSpanRow.Type): AxiomSpan => ({
   serviceName: Option.fromNullishOr(row.service_name),
   serviceVersion: Option.fromNullishOr(row.service_version),
   environment: Option.fromNullishOr(row.environment),
+  events: Option.fromNullishOr(row.events),
 });
 
 const spanProjection =
-  "project trace_id, span_id, parent_span_id, name, service_name = ['service.name'], service_version = ['service.version'], environment = tostring(['resource.custom']['deployment.environment.name'])";
+  "project trace_id, span_id, parent_span_id, name, service_name = ['service.name'], service_version = ['service.version'], environment = tostring(['resource.custom']['deployment.environment.name']), events = tostring(events)";
 
 export const findRootSpan = (
   env: AxiomEnvironment,
@@ -123,6 +126,10 @@ const AxiomLogRow = Schema.Struct({
   event_kind: OptionalString,
   event_source: OptionalString,
   service_name: OptionalString,
+  body: OptionalString,
+  authorization: OptionalString,
+  password: OptionalString,
+  safe_message: OptionalString,
 });
 
 const decodeAxiomLogRow = Schema.decodeUnknownOption(AxiomLogRow);
@@ -133,6 +140,10 @@ export type AxiomLog = {
   readonly eventKind: Option.Option<string>;
   readonly eventSource: Option.Option<string>;
   readonly serviceName: Option.Option<string>;
+  readonly body: Option.Option<string>;
+  readonly authorization: Option.Option<string>;
+  readonly password: Option.Option<string>;
+  readonly safeMessage: Option.Option<string>;
 };
 
 const toAxiomLog = (row: typeof AxiomLogRow.Type): AxiomLog => ({
@@ -141,6 +152,10 @@ const toAxiomLog = (row: typeof AxiomLogRow.Type): AxiomLog => ({
   eventKind: Option.fromNullishOr(row.event_kind),
   eventSource: Option.fromNullishOr(row.event_source),
   serviceName: Option.fromNullishOr(row.service_name),
+  body: Option.fromNullishOr(row.body),
+  authorization: Option.fromNullishOr(row.authorization),
+  password: Option.fromNullishOr(row.password),
+  safeMessage: Option.fromNullishOr(row.safe_message),
 });
 
 export const findLogs = (
@@ -149,7 +164,7 @@ export const findLogs = (
 ): Effect.Effect<ReadonlyArray<AxiomLog>> =>
   runQuery(
     env,
-    `['${env.AXIOM_DATASET_LOGS}'] | where ['attributes.custom']['canary.run_id'] == '${runId}' | project trace_id, event_name = tostring(['attributes.custom']['event.name']), event_kind = tostring(['attributes.custom']['event.kind']), event_source = tostring(['attributes.custom']['event.source']), service_name = ['service.name']`,
+    `['${env.AXIOM_DATASET_LOGS}'] | where ['attributes.custom']['canary.run_id'] == '${runId}' | project trace_id, event_name = tostring(['attributes.custom']['event.name']), event_kind = tostring(['attributes.custom']['event.kind']), event_source = tostring(['attributes.custom']['event.source']), service_name = ['service.name'], body = tostring(body), authorization = tostring(['attributes.custom']['authorization']), password = tostring(['attributes.custom']['password']), safe_message = tostring(['attributes.custom']['safe.message'])`,
   ).pipe(
     Effect.map((rows) =>
       rows.flatMap((row) =>
