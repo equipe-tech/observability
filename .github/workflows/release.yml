@@ -92,7 +92,14 @@ jobs:
       - name: Generate release notes
         env:
           TAG: ${{ needs.tag-check.outputs.tag }}
-        run: bun scripts/release-notes.ts --tag "$TAG" > release-notes.md
+        run: |
+          set -euo pipefail
+          source_notes="docs/releases/${TAG}.md"
+          if [[ -f "$source_notes" ]]; then
+            cp "$source_notes" release-notes.md
+          else
+            bun scripts/release-notes.ts --tag "$TAG" > release-notes.md
+          fi
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -134,6 +141,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -164,7 +172,7 @@ jobs:
             "./dist-release/equipe-tech-observability-cli-${VERSION}.tgz"; do
             [[ -f "$tarball" ]] || { echo "Missing tarball: $tarball"; exit 1; }
             set +e
-            output="$(npm publish "$tarball" --access public --tag "$NPM_TAG" 2>&1)"
+            output="$(npm publish "$tarball" --access public --tag "$NPM_TAG" --provenance 2>&1)"
             status=$?
             set -e
             echo "$output"

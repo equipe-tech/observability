@@ -1,6 +1,6 @@
 {
   "name": "@equipe-tech/observability-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "CLI da plataforma de observabilidade: ciclo de vida da stack local de desenvolvimento",
   "license": "Apache-2.0",
   "bin": {
@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.0-rc.111",
+    "@effect/platform-node-shared": "4.0.0-rc.111",
     "effect": "4.0.0-rc.111"
   }
 }

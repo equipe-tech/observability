@@ -59,6 +59,7 @@ try {
       directory: join(root, "packages/telemetry"),
       archive: "telemetry.tgz",
       required: [
+        "package/README.md",
         "package/dist/LICENSE",
         "package/dist/index.js",
         "package/dist/index.d.ts",
@@ -82,6 +83,7 @@ try {
       directory: join(root, "packages/cli"),
       archive: "cli.tgz",
       required: [
+        "package/README.md",
         "package/dist/LICENSE",
         "package/dist/main.js",
         "package/dist/main.d.ts",
@@ -217,6 +219,41 @@ try {
     }),
   );
   requireSuccess(await run(["bun", "install"], consumer), "Installing packed packages");
+
+  const nodeConsumer = join(temporaryDirectory, "node consumer outside repository");
+  await mkdir(nodeConsumer, { recursive: true });
+  await writeFile(
+    join(nodeConsumer, "package.json"),
+    JSON.stringify({
+      private: true,
+      type: "module",
+      dependencies: {
+        "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
+        "@equipe-tech/observability-cli": `file:${join(temporaryDirectory, "cli.tgz")}`,
+      },
+    }),
+  );
+  requireSuccess(
+    await run(["npm", "install"], nodeConsumer),
+    "Installing packed packages with npm",
+  );
+  requireSuccess(
+    await run(
+      [
+        "node",
+        "--input-type=module",
+        "--eval",
+        "const [root, metrics, node, browser, client, testing] = await Promise.all([import('@equipe-tech/observability'), import('@equipe-tech/observability/metrics'), import('@equipe-tech/observability/node'), import('@equipe-tech/observability/browser'), import('@equipe-tech/observability/browser/client'), import('@equipe-tech/observability/testing')]); if (!root.Telemetry || !metrics.createMetrics || !node.runMain || !browser.BrowserTelemetry || !client.createBrowserTelemetryClient || !testing.run) process.exit(1);",
+      ],
+      nodeConsumer,
+    ),
+    "Importing packed packages with Node.js",
+  );
+  requireSuccess(
+    await run([join(nodeConsumer, "node_modules/.bin/observability"), "--help"], nodeConsumer),
+    "Executing the npm-installed CLI",
+  );
+
   const declarations = new Bun.Glob("**/*.d.ts");
   for (const packageName of ["observability", "observability-cli"]) {
     const distribution = join(consumer, "node_modules/@equipe-tech", packageName, "dist");
