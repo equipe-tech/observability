@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Schema } from "effect";
+import { writeFileSync } from "node:fs";
 import { access, chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,8 @@ const signalCleanupScenario =
   process.env["OBSERVABILITY_COLLECTOR_RECOVERY_SIGNAL_SCENARIO"] ?? "resources";
 const enabled = process.env["OBSERVABILITY_COLLECTOR_RECOVERY"] === "1" || signalCleanupMode;
 const signalReadyFile = process.env["OBSERVABILITY_COLLECTOR_RECOVERY_SIGNAL_READY_FILE"] ?? "";
+const signalConfirmationFile =
+  process.env["OBSERVABILITY_COLLECTOR_RECOVERY_SIGNAL_CONFIRMATION_FILE"] ?? "";
 const evidenceRoot = process.env["OBSERVABILITY_COLLECTOR_RECOVERY_ARTIFACT_ROOT"] ?? "";
 const runId = `obs10-${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
 const network = `${runId}-network`;
@@ -21,6 +24,7 @@ let rootAllocation = Promise.resolve("");
 let signalHandlersInstalled = false;
 let terminationRequested = false;
 let terminationExitCode = 1;
+let observedSignalCount = 0;
 
 const runDocker = (args: ReadonlyArray<string>): string => {
   const result = Bun.spawnSync(["docker", ...args], {
@@ -453,12 +457,19 @@ const SignalCleanupReady = Schema.Struct({
   runId: Schema.NonEmptyString,
 });
 
+const SignalConfirmation = Schema.Struct({
+  count: Schema.Int,
+  signal: Schema.Literals(["SIGINT", "SIGTERM"]),
+});
+
 const decodeSignalCleanupReady = Schema.decodeUnknownSync(SignalCleanupReady);
+const decodeSignalConfirmation = Schema.decodeUnknownSync(SignalConfirmation);
+type CleanupSignal = "SIGINT" | "SIGTERM";
 
 interface CollectorCleanupScenario {
   readonly name: string;
   readonly scenario: string;
-  readonly signals: ReadonlyArray<NodeJS.Signals>;
+  readonly signals: ReadonlyArray<CleanupSignal>;
   readonly expectedExitCode: number;
 }
 
@@ -466,16 +477,22 @@ const collectorCleanupScenarios: ReadonlyArray<CollectorCleanupScenario> = [
   { name: "active resources", scenario: "resources", signals: ["SIGINT"], expectedExitCode: 130 },
   { name: "allocation", scenario: "allocation", signals: ["SIGTERM"], expectedExitCode: 143 },
   {
-    name: "repeated signals",
+    name: "repeated SIGINT signals",
     scenario: "allocation",
     signals: ["SIGINT", "SIGINT"],
     expectedExitCode: 130,
   },
   {
-    name: "mixed signals",
+    name: "mixed SIGTERM then SIGINT signals",
     scenario: "allocation",
     signals: ["SIGTERM", "SIGINT"],
     expectedExitCode: 143,
+  },
+  {
+    name: "mixed SIGINT then SIGTERM signals",
+    scenario: "allocation",
+    signals: ["SIGINT", "SIGTERM"],
+    expectedExitCode: 130,
   },
   { name: "normal failure", scenario: "failure", signals: [], expectedExitCode: 1 },
 ];
@@ -489,6 +506,30 @@ const waitForFile = async (path: string): Promise<void> => {
     await Bun.sleep(25);
   }
   throw new Error(`The cleanup harness did not create ${path}.`);
+};
+
+const waitForSignalConfirmation = async (
+  path: string,
+  count: number,
+  signal: CleanupSignal,
+): Promise<void> => {
+  const deadline = Date.now() + 10_000;
+  let latest = "";
+  while (Date.now() < deadline) {
+    try {
+      latest = await readFile(path, "utf8");
+      const confirmation = decodeSignalConfirmation(JSON.parse(latest));
+      if (confirmation.count === count && confirmation.signal === signal) {
+        return;
+      }
+    } catch {
+      latest = "";
+    }
+    await Bun.sleep(10);
+  }
+  throw new Error(
+    `The cleanup harness did not confirm ${signal} as signal ${count}: ${latest.trim()}`,
+  );
 };
 
 const pathExists = async (path: string): Promise<boolean> => {
@@ -568,7 +609,15 @@ const cleanup = (): Promise<void> => {
   return cleanupResult;
 };
 
-const terminateAfterCleanup = (exitCode: number): void => {
+const terminateAfterCleanup = (exitCode: number, signal: CleanupSignal): void => {
+  observedSignalCount += 1;
+  if (signalConfirmationFile !== "") {
+    writeFileSync(
+      signalConfirmationFile,
+      JSON.stringify({ count: observedSignalCount, signal }),
+      "utf8",
+    );
+  }
   if (!terminationRequested) {
     terminationRequested = true;
     terminationExitCode = exitCode;
@@ -584,8 +633,8 @@ const terminateAfterCleanup = (exitCode: number): void => {
   );
 };
 
-const onSigint = (): void => terminateAfterCleanup(130);
-const onSigterm = (): void => terminateAfterCleanup(143);
+const onSigint = (): void => terminateAfterCleanup(130, "SIGINT");
+const onSigterm = (): void => terminateAfterCleanup(143, "SIGTERM");
 
 const installSignalHandlers = (): void => {
   if (!signalHandlersInstalled) {
@@ -870,6 +919,7 @@ recoveryDescribe("Collector recovery", () => {
     test(`cleans recovery resources for ${scenario.name}`, async () => {
       const controlRoot = await mkdtemp(join(tmpdir(), "collector-cleanup-test-"));
       const readyFile = join(controlRoot, "ready.json");
+      const confirmationFile = join(controlRoot, "signal.json");
       const child = Bun.spawn(
         ["bun", "test", "packages/cli/test/CollectorRecovery.bun.test.ts", "--timeout", "30000"],
         {
@@ -881,6 +931,7 @@ recoveryDescribe("Collector recovery", () => {
             OBSERVABILITY_COLLECTOR_RECOVERY_SIGNAL_TEST: "1",
             OBSERVABILITY_COLLECTOR_RECOVERY_SIGNAL_SCENARIO: scenario.scenario,
             OBSERVABILITY_COLLECTOR_RECOVERY_SIGNAL_READY_FILE: readyFile,
+            OBSERVABILITY_COLLECTOR_RECOVERY_SIGNAL_CONFIRMATION_FILE: confirmationFile,
           },
           stdout: "ignore",
           stderr: "ignore",
@@ -899,8 +950,9 @@ recoveryDescribe("Collector recovery", () => {
         childContainer = ready.container ?? "";
         childNetwork = ready.network ?? "";
         childRunId = ready.runId;
-        for (const signal of scenario.signals) {
+        for (const [index, signal] of scenario.signals.entries()) {
           child.kill(signal);
+          await waitForSignalConfirmation(confirmationFile, index + 1, signal);
         }
         const exitCode = await child.exited;
         exited = true;
