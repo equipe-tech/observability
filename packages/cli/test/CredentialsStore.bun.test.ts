@@ -83,14 +83,14 @@ const administrativeCredentials = () => ({
 });
 
 describe("CredentialsStore", () => {
-  test.serial("writes version 2 credentials durably with owner-only permissions", () =>
+  test.serial("writes version 3 credentials durably with owner-only permissions", () =>
     withCredentialsHome("observability-credentials-", async (root) => {
       const credentials = administrativeCredentials();
       const result = await Effect.runPromise(
         Effect.gen(function* () {
           const store = yield* CredentialsStore;
           const fs = yield* FileSystem.FileSystem;
-          yield* store.save(new CredentialsFile({ version: 2, ...credentials, environments: [] }));
+          yield* store.save(new CredentialsFile({ version: 3, ...credentials, environments: [] }));
           const loaded = yield* store.load();
           const info = yield* fs.stat(store.path);
           const lockExists = yield* fs.exists(`${root}/.credentials.lock`);
@@ -102,7 +102,7 @@ describe("CredentialsStore", () => {
       expect(result.lockExists).toBeFalse();
       expect(Option.isSome(result.loaded)).toBeTrue();
       if (Option.isSome(result.loaded)) {
-        expect(result.loaded.value.version).toBe(2);
+        expect(result.loaded.value.version).toBe(3);
         expect(result.loaded.value.axiom?.token).toBe("xapt-secret");
         expect(result.loaded.value.sentry?.baseUrl.toString()).toBe("https://sentry.io/");
       }
@@ -148,7 +148,7 @@ describe("CredentialsStore", () => {
         }).pipe(Effect.provide(CredentialsStore.layer), Effect.provide(BunServices.layer)),
       );
 
-      expect(decodePersistedVersion(JSON.parse(result.content)).version).toBe(2);
+      expect(decodePersistedVersion(JSON.parse(result.content)).version).toBe(3);
       expect(result.content).toContain("legacy-axiom-secret");
       expect(result.content).toContain("legacy-sentry-secret");
       expect(result.content).toContain("legacy-ingest-secret");
@@ -156,13 +156,65 @@ describe("CredentialsStore", () => {
       expect(Option.isSome(result.loaded)).toBeTrue();
       if (Option.isSome(result.loaded)) {
         expect(result.loaded.value.environments[0]?.providers.type).toBe("combined");
+        const providers = result.loaded.value.environments[0]?.providers;
+        if (providers?.type === "combined") {
+          expect(providers.axiom.correlation.type).toBe("verification-required");
+        }
+      }
+    }),
+  );
+
+  test.serial("migrates version 2 and preserves pending mutations", () =>
+    withCredentialsHome("observability-v2-migration-", async (root) => {
+      const legacy = {
+        version: 2,
+        axiom: { token: "admin-secret", organizationId: "org-id" },
+        environments: [
+          {
+            project: "livro-caixa",
+            environment: "staging",
+            providers: {
+              type: "axiom",
+              axiom: {
+                tokenId: "token-id",
+                token: "ingest-secret",
+                tracesDataset: "livro-caixa-staging-traces",
+                logsDataset: "livro-caixa-staging-logs",
+                metricsDataset: "livro-caixa-staging-metrics",
+              },
+            },
+          },
+        ],
+        pendingAxiomMutations: [{ project: "livro-caixa", environment: "staging" }],
+      };
+      await Bun.write(`${root}/credentials.json`, `${JSON.stringify(legacy)}\n`);
+      await chmod(`${root}/credentials.json`, 0o600);
+
+      const loaded = await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* CredentialsStore;
+          return yield* store.load();
+        }).pipe(Effect.provide(CredentialsStore.layer), Effect.provide(BunServices.layer)),
+      );
+
+      expect(Option.isSome(loaded)).toBeTrue();
+      if (Option.isSome(loaded)) {
+        expect(loaded.value.version).toBe(3);
+        expect(loaded.value.pendingAxiomMutations).toEqual([
+          { project: "livro-caixa", environment: "staging" },
+        ]);
+        const providers = loaded.value.environments[0]?.providers;
+        if (providers?.type === "axiom") {
+          expect(providers.axiom.token).toBe("ingest-secret");
+          expect(providers.axiom.correlation.type).toBe("verification-required");
+        }
       }
     }),
   );
 
   test.serial("rejects unsupported versions without replacing the file", () =>
     withCredentialsHome("observability-version-", async (root) => {
-      const original = '{"version":3,"environments":[]}\n';
+      const original = '{"version":4,"environments":[]}\n';
       await Bun.write(`${root}/credentials.json`, original);
       await chmod(`${root}/credentials.json`, 0o600);
 
@@ -192,7 +244,7 @@ describe("CredentialsStore", () => {
         Effect.gen(function* () {
           const store = yield* CredentialsStore;
           return yield* Effect.flip(
-            store.save(new CredentialsFile({ version: 2, environments: [] })),
+            store.save(new CredentialsFile({ version: 3, environments: [] })),
           );
         }).pipe(
           Effect.provide(CredentialsStore.layer),
@@ -253,7 +305,7 @@ describe("CredentialsStore", () => {
       const contender = Effect.runPromise(
         Effect.gen(function* () {
           const store = yield* CredentialsStore;
-          yield* store.save(new CredentialsFile({ version: 2, environments: [] }));
+          yield* store.save(new CredentialsFile({ version: 3, environments: [] }));
         }).pipe(Effect.provide(CredentialsStore.layer), Effect.provide(BunServices.layer)),
       ).then(() => {
         contenderFinished = true;
@@ -465,7 +517,7 @@ describe("CredentialsStore", () => {
       await Effect.runPromise(
         Effect.gen(function* () {
           const store = yield* CredentialsStore;
-          yield* store.save(new CredentialsFile({ version: 2, environments: [] }));
+          yield* store.save(new CredentialsFile({ version: 3, environments: [] }));
         }).pipe(Effect.provide(CredentialsStore.layer), Effect.provide(BunServices.layer)),
       );
 
@@ -484,7 +536,7 @@ describe("CredentialsStore", () => {
         Effect.gen(function* () {
           const store = yield* CredentialsStore;
           const fs = yield* FileSystem.FileSystem;
-          yield* store.save(new CredentialsFile({ version: 2, environments: [] }));
+          yield* store.save(new CredentialsFile({ version: 3, environments: [] }));
           yield* fs.chmod(store.path, 0o644);
           return yield* Effect.flip(store.load());
         }).pipe(Effect.provide(CredentialsStore.layer), Effect.provide(BunServices.layer)),

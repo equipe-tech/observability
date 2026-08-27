@@ -167,6 +167,21 @@ const provisionRotateToken = Flag.boolean("rotate-token").pipe(
   Flag.withDefault(false),
 );
 
+const provisionAxiomEdgeDeployment = Flag.string("axiom-edge-deployment").pipe(
+  Flag.withDescription("Identificador do edge deployment Axiom para os datasets"),
+  Flag.optional,
+);
+
+const provisionAxiomRetentionDays = Flag.integer("axiom-retention-days").pipe(
+  Flag.withDescription("Retenção Axiom explícita em dias positivos"),
+  Flag.optional,
+);
+
+const provisionCorrelationConfirmed = Flag.boolean("correlation-confirmed").pipe(
+  Flag.withDescription("Confirma que o grupo de correlação salvo foi criado no Console Axiom"),
+  Flag.withDefault(false),
+);
+
 const provision = Command.make(
   "provision",
   {
@@ -177,8 +192,22 @@ const provision = Command.make(
     providers: provisionProviders,
     platform: provisionPlatform,
     rotateToken: provisionRotateToken,
+    axiomEdgeDeployment: provisionAxiomEdgeDeployment,
+    axiomRetentionDays: provisionAxiomRetentionDays,
+    correlationConfirmed: provisionCorrelationConfirmed,
   },
-  Effect.fn(function* ({ dir, environments, force, name, platform, providers, rotateToken }) {
+  Effect.fn(function* ({
+    axiomEdgeDeployment,
+    axiomRetentionDays,
+    correlationConfirmed,
+    dir,
+    environments,
+    force,
+    name,
+    platform,
+    providers,
+    rotateToken,
+  }) {
     const selectedProviders = yield* parseProviderSelection(providers);
     const assets = yield* ProvisionAssets;
     const projectName = yield* assets.resolveName(dir, name);
@@ -205,6 +234,9 @@ const provision = Command.make(
       selectedProviders,
       platform,
       rotateToken,
+      Option.getOrUndefined(axiomEdgeDeployment),
+      Option.getOrUndefined(axiomRetentionDays),
+      correlationConfirmed,
     );
     for (const environment of configured) {
       const providerNames = environmentProviderNames(environment).join(",");
@@ -223,6 +255,17 @@ const provision = Command.make(
         parts.push(`sentry-project=${sentry.value.project}`);
       }
       yield* Console.log(parts.join("  "));
+      if (Option.isSome(axiom) && axiom.value.correlation.type === "manual-required") {
+        yield* Console.log(
+          `manual-action  Open the Axiom Console and create Correlation group "${axiom.value.correlation.groupName}" with slug "${axiom.value.correlation.groupSlug}".`,
+        );
+        yield* Console.log(
+          `manual-action  Select traces dataset ${axiom.value.correlation.tracesDataset}, logs dataset ${axiom.value.correlation.logsDataset}, and metrics dataset ${axiom.value.correlation.metricsDataset}.`,
+        );
+        yield* Console.log(
+          "manual-action  Save the group, then rerun this command with --correlation-confirmed. The CLI cannot verify the group through a stable public Axiom API.",
+        );
+      }
     }
     if (configured.some((environment) => Option.isSome(environmentAxiom(environment)))) {
       yield* Console.log(

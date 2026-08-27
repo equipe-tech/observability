@@ -1,6 +1,6 @@
 {
   "name": "@equipe-tech/observability-cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "CLI da plataforma de observabilidade: ciclo de vida da stack local de desenvolvimento",
   "homepage": "https://github.com/equipe-tech/observability#readme",
   "bugs": {

@@ -6,9 +6,49 @@ const AxiomUser = Schema.Struct({
   email: Schema.NonEmptyString,
 });
 
-const AxiomDataset = Schema.Struct({ name: Schema.NonEmptyString });
+export const AxiomDatasetKind = Schema.Literals([
+  "axiom:events:v1",
+  "otel:logs:v1",
+  "otel:metrics:v1",
+  "otel:traces:v1",
+]);
+export type AxiomDatasetKind = typeof AxiomDatasetKind.Type;
+
+export class AxiomDataset extends Schema.Class<AxiomDataset>(
+  "@equipe-tech/observability-cli/AxiomDataset",
+)({
+  id: Schema.NonEmptyString,
+  name: Schema.NonEmptyString,
+  description: Schema.String,
+  kind: AxiomDatasetKind,
+  edgeDeployment: Schema.NonEmptyString.pipe(Schema.optionalKey),
+  retentionDays: Schema.Int.check(Schema.isGreaterThan(0)).pipe(Schema.optionalKey),
+  useRetentionPeriod: Schema.Boolean,
+}) {}
+
 const AxiomDatasets = Schema.Array(AxiomDataset);
-const AxiomToken = Schema.Struct({ id: Schema.NonEmptyString, name: Schema.NonEmptyString });
+const AxiomCapabilityActions = Schema.Array(Schema.NonEmptyString);
+const AxiomDatasetCapability = Schema.Struct({
+  ingest: AxiomCapabilityActions.pipe(Schema.optionalKey),
+  query: AxiomCapabilityActions.pipe(Schema.optionalKey),
+});
+export const AxiomDatasetCapabilities = Schema.Record(
+  Schema.NonEmptyString,
+  AxiomDatasetCapability,
+);
+const AxiomOrganizationCapabilities = Schema.Record(Schema.NonEmptyString, AxiomCapabilityActions);
+
+export class AxiomToken extends Schema.Class<AxiomToken>(
+  "@equipe-tech/observability-cli/AxiomToken",
+)({
+  id: Schema.NonEmptyString,
+  name: Schema.NonEmptyString,
+  description: Schema.String,
+  expiresAt: Schema.String.pipe(Schema.optionalKey),
+  datasetCapabilities: AxiomDatasetCapabilities,
+  orgCapabilities: AxiomOrganizationCapabilities,
+}) {}
+
 const AxiomTokens = Schema.Array(AxiomToken);
 const AxiomTokenSecret = Schema.Struct({
   id: Schema.NonEmptyString,
@@ -29,6 +69,7 @@ const SentryClientKey = Schema.Struct({
 const SentryClientKeys = Schema.Array(SentryClientKey);
 
 const decodeAxiomUser = Schema.decodeUnknownEffect(AxiomUser);
+const decodeAxiomDataset = Schema.decodeUnknownEffect(AxiomDataset);
 const decodeAxiomDatasets = Schema.decodeUnknownEffect(AxiomDatasets);
 const decodeAxiomTokens = Schema.decodeUnknownEffect(AxiomTokens);
 const decodeAxiomTokenSecret = Schema.decodeUnknownEffect(AxiomTokenSecret);
@@ -42,11 +83,19 @@ const AxiomTestEnvironment = Schema.Struct({
 const decodeAxiomTestEnvironment = Schema.decodeUnknownEffect(AxiomTestEnvironment);
 const decodeAxiomTestUrl = Schema.decodeUnknownEffect(Schema.URLFromString);
 
+export type AxiomDatasetCreateOptions = {
+  readonly kind?: AxiomDatasetKind;
+  readonly edgeDeployment?: string;
+  readonly retentionDays?: number;
+};
+
 export class RemoteApiError extends Schema.TaggedError<RemoteApiError>()("RemoteApiError", {
   code: Schema.Literals([
     "OBS_CLI_REMOTE_UNAUTHORIZED",
     "OBS_CLI_REMOTE_FAILED",
     "OBS_CLI_REMOTE_INVALID_RESPONSE",
+    "OBS_CLI_AXIOM_DATASET_CONFLICT",
+    "OBS_CLI_AXIOM_DATASET_OUTCOME_UNKNOWN",
   ]),
   message: Schema.String,
   provider: Schema.Literals(["Axiom", "Sentry"]),
@@ -191,15 +240,66 @@ const axiomHeaders = (credentials: AxiomCredentials) => ({
   "X-Axiom-Org-Id": credentials.organizationId,
 });
 
+const desiredDatasetKind = (options: AxiomDatasetCreateOptions): AxiomDatasetKind =>
+  options.kind ?? "axiom:events:v1";
+
+const datasetMatches = (dataset: AxiomDataset, options: AxiomDatasetCreateOptions): boolean => {
+  if (dataset.kind !== desiredDatasetKind(options)) {
+    return false;
+  }
+  if (options.edgeDeployment !== undefined && dataset.edgeDeployment !== options.edgeDeployment) {
+    return false;
+  }
+  return (
+    options.retentionDays === undefined ||
+    (dataset.useRetentionPeriod && dataset.retentionDays === options.retentionDays)
+  );
+};
+
+const datasetBody = (name: string, options: AxiomDatasetCreateOptions) => {
+  const body: {
+    name: string;
+    description: string;
+    kind: AxiomDatasetKind;
+    edgeDeployment?: string;
+    retentionDays?: number;
+    useRetentionPeriod?: boolean;
+  } = {
+    name,
+    description: `OpenTelemetry data for ${name}`,
+    kind: desiredDatasetKind(options),
+  };
+  if (options.edgeDeployment !== undefined) {
+    body.edgeDeployment = options.edgeDeployment;
+  }
+  if (options.retentionDays !== undefined) {
+    body.retentionDays = options.retentionDays;
+    body.useRetentionPeriod = true;
+  }
+  return body;
+};
+
+const tokenCapabilities = (datasets: ReadonlyArray<string>) =>
+  Object.fromEntries(datasets.map((dataset) => [dataset, { ingest: ["create"] }]));
+
 export class AxiomApi extends Context.Service<
   AxiomApi,
   {
     identity(credentials: AxiomCredentials): Effect.Effect<string, RemoteApiError>;
-    datasets(credentials: AxiomCredentials): Effect.Effect<ReadonlyArray<string>, RemoteApiError>;
-    createDataset(credentials: AxiomCredentials, name: string): Effect.Effect<void, RemoteApiError>;
-    tokens(
+    datasets(
       credentials: AxiomCredentials,
-    ): Effect.Effect<ReadonlyArray<{ readonly id: string; readonly name: string }>, RemoteApiError>;
+    ): Effect.Effect<ReadonlyArray<AxiomDataset>, RemoteApiError>;
+    createDataset(
+      credentials: AxiomCredentials,
+      name: string,
+      options?: AxiomDatasetCreateOptions,
+    ): Effect.Effect<AxiomDataset, RemoteApiError>;
+    updateDatasetRetention(
+      credentials: AxiomCredentials,
+      dataset: AxiomDataset,
+      retentionDays: number,
+    ): Effect.Effect<AxiomDataset, RemoteApiError>;
+    tokens(credentials: AxiomCredentials): Effect.Effect<ReadonlyArray<AxiomToken>, RemoteApiError>;
     createToken(
       credentials: AxiomCredentials,
       name: string,
@@ -207,7 +307,8 @@ export class AxiomApi extends Context.Service<
     ): Effect.Effect<{ readonly id: string; readonly token: string }, RemoteApiError>;
     regenerateToken(
       credentials: AxiomCredentials,
-      id: string,
+      token: AxiomToken,
+      datasets: ReadonlyArray<string>,
     ): Effect.Effect<{ readonly id: string; readonly token: string }, RemoteApiError>;
   }
 >()("@equipe-tech/observability-cli/AxiomApi") {
@@ -215,6 +316,66 @@ export class AxiomApi extends Context.Service<
     AxiomApi,
     Effect.gen(function* () {
       const baseUrl = yield* resolveAxiomBaseUrl();
+
+      const listDatasets = Effect.fn("AxiomApi.datasets")(function* (credentials) {
+        const response = yield* remoteRequest("Axiom", axiomUrl(baseUrl, "/v2/datasets"), {
+          headers: axiomHeaders(credentials),
+        });
+        yield* expectStatus("Axiom", response, [200]);
+        const value = yield* parseRemoteJson("Axiom", response);
+        return yield* decodeAxiomDatasets(value).pipe(
+          Effect.mapError((cause) => invalidResponse("Axiom", response.status, cause)),
+        );
+      });
+
+      const recoverDataset = Effect.fn("AxiomApi.recoverDataset")(function* (
+        credentials: AxiomCredentials,
+        name: string,
+        options: AxiomDatasetCreateOptions,
+        original: RemoteApiError,
+      ): Effect.fn.Return<AxiomDataset, RemoteApiError> {
+        const matches = (yield* listDatasets(credentials)).filter(
+          (dataset) => dataset.name === name,
+        );
+        const match = matches[0];
+        if (matches.length === 1 && match !== undefined && datasetMatches(match, options)) {
+          return match;
+        }
+        if (matches.length > 0 || original.status === 409) {
+          return yield* new RemoteApiError({
+            code: "OBS_CLI_AXIOM_DATASET_CONFLICT",
+            message: `Axiom dataset ${name} does not match the requested configuration. Review its kind, edge deployment and retention before retrying.`,
+            provider: "Axiom",
+            status: original.status,
+            cause: original,
+          });
+        }
+        if (
+          original.status === 0 ||
+          original.status >= 500 ||
+          original.code === "OBS_CLI_REMOTE_INVALID_RESPONSE" ||
+          (original.status >= 200 && original.status < 300)
+        ) {
+          return yield* new RemoteApiError({
+            code: "OBS_CLI_AXIOM_DATASET_OUTCOME_UNKNOWN",
+            message: `The outcome of creating Axiom dataset ${name} is unknown. Verify the remote dataset before retrying.`,
+            provider: "Axiom",
+            status: original.status,
+            cause: original,
+          });
+        }
+        return yield* original;
+      });
+
+      const parseDatasetResponse = Effect.fn("AxiomApi.parseDatasetResponse")(function* (
+        response: RemoteResponse,
+      ) {
+        const value = yield* parseRemoteJson("Axiom", response);
+        return yield* decodeAxiomDataset(value).pipe(
+          Effect.mapError((cause) => invalidResponse("Axiom", response.status, cause)),
+        );
+      });
+
       return AxiomApi.of({
         identity: Effect.fn("AxiomApi.identity")(function* (credentials) {
           const response = yield* remoteRequest("Axiom", axiomUrl(baseUrl, "/v2/user"), {
@@ -227,25 +388,71 @@ export class AxiomApi extends Context.Service<
           );
           return user.email;
         }),
-        datasets: Effect.fn("AxiomApi.datasets")(function* (credentials) {
-          const response = yield* remoteRequest("Axiom", axiomUrl(baseUrl, "/v2/datasets"), {
-            headers: axiomHeaders(credentials),
+        datasets: listDatasets,
+        createDataset: Effect.fn("AxiomApi.createDataset")(function* (
+          credentials,
+          name,
+          options = {},
+        ) {
+          const mutation = Effect.gen(function* () {
+            const response = yield* remoteRequest("Axiom", axiomUrl(baseUrl, "/v2/datasets"), {
+              method: "POST",
+              headers: axiomHeaders(credentials),
+              body: JSON.stringify(datasetBody(name, options)),
+            });
+            yield* expectStatus("Axiom", response, [200, 201]);
+            const dataset = yield* parseDatasetResponse(response);
+            if (dataset.name !== name || !datasetMatches(dataset, options)) {
+              return yield* new RemoteApiError({
+                code: "OBS_CLI_REMOTE_INVALID_RESPONSE",
+                message: `Axiom returned a dataset that does not match ${name}. Verify the remote resource before retrying.`,
+                provider: "Axiom",
+                status: response.status,
+                cause: dataset,
+              });
+            }
+            return dataset;
           });
-          yield* expectStatus("Axiom", response, [200]);
-          const value = yield* parseRemoteJson("Axiom", response);
-          const datasets = yield* decodeAxiomDatasets(value).pipe(
-            Effect.mapError((cause) => invalidResponse("Axiom", response.status, cause)),
+          return yield* mutation.pipe(
+            Effect.catchTag("RemoteApiError", (error) =>
+              recoverDataset(credentials, name, options, error),
+            ),
           );
-          return datasets.map((dataset) => dataset.name);
         }),
-        createDataset: Effect.fn("AxiomApi.createDataset")(function* (credentials, name) {
-          const response = yield* remoteRequest("Axiom", axiomUrl(baseUrl, "/v2/datasets"), {
-            method: "POST",
-            headers: axiomHeaders(credentials),
-            body: JSON.stringify({ name, description: `OpenTelemetry data for ${name}` }),
-          });
-          yield* expectStatus("Axiom", response, [200, 201, 409]);
-        }),
+        updateDatasetRetention: Effect.fn("AxiomApi.updateDatasetRetention")(
+          function* (credentials, dataset, retentionDays) {
+            const options: AxiomDatasetCreateOptions =
+              dataset.edgeDeployment === undefined
+                ? { kind: dataset.kind, retentionDays }
+                : {
+                    kind: dataset.kind,
+                    edgeDeployment: dataset.edgeDeployment,
+                    retentionDays,
+                  };
+            const mutation = Effect.gen(function* () {
+              const response = yield* remoteRequest(
+                "Axiom",
+                axiomUrl(baseUrl, `/v2/datasets/${encodeURIComponent(dataset.id)}`),
+                {
+                  method: "PUT",
+                  headers: axiomHeaders(credentials),
+                  body: JSON.stringify({ retentionDays, useRetentionPeriod: true }),
+                },
+              );
+              yield* expectStatus("Axiom", response, [200]);
+              const updated = yield* parseDatasetResponse(response);
+              if (updated.name !== dataset.name || !datasetMatches(updated, options)) {
+                return yield* invalidResponse("Axiom", response.status, updated);
+              }
+              return updated;
+            });
+            return yield* mutation.pipe(
+              Effect.catchTag("RemoteApiError", (error) =>
+                recoverDataset(credentials, dataset.name, options, error),
+              ),
+            );
+          },
+        ),
         tokens: Effect.fn("AxiomApi.tokens")(function* (credentials) {
           const response = yield* remoteRequest("Axiom", axiomUrl(baseUrl, "/v2/tokens"), {
             headers: axiomHeaders(credentials),
@@ -257,16 +464,13 @@ export class AxiomApi extends Context.Service<
           );
         }),
         createToken: Effect.fn("AxiomApi.createToken")(function* (credentials, name, datasets) {
-          const datasetCapabilities = Object.fromEntries(
-            datasets.map((dataset) => [dataset, { ingest: ["create"] }]),
-          );
           const response = yield* remoteRequest("Axiom", axiomUrl(baseUrl, "/v2/tokens"), {
             method: "POST",
             headers: axiomHeaders(credentials),
             body: JSON.stringify({
               name,
               description: `Collector ingest token for ${name}`,
-              datasetCapabilities,
+              datasetCapabilities: tokenCapabilities(datasets),
               orgCapabilities: {},
               viewCapabilities: {},
             }),
@@ -277,18 +481,32 @@ export class AxiomApi extends Context.Service<
             Effect.mapError((cause) => invalidResponse("Axiom", response.status, cause)),
           );
         }),
-        regenerateToken: Effect.fn("AxiomApi.regenerateToken")(function* (credentials, id) {
-          const response = yield* remoteRequest(
-            "Axiom",
-            axiomUrl(baseUrl, `/v2/tokens/${encodeURIComponent(id)}/regenerate`),
-            { method: "POST", headers: axiomHeaders(credentials) },
-          );
-          yield* expectStatus("Axiom", response, [200]);
-          const value = yield* parseRemoteJson("Axiom", response);
-          return yield* decodeAxiomTokenSecret(value).pipe(
-            Effect.mapError((cause) => invalidResponse("Axiom", response.status, cause)),
-          );
-        }),
+        regenerateToken: Effect.fn("AxiomApi.regenerateToken")(
+          function* (credentials, token, datasets) {
+            const response = yield* remoteRequest(
+              "Axiom",
+              axiomUrl(baseUrl, `/v2/tokens/${encodeURIComponent(token.id)}/regenerate`),
+              {
+                method: "POST",
+                headers: axiomHeaders(credentials),
+                body: JSON.stringify({
+                  newToken: {
+                    name: token.name,
+                    description: token.description,
+                    datasetCapabilities: tokenCapabilities(datasets),
+                    orgCapabilities: {},
+                    viewCapabilities: {},
+                  },
+                }),
+              },
+            );
+            yield* expectStatus("Axiom", response, [200]);
+            const value = yield* parseRemoteJson("Axiom", response);
+            return yield* decodeAxiomTokenSecret(value).pipe(
+              Effect.mapError((cause) => invalidResponse("Axiom", response.status, cause)),
+            );
+          },
+        ),
       });
     }),
   );

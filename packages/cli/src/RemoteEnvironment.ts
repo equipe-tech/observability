@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Option, Schema } from "effect";
+import { Context, DateTime, Effect, Layer, Option, Schema } from "effect";
 import {
   AxiomCredentials,
   AxiomEnvironment,
@@ -10,9 +10,17 @@ import {
   ManagedEnvironment,
   PendingAxiomMutation,
   SentryCredentials,
+  VerifiedAxiomDataset,
   SentryEnvironment,
 } from "./CredentialsStore.ts";
-import { AxiomApi, RemoteApiError, SentryApi } from "./ProviderApis.ts";
+import {
+  AxiomApi,
+  AxiomDataset,
+  AxiomDatasetCreateOptions,
+  AxiomToken,
+  RemoteApiError,
+  SentryApi,
+} from "./ProviderApis.ts";
 
 const EnvironmentName = Schema.NonEmptyString.check(
   Schema.isMaxLength(32),
@@ -41,8 +49,19 @@ export class RemoteEnvironmentError extends Schema.TaggedError<RemoteEnvironment
       "OBS_CLI_REMOTE_PARTIAL_FAILURE",
       "OBS_CLI_REMOTE_OUTCOME_UNKNOWN",
       "OBS_CLI_REMOTE_ENVIRONMENT_NOT_FOUND",
+      "OBS_CLI_AXIOM_METRICS_MIGRATION_REQUIRED",
+      "OBS_CLI_AXIOM_DATASET_CONFIGURATION_CONFLICT",
+      "OBS_CLI_AXIOM_REMOTE_NAME_CONFLICT",
+      "OBS_CLI_AXIOM_TOKEN_CAPABILITIES_MISMATCH",
+      "OBS_CLI_CORRELATION_CONFIRMATION_REQUIRED",
+      "OBS_CLI_AXIOM_RETENTION_INVALID",
     ]),
     message: Schema.String,
+    datasetName: Schema.NonEmptyString.pipe(Schema.optionalKey),
+    actualKind: Schema.NonEmptyString.pipe(Schema.optionalKey),
+    requiredKind: Schema.NonEmptyString.pipe(Schema.optionalKey),
+    project: Schema.NonEmptyString.pipe(Schema.optionalKey),
+    environment: Schema.NonEmptyString.pipe(Schema.optionalKey),
     cause: Schema.Defect(),
   },
 ) {}
@@ -188,7 +207,7 @@ const makeCredentialsFile = (
   if (pendingAxiomMutations.length > 0) {
     if (axiom !== undefined && sentry !== undefined) {
       return new CredentialsFile({
-        version: 2,
+        version: 3,
         axiom,
         sentry,
         environments,
@@ -196,23 +215,23 @@ const makeCredentialsFile = (
       });
     }
     if (axiom !== undefined) {
-      return new CredentialsFile({ version: 2, axiom, environments, pendingAxiomMutations });
+      return new CredentialsFile({ version: 3, axiom, environments, pendingAxiomMutations });
     }
     if (sentry !== undefined) {
-      return new CredentialsFile({ version: 2, sentry, environments, pendingAxiomMutations });
+      return new CredentialsFile({ version: 3, sentry, environments, pendingAxiomMutations });
     }
-    return new CredentialsFile({ version: 2, environments, pendingAxiomMutations });
+    return new CredentialsFile({ version: 3, environments, pendingAxiomMutations });
   }
   if (axiom !== undefined && sentry !== undefined) {
-    return new CredentialsFile({ version: 2, axiom, sentry, environments });
+    return new CredentialsFile({ version: 3, axiom, sentry, environments });
   }
   if (axiom !== undefined) {
-    return new CredentialsFile({ version: 2, axiom, environments });
+    return new CredentialsFile({ version: 3, axiom, environments });
   }
   if (sentry !== undefined) {
-    return new CredentialsFile({ version: 2, sentry, environments });
+    return new CredentialsFile({ version: 3, sentry, environments });
   }
-  return new CredentialsFile({ version: 2, environments });
+  return new CredentialsFile({ version: 3, environments });
 };
 
 const pendingAxiomMutations = (credentials: CredentialsFile): ReadonlyArray<PendingAxiomMutation> =>
@@ -367,6 +386,51 @@ const partialFailure = (
   });
 };
 
+const expectedDatasetCapabilities = (
+  token: AxiomToken,
+  datasets: ReadonlyArray<string>,
+): boolean => {
+  const capabilityNames = Object.keys(token.datasetCapabilities);
+  if (capabilityNames.length !== datasets.length || token.orgCapabilities === undefined) {
+    return false;
+  }
+  if (Object.keys(token.orgCapabilities).length !== 0) {
+    return false;
+  }
+  return datasets.every((dataset) => {
+    const capability = token.datasetCapabilities[dataset];
+    return (
+      capability !== undefined &&
+      capability.ingest?.length === 1 &&
+      capability.ingest[0] === "create" &&
+      (capability.query === undefined || capability.query.length === 0)
+    );
+  });
+};
+
+const verifiedDataset = (dataset: AxiomDataset): VerifiedAxiomDataset => {
+  const common = {
+    id: dataset.id,
+    name: dataset.name,
+    kind: dataset.kind,
+    useRetentionPeriod: dataset.useRetentionPeriod,
+  };
+  if (dataset.edgeDeployment !== undefined && dataset.retentionDays !== undefined) {
+    return new VerifiedAxiomDataset({
+      ...common,
+      edgeDeployment: dataset.edgeDeployment,
+      retentionDays: dataset.retentionDays,
+    });
+  }
+  if (dataset.edgeDeployment !== undefined) {
+    return new VerifiedAxiomDataset({ ...common, edgeDeployment: dataset.edgeDeployment });
+  }
+  if (dataset.retentionDays !== undefined) {
+    return new VerifiedAxiomDataset({ ...common, retentionDays: dataset.retentionDays });
+  }
+  return new VerifiedAxiomDataset(common);
+};
+
 const mutationOutcomeUnknown = (
   error: RemoteApiError,
   completed: ReadonlyArray<string>,
@@ -480,6 +544,9 @@ export class RemoteEnvironment extends Context.Service<
       providers: ReadonlyArray<ProviderName>,
       platform: string,
       rotateToken: boolean,
+      axiomEdgeDeployment?: string,
+      axiomRetentionDays?: number,
+      correlationConfirmed?: boolean,
     ): Effect.Effect<
       ReadonlyArray<ManagedEnvironment>,
       CredentialsError | RemoteApiError | RemoteEnvironmentError
@@ -510,138 +577,347 @@ export class RemoteEnvironment extends Context.Service<
       });
 
       return RemoteEnvironment.of({
-        provision: Effect.fn("RemoteEnvironment.provision")(
-          function* (
-            project,
-            environments,
-            explicitProviders,
-            platform,
-            rotateToken,
-          ): Effect.fn.Return<
-            ReadonlyArray<ManagedEnvironment>,
-            CredentialsError | RemoteApiError | RemoteEnvironmentError
-          > {
-            const validated: Array<{
-              readonly name: string;
-              readonly datasets: EnvironmentDatasets;
-            }> = [];
-            for (const rawEnvironment of environments) {
-              const name = yield* parseEnvironmentName(rawEnvironment);
-              validated.push({ name, datasets: yield* environmentDatasets(project, name) });
-            }
-            return yield* store.exclusive((access) =>
-              Effect.gen(function* () {
-                let credentials = yield* currentCredentials(access);
-                const requested: Array<RequestedEnvironment> = [];
-                for (const environment of validated) {
-                  const existing = existingEnvironment(credentials, project, environment.name);
-                  requested.push({
-                    name: environment.name,
-                    datasets: environment.datasets,
-                    existing,
-                    providers: effectiveProviders(explicitProviders, existing),
-                  });
+        provision: Effect.fn("RemoteEnvironment.provision")(function* (
+          project,
+          environments,
+          explicitProviders,
+          platform,
+          rotateToken,
+          axiomEdgeDeployment,
+          axiomRetentionDays,
+          correlationConfirmed = false,
+        ): Effect.fn.Return<
+          ReadonlyArray<ManagedEnvironment>,
+          CredentialsError | RemoteApiError | RemoteEnvironmentError
+        > {
+          if (
+            axiomRetentionDays !== undefined &&
+            (!Number.isInteger(axiomRetentionDays) || axiomRetentionDays <= 0)
+          ) {
+            return yield* new RemoteEnvironmentError({
+              code: "OBS_CLI_AXIOM_RETENTION_INVALID",
+              message: "Axiom retention days must be a positive integer.",
+              cause: axiomRetentionDays,
+            });
+          }
+          if (axiomEdgeDeployment !== undefined && axiomEdgeDeployment.length === 0) {
+            return yield* new RemoteEnvironmentError({
+              code: "OBS_CLI_AXIOM_DATASET_CONFIGURATION_CONFLICT",
+              message: "The Axiom edge deployment identifier must not be empty.",
+              cause: axiomEdgeDeployment,
+            });
+          }
+          const validated: Array<{
+            readonly name: string;
+            readonly datasets: EnvironmentDatasets;
+          }> = [];
+          for (const rawEnvironment of environments) {
+            const name = yield* parseEnvironmentName(rawEnvironment);
+            validated.push({ name, datasets: yield* environmentDatasets(project, name) });
+          }
+          return yield* store.exclusive((access) =>
+            Effect.gen(function* () {
+              let credentials = yield* currentCredentials(access);
+              const requested: Array<RequestedEnvironment> = [];
+              for (const environment of validated) {
+                const existing = existingEnvironment(credentials, project, environment.name);
+                requested.push({
+                  name: environment.name,
+                  datasets: environment.datasets,
+                  existing,
+                  providers: effectiveProviders(explicitProviders, existing),
+                });
+              }
+              if (
+                rotateToken &&
+                requested.some((environment) => !environment.providers.includes("axiom"))
+              ) {
+                return yield* new RemoteEnvironmentError({
+                  code: "OBS_CLI_REMOTE_ROTATION_NOT_SELECTED",
+                  message:
+                    "Token rotation requires Axiom for every requested environment. Select --provider axiom or remove --rotate-token.",
+                  cause: "rotate-token",
+                });
+              }
+              if (
+                !rotateToken &&
+                requested.some(
+                  (environment) =>
+                    environment.providers.includes("axiom") &&
+                    hasPendingAxiomMutation(credentials, project, environment.name),
+                )
+              ) {
+                return yield* new RemoteEnvironmentError({
+                  code: "OBS_CLI_REMOTE_TOKEN_UNAVAILABLE",
+                  message:
+                    "A previous Axiom token mutation did not reach a durable checkpoint. Rerun with --rotate-token.",
+                  cause: "pending-axiom-mutation",
+                });
+              }
+
+              const selected = new Set(requested.flatMap((environment) => environment.providers));
+              const providerCredentials = yield* requireCredentials(credentials, selected);
+              const axiomCredentials = providerCredentials.axiom;
+              const sentryCredentials = providerCredentials.sentry;
+              const existingDatasets =
+                selected.has("axiom") && Option.isSome(axiomCredentials)
+                  ? [...(yield* axiomApi.datasets(axiomCredentials.value))]
+                  : [];
+              const existingTokens =
+                selected.has("axiom") && Option.isSome(axiomCredentials)
+                  ? [...(yield* axiomApi.tokens(axiomCredentials.value))]
+                  : [];
+
+              for (const request of requested) {
+                if (!request.providers.includes("axiom")) {
+                  continue;
                 }
-                if (
-                  rotateToken &&
-                  requested.some((environment) => !environment.providers.includes("axiom"))
-                ) {
+                const desiredDatasets = [
+                  { name: request.datasets.traces, kind: "axiom:events:v1" },
+                  { name: request.datasets.logs, kind: "axiom:events:v1" },
+                  { name: request.datasets.metrics, kind: "otel:metrics:v1" },
+                ];
+                for (const desired of desiredDatasets) {
+                  const matches = existingDatasets.filter(
+                    (dataset) => dataset.name === desired.name,
+                  );
+                  if (matches.length > 1) {
+                    return yield* new RemoteEnvironmentError({
+                      code: "OBS_CLI_AXIOM_REMOTE_NAME_CONFLICT",
+                      message: `Axiom contains multiple datasets named ${desired.name}. Resolve the duplicate names before retrying.`,
+                      cause: desired.name,
+                    });
+                  }
+                  const match = matches[0];
+                  if (match === undefined) {
+                    continue;
+                  }
+                  if (match.kind !== desired.kind) {
+                    if (desired.name === request.datasets.metrics) {
+                      return yield* new RemoteEnvironmentError({
+                        code: "OBS_CLI_AXIOM_METRICS_MIGRATION_REQUIRED",
+                        message: `Axiom metrics dataset ${desired.name} has kind ${match.kind}, but ${desired.kind} is required. Preserve historical metrics, stop ingestion, and replace the dataset manually before retrying.`,
+                        datasetName: desired.name,
+                        actualKind: match.kind,
+                        requiredKind: desired.kind,
+                        project,
+                        environment: request.name,
+                        cause: `${project}/${request.name}`,
+                      });
+                    }
+                    return yield* new RemoteEnvironmentError({
+                      code: "OBS_CLI_AXIOM_DATASET_CONFIGURATION_CONFLICT",
+                      message: `Axiom dataset ${desired.name} has incompatible kind ${match.kind}. Review the dataset before retrying.`,
+                      cause: desired.name,
+                    });
+                  }
+                  if (
+                    axiomEdgeDeployment !== undefined &&
+                    match.edgeDeployment !== axiomEdgeDeployment
+                  ) {
+                    return yield* new RemoteEnvironmentError({
+                      code: "OBS_CLI_AXIOM_DATASET_CONFIGURATION_CONFLICT",
+                      message: `Axiom dataset ${desired.name} does not use edge deployment ${axiomEdgeDeployment}. Reconcile the edge deployment in Axiom before retrying.`,
+                      cause: desired.name,
+                    });
+                  }
+                }
+
+                const tokenName = `${project}-${request.name}-collector`;
+                const namedTokens = existingTokens.filter((token) => token.name === tokenName);
+                if (namedTokens.length > 1) {
                   return yield* new RemoteEnvironmentError({
-                    code: "OBS_CLI_REMOTE_ROTATION_NOT_SELECTED",
-                    message:
-                      "Token rotation requires Axiom for every requested environment. Select --provider axiom or remove --rotate-token.",
-                    cause: "rotate-token",
+                    code: "OBS_CLI_AXIOM_REMOTE_NAME_CONFLICT",
+                    message: `Axiom contains multiple tokens named ${tokenName}. Resolve the duplicate names before retrying.`,
+                    cause: tokenName,
                   });
                 }
-                if (
-                  !rotateToken &&
-                  requested.some(
-                    (environment) =>
-                      environment.providers.includes("axiom") &&
-                      hasPendingAxiomMutation(credentials, project, environment.name),
-                  )
-                ) {
+                const remoteToken = namedTokens[0];
+                const localAxiom = Option.isSome(request.existing)
+                  ? environmentAxiom(request.existing.value)
+                  : Option.none<AxiomEnvironment>();
+                const datasetNames = [
+                  request.datasets.traces,
+                  request.datasets.logs,
+                  request.datasets.metrics,
+                ];
+                if (!rotateToken && remoteToken !== undefined) {
+                  if (!expectedDatasetCapabilities(remoteToken, datasetNames)) {
+                    return yield* new RemoteEnvironmentError({
+                      code: "OBS_CLI_AXIOM_TOKEN_CAPABILITIES_MISMATCH",
+                      message: `Axiom token ${tokenName} does not have exact ingest-create access to the three environment datasets. Rerun with --rotate-token.`,
+                      cause: tokenName,
+                    });
+                  }
+                  if (Option.isNone(localAxiom) || localAxiom.value.tokenId !== remoteToken.id) {
+                    return yield* new RemoteEnvironmentError({
+                      code: "OBS_CLI_REMOTE_TOKEN_UNAVAILABLE",
+                      message: `Axiom already contains token ${tokenName}, but its matching local secret is unavailable. Rerun with --rotate-token.`,
+                      cause: tokenName,
+                    });
+                  }
+                }
+                if (!rotateToken && remoteToken === undefined && Option.isSome(localAxiom)) {
                   return yield* new RemoteEnvironmentError({
                     code: "OBS_CLI_REMOTE_TOKEN_UNAVAILABLE",
-                    message:
-                      "A previous Axiom token mutation did not reach a durable checkpoint. Rerun with --rotate-token.",
-                    cause: "pending-axiom-mutation",
+                    message: `The stored token for ${project}/${request.name} does not match Axiom. Rerun with --rotate-token.`,
+                    cause: tokenName,
                   });
                 }
+              }
 
-                const selected = new Set(requested.flatMap((environment) => environment.providers));
-                const providerCredentials = yield* requireCredentials(credentials, selected);
-                const axiomCredentials = providerCredentials.axiom;
-                const sentryCredentials = providerCredentials.sentry;
+              let sentry = Option.none<SentryEnvironment>();
+              if (selected.has("sentry") && Option.isSome(sentryCredentials)) {
+                const sentryProject = yield* sentryApi.ensureProject(
+                  sentryCredentials.value,
+                  project,
+                  platform,
+                );
+                const sentryDsn = yield* sentryApi.dsn(sentryCredentials.value, sentryProject);
+                sentry = Option.some(
+                  new SentryEnvironment({ project: sentryProject, dsn: sentryDsn }),
+                );
+              }
 
-                let sentry = Option.none<SentryEnvironment>();
-                if (selected.has("sentry") && Option.isSome(sentryCredentials)) {
-                  const sentryProject = yield* sentryApi.ensureProject(
-                    sentryCredentials.value,
-                    project,
-                    platform,
-                  );
-                  const sentryDsn = yield* sentryApi.dsn(sentryCredentials.value, sentryProject);
-                  sentry = Option.some(
-                    new SentryEnvironment({ project: sentryProject, dsn: sentryDsn }),
-                  );
-                }
+              const completed: Array<string> = [];
+              const provisioned: Array<ManagedEnvironment> = [];
 
-                const existingDatasets =
-                  selected.has("axiom") && Option.isSome(axiomCredentials)
-                    ? [...(yield* axiomApi.datasets(axiomCredentials.value))]
-                    : [];
-                const existingTokens =
-                  selected.has("axiom") && Option.isSome(axiomCredentials)
-                    ? [...(yield* axiomApi.tokens(axiomCredentials.value))]
-                    : [];
-                const completed: Array<string> = [];
-                const provisioned: Array<ManagedEnvironment> = [];
+              for (const request of requested) {
+                const checkpoint: Effect.Effect<
+                  ManagedEnvironment,
+                  CredentialsError | RemoteApiError | RemoteEnvironmentError
+                > = Effect.gen(function* () {
+                  let axiom = Option.isSome(request.existing)
+                    ? environmentAxiom(request.existing.value)
+                    : Option.none<AxiomEnvironment>();
+                  let selectedSentry = Option.isSome(request.existing)
+                    ? environmentSentry(request.existing.value)
+                    : Option.none<SentryEnvironment>();
+                  if (request.providers.includes("sentry")) {
+                    selectedSentry = sentry;
+                  }
 
-                for (const request of requested) {
-                  const checkpoint: Effect.Effect<
-                    ManagedEnvironment,
-                    CredentialsError | RemoteApiError | RemoteEnvironmentError
-                  > = Effect.gen(function* () {
-                    let axiom = Option.isSome(request.existing)
-                      ? environmentAxiom(request.existing.value)
-                      : Option.none<AxiomEnvironment>();
-                    let selectedSentry = Option.isSome(request.existing)
-                      ? environmentSentry(request.existing.value)
-                      : Option.none<SentryEnvironment>();
-                    if (request.providers.includes("sentry")) {
-                      selectedSentry = sentry;
-                    }
-
-                    let tokenMutated = false;
-                    if (request.providers.includes("axiom") && Option.isSome(axiomCredentials)) {
-                      const datasetNames = [
-                        request.datasets.traces,
-                        request.datasets.logs,
-                        request.datasets.metrics,
-                      ];
-                      for (const dataset of datasetNames) {
-                        if (!existingDatasets.includes(dataset)) {
-                          yield* axiomApi.createDataset(axiomCredentials.value, dataset);
-                          existingDatasets.push(dataset);
+                  let tokenMutated = false;
+                  if (request.providers.includes("axiom") && Option.isSome(axiomCredentials)) {
+                    const datasetNames = [
+                      request.datasets.traces,
+                      request.datasets.logs,
+                      request.datasets.metrics,
+                    ];
+                    const desiredDatasets: ReadonlyArray<{
+                      readonly name: string;
+                      readonly kind: "axiom:events:v1" | "otel:metrics:v1";
+                    }> = [
+                      { name: request.datasets.traces, kind: "axiom:events:v1" },
+                      { name: request.datasets.logs, kind: "axiom:events:v1" },
+                      { name: request.datasets.metrics, kind: "otel:metrics:v1" },
+                    ];
+                    const reconciledDatasets: Array<AxiomDataset> = [];
+                    for (const desired of desiredDatasets) {
+                      let dataset = existingDatasets.find(
+                        (candidate) => candidate.name === desired.name,
+                      );
+                      if (dataset === undefined) {
+                        const options: AxiomDatasetCreateOptions =
+                          axiomEdgeDeployment === undefined
+                            ? axiomRetentionDays === undefined
+                              ? { kind: desired.kind }
+                              : { kind: desired.kind, retentionDays: axiomRetentionDays }
+                            : axiomRetentionDays === undefined
+                              ? { kind: desired.kind, edgeDeployment: axiomEdgeDeployment }
+                              : {
+                                  kind: desired.kind,
+                                  edgeDeployment: axiomEdgeDeployment,
+                                  retentionDays: axiomRetentionDays,
+                                };
+                        dataset = yield* axiomApi.createDataset(
+                          axiomCredentials.value,
+                          desired.name,
+                          options,
+                        );
+                        existingDatasets.push(dataset);
+                      } else if (
+                        axiomRetentionDays !== undefined &&
+                        (!dataset.useRetentionPeriod ||
+                          dataset.retentionDays !== axiomRetentionDays)
+                      ) {
+                        dataset = yield* axiomApi.updateDatasetRetention(
+                          axiomCredentials.value,
+                          dataset,
+                          axiomRetentionDays,
+                        );
+                        const index = existingDatasets.findIndex(
+                          (candidate) => candidate.id === dataset?.id,
+                        );
+                        if (index >= 0) {
+                          existingDatasets[index] = dataset;
                         }
                       }
+                      reconciledDatasets.push(dataset);
+                    }
 
-                      const tokenName = `${project}-${request.name}-collector`;
-                      const remoteToken = existingTokens.find((token) => token.name === tokenName);
-                      const localAxiom = Option.isSome(request.existing)
-                        ? environmentAxiom(request.existing.value)
-                        : Option.none<AxiomEnvironment>();
-                      let token: { readonly id: string; readonly token: string };
-                      if (rotateToken) {
-                        tokenMutated = true;
-                        credentials = markAxiomMutationPending(credentials, project, request.name);
-                        yield* access.save(credentials);
-                        token = yield* (
-                          remoteToken === undefined
-                            ? axiomApi.createToken(axiomCredentials.value, tokenName, datasetNames)
-                            : axiomApi.regenerateToken(axiomCredentials.value, remoteToken.id)
-                        ).pipe(
+                    const tokenName = `${project}-${request.name}-collector`;
+                    const remoteToken = existingTokens.find((token) => token.name === tokenName);
+                    const localAxiom = Option.isSome(request.existing)
+                      ? environmentAxiom(request.existing.value)
+                      : Option.none<AxiomEnvironment>();
+                    let token: { readonly id: string; readonly token: string };
+                    if (rotateToken) {
+                      tokenMutated = true;
+                      credentials = markAxiomMutationPending(credentials, project, request.name);
+                      yield* access.save(credentials);
+                      token = yield* (
+                        remoteToken === undefined
+                          ? axiomApi.createToken(axiomCredentials.value, tokenName, datasetNames)
+                          : axiomApi.regenerateToken(
+                              axiomCredentials.value,
+                              remoteToken,
+                              datasetNames,
+                            )
+                      ).pipe(
+                        Effect.catchTag("RemoteApiError", (error) => {
+                          const classified = mutationOutcomeUnknown(error, completed);
+                          if (
+                            classified._tag === "RemoteEnvironmentError" &&
+                            classified.code === "OBS_CLI_REMOTE_OUTCOME_UNKNOWN"
+                          ) {
+                            return Effect.fail(classified);
+                          }
+                          credentials = clearPendingAxiomMutation(
+                            credentials,
+                            project,
+                            request.name,
+                          );
+                          return access
+                            .save(credentials)
+                            .pipe(Effect.andThen(Effect.fail(classified)));
+                        }),
+                      );
+                    } else if (Option.isSome(localAxiom)) {
+                      if (
+                        remoteToken === undefined ||
+                        remoteToken.id !== localAxiom.value.tokenId
+                      ) {
+                        return yield* new RemoteEnvironmentError({
+                          code: "OBS_CLI_REMOTE_TOKEN_UNAVAILABLE",
+                          message: `The stored token for ${project}/${request.name} does not match Axiom. Rerun with --rotate-token.`,
+                          cause: tokenName,
+                        });
+                      }
+                      token = { id: localAxiom.value.tokenId, token: localAxiom.value.token };
+                    } else if (remoteToken !== undefined) {
+                      return yield* new RemoteEnvironmentError({
+                        code: "OBS_CLI_REMOTE_TOKEN_UNAVAILABLE",
+                        message: `Axiom already contains token ${tokenName}, but its secret is unavailable. Rerun with --rotate-token.`,
+                        cause: tokenName,
+                      });
+                    } else {
+                      tokenMutated = true;
+                      credentials = markAxiomMutationPending(credentials, project, request.name);
+                      yield* access.save(credentials);
+                      token = yield* axiomApi
+                        .createToken(axiomCredentials.value, tokenName, datasetNames)
+                        .pipe(
                           Effect.catchTag("RemoteApiError", (error) => {
                             const classified = mutationOutcomeUnknown(error, completed);
                             if (
@@ -660,101 +936,145 @@ export class RemoteEnvironment extends Context.Service<
                               .pipe(Effect.andThen(Effect.fail(classified)));
                           }),
                         );
-                        if (remoteToken === undefined) {
-                          existingTokens.push({ id: token.id, name: tokenName });
-                        }
-                      } else if (Option.isSome(localAxiom)) {
+                    }
+                    let verified = reconciledDatasets;
+                    if (correlationConfirmed) {
+                      verified = [...(yield* axiomApi.datasets(axiomCredentials.value))].filter(
+                        (dataset) => datasetNames.includes(dataset.name),
+                      );
+                      if (verified.length !== 3) {
+                        return yield* new RemoteEnvironmentError({
+                          code: "OBS_CLI_AXIOM_DATASET_CONFIGURATION_CONFLICT",
+                          message: `A fresh Axiom verification could not find all three datasets for ${project}/${request.name}. Retry after verifying the remote resources.`,
+                          project,
+                          environment: request.name,
+                          cause: `${project}/${request.name}`,
+                        });
+                      }
+                      for (const desired of desiredDatasets) {
+                        const matches = verified.filter((dataset) => dataset.name === desired.name);
+                        const dataset = matches[0];
                         if (
-                          remoteToken === undefined ||
-                          remoteToken.id !== localAxiom.value.tokenId
+                          matches.length !== 1 ||
+                          dataset === undefined ||
+                          dataset.kind !== desired.kind ||
+                          (axiomEdgeDeployment !== undefined &&
+                            dataset.edgeDeployment !== axiomEdgeDeployment) ||
+                          (axiomRetentionDays !== undefined &&
+                            (!dataset.useRetentionPeriod ||
+                              dataset.retentionDays !== axiomRetentionDays))
                         ) {
                           return yield* new RemoteEnvironmentError({
-                            code: "OBS_CLI_REMOTE_TOKEN_UNAVAILABLE",
-                            message: `The stored token for ${project}/${request.name} does not match Axiom. Rerun with --rotate-token.`,
-                            cause: tokenName,
+                            code: "OBS_CLI_AXIOM_DATASET_CONFIGURATION_CONFLICT",
+                            message: `A fresh Axiom verification found an incompatible dataset ${desired.name}. Reconcile its kind, edge deployment and retention before confirming correlation.`,
+                            cause: desired.name,
                           });
                         }
-                        token = { id: localAxiom.value.tokenId, token: localAxiom.value.token };
-                      } else if (remoteToken !== undefined) {
-                        return yield* new RemoteEnvironmentError({
-                          code: "OBS_CLI_REMOTE_TOKEN_UNAVAILABLE",
-                          message: `Axiom already contains token ${tokenName}, but its secret is unavailable. Rerun with --rotate-token.`,
-                          cause: tokenName,
-                        });
-                      } else {
-                        tokenMutated = true;
-                        credentials = markAxiomMutationPending(credentials, project, request.name);
-                        yield* access.save(credentials);
-                        token = yield* axiomApi
-                          .createToken(axiomCredentials.value, tokenName, datasetNames)
-                          .pipe(
-                            Effect.catchTag("RemoteApiError", (error) => {
-                              const classified = mutationOutcomeUnknown(error, completed);
-                              if (
-                                classified._tag === "RemoteEnvironmentError" &&
-                                classified.code === "OBS_CLI_REMOTE_OUTCOME_UNKNOWN"
-                              ) {
-                                return Effect.fail(classified);
-                              }
-                              credentials = clearPendingAxiomMutation(
-                                credentials,
-                                project,
-                                request.name,
-                              );
-                              return access
-                                .save(credentials)
-                                .pipe(Effect.andThen(Effect.fail(classified)));
-                            }),
-                          );
-                        existingTokens.push({ id: token.id, name: tokenName });
                       }
-                      axiom = Option.some(
-                        new AxiomEnvironment({
-                          tokenId: token.id,
-                          token: token.token,
-                          tracesDataset: request.datasets.traces,
-                          logsDataset: request.datasets.logs,
-                          metricsDataset: request.datasets.metrics,
-                        }),
+                      const freshMetrics = verified.find(
+                        (dataset) => dataset.name === request.datasets.metrics,
                       );
+                      if (freshMetrics?.edgeDeployment === undefined) {
+                        return yield* new RemoteEnvironmentError({
+                          code: "OBS_CLI_AXIOM_DATASET_CONFIGURATION_CONFLICT",
+                          message: `Axiom metrics dataset ${request.datasets.metrics} has no verified edge deployment. Configure one before confirming correlation.`,
+                          cause: request.datasets.metrics,
+                        });
+                      }
                     }
+                    const traces = verified.find(
+                      (dataset) => dataset.name === request.datasets.traces,
+                    );
+                    const logs = verified.find((dataset) => dataset.name === request.datasets.logs);
+                    const metrics = verified.find(
+                      (dataset) => dataset.name === request.datasets.metrics,
+                    );
+                    if (traces === undefined || logs === undefined || metrics === undefined) {
+                      return yield* new RemoteEnvironmentError({
+                        code: "OBS_CLI_AXIOM_DATASET_CONFIGURATION_CONFLICT",
+                        message: `Axiom did not return the complete dataset contract for ${project}/${request.name}. Verify the remote resources before retrying.`,
+                        cause: `${project}/${request.name}`,
+                      });
+                    }
+                    const groupName = `${project} ${request.name}`;
+                    const groupSlug = `${project}-${request.name}`;
+                    const currentCorrelation = Option.isSome(axiom)
+                      ? axiom.value.correlation
+                      : undefined;
+                    let correlation: AxiomEnvironment["correlation"] = {
+                      type: "manual-required",
+                      groupName,
+                      groupSlug,
+                      tracesDataset: request.datasets.traces,
+                      logsDataset: request.datasets.logs,
+                      metricsDataset: request.datasets.metrics,
+                    };
+                    if (correlationConfirmed) {
+                      const now = yield* DateTime.now;
+                      correlation = {
+                        type: "operator-confirmed",
+                        groupName,
+                        groupSlug,
+                        tracesDataset: request.datasets.traces,
+                        logsDataset: request.datasets.logs,
+                        metricsDataset: request.datasets.metrics,
+                        confirmedAt: DateTime.formatIso(now),
+                      };
+                    } else if (currentCorrelation?.type === "operator-confirmed") {
+                      correlation = currentCorrelation;
+                    }
+                    axiom = Option.some(
+                      new AxiomEnvironment({
+                        tokenId: token.id,
+                        token: token.token,
+                        tracesDataset: request.datasets.traces,
+                        logsDataset: request.datasets.logs,
+                        metricsDataset: request.datasets.metrics,
+                        datasets: {
+                          traces: verifiedDataset(traces),
+                          logs: verifiedDataset(logs),
+                          metrics: verifiedDataset(metrics),
+                        },
+                        correlation,
+                      }),
+                    );
+                  }
 
-                    const environment = new ManagedEnvironment({
-                      project,
-                      environment: request.name,
-                      providers: yield* makeProviders(axiom, selectedSentry),
-                    });
-                    credentials = replaceEnvironment(credentials, environment);
-                    if (tokenMutated) {
-                      credentials = clearPendingAxiomMutation(credentials, project, request.name);
-                      yield* access.save(credentials).pipe(
-                        Effect.mapError(
-                          (error) =>
-                            new RemoteEnvironmentError({
-                              code: "OBS_CLI_REMOTE_OUTCOME_UNKNOWN",
-                              message: `The Axiom token changed, but local state could not be saved. Rotate the token before retrying. Saved environments: ${completed.length === 0 ? "none" : completed.join(", ")}.`,
-                              cause: error,
-                            }),
-                        ),
-                      );
-                    } else {
-                      yield* access.save(credentials);
-                    }
-                    completed.push(`${project}/${request.name}`);
-                    return environment;
+                  const environment = new ManagedEnvironment({
+                    project,
+                    environment: request.name,
+                    providers: yield* makeProviders(axiom, selectedSentry),
                   });
-                  const result = yield* checkpoint.pipe(
-                    Effect.catchTag("RemoteApiError", (error) =>
-                      Effect.fail(partialFailure(error, completed)),
-                    ),
-                  );
-                  provisioned.push(result);
-                }
-                return provisioned;
-              }),
-            );
-          },
-        ),
+                  credentials = replaceEnvironment(credentials, environment);
+                  if (tokenMutated) {
+                    credentials = clearPendingAxiomMutation(credentials, project, request.name);
+                    yield* access.save(credentials).pipe(
+                      Effect.mapError(
+                        (error) =>
+                          new RemoteEnvironmentError({
+                            code: "OBS_CLI_REMOTE_OUTCOME_UNKNOWN",
+                            message: `The Axiom token changed, but local state could not be saved. Rotate the token before retrying. Saved environments: ${completed.length === 0 ? "none" : completed.join(", ")}.`,
+                            cause: error,
+                          }),
+                      ),
+                    );
+                  } else {
+                    yield* access.save(credentials);
+                  }
+                  completed.push(`${project}/${request.name}`);
+                  return environment;
+                });
+                const result = yield* checkpoint.pipe(
+                  Effect.catchTag("RemoteApiError", (error) =>
+                    Effect.fail(partialFailure(error, completed)),
+                  ),
+                );
+                provisioned.push(result);
+              }
+              return provisioned;
+            }),
+          );
+        }),
         list,
         export: Effect.fn("RemoteEnvironment.export")(function* (project, rawEnvironment) {
           const environment = yield* parseEnvironmentName(rawEnvironment);
@@ -776,6 +1096,17 @@ export class RemoteEnvironment extends Context.Service<
             return yield* new RemoteEnvironmentError({
               code: "OBS_CLI_REMOTE_TOKEN_UNAVAILABLE",
               message: `The stored token for ${project}/${environment} may be stale after an unresolved mutation. Rerun provisioning with --provider axiom --rotate-token before exporting it.`,
+              cause: `${project}/${environment}`,
+            });
+          }
+          const managedAxiom = environmentAxiom(managed);
+          if (
+            Option.isSome(managedAxiom) &&
+            managedAxiom.value.correlation.type !== "operator-confirmed"
+          ) {
+            return yield* new RemoteEnvironmentError({
+              code: "OBS_CLI_CORRELATION_CONFIRMATION_REQUIRED",
+              message: `Correlation for ${project}/${environment} requires a manual Axiom Console action. Create the saved group and rerun provisioning with --correlation-confirmed before exporting deploy variables.`,
               cause: `${project}/${environment}`,
             });
           }

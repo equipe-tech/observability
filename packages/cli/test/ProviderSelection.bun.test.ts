@@ -9,7 +9,7 @@ const repository = fileURLToPath(new URL("../../..", import.meta.url));
 const cli = fileURLToPath(new URL("../dist/main.js", import.meta.url));
 
 const PersistedCredentials = Schema.Struct({
-  version: Schema.Literal(2),
+  version: Schema.Literal(3),
   axiom: Schema.Struct({ token: Schema.NonEmptyString }).pipe(Schema.optionalKey),
   sentry: Schema.Struct({ token: Schema.NonEmptyString }).pipe(Schema.optionalKey),
   environments: Schema.Array(
@@ -32,7 +32,13 @@ type ProviderServer = {
   readonly url: string;
   readonly requests: Array<ProviderRequest>;
   readonly datasets: Set<string>;
-  readonly tokens: Array<{ id: string; name: string; token: string }>;
+  readonly tokens: Array<{
+    id: string;
+    name: string;
+    token: string;
+    description: string;
+    datasetCapabilities: { readonly [name: string]: { readonly ingest: ReadonlyArray<string> } };
+  }>;
   failDataset(name: string): void;
   failNextSentryProject(): void;
   failNextTokenResponse(): void;
@@ -53,7 +59,13 @@ const json = (value: ProviderResponsePayload, status = 200): Response =>
 const startProviderServer = (): ProviderServer => {
   const requests: Array<ProviderRequest> = [];
   const datasets = new Set<string>();
-  const tokens: Array<{ id: string; name: string; token: string }> = [];
+  const tokens: Array<{
+    id: string;
+    name: string;
+    token: string;
+    description: string;
+    datasetCapabilities: { readonly [name: string]: { readonly ingest: ReadonlyArray<string> } };
+  }> = [];
   let sentryProject = false;
   let tokenSequence = 0;
   let failSentryProject = false;
@@ -71,30 +83,71 @@ const startProviderServer = (): ProviderServer => {
         return json({ id: "owner", email: "owner@example.com" });
       }
       if (request.method === "GET" && url.pathname === "/v2/datasets") {
-        return json([...datasets].map((name) => ({ name })));
+        return json(
+          [...datasets].map((name, index) => ({
+            id: `dataset-${index + 1}`,
+            name,
+            description: `OpenTelemetry data for ${name}`,
+            kind: name.endsWith("-metrics") ? "otel:metrics:v1" : "axiom:events:v1",
+            edgeDeployment: "edge-main",
+            useRetentionPeriod: false,
+          })),
+        );
       }
       if (request.method === "POST" && url.pathname === "/v2/datasets") {
-        const value = Schema.decodeUnknownSync(Schema.Struct({ name: Schema.NonEmptyString }))(
-          JSON.parse(body),
-        );
+        const value = Schema.decodeUnknownSync(
+          Schema.Struct({
+            name: Schema.NonEmptyString,
+            description: Schema.String,
+            kind: Schema.Literals(["axiom:events:v1", "otel:metrics:v1"]),
+            edgeDeployment: Schema.NonEmptyString.pipe(Schema.optionalKey),
+          }),
+        )(JSON.parse(body));
         if (failedDatasets.has(value.name)) {
           return json({ error: "selected failure" }, 500);
         }
         datasets.add(value.name);
-        return json({ name: value.name }, 201);
+        return json(
+          {
+            id: `dataset-${datasets.size}`,
+            name: value.name,
+            description: value.description,
+            kind: value.kind,
+            edgeDeployment: value.edgeDeployment ?? "edge-main",
+            useRetentionPeriod: false,
+          },
+          201,
+        );
       }
       if (request.method === "GET" && url.pathname === "/v2/tokens") {
-        return json(tokens.map(({ id, name }) => ({ id, name })));
+        return json(
+          tokens.map(({ datasetCapabilities, description, id, name }) => ({
+            id,
+            name,
+            description,
+            datasetCapabilities,
+            orgCapabilities: {},
+          })),
+        );
       }
       if (request.method === "POST" && url.pathname === "/v2/tokens") {
-        const value = Schema.decodeUnknownSync(Schema.Struct({ name: Schema.NonEmptyString }))(
-          JSON.parse(body),
-        );
+        const value = Schema.decodeUnknownSync(
+          Schema.Struct({
+            name: Schema.NonEmptyString,
+            description: Schema.String,
+            datasetCapabilities: Schema.Record(
+              Schema.NonEmptyString,
+              Schema.Struct({ ingest: Schema.Array(Schema.NonEmptyString) }),
+            ),
+          }),
+        )(JSON.parse(body));
         tokenSequence += 1;
         const token = {
           id: `token-${tokenSequence}`,
           name: value.name,
           token: `ingest-secret-${tokenSequence}`,
+          description: value.description,
+          datasetCapabilities: value.datasetCapabilities,
         };
         tokens.push(token);
         if (failTokenResponse) {
@@ -221,16 +274,22 @@ const provisionArgs = (
   target: string,
   environment: string,
   providers: ReadonlyArray<"axiom" | "sentry">,
-): ReadonlyArray<string> => [
-  "provision",
-  "--dir",
-  target,
-  "--name",
-  "livro-caixa",
-  "--environment",
-  environment,
-  ...providers.flatMap((provider) => ["--provider", provider]),
-];
+): ReadonlyArray<string> => {
+  const args = [
+    "provision",
+    "--dir",
+    target,
+    "--name",
+    "livro-caixa",
+    "--environment",
+    environment,
+    ...providers.flatMap((provider) => ["--provider", provider]),
+  ];
+  if (providers.includes("axiom") || providers.length === 0) {
+    return [...args, "--axiom-edge-deployment", "edge-main", "--correlation-confirmed"];
+  }
+  return args;
+};
 
 const assertNoSecretOutput = (result: CliResult): void => {
   for (const secret of [
@@ -314,7 +373,9 @@ describe("built CLI provider selection", () => {
           "POST /v2/datasets",
           "POST /v2/tokens",
           "GET /v2/datasets",
+          "GET /v2/datasets",
           "GET /v2/tokens",
+          "GET /v2/datasets",
         ]);
         expect(
           server.requests
@@ -324,14 +385,20 @@ describe("built CLI provider selection", () => {
           {
             name: "livro-caixa-staging-traces",
             description: "OpenTelemetry data for livro-caixa-staging-traces",
+            kind: "axiom:events:v1",
+            edgeDeployment: "edge-main",
           },
           {
             name: "livro-caixa-staging-logs",
             description: "OpenTelemetry data for livro-caixa-staging-logs",
+            kind: "axiom:events:v1",
+            edgeDeployment: "edge-main",
           },
           {
             name: "livro-caixa-staging-metrics",
             description: "OpenTelemetry data for livro-caixa-staging-metrics",
+            kind: "otel:metrics:v1",
+            edgeDeployment: "edge-main",
           },
         ]);
         const axiomTokenRequest = server.requests.find(
@@ -442,18 +509,20 @@ describe("built CLI provider selection", () => {
             .slice(combinedRequestStart)
             .map((request) => `${request.method} ${request.path}`),
         ).toEqual([
-          "GET /api/0/projects/maxxi-cash/livro-caixa/",
-          "GET /api/0/projects/maxxi-cash/livro-caixa/keys/",
           "GET /v2/datasets",
           "GET /v2/tokens",
+          "GET /api/0/projects/maxxi-cash/livro-caixa/",
+          "GET /api/0/projects/maxxi-cash/livro-caixa/keys/",
           "POST /v2/datasets",
           "POST /v2/datasets",
           "POST /v2/datasets",
           "POST /v2/tokens",
+          "GET /v2/datasets",
+          "GET /v2/datasets",
+          "GET /v2/tokens",
           "GET /api/0/projects/maxxi-cash/livro-caixa/",
           "GET /api/0/projects/maxxi-cash/livro-caixa/keys/",
           "GET /v2/datasets",
-          "GET /v2/tokens",
         ]);
         expect((await readPersisted(combinedRoot)).environments[0]?.providers.type).toBe(
           "combined",
@@ -621,10 +690,12 @@ describe("built CLI provider selection", () => {
           migrationTarget,
           server,
         );
-        expect(migratedExport.exitCode).toBe(0);
-        expect(migratedExport.stdout).toContain('AXIOM_TOKEN="legacy-ingest-secret"');
-        expect(migratedExport.stdout).toContain('SENTRY_DSN="https://legacy@sentry.example/1"');
-        expect((await readPersisted(migrationRoot)).version).toBe(2);
+        expect(migratedExport.exitCode).toBe(1);
+        expect(migratedExport.stderr).toContain("OBS_CLI_CORRELATION_CONFIRMATION_REQUIRED");
+        const migratedContent = await Bun.file(migrationPath).text();
+        expect(migratedContent).toContain("legacy-ingest-secret");
+        expect(migratedContent).toContain("https://legacy@sentry.example/1");
+        expect((await readPersisted(migrationRoot)).version).toBe(3);
         expect((await stat(migrationPath)).mode & 0o777).toBe(0o600);
         const rotated = await runCli(
           [...provisionArgs(migrationTarget, "legacy", ["axiom"]), "--rotate-token"],
@@ -694,7 +765,7 @@ describe("built CLI provider selection", () => {
         expect(sentryFailure.exitCode).toBe(1);
         expect(sentryFailure.stderr).toContain("OBS_CLI_REMOTE_FAILED");
         expect(server.requests.filter((request) => request.path.startsWith("/v2/")).length).toBe(
-          axiomCallsBeforeSentryFailure,
+          axiomCallsBeforeSentryFailure + 2,
         );
         expect((await readPersisted(sentryFailureRoot)).environments).toHaveLength(0);
         assertNoSecretOutput(sentryFailure);

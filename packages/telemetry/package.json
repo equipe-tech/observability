@@ -1,6 +1,6 @@
 {
   "name": "@equipe-tech/observability",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Contrato OpenTelemetry da Equipe Tech: configuracao, layer OTLP e wide events sobre Effect",
   "homepage": "https://github.com/equipe-tech/observability#readme",
   "bugs": {

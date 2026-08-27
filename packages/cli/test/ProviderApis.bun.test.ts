@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { AxiomCredentials } from "../src/CredentialsStore.ts";
-import { AxiomApi } from "../src/ProviderApis.ts";
+import { AxiomApi, AxiomToken } from "../src/ProviderApis.ts";
 
 const credentials = new AxiomCredentials({ token: "test-token", organizationId: "test-org" });
 
@@ -69,6 +69,242 @@ const startTruncatedResponseServer = (status: number, statusText: string) => {
 };
 
 describe("provider HTTP boundary", () => {
+  test.serial("creates signal datasets with exact kinds and optional configuration", async () => {
+    const requests: Array<{ readonly path: string; readonly body: string }> = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (request) => {
+        const url = new URL(request.url);
+        const body = await request.text();
+        requests.push({ path: url.pathname, body });
+        const value = JSON.parse(body);
+        return Response.json(
+          {
+            id: `id-${requests.length}`,
+            name: value.name,
+            description: value.description,
+            kind: value.kind,
+            edgeDeployment: value.edgeDeployment,
+            retentionDays: value.retentionDays,
+            useRetentionPeriod: value.useRetentionPeriod ?? false,
+          },
+          { status: 201 },
+        );
+      },
+    });
+    try {
+      await withAxiomEndpoint(`http://127.0.0.1:${server.port}`, () =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const api = yield* AxiomApi;
+            yield* api.createDataset(credentials, "project-traces");
+            yield* api.createDataset(credentials, "project-logs", {
+              kind: "axiom:events:v1",
+            });
+            yield* api.createDataset(credentials, "project-metrics", {
+              kind: "otel:metrics:v1",
+              edgeDeployment: "edge-main",
+              retentionDays: 30,
+            });
+          }).pipe(Effect.provide(AxiomApi.layer)),
+        ),
+      );
+      expect(requests.map((request) => JSON.parse(request.body))).toEqual([
+        {
+          name: "project-traces",
+          description: "OpenTelemetry data for project-traces",
+          kind: "axiom:events:v1",
+        },
+        {
+          name: "project-logs",
+          description: "OpenTelemetry data for project-logs",
+          kind: "axiom:events:v1",
+        },
+        {
+          name: "project-metrics",
+          description: "OpenTelemetry data for project-metrics",
+          kind: "otel:metrics:v1",
+          edgeDeployment: "edge-main",
+          retentionDays: 30,
+          useRetentionPeriod: true,
+        },
+      ]);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test.serial("rereads and reconciles an exact dataset after HTTP 409", async () => {
+    let reads = 0;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        if (request.method === "POST") {
+          return Response.json({ error: "exists" }, { status: 409 });
+        }
+        reads += 1;
+        return Response.json([
+          {
+            id: "metrics-id",
+            name: "project-metrics",
+            description: "metrics",
+            kind: "otel:metrics:v1",
+            edgeDeployment: "edge-main",
+            retentionDays: 30,
+            useRetentionPeriod: true,
+          },
+        ]);
+      },
+    });
+    try {
+      const dataset = await withAxiomEndpoint(`http://127.0.0.1:${server.port}`, () =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const api = yield* AxiomApi;
+            return yield* api.createDataset(credentials, "project-metrics", {
+              kind: "otel:metrics:v1",
+              edgeDeployment: "edge-main",
+              retentionDays: 30,
+            });
+          }).pipe(Effect.provide(AxiomApi.layer)),
+        ),
+      );
+      expect(dataset.kind).toBe("otel:metrics:v1");
+      expect(reads).toBe(1);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test.serial("rejects an incompatible dataset after HTTP 409", async () => {
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) =>
+        request.method === "POST"
+          ? Response.json({ error: "exists" }, { status: 409 })
+          : Response.json([
+              {
+                id: "metrics-id",
+                name: "project-metrics",
+                description: "generic create defect",
+                kind: "axiom:events:v1",
+                useRetentionPeriod: false,
+              },
+            ]),
+    });
+    try {
+      const error = await withAxiomEndpoint(`http://127.0.0.1:${server.port}`, () =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const api = yield* AxiomApi;
+            return yield* Effect.flip(
+              api.createDataset(credentials, "project-metrics", {
+                kind: "otel:metrics:v1",
+              }),
+            );
+          }).pipe(Effect.provide(AxiomApi.layer)),
+        ),
+      );
+      expect(error.code).toBe("OBS_CLI_AXIOM_DATASET_CONFLICT");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test.serial("rejects malformed dataset kinds and token capabilities", async () => {
+    let tokenResponse = false;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        if (new URL(request.url).pathname === "/v2/datasets") {
+          return Response.json([
+            {
+              id: "bad-id",
+              name: "bad-dataset",
+              description: "bad",
+              kind: "generic",
+              useRetentionPeriod: false,
+            },
+          ]);
+        }
+        tokenResponse = true;
+        return Response.json([
+          {
+            id: "bad-token",
+            name: "bad-token",
+            description: "bad",
+            datasetCapabilities: { dataset: { ingest: "create" } },
+            orgCapabilities: {},
+          },
+        ]);
+      },
+    });
+    try {
+      const result = await withAxiomEndpoint(`http://127.0.0.1:${server.port}`, () =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const api = yield* AxiomApi;
+            const datasetError = yield* Effect.flip(api.datasets(credentials));
+            const tokenError = yield* Effect.flip(api.tokens(credentials));
+            return { datasetError, tokenError };
+          }).pipe(Effect.provide(AxiomApi.layer)),
+        ),
+      );
+      expect(result.datasetError.code).toBe("OBS_CLI_REMOTE_INVALID_RESPONSE");
+      expect(result.tokenError.code).toBe("OBS_CLI_REMOTE_INVALID_RESPONSE");
+      expect(tokenResponse).toBeTrue();
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test.serial("regenerates tokens with the documented exact newToken body", async () => {
+    let body = "";
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (request) => {
+        body = await request.text();
+        return Response.json({ id: "token-id", token: "new-secret" });
+      },
+    });
+    const token = new AxiomToken({
+      id: "token-id",
+      name: "project-collector",
+      description: "collector",
+      datasetCapabilities: {},
+      orgCapabilities: {},
+    });
+    try {
+      await withAxiomEndpoint(`http://127.0.0.1:${server.port}`, () =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const api = yield* AxiomApi;
+            yield* api.regenerateToken(credentials, token, ["traces", "logs", "metrics"]);
+          }).pipe(Effect.provide(AxiomApi.layer)),
+        ),
+      );
+      expect(JSON.parse(body)).toEqual({
+        newToken: {
+          name: "project-collector",
+          description: "collector",
+          datasetCapabilities: {
+            traces: { ingest: ["create"] },
+            logs: { ingest: ["create"] },
+            metrics: { ingest: ["create"] },
+          },
+          orgCapabilities: {},
+          viewCapabilities: {},
+        },
+      });
+    } finally {
+      await server.stop(true);
+    }
+  });
   test.serial("classifies unauthorized before consuming a body proven unreadable", async () => {
     const server = startTruncatedResponseServer(401, "Unauthorized");
     const url = `http://127.0.0.1:${server.listener.port}`;
