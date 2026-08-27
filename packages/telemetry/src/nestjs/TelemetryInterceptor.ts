@@ -1,6 +1,6 @@
 import type { CallHandler, ExecutionContext, NestInterceptor } from "@nestjs/common";
-import { Context, Effect, Exit, Option, Schema } from "effect";
-import type { Clock, ManagedRuntime, Tracer } from "effect";
+import { Context, Effect, Exit, Option, Schema, Tracer } from "effect";
+import type { Clock, ManagedRuntime } from "effect";
 import { Observable } from "rxjs";
 
 const HttpRequestBoundary = Schema.Struct({
@@ -8,6 +8,21 @@ const HttpRequestBoundary = Schema.Struct({
 });
 
 const decodeHttpRequestBoundary = Schema.decodeUnknownOption(HttpRequestBoundary);
+
+const TraceparentRequest = Schema.Struct({
+  headers: Schema.Struct({
+    traceparent: Schema.String.check(
+      Schema.isPattern(/^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/),
+      Schema.makeFilter(
+        (traceparent) =>
+          traceparent.slice(3, 35) !== "00000000000000000000000000000000" &&
+          traceparent.slice(36, 52) !== "0000000000000000",
+      ),
+    ),
+  }),
+});
+
+const parseTraceparentRequest = Schema.decodeUnknownOption(TraceparentRequest);
 
 const HttpResponseBoundary = Schema.Struct({
   statusCode: Schema.Number.check(Schema.isInt()),
@@ -66,21 +81,35 @@ export class TelemetryInterceptor<RuntimeError> implements NestInterceptor {
     const clock = (this.#clock ??= this.#runtime.runSync(Effect.clockWith(Effect.succeed)));
     const httpContext = context.switchToHttp();
     const request = httpContext.getRequest<RequestReference>();
+    const traceparentRequest = httpContext.getRequest<typeof TraceparentRequest.Encoded>();
     const method = decodeHttpRequestBoundary(request).pipe(
       Option.map((boundary) => boundary.method.toUpperCase()),
       Option.getOrElse(() => "UNKNOWN"),
     );
     const controller = context.getClass().name;
     const handler = context.getHandler().name;
+    const parent = parseTraceparentRequest({ headers: traceparentRequest.headers }).pipe(
+      Option.map(({ headers }) => {
+        const traceparent = headers.traceparent;
+        return Tracer.externalSpan({
+          traceId: traceparent.slice(3, 35),
+          spanId: traceparent.slice(36, 52),
+          sampled: Number.parseInt(traceparent.slice(53, 55), 16) % 2 === 1,
+        });
+      }),
+    );
     const span = tracer.span({
       name: `${method} ${controller}.${handler}`,
-      parent: Option.none(),
+      parent,
       annotations: Context.empty(),
       links: [],
       startTime: clock.currentTimeNanosUnsafe(),
       kind: "server",
-      root: true,
-      sampled: true,
+      root: Option.isNone(parent),
+      sampled: Option.match(parent, {
+        onNone: () => true,
+        onSome: (remoteParent) => remoteParent.sampled,
+      }),
     });
     span.attribute("http.request.method", method);
     span.attribute("nestjs.controller", controller);
