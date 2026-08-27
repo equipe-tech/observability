@@ -48,7 +48,7 @@ A CLI cria três datasets para cada ambiente:
 - `<project>-<environment>-logs`
 - `<project>-<environment>-metrics`
 
-Traces e logs usam `axiom:events:v1`. Métricas usam `otel:metrics:v1`. A CLI verifica kind, edge deployment explícito e retenção explícita antes de mutar recursos. Ela nunca exclui um dataset incompatível. Uma métrica antiga com kind Events exige preservação e migração manual.
+Traces e logs usam `axiom:events:v1`. Métricas usam `otel:metrics:v1`. A CLI verifica kind, edge deployment explícito e retenção explícita no preflight. Retenção divergente é um conflito destrutivo e nunca produz PUT automático. A CLI nunca exclui um dataset incompatível. Uma métrica antiga com kind Events exige preservação e migração manual.
 
 A CLI também cria um token de ingestão para cada ambiente. O token concede ingest-create somente aos três datasets exatos daquele ambiente.
 

@@ -28,15 +28,13 @@ export class AxiomDataset extends Schema.Class<AxiomDataset>(
 
 const AxiomDatasets = Schema.Array(AxiomDataset);
 const AxiomCapabilityActions = Schema.Array(Schema.NonEmptyString);
-const AxiomDatasetCapability = Schema.Struct({
-  ingest: AxiomCapabilityActions.pipe(Schema.optionalKey),
-  query: AxiomCapabilityActions.pipe(Schema.optionalKey),
-});
+const AxiomDatasetCapability = Schema.Record(Schema.NonEmptyString, AxiomCapabilityActions);
 export const AxiomDatasetCapabilities = Schema.Record(
   Schema.NonEmptyString,
   AxiomDatasetCapability,
 );
 const AxiomOrganizationCapabilities = Schema.Record(Schema.NonEmptyString, AxiomCapabilityActions);
+const AxiomViewCapabilities = Schema.Record(Schema.NonEmptyString, AxiomCapabilityActions);
 
 export class AxiomToken extends Schema.Class<AxiomToken>(
   "@equipe-tech/observability-cli/AxiomToken",
@@ -47,6 +45,7 @@ export class AxiomToken extends Schema.Class<AxiomToken>(
   expiresAt: Schema.String.pipe(Schema.optionalKey),
   datasetCapabilities: AxiomDatasetCapabilities,
   orgCapabilities: AxiomOrganizationCapabilities,
+  viewCapabilities: AxiomViewCapabilities,
 }) {}
 
 const AxiomTokens = Schema.Array(AxiomToken);
@@ -294,11 +293,6 @@ export class AxiomApi extends Context.Service<
       name: string,
       options?: AxiomDatasetCreateOptions,
     ): Effect.Effect<AxiomDataset, RemoteApiError>;
-    updateDatasetRetention(
-      credentials: AxiomCredentials,
-      dataset: AxiomDataset,
-      retentionDays: number,
-    ): Effect.Effect<AxiomDataset, RemoteApiError>;
     tokens(credentials: AxiomCredentials): Effect.Effect<ReadonlyArray<AxiomToken>, RemoteApiError>;
     createToken(
       credentials: AxiomCredentials,
@@ -419,40 +413,6 @@ export class AxiomApi extends Context.Service<
             ),
           );
         }),
-        updateDatasetRetention: Effect.fn("AxiomApi.updateDatasetRetention")(
-          function* (credentials, dataset, retentionDays) {
-            const options: AxiomDatasetCreateOptions =
-              dataset.edgeDeployment === undefined
-                ? { kind: dataset.kind, retentionDays }
-                : {
-                    kind: dataset.kind,
-                    edgeDeployment: dataset.edgeDeployment,
-                    retentionDays,
-                  };
-            const mutation = Effect.gen(function* () {
-              const response = yield* remoteRequest(
-                "Axiom",
-                axiomUrl(baseUrl, `/v2/datasets/${encodeURIComponent(dataset.id)}`),
-                {
-                  method: "PUT",
-                  headers: axiomHeaders(credentials),
-                  body: JSON.stringify({ retentionDays, useRetentionPeriod: true }),
-                },
-              );
-              yield* expectStatus("Axiom", response, [200]);
-              const updated = yield* parseDatasetResponse(response);
-              if (updated.name !== dataset.name || !datasetMatches(updated, options)) {
-                return yield* invalidResponse("Axiom", response.status, updated);
-              }
-              return updated;
-            });
-            return yield* mutation.pipe(
-              Effect.catchTag("RemoteApiError", (error) =>
-                recoverDataset(credentials, dataset.name, options, error),
-              ),
-            );
-          },
-        ),
         tokens: Effect.fn("AxiomApi.tokens")(function* (credentials) {
           const response = yield* remoteRequest("Axiom", axiomUrl(baseUrl, "/v2/tokens"), {
             headers: axiomHeaders(credentials),

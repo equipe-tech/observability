@@ -127,6 +127,7 @@ const startProviderServer = (): ProviderServer => {
             description,
             datasetCapabilities,
             orgCapabilities: {},
+            viewCapabilities: {},
           })),
         );
       }
@@ -286,7 +287,7 @@ const provisionArgs = (
     ...providers.flatMap((provider) => ["--provider", provider]),
   ];
   if (providers.includes("axiom") || providers.length === 0) {
-    return [...args, "--axiom-edge-deployment", "edge-main", "--correlation-confirmed"];
+    return [...args, "--axiom-edge-deployment", "edge-main"];
   }
   return args;
 };
@@ -340,6 +341,12 @@ describe("built CLI provider selection", () => {
           axiomTarget,
           server,
         );
+        const axiomConfirmation = await runCli(
+          [...provisionArgs(axiomTarget, "staging", []), "--correlation-confirmed"],
+          axiomRoot,
+          axiomTarget,
+          server,
+        );
         const axiomExport = await runCli(
           ["env", "export", "--name", "livro-caixa", "--environment", "staging"],
           axiomRoot,
@@ -348,6 +355,7 @@ describe("built CLI provider selection", () => {
         );
         expect(axiomFirst.exitCode).toBe(0);
         expect(axiomRepeat.exitCode).toBe(0);
+        expect(axiomConfirmation.exitCode).toBe(0);
         expect(axiomExport.stdout.trim().split("\n")).toEqual([
           'OTEL_SERVICE_NAME="livro-caixa"',
           'OTEL_DEPLOYMENT_ENVIRONMENT="staging"',
@@ -373,6 +381,7 @@ describe("built CLI provider selection", () => {
           "POST /v2/datasets",
           "POST /v2/tokens",
           "GET /v2/datasets",
+          "GET /v2/tokens",
           "GET /v2/datasets",
           "GET /v2/tokens",
           "GET /v2/datasets",
@@ -487,12 +496,19 @@ describe("built CLI provider selection", () => {
         expect(combined.stdout).toContain("providers=axiom,sentry");
         expect(combinedRepeat.stdout).toContain("providers=axiom,sentry");
         assertNoSecretOutput(combinedRepeat);
+        const combinedConfirmation = await runCli(
+          [...provisionArgs(combinedTarget, "canary", []), "--correlation-confirmed"],
+          combinedRoot,
+          combinedTarget,
+          server,
+        );
         const combinedExport = await runCli(
           ["env", "export", "--name", "livro-caixa", "--environment", "canary"],
           combinedRoot,
           combinedTarget,
           server,
         );
+        expect(combinedConfirmation.exitCode).toBe(0);
         expect(combinedExport.exitCode).toBe(0);
         expect(combinedExport.stdout.trim().split("\n")).toEqual([
           'OTEL_SERVICE_NAME="livro-caixa"',
@@ -518,6 +534,9 @@ describe("built CLI provider selection", () => {
           "POST /v2/datasets",
           "POST /v2/tokens",
           "GET /v2/datasets",
+          "GET /v2/tokens",
+          "GET /api/0/projects/maxxi-cash/livro-caixa/",
+          "GET /api/0/projects/maxxi-cash/livro-caixa/keys/",
           "GET /v2/datasets",
           "GET /v2/tokens",
           "GET /api/0/projects/maxxi-cash/livro-caixa/",

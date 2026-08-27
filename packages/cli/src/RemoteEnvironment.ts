@@ -391,21 +391,45 @@ const expectedDatasetCapabilities = (
   datasets: ReadonlyArray<string>,
 ): boolean => {
   const capabilityNames = Object.keys(token.datasetCapabilities);
-  if (capabilityNames.length !== datasets.length || token.orgCapabilities === undefined) {
+  if (capabilityNames.length !== datasets.length) {
     return false;
   }
-  if (Object.keys(token.orgCapabilities).length !== 0) {
+  if (
+    Object.keys(token.orgCapabilities).length !== 0 ||
+    Object.keys(token.viewCapabilities).length !== 0
+  ) {
     return false;
   }
   return datasets.every((dataset) => {
     const capability = token.datasetCapabilities[dataset];
-    return (
-      capability !== undefined &&
-      capability.ingest?.length === 1 &&
-      capability.ingest[0] === "create" &&
-      (capability.query === undefined || capability.query.length === 0)
-    );
+    if (capability === undefined || Object.keys(capability).length !== 1) {
+      return false;
+    }
+    return capability.ingest?.length === 1 && capability.ingest[0] === "create";
   });
+};
+
+const matchingManualCorrelation = (
+  existing: Option.Option<ManagedEnvironment>,
+  project: string,
+  environment: string,
+  datasets: EnvironmentDatasets,
+): boolean => {
+  if (Option.isNone(existing)) {
+    return false;
+  }
+  const axiom = environmentAxiom(existing.value);
+  if (Option.isNone(axiom) || axiom.value.correlation.type !== "manual-required") {
+    return false;
+  }
+  const correlation = axiom.value.correlation;
+  return (
+    correlation.groupName === `${project} ${environment}` &&
+    correlation.groupSlug === `${project}-${environment}` &&
+    correlation.tracesDataset === datasets.traces &&
+    correlation.logsDataset === datasets.logs &&
+    correlation.metricsDataset === datasets.metrics
+  );
 };
 
 const verifiedDataset = (dataset: AxiomDataset): VerifiedAxiomDataset => {
@@ -628,6 +652,33 @@ export class RemoteEnvironment extends Context.Service<
                   providers: effectiveProviders(explicitProviders, existing),
                 });
               }
+              if (correlationConfirmed) {
+                if (axiomEdgeDeployment === undefined) {
+                  return yield* new RemoteEnvironmentError({
+                    code: "OBS_CLI_CORRELATION_CONFIRMATION_REQUIRED",
+                    message:
+                      "Correlation confirmation requires one explicit --axiom-edge-deployment value.",
+                    cause: "missing-axiom-edge-deployment",
+                  });
+                }
+                for (const request of requested) {
+                  if (
+                    !request.providers.includes("axiom") ||
+                    !matchingManualCorrelation(
+                      request.existing,
+                      project,
+                      request.name,
+                      request.datasets,
+                    )
+                  ) {
+                    return yield* new RemoteEnvironmentError({
+                      code: "OBS_CLI_CORRELATION_CONFIRMATION_REQUIRED",
+                      message: `Correlation for ${project}/${request.name} can be confirmed only after a prior completed provisioning invocation saved the matching manual action.`,
+                      cause: `${project}/${request.name}`,
+                    });
+                  }
+                }
+              }
               if (
                 rotateToken &&
                 requested.some((environment) => !environment.providers.includes("axiom"))
@@ -690,6 +741,13 @@ export class RemoteEnvironment extends Context.Service<
                   }
                   const match = matches[0];
                   if (match === undefined) {
+                    if (correlationConfirmed) {
+                      return yield* new RemoteEnvironmentError({
+                        code: "OBS_CLI_AXIOM_DATASET_CONFIGURATION_CONFLICT",
+                        message: `Axiom dataset ${desired.name} is missing. Restore it and complete provisioning before confirming correlation.`,
+                        cause: desired.name,
+                      });
+                    }
                     continue;
                   }
                   if (match.kind !== desired.kind) {
@@ -708,6 +766,16 @@ export class RemoteEnvironment extends Context.Service<
                     return yield* new RemoteEnvironmentError({
                       code: "OBS_CLI_AXIOM_DATASET_CONFIGURATION_CONFLICT",
                       message: `Axiom dataset ${desired.name} has incompatible kind ${match.kind}. Review the dataset before retrying.`,
+                      cause: desired.name,
+                    });
+                  }
+                  if (
+                    axiomRetentionDays !== undefined &&
+                    (!match.useRetentionPeriod || match.retentionDays !== axiomRetentionDays)
+                  ) {
+                    return yield* new RemoteEnvironmentError({
+                      code: "OBS_CLI_AXIOM_DATASET_CONFIGURATION_CONFLICT",
+                      message: `Axiom dataset ${desired.name} has retention that differs from the explicitly requested ${axiomRetentionDays} days. Retention changes are destructive and must be performed manually before retrying.`,
                       cause: desired.name,
                     });
                   }
@@ -836,22 +904,6 @@ export class RemoteEnvironment extends Context.Service<
                           options,
                         );
                         existingDatasets.push(dataset);
-                      } else if (
-                        axiomRetentionDays !== undefined &&
-                        (!dataset.useRetentionPeriod ||
-                          dataset.retentionDays !== axiomRetentionDays)
-                      ) {
-                        dataset = yield* axiomApi.updateDatasetRetention(
-                          axiomCredentials.value,
-                          dataset,
-                          axiomRetentionDays,
-                        );
-                        const index = existingDatasets.findIndex(
-                          (candidate) => candidate.id === dataset?.id,
-                        );
-                        if (index >= 0) {
-                          existingDatasets[index] = dataset;
-                        }
                       }
                       reconciledDatasets.push(dataset);
                     }

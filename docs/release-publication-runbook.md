@@ -8,7 +8,9 @@ Este runbook prepara a candidata `0.2.1`, mas separa todas as mutações por um 
 - Um único tag anotado `v0.2.1` aponta para o commit aprovado que contém os dois manifests e as notas.
 - O commit aprovado está no histórico de `origin/master` antes da criação do tag.
 - Os tarballs aprovados contêm READMEs, licença Apache-2.0, declarações, entrypoints e assets esperados.
-- O workflow usa OpenID Connect com `id-token: write` e `npm publish --provenance`.
+- O push do tag executa somente verificação e não pode criar GitHub Release nem publicar no npm.
+- A publicação exige `workflow_dispatch` separado com `tag` e `confirm_tag` exatamente iguais, checkout do tag existente e aprovação do environment protegido `publication`.
+- O workflow usa OpenID Connect com `id-token: write` e `npm publish --provenance` somente nos jobs de publicação disparados manualmente.
 - A publicação exige `NPM_TOKEN`, autenticação confirmada por `npm whoami` e as variáveis de requisição OIDC do GitHub. A ausência de qualquer requisito falha o job.
 - A verificação acionada pela release não recebe AXIOM_TOKEN nem outro secret de provider e não executa o canário deployed.
 - Nenhum comando de mutação desta página roda sem aprovação do responsável pela release.
@@ -183,7 +185,7 @@ git tag -a v0.2.1 "$approved_sha" -m "Release 0.2.1"
 git push origin v0.2.1
 ```
 
-O push do tag aciona o workflow. Não rode `npm publish`, `gh release create`, upload de asset ou alteração de dist-tag manual em paralelo.
+O push do tag aciona somente a verificação reutilizável. Ele não cria release e não publica pacotes. Depois da verificação, selecione o próprio ref `v0.2.1` na interface e abra manualmente o workflow `Release` com `tag=v0.2.1` e `confirm_tag=v0.2.1`. O workflow exige que o dispatch rode do ref exato do tag, que o tag exista, que o checkout corresponda ao commit exato e que o environment protegido `publication` seja aprovado. Não rode `npm publish`, `gh release create`, upload de asset ou alteração de dist-tag manual em paralelo.
 
 ## Verificação após publicação
 
@@ -202,7 +204,7 @@ Confirme dois assets no GitHub Release, proveniência nos dois pacotes npm, `lat
 
 - Antes do tag, corrija no branch, repita toda a validação, gere novos hashes e peça nova aprovação do SHA.
 - Se o tag remoto existir mas o GitHub Release e os dois pacotes ainda não tiverem sido publicados, cancele o workflow. Remova eventual draft e o tag somente com aprovação explícita. Nunca mova um tag de release publicado.
-- Se somente um pacote for publicado, preserve a versão publicada. Corrija a causa e reexecute o workflow por `workflow_dispatch` com o tag existente. A release e os assets existentes não são sobrescritos, os checksums são revalidados e a versão já publicada é ignorada de forma idempotente.
+- Se somente um pacote for publicado, preserve a versão publicada. Corrija a causa e reexecute o workflow por `workflow_dispatch` com `tag` e `confirm_tag` iguais ao tag existente. A release e os assets existentes não são sobrescritos, os checksums são revalidados e a versão já publicada é ignorada de forma idempotente.
 - Se um pacote publicado tiver defeito, faça uma correção coordenada com nova versão patch nos dois pacotes. Não reutilize `0.2.1`.
 - A CLI 0.2.0 não lê credenciais no formato 3. Um rollback da CLI exige restaurar um backup seguro anterior à migração e validar os segredos de runtime; não converta o arquivo manualmente.
 - Não use `npm unpublish` como rollback normal. `npm deprecate` ou mudança manual de dist-tag exigem aprovação explícita, mensagem de substituição e verificação dos dois pacotes.

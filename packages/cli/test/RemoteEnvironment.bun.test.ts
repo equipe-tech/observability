@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { Effect, Layer, Option } from "effect";
 import {
   AxiomCredentials,
+  AxiomEnvironment,
   CredentialsAccess,
   CredentialsError,
   CredentialsFile,
   CredentialsStore,
+  ManagedEnvironment,
   PendingAxiomMutation,
   SentryCredentials,
 } from "../src/CredentialsStore.ts";
@@ -136,24 +138,6 @@ const makeRemoteLayer = (options: RemoteOptions = {}) => {
         return dataset;
       });
     },
-    updateDatasetRetention: (_credentials, dataset, retentionDays) =>
-      Effect.sync(() => {
-        const common = {
-          id: dataset.id,
-          name: dataset.name,
-          description: dataset.description,
-          kind: dataset.kind,
-          retentionDays,
-          useRetentionPeriod: true,
-        };
-        const updated =
-          dataset.edgeDeployment === undefined
-            ? new AxiomDataset(common)
-            : new AxiomDataset({ ...common, edgeDeployment: dataset.edgeDeployment });
-        const index = datasets.findIndex((candidate) => candidate.id === dataset.id);
-        datasets[index] = updated;
-        return updated;
-      }),
     tokens: () =>
       Effect.sync(() => {
         axiomTokenLists += 1;
@@ -183,6 +167,7 @@ const makeRemoteLayer = (options: RemoteOptions = {}) => {
               tokenDatasets.map((dataset) => [dataset, { ingest: ["create"] }]),
             ),
             orgCapabilities: {},
+            viewCapabilities: {},
           }),
         );
         return { id, token: `secret-${tokenCreations}` };
@@ -241,6 +226,9 @@ const makeRemoteLayer = (options: RemoteOptions = {}) => {
     },
     failSaveAt: (call: number) => {
       failedSaveCall = Option.some(call);
+    },
+    setCredentials: (next: CredentialsFile) => {
+      credentials = next;
     },
     markPendingAxiomMutation: (project: string, environment: string) => {
       const pendingAxiomMutations = [new PendingAxiomMutation({ project, environment })];
@@ -484,6 +472,7 @@ describe("RemoteEnvironment", () => {
           "livro-caixa-staging-metrics": { ingest: ["create"] },
         },
         orgCapabilities: {},
+        viewCapabilities: {},
       }),
     );
 
@@ -677,6 +666,260 @@ describe("RemoteEnvironment", () => {
         : Option.getOrUndefined(environmentAxiom(result.confirmed[0]))?.correlation.type,
     ).toBe("operator-confirmed");
     expect(result.exported).toContain('AXIOM_TOKEN="secret-1"');
+  });
+
+  test("rejects same-call correlation confirmation before provider reads or mutations", async () => {
+    const remote = makeRemoteLayer({ sentry: false });
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* RemoteEnvironment;
+        return yield* Effect.flip(
+          service.provision(
+            "livro-caixa",
+            ["staging"],
+            ["axiom"],
+            "node",
+            false,
+            "edge-1",
+            30,
+            true,
+          ),
+        );
+      }).pipe(Effect.provide(remote.layer)),
+    );
+
+    expect(error._tag).toBe("RemoteEnvironmentError");
+    if (error._tag === "RemoteEnvironmentError") {
+      expect(error.code).toBe("OBS_CLI_CORRELATION_CONFIRMATION_REQUIRED");
+    }
+    expect(remote.state().axiomDatasetLists).toBe(0);
+    expect(remote.state().axiomTokenLists).toBe(0);
+    expect(remote.state().datasets).toHaveLength(0);
+    expect(remote.state().tokenCreations).toBe(0);
+  });
+
+  test("rejects lower, higher and disabled explicit retention before any mutation", async () => {
+    for (const retention of [
+      { existing: 30, requested: 14, enabled: true },
+      { existing: 14, requested: 30, enabled: true },
+      { existing: 30, requested: 30, enabled: false },
+    ]) {
+      const remote = makeRemoteLayer({ sentry: false });
+      remote.state().datasets.push(
+        new AxiomDataset({
+          id: `retention-${retention.existing}`,
+          name: "livro-caixa-staging-traces",
+          description: "retention conflict",
+          kind: "axiom:events:v1",
+          edgeDeployment: "edge-1",
+          retentionDays: retention.existing,
+          useRetentionPeriod: retention.enabled,
+        }),
+      );
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const service = yield* RemoteEnvironment;
+          return yield* Effect.flip(
+            service.provision(
+              "livro-caixa",
+              ["staging"],
+              ["axiom"],
+              "node",
+              false,
+              "edge-1",
+              retention.requested,
+            ),
+          );
+        }).pipe(Effect.provide(remote.layer)),
+      );
+
+      expect(error._tag).toBe("RemoteEnvironmentError");
+      if (error._tag === "RemoteEnvironmentError") {
+        expect(error.code).toBe("OBS_CLI_AXIOM_DATASET_CONFIGURATION_CONFLICT");
+        expect(error.message).toContain("destructive");
+      }
+      expect(remote.state().datasets).toHaveLength(1);
+      expect(remote.state().tokenCreations).toBe(0);
+      expect(remote.state().sentryProjectCalls).toBe(0);
+    }
+  });
+
+  test("rejects extra dataset, organization and view token capabilities", async () => {
+    for (const extra of ["dataset", "organization", "view"]) {
+      const remote = makeRemoteLayer({ sentry: false });
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const service = yield* RemoteEnvironment;
+          yield* service.provision("livro-caixa", ["staging"], ["axiom"], "node", false, "edge-1");
+        }).pipe(Effect.provide(remote.layer)),
+      );
+      const datasetCapabilities = {
+        "livro-caixa-staging-traces": { ingest: ["create"] },
+        "livro-caixa-staging-logs": { ingest: ["create"] },
+        "livro-caixa-staging-metrics": { ingest: ["create"] },
+      };
+      const capabilities =
+        extra === "dataset"
+          ? { ...datasetCapabilities, unexpected: { ingest: ["create"] } }
+          : datasetCapabilities;
+      remote.state().tokens[0] = new AxiomToken({
+        id: "token-1",
+        name: "livro-caixa-staging-collector",
+        description: "Collector token",
+        datasetCapabilities: capabilities,
+        orgCapabilities: extra === "organization" ? { datasets: ["read"] } : {},
+        viewCapabilities: extra === "view" ? { dashboard: ["read"] } : {},
+      });
+
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const service = yield* RemoteEnvironment;
+          return yield* Effect.flip(
+            service.provision("livro-caixa", ["staging"], ["axiom"], "node", false, "edge-1"),
+          );
+        }).pipe(Effect.provide(remote.layer)),
+      );
+      expect(error._tag).toBe("RemoteEnvironmentError");
+      if (error._tag === "RemoteEnvironmentError") {
+        expect(error.code).toBe("OBS_CLI_AXIOM_TOKEN_CAPABILITIES_MISMATCH");
+      }
+      expect(remote.state().tokenRegenerations).toBe(0);
+    }
+  });
+
+  test("rejects stale manual correlation state before provider reads", async () => {
+    const remote = makeRemoteLayer({ sentry: false });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* RemoteEnvironment;
+        yield* service.provision("livro-caixa", ["staging"], ["axiom"], "node", false, "edge-1");
+      }).pipe(Effect.provide(remote.layer)),
+    );
+    const state = remote.state();
+    const managed = state.credentials.environments[0];
+    const administrative = state.credentials.axiom;
+    if (managed === undefined || administrative === undefined) {
+      throw new Error("Expected persisted Axiom environment");
+    }
+    const existing = environmentAxiom(managed);
+    if (Option.isNone(existing) || existing.value.datasets === undefined) {
+      throw new Error("Expected verified Axiom state");
+    }
+    const staleAxiom = new AxiomEnvironment({
+      tokenId: existing.value.tokenId,
+      token: existing.value.token,
+      tracesDataset: existing.value.tracesDataset,
+      logsDataset: existing.value.logsDataset,
+      metricsDataset: existing.value.metricsDataset,
+      datasets: existing.value.datasets,
+      correlation: {
+        type: "manual-required",
+        groupName: "livro-caixa staging",
+        groupSlug: "stale-slug",
+        tracesDataset: existing.value.tracesDataset,
+        logsDataset: existing.value.logsDataset,
+        metricsDataset: existing.value.metricsDataset,
+      },
+    });
+    remote.setCredentials(
+      new CredentialsFile({
+        version: 3,
+        axiom: administrative,
+        environments: [
+          new ManagedEnvironment({
+            project: "livro-caixa",
+            environment: "staging",
+            providers: { type: "axiom", axiom: staleAxiom },
+          }),
+        ],
+      }),
+    );
+    const reads = remote.state().axiomDatasetLists;
+
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* RemoteEnvironment;
+        return yield* Effect.flip(
+          service.provision(
+            "livro-caixa",
+            ["staging"],
+            ["axiom"],
+            "node",
+            false,
+            "edge-1",
+            undefined,
+            true,
+          ),
+        );
+      }).pipe(Effect.provide(remote.layer)),
+    );
+    expect(error._tag).toBe("RemoteEnvironmentError");
+    if (error._tag === "RemoteEnvironmentError") {
+      expect(error.code).toBe("OBS_CLI_CORRELATION_CONFIRMATION_REQUIRED");
+    }
+    expect(remote.state().axiomDatasetLists).toBe(reads);
+  });
+
+  test("rejects missing and different edge deployments on every signal", async () => {
+    for (const signal of ["traces", "logs", "metrics"]) {
+      for (const edge of [undefined, "edge-other"]) {
+        const remote = makeRemoteLayer({ sentry: false });
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            const service = yield* RemoteEnvironment;
+            yield* service.provision(
+              "livro-caixa",
+              ["staging"],
+              ["axiom"],
+              "node",
+              false,
+              "edge-1",
+            );
+          }).pipe(Effect.provide(remote.layer)),
+        );
+        const name = `livro-caixa-staging-${signal}`;
+        const index = remote.state().datasets.findIndex((dataset) => dataset.name === name);
+        const dataset = remote.state().datasets[index];
+        if (dataset === undefined) {
+          throw new Error(`Expected ${signal} dataset`);
+        }
+        const common = {
+          id: dataset.id,
+          name: dataset.name,
+          description: dataset.description,
+          kind: dataset.kind,
+          useRetentionPeriod: dataset.useRetentionPeriod,
+        };
+        remote.state().datasets[index] =
+          edge === undefined
+            ? new AxiomDataset(common)
+            : new AxiomDataset({ ...common, edgeDeployment: edge });
+        const mutations = remote.state().tokenCreations;
+
+        const error = await Effect.runPromise(
+          Effect.gen(function* () {
+            const service = yield* RemoteEnvironment;
+            return yield* Effect.flip(
+              service.provision(
+                "livro-caixa",
+                ["staging"],
+                ["axiom"],
+                "node",
+                false,
+                "edge-1",
+                undefined,
+                true,
+              ),
+            );
+          }).pipe(Effect.provide(remote.layer)),
+        );
+        expect(error._tag).toBe("RemoteEnvironmentError");
+        if (error._tag === "RemoteEnvironmentError") {
+          expect(error.code).toBe("OBS_CLI_AXIOM_DATASET_CONFIGURATION_CONFLICT");
+        }
+        expect(remote.state().tokenCreations).toBe(mutations);
+      }
+    }
   });
 
   test("rejects an Events metrics dataset before any mutation", async () => {

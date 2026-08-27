@@ -262,6 +262,42 @@ describe("provider HTTP boundary", () => {
     }
   });
 
+  test.serial("parses complete organization, dataset and view token capabilities", async () => {
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () =>
+        Response.json([
+          {
+            id: "token-id",
+            name: "collector",
+            description: "collector token",
+            expiresAt: "2030-01-01T00:00:00Z",
+            datasetCapabilities: {
+              traces: { ingest: ["create"], query: ["read"] },
+            },
+            orgCapabilities: { datasets: ["read"] },
+            viewCapabilities: { dashboard: ["read"] },
+          },
+        ]),
+    });
+    try {
+      const tokens = await withAxiomEndpoint(`http://127.0.0.1:${server.port}`, () =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const api = yield* AxiomApi;
+            return yield* api.tokens(credentials);
+          }).pipe(Effect.provide(AxiomApi.layer)),
+        ),
+      );
+      expect(tokens[0]?.datasetCapabilities.traces?.query).toEqual(["read"]);
+      expect(tokens[0]?.orgCapabilities.datasets).toEqual(["read"]);
+      expect(tokens[0]?.viewCapabilities.dashboard).toEqual(["read"]);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test.serial("regenerates tokens with the documented exact newToken body", async () => {
     let body = "";
     const server = Bun.serve({
@@ -278,6 +314,7 @@ describe("provider HTTP boundary", () => {
       description: "collector",
       datasetCapabilities: {},
       orgCapabilities: {},
+      viewCapabilities: {},
     });
     try {
       await withAxiomEndpoint(`http://127.0.0.1:${server.port}`, () =>

@@ -57,9 +57,9 @@ Sem `--provider`, um ambiente novo configura Axiom e Sentry. Um ambiente existen
 
 A seleção é aditiva. Selecionar Axiom em um ambiente Sentry adiciona Axiom sem remover Sentry.
 
-Axiom cria traces e logs como `axiom:events:v1` e métricas como `otel:metrics:v1`. `--axiom-edge-deployment` aplica e verifica um edge deployment explícito. `--axiom-retention-days` aceita somente dias positivos e aplica retenção explícita sem inventar o padrão da organização. A CLI nunca exclui datasets incompatíveis.
+Axiom cria traces e logs como `axiom:events:v1` e métricas como `otel:metrics:v1`. `--axiom-edge-deployment` aplica e verifica um edge deployment explícito. `--axiom-retention-days` aceita somente dias positivos e aplica retenção explícita somente na criação. Se um dataset existente divergir em dias ou `useRetentionPeriod`, o preflight falha sem mutação. A CLI nunca altera retenção nem exclui datasets durante reconciliação.
 
-Axiom não oferece uma API pública estável para grupos de Correlation. O provisionamento salva e imprime uma ação manual com o nome, slug e os três datasets. Depois de criar o grupo no Console, repita o provisionamento com `--correlation-confirmed`. A confirmação só é aceita após uma leitura nova dos datasets, incluindo o kind MetricsDB e o edge deployment da métrica.
+Axiom não oferece uma API pública estável para grupos de Correlation. Uma primeira invocação concluída salva e imprime uma ação manual com o nome, slug e os três datasets. Depois de criar o grupo no Console, repita o provisionamento com `--correlation-confirmed` e um `--axiom-edge-deployment` explícito. A confirmação rejeita a mesma invocação que cria recursos, exige a ação manual persistida correspondente e verifica o edge exato em traces, logs e métricas.
 
 Sentry usa um projeto para todos os ambientes da aplicação.
 
