@@ -43,7 +43,7 @@ await metrics.close();
 
 ## Lifecycle
 
-`createMetrics` validates the complete configuration before acquiring a runtime lease. Equal active configurations share one runtime, registry, periodic exporter, and lifecycle queue. `exportIntervalMilliseconds` controls periodic collection and defaults to 10,000 milliseconds.
+`createMetrics` validates the complete configuration before acquiring a runtime lease. Equal active configurations share one runtime, registry, periodic exporter, and lifecycle queue. They also share exactly one exporter when facade and layer leases overlap. The most recently acquired active layer binding provides the transport; the built-in fetch transport is the fallback when no layer binding is active. Transport identity is deliberately excluded from the pool key because including it would create parallel runtimes and duplicate exporters. `exportIntervalMilliseconds` controls periodic collection and defaults to 10,000 milliseconds.
 
 `add`, `record`, gauge registration, and unregister are synchronous. `flush` and `close` are asynchronous and bounded by `flushTimeoutMilliseconds`, which defaults to 3 seconds. A repeated `close` returns the same promise. Recording, registration, or flushing after close throws `MetricsError` with code `CLOSED`. Cumulative counter and histogram values remain in the shared runtime after an individual lease closes and retain the runtime start time.
 

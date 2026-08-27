@@ -167,6 +167,144 @@ const waitFor = async (condition: () => boolean, timeoutMilliseconds = 2_000): P
 };
 
 describe("framework-neutral metrics", () => {
+  it("rejects a non-HTTP OTLP endpoint with stable public configuration fields", async () => {
+    const collector = await startCollector();
+    try {
+      let failure: MetricsError | undefined;
+      try {
+        await createMetrics({
+          ...options(collector.endpoint),
+          otlpEndpoint: "ftp://collector.invalid",
+        });
+      } catch (cause) {
+        if (cause instanceof MetricsError) {
+          failure = cause;
+        }
+      }
+      assert.isDefined(failure);
+      assert.equal(failure.name, "MetricsError");
+      assert.equal(failure.code, "INVALID_CONFIGURATION");
+      assert.equal(failure.operation, "createMetrics");
+      assert.equal(failure.instrumentName, undefined);
+      assert.isFalse(failure.retryable);
+      assert.equal(failure.cause, undefined);
+      assert.equal(
+        failure.message,
+        "Metrics configuration is invalid. Set otlpEndpoint to an HTTP or HTTPS URL without credentials.",
+      );
+      assert.equal(collector.requests.length, 0);
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
+  it("isolates a non-finite gauge observation and recovers on the next collection", async () => {
+    const collector = await startCollector();
+    try {
+      const metrics = await createMetrics(options(collector.endpoint));
+      let invalidValue = Number.NaN;
+      let invalidCalls = 0;
+      let validCalls = 0;
+      metrics.counter({ name: "observation.total", description: "Total", unit: "1" }).add(1);
+      metrics.observableGauge(
+        { name: "observation.invalid", description: "Invalid observation", unit: "1" },
+        () => {
+          invalidCalls++;
+          return [{ value: invalidValue }];
+        },
+      );
+      metrics.observableGauge(
+        { name: "observation.valid", description: "Valid observation", unit: "1" },
+        () => {
+          validCalls++;
+          return [{ value: 7 }];
+        },
+      );
+
+      const failed = await metrics.flush();
+      const failure = failed.gaugeFailures[0];
+      assert.isDefined(failure);
+      assert.equal(failed.gaugeFailures.length, 1);
+      assert.equal(failure.instrumentName, "observation.invalid");
+      assert.equal(failure.code, "INVALID_OBSERVATION");
+      assert.include(failure.message, 'Observable gauge "observation.invalid"');
+      assert.isFalse(Object.hasOwn(failure, "retryable"));
+      const failedPayload = collector.requests[0];
+      assert.isDefined(failedPayload);
+      assert.isDefined(metricNamed(failedPayload, "observation.total"));
+      assert.isDefined(metricNamed(failedPayload, "observation.valid"));
+      assert.isUndefined(metricNamed(failedPayload, "observation.invalid"));
+
+      invalidValue = 5;
+      const recovered = await metrics.flush();
+      assert.deepEqual(recovered.gaugeFailures, []);
+      const recoveredPayload = collector.requests[1];
+      assert.isDefined(recoveredPayload);
+      assert.equal(
+        metricNamed(recoveredPayload, "observation.invalid")?.gauge?.dataPoints[0]?.asDouble,
+        5,
+      );
+      assert.equal(
+        metricNamed(recoveredPayload, "observation.valid")?.gauge?.dataPoints[0]?.asDouble,
+        7,
+      );
+      assert.equal(invalidCalls, 2);
+      assert.equal(validCalls, 2);
+      await metrics.close();
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
+  it("rejects 101 gauge observations without a partial series and recovers", async () => {
+    const collector = await startCollector();
+    try {
+      const metrics = await createMetrics(options(collector.endpoint));
+      let observationCount = 101;
+      let callbackCalls = 0;
+      metrics.counter({ name: "series.total", description: "Total", unit: "1" }).add(1);
+      metrics.observableGauge(
+        { name: "series.overflow", description: "Series overflow", unit: "1" },
+        () => {
+          callbackCalls++;
+          return Array.from({ length: observationCount }, (_, index) => ({
+            value: index,
+            attributes: [{ key: "series", value: index }],
+          }));
+        },
+      );
+
+      const failed = await metrics.flush();
+      const failure = failed.gaugeFailures[0];
+      assert.isDefined(failure);
+      assert.equal(failed.gaugeFailures.length, 1);
+      assert.equal(failure.instrumentName, "series.overflow");
+      assert.equal(failure.code, "SERIES_LIMIT_EXCEEDED");
+      assert.equal(
+        failure.message,
+        'Observable gauge "series.overflow" exceeds the 100-observation collection limit.',
+      );
+      assert.isFalse(Object.hasOwn(failure, "retryable"));
+      const failedPayload = collector.requests[0];
+      assert.isDefined(failedPayload);
+      assert.isDefined(metricNamed(failedPayload, "series.total"));
+      assert.isUndefined(metricNamed(failedPayload, "series.overflow"));
+
+      observationCount = 1;
+      const recovered = await metrics.flush();
+      assert.deepEqual(recovered.gaugeFailures, []);
+      const recoveredPayload = collector.requests[1];
+      assert.isDefined(recoveredPayload);
+      const recoveredGauge = metricNamed(recoveredPayload, "series.overflow");
+      assert.equal(recoveredGauge?.gauge?.dataPoints.length, 1);
+      assert.equal(recoveredGauge?.gauge?.dataPoints[0]?.asDouble, 0);
+      assert.equal(callbackCalls, 2);
+      await metrics.close();
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
   it("exports counter, histogram, and immediately collected gauge values through real OTLP", async () => {
     const collector = await startCollector();
     try {
