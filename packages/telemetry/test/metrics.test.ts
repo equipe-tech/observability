@@ -262,7 +262,15 @@ describe("framework-neutral metrics", () => {
       const metrics = await createMetrics(options(collector.endpoint));
       let observationCount = 101;
       let callbackCalls = 0;
+      let validCalls = 0;
       metrics.counter({ name: "series.total", description: "Total", unit: "1" }).add(1);
+      metrics.observableGauge(
+        { name: "series.valid", description: "Valid series", unit: "1" },
+        () => {
+          validCalls++;
+          return [{ value: 9 }];
+        },
+      );
       metrics.observableGauge(
         { name: "series.overflow", description: "Series overflow", unit: "1" },
         () => {
@@ -288,6 +296,7 @@ describe("framework-neutral metrics", () => {
       const failedPayload = collector.requests[0];
       assert.isDefined(failedPayload);
       assert.isDefined(metricNamed(failedPayload, "series.total"));
+      assert.equal(metricNamed(failedPayload, "series.valid")?.gauge?.dataPoints[0]?.asDouble, 9);
       assert.isUndefined(metricNamed(failedPayload, "series.overflow"));
 
       observationCount = 1;
@@ -298,7 +307,12 @@ describe("framework-neutral metrics", () => {
       const recoveredGauge = metricNamed(recoveredPayload, "series.overflow");
       assert.equal(recoveredGauge?.gauge?.dataPoints.length, 1);
       assert.equal(recoveredGauge?.gauge?.dataPoints[0]?.asDouble, 0);
+      assert.equal(
+        metricNamed(recoveredPayload, "series.valid")?.gauge?.dataPoints[0]?.asDouble,
+        9,
+      );
       assert.equal(callbackCalls, 2);
+      assert.equal(validCalls, 2);
       await metrics.close();
     } finally {
       await closeServer(collector.server);
