@@ -16,6 +16,7 @@ import {
 import { canaryRunId, canarySensitiveValues, emitCanary } from "./support/canary.ts";
 
 const deployedEnabled = process.env["OBSERVABILITY_E2E_DEPLOYED"] === "1";
+const canaryEnvironment = "e2e";
 
 type DeployedRun = {
   readonly root: AxiomSpan;
@@ -35,7 +36,7 @@ const findDeployedRun = Effect.fn("findDeployedRun")(function* (
     if (Option.isSome(root)) {
       const child = yield* findChildSpan(env, root.value.traceId);
       const logs = yield* findLogs(env, runId);
-      const metric = yield* findMetric(env, runId);
+      const metric = yield* findMetric(env, runId, canaryEnvironment);
       const completed = logs.find((log) => log.eventName === "canary.completed");
       const browser = logs.find((log) => log.eventName === "canary.browser");
       const redaction = logs.find((log) => log.eventName === "canary.redaction");
@@ -70,6 +71,15 @@ const redactionAttributeValues = (attributes: AxiomRedactionAttributes): Readonl
   Option.getOrThrow(attributes.safeMessage),
 ];
 
+const assertEnvironmentAliases = (
+  environmentName: Option.Option<string>,
+  environmentAlias: Option.Option<string>,
+  expected: string,
+): void => {
+  assert.deepStrictEqual(environmentName, Option.some(expected));
+  assert.deepStrictEqual(environmentAlias, environmentName);
+};
+
 const assertRedactionAttributes = (
   attributes: AxiomRedactionAttributes,
   sensitive: ReturnType<typeof canarySensitiveValues>,
@@ -99,7 +109,7 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
         const config = new TelemetryConfig({
           serviceName: "observability-canary",
           serviceVersion: "0.1.0",
-          environment: "e2e",
+          environment: canaryEnvironment,
           otlpEndpoint: new URL(endpoint),
         });
 
@@ -114,11 +124,20 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
 
         assert.deepStrictEqual(run.root.serviceName, Option.some("observability-canary"));
         assert.deepStrictEqual(run.root.serviceVersion, Option.some("0.1.0"));
-        assert.deepStrictEqual(run.root.environment, Option.some("e2e"));
+        assertEnvironmentAliases(
+          run.root.environmentName,
+          run.root.environmentAlias,
+          canaryEnvironment,
+        );
 
         assert.deepStrictEqual(run.completed.traceId, Option.some(run.root.traceId));
         assert.deepStrictEqual(run.completed.eventKind, Option.some("wide"));
         assert.deepStrictEqual(run.completed.serviceName, Option.some("observability-canary"));
+        assertEnvironmentAliases(
+          run.completed.environmentName,
+          run.completed.environmentAlias,
+          canaryEnvironment,
+        );
 
         assert.deepStrictEqual(run.browser.eventSource, Option.some("browser"));
         assert.deepStrictEqual(run.browser.eventKind, Option.some("wide"));

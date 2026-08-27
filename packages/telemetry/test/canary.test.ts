@@ -136,6 +136,17 @@ const attributeValue = (
     Option.flatMap((attribute) => Option.fromNullishOr(attribute.value.stringValue)),
   );
 
+const assertEnvironmentAliases = (resource: CanaryResource, expected: string): void => {
+  const canonical = Option.getOrUndefined(
+    attributeValue(resource.attributes, "deployment.environment.name"),
+  );
+  const legacy = Option.getOrUndefined(
+    attributeValue(resource.attributes, "deployment.environment"),
+  );
+  assert.strictEqual(canonical, expected);
+  assert.strictEqual(legacy, canonical);
+};
+
 const readTelemetryExport = Effect.fn("readTelemetryExport")(function* (): Effect.fn.Return<
   CanaryExport,
   never
@@ -293,10 +304,7 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
           Option.getOrUndefined(attributeValue(resource, "service.version")),
           "0.1.0",
         );
-        assert.strictEqual(
-          Option.getOrUndefined(attributeValue(resource, "deployment.environment.name")),
-          "test",
-        );
+        assertEnvironmentAliases(run.root.resource, "test");
 
         assert.strictEqual(run.log.log.traceId, run.root.span.traceId);
         assert.strictEqual(
@@ -374,12 +382,7 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
             Option.getOrUndefined(attributeValue(signalResource.attributes, "service.version")),
             "0.1.0",
           );
-          assert.strictEqual(
-            Option.getOrUndefined(
-              attributeValue(signalResource.attributes, "deployment.environment.name"),
-            ),
-            "test",
-          );
+          assertEnvironmentAliases(signalResource, "test");
         }
       }),
     60_000,

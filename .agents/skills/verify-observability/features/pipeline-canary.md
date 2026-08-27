@@ -8,7 +8,7 @@ The local canary sends telemetry through OTLP and verifies the Collector file ex
 - `pipeline-log` exports a correlated wide-event log.
 - `pipeline-browser` accepts and exports a browser event.
 - `pipeline-metric` exports the `canary.operations` counter.
-- `pipeline-resource` preserves service and environment attributes.
+- `pipeline-resource` exports service attributes and equal `deployment.environment.name` and `deployment.environment` resource values for all signals.
 - `pipeline-redaction` removes secret fields and secret values across all signals.
 
 ## How to get to it (user POV)
@@ -29,7 +29,7 @@ Preconditions:
 - **Read the export.** Find `data/otlp.jsonl` under `STATE_ROOT`. Require a nonempty file.
 - **Identify the run.** Extract values that match `test-[a-z0-9-]+`. Require one unique canary run ID in fresh state.
 - **Verify correlation.** Require the canary result. It verifies trace IDs, span parentage, a correlated log, a browser event, and a metric.
-- **Verify resources.** Require the canary result. It verifies the service name, version, and deployment environment.
+- **Verify resources.** Require the canary result. It verifies service fields and equal canonical and transition environment values for all signals.
 - **Verify redaction.** Require the canary result. It rejects generated secrets and preserves the negative controls.
 - **Verify replacements.** Search the export for `****` and `[REDACTED]`. Require both replacement forms.
 - **Capture proof.** Copy `otlp.jsonl`. Save the command result, run ID, and replacement search output.
