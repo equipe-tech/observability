@@ -269,11 +269,15 @@ describe("BrowserEventTransport.layerFetch", () => {
       const secret = crypto.randomUUID().replaceAll("-", "");
       const bodies: Array<string> = [];
       const endpoint = yield* Effect.promise(() => startEndpoint(200, bodies));
-      const fields: WideEventFields = {
-        authorization: secret,
-        note: `before Bearer ${secret} after`,
-        control: "tokenizer",
-      };
+      const fields: WideEventFields = Object.fromEntries([
+        ["authorization", secret],
+        ["note", `before Bearer ${secret} after`],
+        ["control", "tokenizer"],
+        ["toString", "safe-to-string"],
+        ["constructor", "safe-constructor"],
+        ["hasOwnProperty", "safe-has-own-property"],
+        ["__proto__", "safe-proto"],
+      ]);
       Object.defineProperty(fields, "nested", { value: { token: secret }, enumerable: true });
       yield* Effect.gen(function* () {
         const telemetry = yield* BrowserTelemetry;
@@ -295,9 +299,18 @@ describe("BrowserEventTransport.layerFetch", () => {
       assert.include(body, sensitiveTextReplacement);
       assert.include(body, "tokenizer");
       assert.notInclude(body, "nested");
+      assert.include(body, '"toString":"safe-to-string"');
+      assert.include(body, '"constructor":"safe-constructor"');
+      assert.include(body, '"hasOwnProperty":"safe-has-own-property"');
+      assert.include(body, '"__proto__":"safe-proto"');
       const batch = decodeBrowserEventBatch(JSON.parse(body));
       assert.strictEqual(batch.version, 1);
       assert.strictEqual(batch.events.length, 1);
+      const event = batch.events[0];
+      assert.isDefined(event);
+      for (const key of ["toString", "constructor", "hasOwnProperty", "__proto__"]) {
+        assert.isTrue(Object.prototype.hasOwnProperty.call(event.fields, key));
+      }
     }),
   );
 

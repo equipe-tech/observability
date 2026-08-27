@@ -57,6 +57,7 @@ const decodeJsonText = Schema.decodeOption(Schema.fromJsonString(Schema.Json));
 const decodeJsonObject = Schema.decodeUnknownOption(Schema.JsonObject);
 
 type SensitiveScalar = typeof SensitiveScalar.Type;
+type SanitizedFieldEntry = readonly [string, SensitiveScalar];
 type JsonValue = typeof Schema.Json.Type;
 type SanitizedJson = null | string | number | boolean | Array<SanitizedJson> | SanitizedJsonObject;
 interface SanitizedJsonObject {
@@ -205,7 +206,8 @@ const sanitizeJson = (source: JsonValue): Option.Option<string> => {
     if (Option.isNone(sourceObject)) {
       return Option.none();
     }
-    const output: SanitizedJsonObject = {};
+    const output: SanitizedJsonObject = Object.create(null);
+    const outputKeys = new Set<string>();
     current.assign(output);
     const keys = Object.keys(sourceObject.value);
     for (const key of keys) {
@@ -217,10 +219,11 @@ const sanitizeJson = (source: JsonValue): Option.Option<string> => {
         continue;
       }
       output[key] = null;
+      outputKeys.add(key);
     }
     for (let index = keys.length - 1; index >= 0; index -= 1) {
       const key = keys[index];
-      if (!Predicate.isString(key) || !(key in output)) {
+      if (!Predicate.isString(key) || !outputKeys.has(key)) {
         continue;
       }
       const child = sourceObject.value[key];
@@ -267,15 +270,15 @@ const shouldDropKey = (key: string): boolean =>
   containsStructuredAssignment(key);
 
 export const sanitizeBrowserFields = (fields: WideEventFields): BrowserEventFields => {
-  const sanitized: { [attribute: string]: SensitiveScalar } = {};
-  let count = 0;
+  const sanitized: Array<SanitizedFieldEntry> = [];
+  const boundedKeys = new Set<string>();
   for (const [key, runtimeValue] of Object.entries(fields)) {
     const decoded = decodeSensitiveScalar(runtimeValue);
     if (Option.isNone(decoded) || key === "" || shouldDropKey(key)) {
       continue;
     }
     const boundedKey = key.slice(0, maxFieldKeyLength);
-    if (boundedKey in sanitized) {
+    if (boundedKeys.has(boundedKey)) {
       continue;
     }
     const value = isSensitiveFieldKey(key)
@@ -283,13 +286,13 @@ export const sanitizeBrowserFields = (fields: WideEventFields): BrowserEventFiel
       : Predicate.isString(decoded.value)
         ? sanitizeString(decoded.value, maxFieldValueLength).slice(0, maxFieldValueLength)
         : decoded.value;
-    sanitized[boundedKey] = value;
-    count += 1;
-    if (count >= maxFieldsPerEvent) {
+    sanitized.push([boundedKey, value]);
+    boundedKeys.add(boundedKey);
+    if (boundedKeys.size >= maxFieldsPerEvent) {
       break;
     }
   }
-  return sanitized;
+  return Object.fromEntries(sanitized);
 };
 
 export const sanitizeBrowserEventName = (name: string): string =>

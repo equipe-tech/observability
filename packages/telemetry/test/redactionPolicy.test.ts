@@ -186,6 +186,29 @@ describe("browser telemetry redaction policy", () => {
     assert.deepStrictEqual(fields, { valid: "kept" });
   });
 
+  it("preserves inherited names and proto as safe own fields", () => {
+    const names = ["toString", "constructor", "hasOwnProperty", "__proto__"];
+    const input = Object.fromEntries(names.map((name) => [name, `value-${name}`]));
+    const fields = sanitizeBrowserFields(input);
+    assert.strictEqual(Object.getPrototypeOf(fields), Object.prototype);
+    assert.deepStrictEqual(Object.keys(fields), names);
+    for (const name of names) {
+      assert.isTrue(Object.prototype.hasOwnProperty.call(fields, name));
+      assert.strictEqual(fields[name], `value-${name}`);
+    }
+  });
+
+  it("preserves proto and inherited names in sanitized JSON text", () => {
+    const names = ["toString", "constructor", "hasOwnProperty", "__proto__"];
+    const source = Object.fromEntries(names.map((name) => [name, `value-${name}`]));
+    const fields = sanitizeBrowserFields({ json: JSON.stringify(source) });
+    const serialized = String(fields.json);
+    for (const name of names) {
+      assert.include(serialized, `"${name}":"value-${name}"`);
+    }
+    assert.strictEqual(serialized, JSON.stringify(source));
+  });
+
   it("inspects complete keys and values before applying output bounds", () => {
     const secret = marker();
     const dangerousKey = `${"x".repeat(140)}.authorization`;
@@ -216,6 +239,10 @@ describe("browser telemetry redaction policy", () => {
     });
     assert.strictEqual(safeFirst[prefix], "first");
     assert.strictEqual(sensitiveFirst[prefix], sensitiveFieldReplacement);
+    assert.deepStrictEqual(Object.keys(safeFirst), [prefix]);
+    assert.deepStrictEqual(Object.keys(sensitiveFirst), [prefix]);
+    assert.isTrue(Object.prototype.hasOwnProperty.call(safeFirst, prefix));
+    assert.isTrue(Object.prototype.hasOwnProperty.call(sensitiveFirst, prefix));
   });
 
   it("sanitizes event names before truncation", () => {
