@@ -235,6 +235,7 @@ describe("axiom query support", () => {
       assert.include(query.query, "`e2e-metrics`:`canary.operations`");
       assert.include(query.query, '`canary.run_id` == "test-run-1"');
       assert.include(query.query, '`deployment.environment.name` == "e2e"');
+      assert.include(query.query, '`deployment.environment` == "e2e"');
     }),
   );
 });

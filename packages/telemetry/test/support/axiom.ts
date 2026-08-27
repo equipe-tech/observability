@@ -260,7 +260,7 @@ export const findMetric = (
 ): Effect.Effect<Option.Option<AxiomMetric>> =>
   runMetricsQuery(
     env,
-    `\`${env.AXIOM_DATASET_METRICS}\`:\`canary.operations\` | where \`canary.run_id\` == "${runId}" and \`deployment.environment.name\` == "${environment}"`,
+    `\`${env.AXIOM_DATASET_METRICS}\`:\`canary.operations\` | where \`canary.run_id\` == "${runId}" and \`deployment.environment.name\` == "${environment}" and \`deployment.environment\` == "${environment}"`,
   ).pipe(
     Effect.map((content) =>
       content.includes(runId) ? Option.some({ content }) : Option.none<AxiomMetric>(),
