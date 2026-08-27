@@ -28,7 +28,7 @@ Preconditions:
 - The parent skill created `ARTIFACT_ROOT`.
 - No resource name begins with the test's generated `obs10-<pid>-<uuid>` prefix.
 
-1. Record `docker version` and the pinned image digest in the artifact directory.
+1. Record `docker version`, `kamal version`, and the pinned image digest in the artifact directory.
 2. Run `bun test packages/cli/test/CollectorAssets.bun.test.ts --timeout 30000` and record stdout, stderr, and exit code.
 3. Run the pinned production validation command from the implementation brief and record stdout, stderr, and exit code.
 4. Run `OBSERVABILITY_COLLECTOR_RECOVERY=1 OBSERVABILITY_COLLECTOR_RECOVERY_ARTIFACT_ROOT="$ARTIFACT_ROOT/collector-recovery" bun test packages/cli/test/CollectorRecovery.bun.test.ts --timeout 120000` and record stdout, stderr, and exit code.
@@ -36,7 +36,7 @@ Preconditions:
 6. Confirm that `docker ps -a --format '{{.Names}}'` and `docker network ls --format '{{.Name}}'` contain no resource with the generated prefix after the test.
 7. Copy the production Collector asset, accessory asset, test output, pinned image digest, and build revision into `ARTIFACT_ROOT/collector-recovery`.
 
-The maintained test creates a unique Docker network, unique bind-mounted queue and receipt directories, random loopback host ports, one source Collector, and disposable sink Collectors. It sends unique event identities. It verifies accepted outage requests, queue growth for all signals, process health, a changed source container identity after restart, exact sink receipt, complete drain, four accepted saturation requests and four HTTP 503 responses per signal, refusal metrics, enqueue failure metrics, and health during saturation. Cleanup removes only resources with the generated prefix and only its temporary directory.
+The maintained test creates a unique Docker network, unique bind-mounted queue and receipt directories, random loopback host ports, one source Collector, and disposable sink Collectors. It sends unique event identities. It sends unique traces, logs, and metrics before outage, during outage, and after restart. It verifies queue growth for all signals, process health, a changed source container identity after restart, exact final receipt counts after queues remain empty for one second, four accepted saturation requests and four HTTP 503 responses per signal, refusal metrics, enqueue failure metrics, and health during saturation. Cleanup removes only resources with the generated prefix and only its temporary directory.
 
 ## Gotchas
 
@@ -44,6 +44,6 @@ The maintained test creates a unique Docker network, unique bind-mounted queue a
 - `queue_size` counts export requests, not bytes or telemetry items.
 - The health endpoint reports process and component startup, not destination availability.
 - File storage `max_size` is a fail-safe, not the normal rejection boundary.
-- Docker Desktop bind-mount permissions differ from a Linux production host. The canary runs the source as `10001:10001`, while production additionally requires owner `10001:10001` and mode `0700`.
+- Docker Desktop bind-mount permissions differ from a Linux production host. The canary runs the source as `10001:10001`, while a Linux host must separately prove owner `10001:10001` and mode `0700` with the documented bootstrap and post-boot checks.
 - At-least-once delivery may duplicate data after an unclean failure. The maintained clean outage case expects exactly one receipt.
 - Never point this recipe at Axiom, production credentials, an existing queue, or fixed shared ports.

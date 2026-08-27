@@ -8,23 +8,27 @@ O retry não expira. Capacidade de fila e capacidade do filesystem limitam o uso
 
 O asset provisionado usa `/var/lib/observability/<name>/collector/queue`. Antes do primeiro boot:
 
-1. Monte um filesystem dedicado de 8 GiB em `/var/lib/observability/<name>/collector`.
-2. Confirme que o path é um mount separado.
-3. Confirme capacidade total de 8 GiB e pelo menos 2 GiB livres.
-4. Confirme owner `10001:10001` e mode `0700` no diretório `queue`.
+1. Monte um filesystem dedicado de pelo menos 8 GiB em `/var/lib/observability/<name>/collector`.
+2. Confirme que o path é um mount separado e tem pelo menos 2 GiB livres.
+3. Crie `queue` com owner `10001:10001` e mode `0700`.
+4. Confirme owner e mode depois da criação e novamente depois do primeiro boot.
 5. Interrompa o deploy se qualquer precondição falhar.
 
-O Kamal prepara o diretório com owner e mode declarados no accessory. O filesystem dedicado continua sendo uma precondição de infraestrutura. Não substitua esse diretório por um named volume root-owned.
+O Kamal também declara owner e mode no accessory. O bootstrap explícito permite validar o host antes que o container exista. O filesystem dedicado continua sendo uma precondição de infraestrutura. Não substitua esse diretório por um named volume root-owned.
 
-Execute o preflight no host e não prossiga se um teste falhar:
+Execute o bootstrap e o preflight no host e não prossiga se um teste falhar:
 
 ```sh
 QUEUE_ROOT="/var/lib/observability/<name>/collector"
+test -d "$QUEUE_ROOT"
 test "$(findmnt --noheadings --output TARGET --target "$QUEUE_ROOT")" = "$QUEUE_ROOT"
-test "$(find "$QUEUE_ROOT/queue" -maxdepth 0 -printf '%U:%G %m')" = "10001:10001 700"
 test "$(df --block-size=1 --output=size "$QUEUE_ROOT" | tail -1 | tr -d ' ')" -ge "8589934592"
 test "$(df --block-size=1 --output=avail "$QUEUE_ROOT" | tail -1 | tr -d ' ')" -ge "2147483648"
+sudo install -d -o 10001 -g 10001 -m 0700 "$QUEUE_ROOT/queue"
+test "$(find "$QUEUE_ROOT/queue" -maxdepth 0 -printf '%U:%G %m')" = "10001:10001 700"
 ```
+
+Depois do primeiro boot, repita o último teste antes de liberar produtores.
 
 Cada banco do `file_storage` tem limite terminal de 2 GiB. Os três bancos podem ocupar até 6 GiB. `max_size` é somente um último limite de proteção. A saturação física pode ocorrer sem incremento confiável nos contadores de rejeição. Não espere um banco chegar a 2 GiB.
 
@@ -53,7 +57,7 @@ Consulte estes contadores e gauges em `0.159.0`:
 - Envio concluído: `otelcol_exporter_sent_spans`, `otelcol_exporter_sent_log_records`, `otelcol_exporter_sent_metric_points`.
 - Tamanho do batch: `otelcol_exporter_enqueue_size_bytes`, `otelcol_exporter_queue_batch_send_size_bytes`.
 
-A versão `0.159.0` não expõe um contador estável dedicado a retry. Falhas de envio crescentes junto com fila persistente indicam retry. Essas métricas detalhadas de exporter têm estabilidade alpha.
+A versão `0.159.0` não expõe um contador estável dedicado a retry. Fila crescente ou persistente com contadores `sent` estáveis indica retry. Um contador `send_failed` crescente indica falha permanente de export e possível descarte, não retry. Essas métricas detalhadas de exporter têm estabilidade alpha.
 
 Use estes thresholds por exporter:
 
@@ -139,15 +143,32 @@ Quarentena é uma operação destrutiva do ponto de vista da fila ativa. Exige a
 2. Obtenha aprovação explícita de perda de dados.
 3. Interrompa produtores e Collector.
 4. Faça e assine um backup frio.
-5. Renomeie `queue` para um diretório irmão com timestamp.
-6. Crie um novo `queue` com mode `0700` e owner `10001:10001`.
-7. Inicie o Collector e verifique saúde.
-8. Envie um canário único por sinal e verifique export.
-9. Retenha a quarentena até o fim da janela de rollback.
+5. Selecione um `QUARANTINE_ROOT` em outro filesystem.
+6. Confirme com `findmnt` que os filesystems são distintos.
+7. Confirme que o espaço livre em `QUARANTINE_ROOT` é maior que o tamanho total de `queue`.
+8. Mova `queue` para `QUARANTINE_ROOT/queue-<timestamp>` enquanto o Collector permanece parado.
+9. Crie um novo `queue` com mode `0700` e owner `10001:10001`.
+10. Inicie o Collector e verifique saúde.
+11. Envie um canário único por sinal e verifique export.
+12. Retenha a quarentena até o fim da janela de rollback.
 
-Nunca apague a quarentena durante a recuperação.
+Nunca mantenha a quarentena no filesystem dedicado de 8 GiB. Nunca apague a quarentena durante a recuperação.
 
-Para rollback, interrompa produtores e Collector, mova a fila nova para outro path de quarentena, restaure o nome original, confira owner e mode, restaure o token antigo quando necessário, reinicie e só então retome produtores depois de verificar saúde e profundidade da fila.
+Para rollback, interrompa produtores e Collector, mova a fila nova para um segundo path fora do filesystem dedicado, restaure a fila original a partir de `QUARANTINE_ROOT`, confira owner e mode, restaure o token antigo quando necessário, reinicie e só então retome produtores depois de verificar saúde e profundidade da fila.
+
+## Migrar deployments existentes
+
+O asset anterior usava o named volume `otel-collector-queue`. Não troque diretamente para o bind mount com uma fila ativa.
+
+1. Registre `kamal version`, o container ID, o digest da imagem e o nome do volume.
+2. Interrompa os produtores e drene a fila com a configuração antiga.
+3. Confirme profundidade zero duas vezes e faça backup frio do named volume.
+4. Prepare o filesystem e o bind mount com o bootstrap desta página.
+5. Com o Collector parado, copie o backup para o novo diretório e aplique owner `10001:10001` e mode `0700`.
+6. Inicie somente a configuração nova, verifique saúde, fila e um canário por sinal.
+7. Retenha o named volume antigo até o fim da janela de rollback.
+
+Os nomes `otlphttp/traces`, `otlphttp/logs` e `otlphttp/metrics` fazem parte da identidade persistida das filas. Renomear um exporter pode deixar itens antigos inacessíveis. Drene, faça backup frio e prove a migração antes de qualquer mudança futura nesses nomes.
 
 ## Garantias e limites
 

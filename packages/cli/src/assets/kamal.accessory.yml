@@ -1,5 +1,6 @@
 accessories:
   otel-collector:
+    service: "{{name}}-otel-collector"
     image: otel/opentelemetry-collector-contrib:0.159.0
     roles:
       - web

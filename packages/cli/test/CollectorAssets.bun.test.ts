@@ -114,6 +114,7 @@ const ProductionConfig = Schema.Struct({
 const KamalAccessory = Schema.Struct({
   accessories: Schema.Struct({
     "otel-collector": Schema.Struct({
+      service: Schema.String,
       image: Schema.String,
       directories: Schema.Array(
         Schema.Struct({
@@ -262,6 +263,14 @@ describe("Collector assets", () => {
     expectCollectorContract(production, true);
     expectProductionOperations(production);
 
+    const changedQueueCapacity = production.replace("queue_size: 64", "queue_size: 65");
+    expect(changedQueueCapacity).not.toBe(production);
+    expect(() => expectProductionOperations(changedQueueCapacity)).toThrow(/64/);
+
+    const changedQueueBatchLimit = production.replace("max_size: 8388608", "max_size: 8388609");
+    expect(changedQueueBatchLimit).not.toBe(production);
+    expect(() => expectProductionOperations(changedQueueBatchLimit)).toThrow(/8388608/);
+
     const withoutTraceAttributeRedaction = production.replace(
       "transform/redact, redaction/sensitive",
       "transform/redact",
@@ -280,6 +289,8 @@ describe("Collector assets", () => {
     const parsed: unknown = Bun.YAML.parse(rendered);
     const decoded = decodeKamalAccessory(parsed).accessories["otel-collector"];
 
+    expect(decoded.service).toBe("verify-app-otel-collector");
+    expect(decoded.service).not.toBe("otel-collector");
     expect(decoded.image).toBe("otel/opentelemetry-collector-contrib:0.159.0");
     expect(decoded.directories).toEqual([
       {

@@ -327,7 +327,7 @@ export class RemoteEnvironment extends Context.Service<
           const variables = [
             ["OTEL_SERVICE_NAME", managed.project],
             ["OTEL_DEPLOYMENT_ENVIRONMENT", managed.environment],
-            ["OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318"],
+            ["OTEL_EXPORTER_OTLP_ENDPOINT", `http://${managed.project}-otel-collector:4318`],
             ["AXIOM_TOKEN", managed.axiomToken],
             ["AXIOM_DATASET_TRACES", managed.tracesDataset],
             ["AXIOM_DATASET_LOGS", managed.logsDataset],

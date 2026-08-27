@@ -149,6 +149,48 @@ const send = async (port: number, signal: string, body: string): Promise<number>
   return response.status;
 };
 
+interface RecoverySignal {
+  readonly signal: string;
+  readonly exporter: string;
+  readonly identity: string;
+  readonly body: string;
+}
+
+const recoverySignals = (phase: string, sequence: number): ReadonlyArray<RecoverySignal> => {
+  const traceIdentity = `${runId}-${phase}-trace`;
+  const logIdentity = `${runId}-${phase}-log`;
+  const metricIdentity = `${runId}.${phase}.metric`;
+  return [
+    {
+      signal: "traces",
+      exporter: "otlphttp/traces",
+      identity: traceIdentity,
+      body: tracePayload(traceIdentity, sequence),
+    },
+    {
+      signal: "logs",
+      exporter: "otlphttp/logs",
+      identity: logIdentity,
+      body: logPayload(logIdentity),
+    },
+    {
+      signal: "metrics",
+      exporter: "otlphttp/metrics",
+      identity: metricIdentity,
+      body: metricPayload(metricIdentity),
+    },
+  ];
+};
+
+const sendRecoverySignals = async (
+  port: number,
+  signals: ReadonlyArray<RecoverySignal>,
+): Promise<void> => {
+  for (const signal of signals) {
+    expect(await send(port, signal.signal, signal.body)).toBe(200);
+  }
+};
+
 const sourceConfig = (sink: string, queueSize: number): string => `extensions:
   file_storage/queue:
     directory: /var/lib/otelcol/queue
@@ -166,7 +208,7 @@ receivers:
         endpoint: 0.0.0.0:4318
         max_request_body_size: 8388608
 exporters:
-  otlp_http/traces:
+  otlphttp/traces:
     endpoint: http://${sink}:4318
     encoding: json
     compression: none
@@ -186,7 +228,7 @@ exporters:
       initial_interval: 1s
       max_interval: 2s
       max_elapsed_time: 0
-  otlp_http/logs:
+  otlphttp/logs:
     endpoint: http://${sink}:4318
     encoding: json
     compression: none
@@ -206,7 +248,7 @@ exporters:
       initial_interval: 1s
       max_interval: 2s
       max_elapsed_time: 0
-  otlp_http/metrics:
+  otlphttp/metrics:
     endpoint: http://${sink}:4318
     encoding: json
     compression: none
@@ -240,13 +282,13 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      exporters: [otlp_http/traces]
+      exporters: [otlphttp/traces]
     logs:
       receivers: [otlp]
-      exporters: [otlp_http/logs]
+      exporters: [otlphttp/logs]
     metrics:
       receivers: [otlp]
-      exporters: [otlp_http/metrics]
+      exporters: [otlphttp/metrics]
 `;
 
 const sinkConfig = (): string => `receivers:
@@ -353,6 +395,23 @@ const metricValue = (metrics: string, name: string, exporter: string): number =>
   return Number(line.slice(line.lastIndexOf(" ") + 1));
 };
 
+const queuesAreEmpty = (metrics: string): boolean =>
+  ["otlphttp/traces", "otlphttp/logs", "otlphttp/metrics"].every(
+    (exporter) => metricValue(metrics, "otelcol_exporter_queue_size", exporter) === 0,
+  );
+
+const waitForSustainedEmptyQueues = async (metricsPort: number): Promise<string> => {
+  const first = await waitForText(
+    () => fetchText(`http://127.0.0.1:${metricsPort}/metrics`),
+    queuesAreEmpty,
+  );
+  expect(queuesAreEmpty(first)).toBe(true);
+  await Bun.sleep(1_000);
+  const second = await fetchText(`http://127.0.0.1:${metricsPort}/metrics`);
+  expect(queuesAreEmpty(second)).toBe(true);
+  return second;
+};
+
 const receiverMetricValue = (metrics: string, name: string): number => {
   const line = metrics
     .split("\n")
@@ -376,6 +435,9 @@ interface SaturationResult {
 }
 
 afterAll(async () => {
+  if (!enabled) {
+    return;
+  }
   for (const container of containers) {
     Bun.spawnSync(["docker", "rm", "--force", container], { stdout: "ignore", stderr: "ignore" });
   }
@@ -383,30 +445,28 @@ afterAll(async () => {
   if (root !== "") {
     await rm(root, { recursive: true, force: true });
   }
-  if (enabled) {
-    const remainingContainers = Bun.spawnSync([
-      "docker",
-      "ps",
-      "--all",
-      "--filter",
-      `name=${runId}`,
-      "--format",
-      "{{.Names}}",
-    ]).stdout.toString();
-    const remainingNetworks = Bun.spawnSync([
-      "docker",
-      "network",
-      "ls",
-      "--filter",
-      `name=${network}`,
-      "--format",
-      "{{.Name}}",
-    ]).stdout.toString();
-    await saveEvidence(
-      "cleanup.txt",
-      `containers=${remainingContainers.trim()}\nnetworks=${remainingNetworks.trim()}`,
-    );
-  }
+  const remainingContainers = Bun.spawnSync([
+    "docker",
+    "ps",
+    "--all",
+    "--filter",
+    `name=${runId}`,
+    "--format",
+    "{{.Names}}",
+  ]).stdout.toString();
+  const remainingNetworks = Bun.spawnSync([
+    "docker",
+    "network",
+    "ls",
+    "--filter",
+    `name=${network}`,
+    "--format",
+    "{{.Name}}",
+  ]).stdout.toString();
+  await saveEvidence(
+    "cleanup.txt",
+    `containers=${remainingContainers.trim()}\nnetworks=${remainingNetworks.trim()}`,
+  );
 });
 
 const recoveryDescribe = enabled ? describe : describe.skip;
@@ -433,26 +493,42 @@ recoveryDescribe("Collector recovery", () => {
     ]);
     await Promise.all([chmod(recoveryQueue, 0o777), chmod(recoveryReceipts, 0o777)]);
 
+    const recoveryReceiptPath = join(recoveryReceipts, "otlp.jsonl");
+    const beforeOutage = recoverySignals("before-outage", 1);
+    const duringOutage = recoverySignals("during-outage", 2);
+    const afterRestart = recoverySignals("after-restart", 3);
+    const expectedRecoverySignals = [...beforeOutage, ...duringOutage, ...afterRestart];
+    await saveEvidence(
+      "recovery-identities.json",
+      JSON.stringify(expectedRecoverySignals, undefined, 2),
+    );
+
+    startSink(`${runId}-sink`, recoverySinkConfig, recoveryReceipts);
     const original = startSource(`${runId}-source`, recoveryConfig, recoveryQueue);
     await saveEvidence("recovery-source-original-id.txt", original.id);
     await waitForText(
       () => fetchText(`http://127.0.0.1:${original.healthPort}/health`),
       (value) => value.length > 0,
     );
+    await sendRecoverySignals(original.otlpPort, beforeOutage);
+    const beforeOutageReceipts = await waitForText(
+      () => readFile(recoveryReceiptPath, "utf8"),
+      (value) => beforeOutage.every((signal) => value.includes(signal.identity)),
+    );
+    for (const signal of beforeOutage) {
+      expect(receiptCount(beforeOutageReceipts, signal.identity)).toBe(1);
+    }
+    await waitForSustainedEmptyQueues(original.metricsPort);
 
-    const outageTrace = `${runId}-outage-trace`;
-    const outageLog = `${runId}-outage-log`;
-    const outageMetric = `${runId}.outage.metric`;
-    expect(await send(original.otlpPort, "traces", tracePayload(outageTrace, 1))).toBe(200);
-    expect(await send(original.otlpPort, "logs", logPayload(outageLog))).toBe(200);
-    expect(await send(original.otlpPort, "metrics", metricPayload(outageMetric))).toBe(200);
-
+    removeContainer(`${runId}-sink`);
+    await Bun.sleep(250);
+    await sendRecoverySignals(original.otlpPort, duringOutage);
     const queued = await waitForText(
       () => fetchText(`http://127.0.0.1:${original.metricsPort}/metrics`),
       (value) =>
-        metricValue(value, "otelcol_exporter_queue_size", "otlp_http/traces") === 1 &&
-        metricValue(value, "otelcol_exporter_queue_size", "otlp_http/logs") === 1 &&
-        metricValue(value, "otelcol_exporter_queue_size", "otlp_http/metrics") === 1,
+        duringOutage.every(
+          (signal) => metricValue(value, "otelcol_exporter_queue_size", signal.exporter) === 1,
+        ),
     );
     expect(queued).toContain("otelcol_exporter_queue_capacity");
     await saveEvidence("recovery-queued-metrics.txt", queued);
@@ -471,30 +547,23 @@ recoveryDescribe("Collector recovery", () => {
     );
 
     startSink(`${runId}-sink`, recoverySinkConfig, recoveryReceipts);
-    const recoveryReceiptPath = join(recoveryReceipts, "otlp.jsonl");
-    const recovered = await waitForText(
-      () => readFile(recoveryReceiptPath, "utf8"),
-      (value) =>
-        value.includes(outageTrace) && value.includes(outageLog) && value.includes(outageMetric),
-    );
-    expect(receiptCount(recovered, outageTrace)).toBe(1);
-    expect(receiptCount(recovered, outageLog)).toBe(1);
-    expect(receiptCount(recovered, outageMetric)).toBe(1);
-    await saveEvidence("recovery-receipts.jsonl", recovered);
-
-    const postRestart = `${runId}-post-restart`;
-    expect(await send(restarted.otlpPort, "traces", tracePayload(postRestart, 2))).toBe(200);
     await waitForText(
       () => readFile(recoveryReceiptPath, "utf8"),
-      (value) => value.includes(postRestart),
+      (value) => duringOutage.every((signal) => value.includes(signal.identity)),
     );
-    const drainedMetrics = await waitForText(
-      () => fetchText(`http://127.0.0.1:${restarted.metricsPort}/metrics`),
+    await sendRecoverySignals(restarted.otlpPort, afterRestart);
+    await waitForText(
+      () => readFile(recoveryReceiptPath, "utf8"),
       (value) =>
-        metricValue(value, "otelcol_exporter_queue_size", "otlp_http/traces") === 0 &&
-        metricValue(value, "otelcol_exporter_queue_size", "otlp_http/logs") === 0 &&
-        metricValue(value, "otelcol_exporter_queue_size", "otlp_http/metrics") === 0,
+        [...duringOutage, ...afterRestart].every((signal) => value.includes(signal.identity)),
     );
+    const drainedMetrics = await waitForSustainedEmptyQueues(restarted.metricsPort);
+    const afterRestartReceipts = await readFile(recoveryReceiptPath, "utf8");
+    const finalRecoveryReceipts = `${beforeOutageReceipts.trimEnd()}\n${afterRestartReceipts}`;
+    for (const signal of expectedRecoverySignals) {
+      expect(receiptCount(finalRecoveryReceipts, signal.identity)).toBe(1);
+    }
+    await saveEvidence("recovery-final-receipts.jsonl", finalRecoveryReceipts);
     await saveEvidence("recovery-drained-metrics.txt", drainedMetrics);
 
     const saturationQueue = join(root, "saturation-queue");
@@ -517,21 +586,21 @@ recoveryDescribe("Collector recovery", () => {
     const saturationSignals = [
       {
         signal: "traces",
-        exporter: "otlp_http/traces",
+        exporter: "otlphttp/traces",
         enqueueFailureMetric: "otelcol_exporter_enqueue_failed_spans",
         receiverRefusalMetric: "otelcol_receiver_refused_spans",
         payload: (name: string, index: number) => tracePayload(name, index + 10),
       },
       {
         signal: "logs",
-        exporter: "otlp_http/logs",
+        exporter: "otlphttp/logs",
         enqueueFailureMetric: "otelcol_exporter_enqueue_failed_log_records",
         receiverRefusalMetric: "otelcol_receiver_refused_log_records",
         payload: (name: string) => logPayload(name),
       },
       {
         signal: "metrics",
-        exporter: "otlp_http/metrics",
+        exporter: "otlphttp/metrics",
         enqueueFailureMetric: "otelcol_exporter_enqueue_failed_metric_points",
         receiverRefusalMetric: "otelcol_receiver_refused_metric_points",
         payload: (name: string) => metricPayload(name.replaceAll("-", ".")),
@@ -587,7 +656,7 @@ recoveryDescribe("Collector recovery", () => {
 
     startSink(`${runId}-saturation-sink`, saturationSinkConfig, saturationReceipts);
     const saturationReceiptPath = join(saturationReceipts, "otlp.jsonl");
-    const drained = await waitForText(
+    await waitForText(
       () => readFile(saturationReceiptPath, "utf8"),
       (value) =>
         saturationResults.every((result) =>
@@ -598,13 +667,16 @@ recoveryDescribe("Collector recovery", () => {
           ),
         ),
     );
+    await waitForSustainedEmptyQueues(saturation.metricsPort);
+    const finalSaturationReceipts = await readFile(saturationReceiptPath, "utf8");
     for (const result of saturationResults) {
       for (const name of result.allNames) {
         const receiptName = result.signal === "metrics" ? name.replaceAll("-", ".") : name;
-        expect(drained.includes(receiptName)).toBe(result.acceptedNames.includes(name));
+        const expectedCount = result.acceptedNames.includes(name) ? 1 : 0;
+        expect(receiptCount(finalSaturationReceipts, receiptName)).toBe(expectedCount);
       }
     }
-    await saveEvidence("saturation-receipts.jsonl", drained);
+    await saveEvidence("saturation-final-receipts.jsonl", finalSaturationReceipts);
     await saveEvidence(
       "collector-logs.txt",
       [
@@ -613,13 +685,6 @@ recoveryDescribe("Collector recovery", () => {
         dockerLogs(`${runId}-saturation-source`),
         dockerLogs(`${runId}-saturation-sink`),
       ].join("\n"),
-    );
-    await waitForText(
-      () => fetchText(`http://127.0.0.1:${saturation.metricsPort}/metrics`),
-      (value) =>
-        saturationSignals.every(
-          (signal) => metricValue(value, "otelcol_exporter_queue_size", signal.exporter) === 0,
-        ),
     );
   }, 120_000);
 });
