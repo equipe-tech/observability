@@ -135,6 +135,118 @@ describe("provider HTTP boundary", () => {
     }
   });
 
+  test.serial(
+    "accepts an unrelated provider-default zero retention dataset before mutation",
+    async () => {
+      const requests: Array<{ readonly method: string; readonly path: string }> = [];
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: (request) => {
+          requests.push({ method: request.method, path: new URL(request.url).pathname });
+          return Response.json([
+            {
+              id: "unrelated-id",
+              name: "unrelated-production-traces",
+              description: "Unrelated provider-default dataset",
+              kind: "axiom:events:v1",
+              retentionDays: 0,
+              useRetentionPeriod: false,
+            },
+          ]);
+        },
+      });
+      try {
+        const datasets = await withAxiomEndpoint(`http://127.0.0.1:${server.port}`, () =>
+          Effect.runPromise(
+            Effect.gen(function* () {
+              const api = yield* AxiomApi;
+              return yield* api.datasets(credentials);
+            }).pipe(Effect.provide(AxiomApi.layer)),
+          ),
+        );
+        expect(datasets).toHaveLength(1);
+        expect(datasets[0]?.retentionDays).toBe(0);
+        expect(datasets[0]?.useRetentionPeriod).toBeFalse();
+        expect(
+          datasets.some((dataset) => dataset.name.startsWith("hibou-production-")),
+        ).toBeFalse();
+        expect(requests).toEqual([{ method: "GET", path: "/v2/datasets" }]);
+      } finally {
+        await server.stop(true);
+      }
+    },
+  );
+
+  test.serial("rejects invalid dataset retention discriminations", async () => {
+    const invalidDatasets = [
+      {
+        id: "negative-default",
+        name: "negative-default",
+        description: "negative provider default",
+        kind: "axiom:events:v1",
+        retentionDays: -1,
+        useRetentionPeriod: false,
+      },
+      {
+        id: "negative-custom",
+        name: "negative-custom",
+        description: "negative custom retention",
+        kind: "axiom:events:v1",
+        retentionDays: -1,
+        useRetentionPeriod: true,
+      },
+      {
+        id: "zero-custom",
+        name: "zero-custom",
+        description: "zero custom retention",
+        kind: "axiom:events:v1",
+        retentionDays: 0,
+        useRetentionPeriod: true,
+      },
+      {
+        id: "missing-custom",
+        name: "missing-custom",
+        description: "missing custom retention",
+        kind: "axiom:events:v1",
+        useRetentionPeriod: true,
+      },
+      {
+        id: "positive-default",
+        name: "positive-default",
+        description: "positive provider default",
+        kind: "axiom:events:v1",
+        retentionDays: 30,
+        useRetentionPeriod: false,
+      },
+    ];
+    let responseIndex = 0;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => Response.json([invalidDatasets[responseIndex++]]),
+    });
+    try {
+      const errors = await withAxiomEndpoint(`http://127.0.0.1:${server.port}`, () =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const api = yield* AxiomApi;
+            const results = [];
+            for (const _ of invalidDatasets) {
+              results.push(yield* Effect.flip(api.datasets(credentials)));
+            }
+            return results;
+          }).pipe(Effect.provide(AxiomApi.layer)),
+        ),
+      );
+      expect(errors.map((error) => error.code)).toEqual(
+        invalidDatasets.map(() => "OBS_CLI_REMOTE_INVALID_RESPONSE"),
+      );
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test.serial("rereads and reconciles an exact dataset after HTTP 409", async () => {
     let reads = 0;
     const server = Bun.serve({

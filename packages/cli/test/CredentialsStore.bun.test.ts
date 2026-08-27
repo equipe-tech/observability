@@ -8,6 +8,7 @@ import {
   CredentialsFile,
   CredentialsStore,
   SentryCredentials,
+  VerifiedAxiomDataset,
 } from "../src/CredentialsStore.ts";
 
 const PersistedVersion = Schema.Struct({ version: Schema.Number });
@@ -83,6 +84,33 @@ const administrativeCredentials = () => ({
 });
 
 describe("CredentialsStore", () => {
+  test("enforces retention discriminations in verified dataset state", () => {
+    const verifiedDataset = (retention: {
+      readonly retentionDays?: number;
+      readonly useRetentionPeriod: boolean;
+    }) =>
+      new VerifiedAxiomDataset({
+        id: "dataset-id",
+        name: "dataset-name",
+        kind: "axiom:events:v1",
+        ...retention,
+      });
+
+    expect(() => verifiedDataset({ useRetentionPeriod: false })).not.toThrow();
+    expect(() => verifiedDataset({ retentionDays: 0, useRetentionPeriod: false })).not.toThrow();
+    expect(() => verifiedDataset({ retentionDays: 30, useRetentionPeriod: true })).not.toThrow();
+
+    for (const retention of [
+      { retentionDays: -1, useRetentionPeriod: false },
+      { retentionDays: -1, useRetentionPeriod: true },
+      { retentionDays: 0, useRetentionPeriod: true },
+      { useRetentionPeriod: true },
+      { retentionDays: 30, useRetentionPeriod: false },
+    ]) {
+      expect(() => verifiedDataset(retention)).toThrow(/Schema validation failed/);
+    }
+  });
+
   test.serial("writes version 3 credentials durably with owner-only permissions", () =>
     withCredentialsHome("observability-credentials-", async (root) => {
       const credentials = administrativeCredentials();

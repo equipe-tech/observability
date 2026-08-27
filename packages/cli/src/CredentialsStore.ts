@@ -1,5 +1,9 @@
 import { Clock, Context, Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
 import { homedir } from "node:os";
+import {
+  AxiomDatasetRetentionDays,
+  AxiomDatasetRetentionInvariant,
+} from "./AxiomDatasetRetention.ts";
 
 const CredentialsEnvironment = Schema.Struct({
   OBSERVABILITY_HOME: Schema.NonEmptyString.pipe(Schema.optionalKey),
@@ -32,14 +36,16 @@ export const AxiomDatasetKind = Schema.Literals([
 
 export class VerifiedAxiomDataset extends Schema.Class<VerifiedAxiomDataset>(
   "@equipe-tech/observability-cli/VerifiedAxiomDataset",
-)({
-  id: Schema.NonEmptyString,
-  name: Schema.NonEmptyString,
-  kind: AxiomDatasetKind,
-  edgeDeployment: Schema.NonEmptyString.pipe(Schema.optionalKey),
-  retentionDays: Schema.Int.check(Schema.isGreaterThan(0)).pipe(Schema.optionalKey),
-  useRetentionPeriod: Schema.Boolean,
-}) {}
+)(
+  Schema.Struct({
+    id: Schema.NonEmptyString,
+    name: Schema.NonEmptyString,
+    kind: AxiomDatasetKind,
+    edgeDeployment: Schema.NonEmptyString.pipe(Schema.optionalKey),
+    retentionDays: AxiomDatasetRetentionDays,
+    useRetentionPeriod: Schema.Boolean,
+  }).check(AxiomDatasetRetentionInvariant),
+) {}
 
 const VerificationRequired = Schema.Struct({ type: Schema.Literal("verification-required") });
 const ManualCorrelation = Schema.Struct({

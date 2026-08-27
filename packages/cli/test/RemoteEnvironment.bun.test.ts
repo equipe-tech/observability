@@ -698,11 +698,10 @@ describe("RemoteEnvironment", () => {
     expect(remote.state().tokenCreations).toBe(0);
   });
 
-  test("rejects lower, higher and disabled explicit retention before any mutation", async () => {
+  test("rejects lower and higher explicit retention before any mutation", async () => {
     for (const retention of [
       { existing: 30, requested: 14, enabled: true },
       { existing: 14, requested: 30, enabled: true },
-      { existing: 30, requested: 30, enabled: false },
     ]) {
       const remote = makeRemoteLayer({ sentry: false });
       remote.state().datasets.push(
