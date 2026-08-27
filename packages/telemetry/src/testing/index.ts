@@ -36,11 +36,41 @@ export type CapturedMetricPoint = {
   readonly attributes: CapturedAttributes;
 };
 
-export type CapturedMetric = {
+export type CapturedHistogramPoint = {
+  readonly attributes: CapturedAttributes;
+  readonly count: number;
+  readonly sum: number;
+  readonly min: number;
+  readonly max: number;
+  readonly explicitBounds: ReadonlyArray<number>;
+  readonly bucketCounts: ReadonlyArray<number>;
+};
+
+type CapturedMetricCommon = {
   readonly name: string;
+  readonly description: string;
+  readonly unit: string;
   readonly points: ReadonlyArray<CapturedMetricPoint>;
   readonly resourceAttributes: CapturedAttributes;
 };
+
+export type CapturedMetric =
+  | (CapturedMetricCommon & {
+      readonly kind: "sum";
+      readonly isMonotonic: boolean;
+      readonly aggregationTemporality: number;
+    })
+  | (CapturedMetricCommon & { readonly kind: "gauge" })
+  | (CapturedMetricCommon & {
+      readonly kind: "histogram";
+      readonly aggregationTemporality: number;
+      readonly histogramPoints: ReadonlyArray<CapturedHistogramPoint>;
+    })
+  | (CapturedMetricCommon & {
+      readonly kind: "exponentialHistogram";
+      readonly aggregationTemporality: number;
+    })
+  | (CapturedMetricCommon & { readonly kind: "summary" });
 
 export type CapturedTelemetry = {
   readonly spans: ReadonlyArray<CapturedSpan>;
@@ -124,12 +154,37 @@ const MetricDataPoint = Schema.Struct({
   asInt: Schema.Union([Schema.String, Schema.Number]).pipe(Schema.optionalKey),
 });
 
-const DataPoints = Schema.Struct({ dataPoints: Schema.Array(MetricDataPoint) });
+const NumberDataPoints = Schema.Struct({ dataPoints: Schema.Array(MetricDataPoint) });
+
+const HistogramDataPoint = Schema.Struct({
+  attributes: Attributes,
+  count: Schema.Number,
+  sum: Schema.Number,
+  min: Schema.Number,
+  max: Schema.Number,
+  explicitBounds: Schema.Array(Schema.Number),
+  bucketCounts: Schema.Array(Schema.Number),
+});
 
 const ExportedMetric = Schema.Struct({
   name: Schema.String,
-  sum: DataPoints.pipe(Schema.optionalKey),
-  gauge: DataPoints.pipe(Schema.optionalKey),
+  description: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  unit: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed("1"))),
+  sum: Schema.Struct({
+    dataPoints: Schema.Array(MetricDataPoint),
+    isMonotonic: Schema.Boolean,
+    aggregationTemporality: Schema.Number,
+  }).pipe(Schema.optionalKey),
+  gauge: NumberDataPoints.pipe(Schema.optionalKey),
+  histogram: Schema.Struct({
+    dataPoints: Schema.Array(HistogramDataPoint),
+    aggregationTemporality: Schema.Number,
+  }).pipe(Schema.optionalKey),
+  exponentialHistogram: Schema.Struct({
+    dataPoints: Schema.Array(MetricDataPoint),
+    aggregationTemporality: Schema.Number,
+  }).pipe(Schema.optionalKey),
+  summary: NumberDataPoints.pipe(Schema.optionalKey),
 });
 
 const MetricExport = Schema.Struct({
@@ -163,6 +218,16 @@ const toAttributes = (attributes: ReadonlyArray<ExportedAttribute>): CapturedAtt
   }
   return converted;
 };
+
+type ExportedMetricDataPoint = typeof MetricDataPoint.Type;
+
+const toCapturedMetricPoints = (
+  dataPoints: ReadonlyArray<ExportedMetricDataPoint>,
+): ReadonlyArray<CapturedMetricPoint> =>
+  dataPoints.map((dataPoint) => ({
+    value: Option.fromNullishOr(dataPoint.asDouble ?? dataPoint.asInt).pipe(Option.map(Number)),
+    attributes: toAttributes(dataPoint.attributes),
+  }));
 
 export const attribute = (
   attributes: CapturedAttributes,
@@ -245,17 +310,59 @@ const decodeCapturedTelemetry = Effect.fn("decodeCapturedTelemetry")(function* (
         const resourceAttributes = toAttributes(resourceMetrics.resource.attributes);
         for (const scopeMetrics of resourceMetrics.scopeMetrics) {
           for (const metric of scopeMetrics.metrics) {
-            const dataPoints = metric.sum?.dataPoints ?? metric.gauge?.dataPoints ?? [];
-            metrics.push({
+            const common = {
               name: metric.name,
-              points: dataPoints.map((dataPoint) => ({
-                value: Option.fromNullishOr(dataPoint.asDouble ?? dataPoint.asInt).pipe(
-                  Option.map(Number),
-                ),
-                attributes: toAttributes(dataPoint.attributes),
-              })),
+              description: metric.description,
+              unit: metric.unit,
               resourceAttributes,
-            });
+            };
+            if (metric.sum !== undefined) {
+              metrics.push({
+                ...common,
+                kind: "sum",
+                points: toCapturedMetricPoints(metric.sum.dataPoints),
+                isMonotonic: metric.sum.isMonotonic,
+                aggregationTemporality: metric.sum.aggregationTemporality,
+              });
+            } else if (metric.gauge !== undefined) {
+              metrics.push({
+                ...common,
+                kind: "gauge",
+                points: toCapturedMetricPoints(metric.gauge.dataPoints),
+              });
+            } else if (metric.histogram !== undefined) {
+              metrics.push({
+                ...common,
+                kind: "histogram",
+                points: metric.histogram.dataPoints.map((dataPoint) => ({
+                  value: Option.none(),
+                  attributes: toAttributes(dataPoint.attributes),
+                })),
+                aggregationTemporality: metric.histogram.aggregationTemporality,
+                histogramPoints: metric.histogram.dataPoints.map((dataPoint) => ({
+                  attributes: toAttributes(dataPoint.attributes),
+                  count: dataPoint.count,
+                  sum: dataPoint.sum,
+                  min: dataPoint.min,
+                  max: dataPoint.max,
+                  explicitBounds: dataPoint.explicitBounds,
+                  bucketCounts: dataPoint.bucketCounts,
+                })),
+              });
+            } else if (metric.exponentialHistogram !== undefined) {
+              metrics.push({
+                ...common,
+                kind: "exponentialHistogram",
+                points: toCapturedMetricPoints(metric.exponentialHistogram.dataPoints),
+                aggregationTemporality: metric.exponentialHistogram.aggregationTemporality,
+              });
+            } else if (metric.summary !== undefined) {
+              metrics.push({
+                ...common,
+                kind: "summary",
+                points: toCapturedMetricPoints(metric.summary.dataPoints),
+              });
+            }
           }
         }
       }

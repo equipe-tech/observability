@@ -72,6 +72,7 @@ O pacote `@equipe-tech/observability` publica um subpath por runtime:
 
 | Subpath     | Conteúdo                                                                                                                     |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `./metrics` | Facade sem dependência de framework para counters, histogramas, gauges observáveis, flush e close                            |
 | `./node`    | `runMain` (telemetria do ambiente, interrupção em `SIGINT`/`SIGTERM`, flush no shutdown) e ingestão de eventos do browser    |
 | `./nestjs`  | `TelemetryInterceptor` (spans de fronteira HTTP), `withRequestSpan` e `createBrowserEventsController` (`/_telemetry/events`) |
 | `./browser` | `BrowserTelemetry` (fila limitada, batch e flush de wide events para `/_telemetry/events`) com transporte `fetch` injetável  |
@@ -80,6 +81,8 @@ O pacote `@equipe-tech/observability` publica um subpath por runtime:
 O contrato do endpoint `/_telemetry/events` vive em `BrowserEvents` no entrypoint raiz. O servidor faz o parse com `parseBrowserEventBatch` e re-emite os eventos como wide events com atributos de servidor (`event.source`, `browser.event.id`).
 
 O adapter `./nestjs` publica o endpoint pronto: registre `createBrowserEventsController(runtime)` nos controllers do módulo. O controller responde `202 { accepted }` e rejeita batches inválidos com `400 { code, message, correlationId }`. O valor `correlationId` é um identificador seguro para suporte. O limite de corpo bruto pertence ao transporte HTTP; o Express responde `413` acima do limite configurado.
+
+Consulte [Métricas sem dependência de framework](docs/metrics.md) para lifecycle, limites de cardinalidade, atributos e erros.
 
 Consulte [Semântica HTTP do adapter NestJS](docs/nestjs-http-semantics.md) para rotas, status, proxy, privacidade e exclusões.
 
