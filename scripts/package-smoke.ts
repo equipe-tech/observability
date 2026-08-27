@@ -68,6 +68,8 @@ try {
         "package/dist/node/index.d.ts",
         "package/dist/nestjs/index.js",
         "package/dist/nestjs/index.d.ts",
+        "package/dist/nestjs/RequestWideEventTraceCorrelation.js",
+        "package/dist/nestjs/RequestWideEventTraceCorrelation.d.ts",
         "package/dist/browser/index.js",
         "package/dist/browser/index.d.ts",
         "package/dist/browser/client.js",
@@ -156,7 +158,7 @@ try {
     }
     await writeFile(
       join(nestConsumer, "app.ts"),
-      "import 'reflect-metadata';\nimport { Controller, Get, Module } from '@nestjs/common';\nimport { NestFactory } from '@nestjs/core';\nimport { TelemetryModule } from '@equipe-tech/observability/nestjs';\nclass AppController { ping() { return { ok: true }; } }\nController()(AppController);\nconst descriptor = Object.getOwnPropertyDescriptor(AppController.prototype, 'ping');\nif (!descriptor) throw new Error('Missing ping descriptor.');\nGet('ping')(AppController.prototype, 'ping', descriptor);\nclass AppModule {}\nModule({ imports: [TelemetryModule.forRootAsync({ imports: undefined, inject: undefined, useFactory: async () => ({ enabled: false }) })], controllers: [AppController] })(AppModule);\nconst app = await NestFactory.create(AppModule, { logger: false });\nawait app.listen(0, '127.0.0.1');\nconst address = app.getHttpServer().address();\nif (!address || typeof address === 'string') throw new Error('Missing server address.');\nconst response = await fetch(`http://127.0.0.1:${address.port}/ping`);\nif (response.status !== 200 || (await response.json()).ok !== true) throw new Error('Packed Nest request failed.');\nawait app.close();\n",
+      "import 'reflect-metadata';\nimport { Controller, Get, Module } from '@nestjs/common';\nimport { NestFactory } from '@nestjs/core';\nimport { createRequestWideEventTraceCorrelation, TelemetryModule } from '@equipe-tech/observability/nestjs';\nconst correlations: Array<{ readonly traceId: string; readonly spanId: string }> = [];\nconst traceCorrelation = createRequestWideEventTraceCorrelation(() => ({ set: (value) => correlations.push(value) }));\ntraceCorrelation.correlate({}, { traceId: '11111111111111111111111111111111', spanId: '1111111111111111' });\nif (correlations.length !== 1 || correlations[0]?.spanId !== '1111111111111111') throw new Error('Packed trace correlation bridge failed.');\nclass AppController { ping() { return { ok: true }; } }\nController()(AppController);\nconst descriptor = Object.getOwnPropertyDescriptor(AppController.prototype, 'ping');\nif (!descriptor) throw new Error('Missing ping descriptor.');\nGet('ping')(AppController.prototype, 'ping', descriptor);\nclass AppModule {}\nModule({ imports: [TelemetryModule.forRootAsync({ imports: undefined, inject: undefined, useFactory: async () => ({ enabled: false }) })], controllers: [AppController] })(AppModule);\nconst app = await NestFactory.create(AppModule, { logger: false });\nawait app.listen(0, '127.0.0.1');\nconst address = app.getHttpServer().address();\nif (!address || typeof address === 'string') throw new Error('Missing server address.');\nconst response = await fetch(`http://127.0.0.1:${address.port}/ping`);\nif (response.status !== 200 || (await response.json()).ok !== true) throw new Error('Packed Nest request failed.');\nawait app.close();\n",
     );
     await writeFile(
       join(nestConsumer, "tsconfig.json"),
@@ -179,6 +181,22 @@ try {
       ),
       `Type-checking the Nest ${nestMajor} packed consumer`,
     );
+    const bridgeDeclaration = await readFile(
+      join(
+        nestConsumer,
+        "node_modules/@equipe-tech/observability/dist/nestjs/RequestWideEventTraceCorrelation.d.ts",
+      ),
+      "utf8",
+    );
+    if (
+      /from ["'](?:effect|evlog)(?:\/|["'])|import\(["'](?:effect|evlog)(?:\/|["'])/.test(
+        bridgeDeclaration,
+      )
+    ) {
+      throw new Error(
+        "The request-wide event trace correlation declaration exposes Effect or evlog.",
+      );
+    }
     requireSuccess(
       await run(["bun", "app.ts"], nestConsumer),
       `Executing the Nest ${nestMajor} packed consumer`,

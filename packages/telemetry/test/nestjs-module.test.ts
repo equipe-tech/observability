@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import { Schema } from "effect";
 import { assert, describe, it } from "vite-plus/test";
 import {
+  createRequestWideEventTraceCorrelation,
   InvalidTelemetryModuleOptions,
   TelemetryModule,
   TelemetryShutdownError,
@@ -31,6 +32,8 @@ const methodDescriptor = <Prototype extends WeakKey>(
 const applicationBaseUrl = (address: string | AddressInfo | null): string =>
   `http://127.0.0.1:${decodeAddress(address).port}`;
 
+const occurrenceCount = (content: string, value: string): number => content.split(value).length - 1;
+
 interface OtlpRequest {
   readonly path: string;
   readonly body: string;
@@ -41,6 +44,12 @@ interface OtlpCapture {
   readonly requests: Array<OtlpRequest>;
   readonly close: () => Promise<void>;
 }
+
+const traceExportContent = (capture: OtlpCapture): string =>
+  capture.requests
+    .filter((request) => request.path === "/v1/traces")
+    .map((request) => request.body)
+    .join("\n");
 
 const makeOtlpCapture = async (delayMilliseconds = 0): Promise<OtlpCapture> => {
   const requests: Array<OtlpRequest> = [];
@@ -143,22 +152,14 @@ describe("TelemetryModule", () => {
         const response = await fetch(`${baseUrl}${path}`);
         assert.strictEqual(response.status, 200);
       }
-      assert.lengthOf(
-        capture.requests.filter((request) => request.path === "/v1/traces"),
-        0,
-      );
       await app.close();
 
-      const traceRequests = capture.requests.filter((request) => request.path === "/v1/traces");
-      assert.lengthOf(traceRequests, 1);
-      assert.include(traceRequests[0]?.body, '"name":"GET /ping"');
-      assert.notInclude(traceRequests[0]?.body, "GET /health");
-      assert.notInclude(traceRequests[0]?.body, "GET /ready");
-      assert.notInclude(traceRequests[0]?.body, "GET /_telemetry/events");
-      assert.include(
-        traceRequests[0]?.body,
-        '"service.name","value":{"stringValue":"nestjs-module-test"}',
-      );
+      const traceContent = traceExportContent(capture);
+      assert.strictEqual(occurrenceCount(traceContent, '"name":"GET /ping"'), 1);
+      assert.notInclude(traceContent, "GET /health");
+      assert.notInclude(traceContent, "GET /ready");
+      assert.notInclude(traceContent, "GET /_telemetry/events");
+      assert.include(traceContent, '"service.name","value":{"stringValue":"nestjs-module-test"}');
     } finally {
       await app.close().catch(() => undefined);
       await capture.close();
@@ -183,6 +184,7 @@ describe("TelemetryModule", () => {
             otlpEndpoint: capture.endpoint,
             healthRouteTemplates: undefined,
             proxyPolicy: undefined,
+            requestWideEventTraceCorrelation: undefined,
             shutdownTimeoutMilliseconds: undefined,
           }),
         }),
@@ -196,9 +198,11 @@ describe("TelemetryModule", () => {
       const response = await fetch(`${applicationBaseUrl(app.getHttpServer().address())}/ping`);
       assert.strictEqual(response.status, 200);
       await app.close();
-      assert.lengthOf(
-        capture.requests.filter((request) => request.path === "/v1/traces"),
-        1,
+      const traceContent = traceExportContent(capture);
+      assert.strictEqual(occurrenceCount(traceContent, '"name":"GET /ping"'), 1);
+      assert.include(
+        traceContent,
+        '"service.name","value":{"stringValue":"nestjs-undefined-test"}',
       );
     } finally {
       await app.close().catch(() => undefined);
@@ -358,9 +362,9 @@ describe("TelemetryModule", () => {
       const response = await fetch(`${applicationBaseUrl(app.getHttpServer().address())}/ping`);
       assert.strictEqual(response.status, 200);
       await Promise.all([app.close(), app.close()]);
-      const traceRequests = capture.requests.filter((request) => request.path === "/v1/traces");
-      assert.lengthOf(traceRequests, 1);
-      assert.strictEqual(traceRequests[0]?.body.split('"name":"GET /ping"').length, 2);
+      const traceContent = traceExportContent(capture);
+      assert.strictEqual(occurrenceCount(traceContent, '"name":"GET /ping"'), 1);
+      assert.include(traceContent, '"service.name","value":{"stringValue":"nestjs-module-test"}');
     } finally {
       await app.close().catch(() => undefined);
       await capture.close();
@@ -389,6 +393,63 @@ describe("TelemetryModule", () => {
             useFactory: async () => {
               await new Promise((resolve) => setTimeout(resolve, 50));
               return enabledOptions(`${capture.endpoint}/alternate`);
+            },
+          },
+          { scopedResource: acquisitionResource },
+        ),
+      ],
+    })(AppModule);
+
+    const app = await NestFactory.create(AppModule, {
+      logger: false,
+      abortOnError: false,
+    });
+    try {
+      const failure = await app.init().then(
+        () => undefined,
+        (cause) => cause,
+      );
+      assert.instanceOf(failure, InvalidTelemetryModuleOptions);
+      assert.strictEqual(failure?.code, "OBS_TELEMETRY_INVALID_MODULE_OPTIONS");
+      assert.strictEqual(resourceAcquisitions, 0);
+    } finally {
+      await app.close().catch(() => undefined);
+      await capture.close();
+    }
+  });
+
+  it("rejects differing correlation adapters before runtime acquisition", async () => {
+    const capture = await makeOtlpCapture();
+    let resourceAcquisitions = 0;
+    const acquisitionResource = {
+      acquire: () => {
+        resourceAcquisitions++;
+      },
+      release: () => undefined,
+    };
+    const firstCorrelation = createRequestWideEventTraceCorrelation(() => undefined);
+    const secondCorrelation = createRequestWideEventTraceCorrelation(() => undefined);
+
+    class AppModule {}
+    Module({
+      imports: [
+        telemetryModuleForTesting(
+          {
+            useFactory: () => ({
+              ...enabledOptions(capture.endpoint),
+              requestWideEventTraceCorrelation: firstCorrelation,
+            }),
+          },
+          { scopedResource: acquisitionResource },
+        ),
+        telemetryModuleForTesting(
+          {
+            useFactory: async () => {
+              await new Promise((resolve) => setTimeout(resolve, 50));
+              return {
+                ...enabledOptions(capture.endpoint),
+                requestWideEventTraceCorrelation: secondCorrelation,
+              };
             },
           },
           { scopedResource: acquisitionResource },
