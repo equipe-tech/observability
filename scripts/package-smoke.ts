@@ -62,6 +62,8 @@ try {
         "package/dist/LICENSE",
         "package/dist/index.js",
         "package/dist/index.d.ts",
+        "package/dist/Metrics.js",
+        "package/dist/Metrics.d.ts",
         "package/dist/node/index.js",
         "package/dist/node/index.d.ts",
         "package/dist/nestjs/index.js",
@@ -142,7 +144,7 @@ try {
       [
         "bun",
         "-e",
-        "import { Telemetry, WideEvent } from '@equipe-tech/observability'; import { runMain, ingestBrowserEvents } from '@equipe-tech/observability/node'; import { BrowserTelemetry } from '@equipe-tech/observability/browser'; import { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client'; import { run } from '@equipe-tech/observability/testing'; if (!Telemetry.layer || !WideEvent.emit || !runMain || !ingestBrowserEvents || !BrowserTelemetry.layer || !createBrowserTelemetryClient || !run) process.exit(1);",
+        "import { Telemetry, WideEvent } from '@equipe-tech/observability'; import { createMetrics } from '@equipe-tech/observability/metrics'; import { runMain, ingestBrowserEvents } from '@equipe-tech/observability/node'; import { BrowserTelemetry } from '@equipe-tech/observability/browser'; import { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client'; import { run } from '@equipe-tech/observability/testing'; if (!Telemetry.layer || !WideEvent.emit || !createMetrics || !runMain || !ingestBrowserEvents || !BrowserTelemetry.layer || !createBrowserTelemetryClient || !run) process.exit(1);",
       ],
       consumer,
     ),
@@ -151,6 +153,21 @@ try {
   await writeFile(
     join(consumer, "index.ts"),
     "import { TelemetryConfig } from '@equipe-tech/observability';\nimport { layer } from '@equipe-tech/observability/node';\nimport { BrowserTelemetry } from '@equipe-tech/observability/browser';\nimport { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client';\nimport { run } from '@equipe-tech/observability/testing';\nconst config = new TelemetryConfig({ serviceName: 'test', serviceVersion: '1.0.0', environment: 'test', otlpEndpoint: new URL('http://localhost:4318') });\nvoid config;\nvoid layer;\nvoid BrowserTelemetry;\nvoid createBrowserTelemetryClient;\nvoid run;\n",
+  );
+  await writeFile(
+    join(consumer, "metrics-consumer.ts"),
+    "import { createMetrics, type MetricAttribute } from '@equipe-tech/observability/metrics';\nconst metrics = await createMetrics({ enabled: false, serviceName: 'packed-consumer', serviceVersion: '1.0.0', environment: 'test', otlpEndpoint: 'http://localhost:4318' });\nconst attributes: ReadonlyArray<MetricAttribute> = [{ key: 'packed', value: true }];\nconst counter = metrics.counter({ name: 'packed.counter', description: 'Packed counter', unit: '1' });\nconst histogram = metrics.histogram({ name: 'packed.histogram', description: 'Packed histogram', unit: 'ms', boundaries: [1, 10] });\nconst gauge = metrics.observableGauge({ name: 'packed.gauge', description: 'Packed gauge', unit: '%' }, () => [{ value: 4, attributes }]);\ncounter.add(1, attributes);\nhistogram.record(5, attributes);\ngauge.unregister();\nawait metrics.flush();\nawait metrics.close();\n",
+  );
+  const metricsDeclaration = await readFile(
+    join(consumer, "node_modules/@equipe-tech/observability/dist/Metrics.d.ts"),
+    "utf8",
+  );
+  if (/from ["']effect(?:\/|["'])|import\(["']effect(?:\/|["'])/.test(metricsDeclaration)) {
+    throw new Error("The metrics facade declaration exposes an Effect module reference.");
+  }
+  requireSuccess(
+    await run(["bun", "metrics-consumer.ts"], consumer),
+    "Executing the packed metrics facade",
   );
   await writeFile(
     join(consumer, "tsconfig.json"),
@@ -162,7 +179,7 @@ try {
         strict: true,
         noEmit: true,
       },
-      include: ["index.ts"],
+      include: ["index.ts", "metrics-consumer.ts"],
     }),
   );
   requireSuccess(

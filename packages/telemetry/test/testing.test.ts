@@ -17,11 +17,22 @@ describe("Testing.run", () => {
       const counter = Metric.counter("testing.operations", {
         attributes: { "testing.run_id": runId },
       });
+      const histogram = Metric.histogram("testing.duration", {
+        description: "Testing duration",
+        attributes: { "testing.run_id": runId, unit: "ms" },
+        boundaries: [10, 20],
+      });
+      const gauge = Metric.gauge("testing.load", {
+        description: "Testing load",
+        attributes: { "testing.run_id": runId, unit: "%" },
+      });
       const { exit, telemetry } = yield* Testing.run(
         Effect.gen(function* () {
           yield* Effect.sleep("5 millis").pipe(Effect.withSpan("testing.child"));
           yield* WideEvent.emit("testing.completed", { "testing.run_id": runId });
           yield* Metric.update(counter, 1);
+          yield* Metric.update(histogram, 12);
+          yield* Metric.update(gauge, 7);
           return "done";
         }).pipe(Effect.withSpan("testing.operation")),
         {
@@ -68,6 +79,42 @@ describe("Testing.run", () => {
       );
       assert.isDefined(point);
       assert.deepStrictEqual(point.value, Option.some(1));
+      assert.strictEqual(metric.kind, "sum");
+      if (metric.kind === "sum") {
+        assert.isFalse(metric.isMonotonic);
+        assert.strictEqual(metric.aggregationTemporality, 2);
+      }
+
+      const capturedHistogram = telemetry.metrics.find(
+        (candidate) => candidate.name === "testing.duration",
+      );
+      assert.isDefined(capturedHistogram);
+      assert.strictEqual(capturedHistogram.kind, "histogram");
+      assert.strictEqual(capturedHistogram.unit, "ms");
+      if (capturedHistogram.kind === "histogram") {
+        const histogramPoint = capturedHistogram.histogramPoints[0];
+        assert.isDefined(histogramPoint);
+        assert.strictEqual(histogramPoint.count, 1);
+        assert.strictEqual(histogramPoint.sum, 12);
+        assert.deepStrictEqual(histogramPoint.explicitBounds, [10]);
+        assert.deepStrictEqual(histogramPoint.bucketCounts, [0, 1]);
+        assert.strictEqual(
+          histogramPoint.bucketCounts.length,
+          histogramPoint.explicitBounds.length + 1,
+        );
+        assert.isTrue(Option.isNone(Testing.attribute(histogramPoint.attributes, "unit")));
+      }
+
+      const capturedGauge = telemetry.metrics.find(
+        (candidate) => candidate.name === "testing.load",
+      );
+      assert.isDefined(capturedGauge);
+      assert.strictEqual(capturedGauge.kind, "gauge");
+      assert.strictEqual(capturedGauge.unit, "%");
+      const capturedGaugePoint = capturedGauge.points[0];
+      assert.isDefined(capturedGaugePoint);
+      assert.deepStrictEqual(capturedGaugePoint.value, Option.some(7));
+      assert.isTrue(Option.isNone(Testing.attribute(capturedGaugePoint.attributes, "unit")));
     }),
   );
 

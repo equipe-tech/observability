@@ -1,13 +1,9 @@
 import { Duration, Effect, Layer } from "effect";
 import { FetchHttpClient, type HttpClient, HttpClientRequest } from "effect/unstable/http";
-import {
-  OtlpExporter,
-  OtlpLogger,
-  OtlpMetrics,
-  OtlpSerialization,
-} from "effect/unstable/observability";
+import { OtlpExporter, OtlpLogger, OtlpSerialization } from "effect/unstable/observability";
 import type { EnvironmentVariables, InvalidTelemetryEnvironment } from "./TelemetryConfig.ts";
 import { telemetryConfigFromEnv, type TelemetryConfig } from "./TelemetryConfig.ts";
+import { layerMetricsRuntime } from "./MetricsRuntime.ts";
 import { layerHttpServerOtlpTracer } from "./nestjs/HttpServerOtlpTracer.ts";
 
 export type OtlpLayerOptions = {
@@ -27,17 +23,16 @@ export const layerOtlp = (
       "deployment.environment.name": config.environment,
     },
   };
+  const metrics = layerMetricsRuntime(config, {
+    shutdownTimeoutMilliseconds: Duration.toMillis(options.shutdownTimeout ?? "3 seconds"),
+  });
   return Layer.mergeAll(
     OtlpLogger.layer({
       url: url("/v1/logs"),
       resource,
       shutdownTimeout: options.shutdownTimeout,
     }),
-    OtlpMetrics.layer({
-      url: url("/v1/metrics"),
-      resource,
-      shutdownTimeout: options.shutdownTimeout,
-    }),
+    metrics,
     layerHttpServerOtlpTracer({
       url: url("/v1/traces"),
       resource,
