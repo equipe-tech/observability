@@ -40,14 +40,17 @@ export const AxiomDatasetCapabilities = Schema.Record(
   AxiomDatasetCapability,
 );
 const AxiomOrganizationCapabilities = Schema.Record(Schema.NonEmptyString, AxiomCapabilityActions);
-const AxiomViewCapabilities = Schema.Record(Schema.NonEmptyString, AxiomCapabilityActions);
+const AxiomTokenDescription = Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed("")));
+const AxiomViewCapabilities = Schema.Record(Schema.NonEmptyString, AxiomCapabilityActions).pipe(
+  Schema.withDecodingDefaultKey(Effect.succeed({})),
+);
 
 export class AxiomToken extends Schema.Class<AxiomToken>(
   "@equipe-tech/observability-cli/AxiomToken",
 )({
   id: Schema.NonEmptyString,
   name: Schema.NonEmptyString,
-  description: Schema.String,
+  description: AxiomTokenDescription,
   expiresAt: Schema.String.pipe(Schema.optionalKey),
   datasetCapabilities: AxiomDatasetCapabilities,
   orgCapabilities: AxiomOrganizationCapabilities,

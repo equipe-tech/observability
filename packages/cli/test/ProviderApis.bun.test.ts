@@ -374,6 +374,175 @@ describe("provider HTTP boundary", () => {
     }
   });
 
+  test.serial(
+    "normalizes the exact real token list and explicit-empty optional fields identically",
+    async () => {
+      const omitted = [
+        {
+          id: "unrelated-token-id",
+          name: "unrelated-token",
+          datasetCapabilities: {},
+          orgCapabilities: {},
+        },
+        {
+          id: "hibou-token-id",
+          name: "hibou-production-collector",
+          description: "Collector ingest token for hibou-production-collector",
+          datasetCapabilities: {
+            "hibou-production-traces": { ingest: ["create"] },
+            "hibou-production-logs": { ingest: ["create"] },
+            "hibou-production-metrics": { ingest: ["create"] },
+          },
+          orgCapabilities: {},
+        },
+      ];
+      const explicitEmpty = [
+        {
+          ...omitted[0],
+          description: "",
+          viewCapabilities: {},
+        },
+        {
+          ...omitted[1],
+          viewCapabilities: {},
+        },
+      ];
+      let requestIndex = 0;
+      const requests: Array<{ readonly method: string; readonly path: string }> = [];
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: (request) => {
+          requests.push({ method: request.method, path: new URL(request.url).pathname });
+          return Response.json(requestIndex++ === 0 ? omitted : explicitEmpty);
+        },
+      });
+      try {
+        const result = await withAxiomEndpoint(`http://127.0.0.1:${server.port}`, () =>
+          Effect.runPromise(
+            Effect.gen(function* () {
+              const api = yield* AxiomApi;
+              const normalizedOmitted = yield* api.tokens(credentials);
+              const normalizedExplicitEmpty = yield* api.tokens(credentials);
+              return { normalizedExplicitEmpty, normalizedOmitted };
+            }).pipe(Effect.provide(AxiomApi.layer)),
+          ),
+        );
+        expect(result.normalizedOmitted).toEqual(result.normalizedExplicitEmpty);
+        expect(result.normalizedOmitted[0]?.description).toBe("");
+        expect(result.normalizedOmitted[0]?.viewCapabilities).toEqual({});
+        expect(result.normalizedOmitted[1]?.viewCapabilities).toEqual({});
+        expect(requestIndex).toBe(2);
+        expect(requests).toEqual([
+          { method: "GET", path: "/v2/tokens" },
+          { method: "GET", path: "/v2/tokens" },
+        ]);
+      } finally {
+        await server.stop(true);
+      }
+    },
+  );
+
+  test.serial("rejects every omitted strict token field", async () => {
+    const omissions = [
+      {
+        field: "id",
+        token: {
+          name: "strict-token",
+          datasetCapabilities: {},
+          orgCapabilities: {},
+        },
+      },
+      {
+        field: "name",
+        token: {
+          id: "strict-token-id",
+          datasetCapabilities: {},
+          orgCapabilities: {},
+        },
+      },
+      {
+        field: "datasetCapabilities",
+        token: {
+          id: "strict-token-id",
+          name: "strict-token",
+          orgCapabilities: {},
+        },
+      },
+      {
+        field: "orgCapabilities",
+        token: {
+          id: "strict-token-id",
+          name: "strict-token",
+          datasetCapabilities: {},
+        },
+      },
+    ];
+    let responseIndex = 0;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => Response.json([omissions[responseIndex++]?.token]),
+    });
+    try {
+      const errors = await withAxiomEndpoint(`http://127.0.0.1:${server.port}`, () =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const api = yield* AxiomApi;
+            const results = [];
+            for (const _ of omissions) {
+              results.push(yield* Effect.flip(api.tokens(credentials)));
+            }
+            return results;
+          }).pipe(Effect.provide(AxiomApi.layer)),
+        ),
+      );
+      expect(errors.map((error) => error.code)).toEqual(
+        omissions.map(() => "OBS_CLI_REMOTE_INVALID_RESPONSE"),
+      );
+      expect(omissions.map(({ field }) => field)).toEqual([
+        "id",
+        "name",
+        "datasetCapabilities",
+        "orgCapabilities",
+      ]);
+      expect(responseIndex).toBe(omissions.length);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test.serial("rejects malformed optional token view capabilities", async () => {
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () =>
+        Response.json([
+          {
+            id: "malformed-view-token",
+            name: "malformed-view-token",
+            description: "",
+            datasetCapabilities: {},
+            orgCapabilities: {},
+            viewCapabilities: { dashboard: "read" },
+          },
+        ]),
+    });
+    try {
+      const error = await withAxiomEndpoint(`http://127.0.0.1:${server.port}`, () =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const api = yield* AxiomApi;
+            return yield* Effect.flip(api.tokens(credentials));
+          }).pipe(Effect.provide(AxiomApi.layer)),
+        ),
+      );
+      expect(error.code).toBe("OBS_CLI_REMOTE_INVALID_RESPONSE");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test.serial("parses complete organization, dataset and view token capabilities", async () => {
     const server = Bun.serve({
       hostname: "127.0.0.1",

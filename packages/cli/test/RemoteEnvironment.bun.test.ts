@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Effect, Layer, Option } from "effect";
+import { Effect, Layer, Option, Schema } from "effect";
 import {
   AxiomCredentials,
   AxiomEnvironment,
@@ -743,6 +743,55 @@ describe("RemoteEnvironment", () => {
     }
   });
 
+  test("reconciles the exact normalized production token list without mutation", async () => {
+    const remote = makeRemoteLayer({ sentry: false });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* RemoteEnvironment;
+        yield* service.provision("hibou", ["production"], ["axiom"], "node", false);
+      }).pipe(Effect.provide(remote.layer)),
+    );
+    const state = remote.state();
+    state.tokens.splice(
+      0,
+      state.tokens.length,
+      Schema.decodeUnknownSync(AxiomToken)({
+        id: "unrelated-token-id",
+        name: "unrelated-token",
+        datasetCapabilities: {},
+        orgCapabilities: {},
+      }),
+      Schema.decodeUnknownSync(AxiomToken)({
+        id: "token-1",
+        name: "hibou-production-collector",
+        description: "Collector ingest token for hibou-production-collector",
+        datasetCapabilities: {
+          "hibou-production-traces": { ingest: ["create"] },
+          "hibou-production-logs": { ingest: ["create"] },
+          "hibou-production-metrics": { ingest: ["create"] },
+        },
+        orgCapabilities: {},
+      }),
+    );
+    const mutationCounts = {
+      creations: state.tokenCreations,
+      regenerations: state.tokenRegenerations,
+    };
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* RemoteEnvironment;
+        yield* service.provision("hibou", ["production"], ["axiom"], "node", false);
+      }).pipe(Effect.provide(remote.layer)),
+    );
+
+    expect(state.tokens[0]?.description).toBe("");
+    expect(state.tokens[0]?.viewCapabilities).toEqual({});
+    expect(state.tokens[1]?.viewCapabilities).toEqual({});
+    expect(remote.state().tokenCreations - mutationCounts.creations).toBe(0);
+    expect(remote.state().tokenRegenerations - mutationCounts.regenerations).toBe(0);
+  });
+
   test("rejects extra dataset, organization and view token capabilities", async () => {
     for (const extra of ["dataset", "organization", "view"]) {
       const remote = makeRemoteLayer({ sentry: false });
@@ -761,14 +810,25 @@ describe("RemoteEnvironment", () => {
         extra === "dataset"
           ? { ...datasetCapabilities, unexpected: { ingest: ["create"] } }
           : datasetCapabilities;
-      remote.state().tokens[0] = new AxiomToken({
-        id: "token-1",
-        name: "livro-caixa-staging-collector",
-        description: "Collector token",
-        datasetCapabilities: capabilities,
-        orgCapabilities: extra === "organization" ? { datasets: ["read"] } : {},
-        viewCapabilities: extra === "view" ? { dashboard: ["read"] } : {},
-      });
+      remote.state().tokens[0] =
+        extra === "view"
+          ? Schema.decodeUnknownSync(AxiomToken)({
+              id: "token-1",
+              name: "livro-caixa-staging-collector",
+              datasetCapabilities: capabilities,
+              orgCapabilities: {},
+              viewCapabilities: { dashboard: ["read"] },
+            })
+          : Schema.decodeUnknownSync(AxiomToken)({
+              id: "token-1",
+              name: "livro-caixa-staging-collector",
+              datasetCapabilities: capabilities,
+              orgCapabilities: extra === "organization" ? { datasets: ["read"] } : {},
+            });
+      const mutationCounts = {
+        creations: remote.state().tokenCreations,
+        regenerations: remote.state().tokenRegenerations,
+      };
 
       const error = await Effect.runPromise(
         Effect.gen(function* () {
@@ -782,7 +842,8 @@ describe("RemoteEnvironment", () => {
       if (error._tag === "RemoteEnvironmentError") {
         expect(error.code).toBe("OBS_CLI_AXIOM_TOKEN_CAPABILITIES_MISMATCH");
       }
-      expect(remote.state().tokenRegenerations).toBe(0);
+      expect(remote.state().tokenCreations).toBe(mutationCounts.creations);
+      expect(remote.state().tokenRegenerations).toBe(mutationCounts.regenerations);
     }
   });
 
