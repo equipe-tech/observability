@@ -6,6 +6,17 @@ on:
     branches:
       - master
   workflow_call:
+    inputs:
+      ref:
+        required: false
+        type: string
+      run_deployed_canary:
+        default: true
+        required: false
+        type: boolean
+    secrets:
+      AXIOM_TOKEN:
+        required: false
 
 permissions:
   contents: read
@@ -16,6 +27,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - name: Configure the observability state directory
         run: echo "OBSERVABILITY_HOME=${RUNNER_TEMP}/observability" >> "$GITHUB_ENV"
       - uses: oven-sh/setup-bun@v2
@@ -40,6 +53,7 @@ jobs:
       - if: always()
         run: bun packages/cli/src/main.ts dev down
       - name: deployed canary
+        if: ${{ github.event_name != 'workflow_call' || inputs.run_deployed_canary }}
         env:
           AXIOM_TOKEN: ${{ secrets.AXIOM_TOKEN }}
           AXIOM_DATASET_TRACES: ${{ vars.AXIOM_DATASET_TRACES }}
@@ -62,3 +76,6 @@ jobs:
           OBSERVABILITY_E2E_DEPLOYED=1 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:24318 bun test:canary:deployed
       - if: always()
         run: docker rm -f otel-production 2>/dev/null || true
+      - name: Clean runner observability state
+        if: always()
+        run: rm -rf "$OBSERVABILITY_HOME" "${RUNNER_TEMP}/collector-recovery"

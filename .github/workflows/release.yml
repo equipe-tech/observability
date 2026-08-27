@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag existente para reprocessar (exemplo: v0.2.0)"
+        description: "Tag existente ainda não publicada (exemplo: v0.2.0)"
         required: true
         type: string
 
@@ -59,7 +59,9 @@ jobs:
   verify:
     needs: tag-check
     uses: ./.github/workflows/ci.yml
-    secrets: inherit
+    with:
+      ref: ${{ needs.tag-check.outputs.tag }}
+      run_deployed_canary: false
 
   release:
     needs:
@@ -78,21 +80,47 @@ jobs:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       - run: bun run build
-      - name: Pack release tarballs
+      - name: Pack and verify release tarballs
         env:
+          TAG: ${{ needs.tag-check.outputs.tag }}
           VERSION: ${{ needs.tag-check.outputs.version }}
         run: |
           set -euo pipefail
-          mkdir -p dist-release
-          (cd packages/telemetry && bun pm pack --ignore-scripts --quiet \
-            --filename "$PWD/../../dist-release/equipe-tech-observability-${VERSION}.tgz")
-          (cd packages/cli && bun pm pack --ignore-scripts --quiet \
-            --filename "$PWD/../../dist-release/equipe-tech-observability-cli-${VERSION}.tgz")
+          rm -rf .release-pack dist-release
+          trap 'rm -rf .release-pack' EXIT
+          for pack_set in pack-1 pack-2 pack-3; do
+            destination="$PWD/.release-pack/$pack_set"
+            mkdir -p "$destination"
+            (cd packages/telemetry && bun pm pack --ignore-scripts --quiet \
+              --filename "$destination/equipe-tech-observability-${VERSION}.tgz")
+            (cd packages/cli && bun pm pack --ignore-scripts --quiet \
+              --filename "$destination/equipe-tech-observability-cli-${VERSION}.tgz")
+          done
+          for pack_set in pack-2 pack-3; do
+            cmp ".release-pack/pack-1/equipe-tech-observability-${VERSION}.tgz" \
+              ".release-pack/$pack_set/equipe-tech-observability-${VERSION}.tgz"
+            cmp ".release-pack/pack-1/equipe-tech-observability-cli-${VERSION}.tgz" \
+              ".release-pack/$pack_set/equipe-tech-observability-cli-${VERSION}.tgz"
+          done
+          checksum_file="docs/releases/${TAG}.sha256"
+          [[ -f "$checksum_file" ]] \
+            || { echo "The release checksum file is missing: $checksum_file"; exit 1; }
+          sha256sum --check "$checksum_file"
+          mkdir dist-release
+          cp .release-pack/pack-1/*.tgz dist-release/
+          rm -rf .release-pack
           ls -l dist-release
       - name: Generate release notes
         env:
           TAG: ${{ needs.tag-check.outputs.tag }}
-        run: bun scripts/release-notes.ts --tag "$TAG" > release-notes.md
+        run: |
+          set -euo pipefail
+          source_notes="docs/releases/${TAG}.md"
+          if [[ -f "$source_notes" ]]; then
+            cp "$source_notes" release-notes.md
+          else
+            bun scripts/release-notes.ts --tag "$TAG" > release-notes.md
+          fi
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -100,9 +128,8 @@ jobs:
           PRERELEASE: ${{ needs.tag-check.outputs.prerelease }}
         run: |
           set -euo pipefail
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft \
-            | grep -q false; then
-            echo "The release $TAG is already published. Assets are re-uploaded with --clobber only."
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "The release $TAG already exists. Existing assets will not be replaced."
           else
             create_args=(release create "$TAG" --repo "$GITHUB_REPOSITORY" \
               --title "$TAG" --notes-file release-notes.md --verify-tag)
@@ -110,8 +137,8 @@ jobs:
               create_args+=(--prerelease)
             fi
             gh "${create_args[@]}"
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" dist-release/*
           fi
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" dist-release/* --clobber
       - name: Verify the release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -126,6 +153,9 @@ jobs:
             grep -qx "$expected" <<< "$assets" \
               || { echo "The release is missing the asset $expected."; exit 1; }
           done
+      - name: Clean release temporary paths
+        if: always()
+        run: rm -rf .release-pack dist-release release-notes.md
 
   publish-npm:
     needs:
@@ -134,20 +164,67 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag-check.outputs.tag }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: "https://registry.npmjs.org"
-      - name: Download the release tarballs
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - name: Download, rebuild, and verify the release tarballs
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.tag-check.outputs.tag }}
+          VERSION: ${{ needs.tag-check.outputs.version }}
         run: |
           set -euo pipefail
-          mkdir -p dist-release
+          rm -rf .release-pack dist-release
+          trap 'rm -rf .release-pack' EXIT
+          mkdir dist-release
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
             --pattern "*.tgz" --dir dist-release
+          for pack_set in pack-1 pack-2 pack-3; do
+            destination="$PWD/.release-pack/$pack_set"
+            mkdir -p "$destination"
+            (cd packages/telemetry && bun pm pack --ignore-scripts --quiet \
+              --filename "$destination/equipe-tech-observability-${VERSION}.tgz")
+            (cd packages/cli && bun pm pack --ignore-scripts --quiet \
+              --filename "$destination/equipe-tech-observability-cli-${VERSION}.tgz")
+          done
+          for pack_set in pack-2 pack-3; do
+            cmp ".release-pack/pack-1/equipe-tech-observability-${VERSION}.tgz" \
+              ".release-pack/$pack_set/equipe-tech-observability-${VERSION}.tgz"
+            cmp ".release-pack/pack-1/equipe-tech-observability-cli-${VERSION}.tgz" \
+              ".release-pack/$pack_set/equipe-tech-observability-cli-${VERSION}.tgz"
+          done
+          checksum_file="docs/releases/${TAG}.sha256"
+          [[ -f "$checksum_file" ]] \
+            || { echo "The release checksum file is missing: $checksum_file"; exit 1; }
+          sha256sum --check "$checksum_file"
+          cmp ".release-pack/pack-1/equipe-tech-observability-${VERSION}.tgz" \
+            "dist-release/equipe-tech-observability-${VERSION}.tgz"
+          cmp ".release-pack/pack-1/equipe-tech-observability-cli-${VERSION}.tgz" \
+            "dist-release/equipe-tech-observability-cli-${VERSION}.tgz"
+          rm -rf .release-pack
+      - name: Validate npm authentication and trusted publishing
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -n "$NODE_AUTH_TOKEN" ]] \
+            || { echo "NPM_TOKEN is required for publication."; exit 1; }
+          [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]] \
+            || { echo "GitHub OIDC request URL is unavailable."; exit 1; }
+          [[ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]] \
+            || { echo "GitHub OIDC request token is unavailable."; exit 1; }
+          npm whoami --registry https://registry.npmjs.org
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -155,16 +232,18 @@ jobs:
           NPM_TAG: ${{ needs.tag-check.outputs.npm_tag }}
         run: |
           set -euo pipefail
-          if [[ -z "$NODE_AUTH_TOKEN" ]]; then
-            echo "npm publish skipped: the NPM_TOKEN secret is not configured."
-            exit 0
-          fi
+          [[ -n "$NODE_AUTH_TOKEN" ]] \
+            || { echo "NPM_TOKEN is required for publication."; exit 1; }
+          [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]] \
+            || { echo "GitHub OIDC request URL is unavailable."; exit 1; }
+          [[ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]] \
+            || { echo "GitHub OIDC request token is unavailable."; exit 1; }
           for tarball in \
             "./dist-release/equipe-tech-observability-${VERSION}.tgz" \
             "./dist-release/equipe-tech-observability-cli-${VERSION}.tgz"; do
             [[ -f "$tarball" ]] || { echo "Missing tarball: $tarball"; exit 1; }
             set +e
-            output="$(npm publish "$tarball" --access public --tag "$NPM_TAG" 2>&1)"
+            output="$(npm publish "$tarball" --access public --tag "$NPM_TAG" --provenance 2>&1)"
             status=$?
             set -e
             echo "$output"
@@ -176,3 +255,6 @@ jobs:
               exit $status
             fi
           done
+      - name: Clean npm publication temporary paths
+        if: always()
+        run: rm -rf .release-pack dist-release

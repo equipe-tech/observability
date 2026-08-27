@@ -28,20 +28,47 @@ jobs:
           cli_version="$(jq -r .version packages/cli/package.json)"
           [[ "$telemetry_version" == "$cli_version" ]] \
             || { echo "The package versions diverge: $telemetry_version vs $cli_version."; exit 1; }
-          bun scripts/release.ts patch --dry-run
-          bun scripts/release-notes.ts --tag "v$telemetry_version" > release-notes.md
-          test -s release-notes.md
-          cat release-notes.md
+          tag="v$telemetry_version"
+          bun scripts/release.ts "$telemetry_version" --dry-run
+          test -s "docs/releases/${tag}.md"
+          test -s "docs/releases/${tag}.sha256"
+          cat "docs/releases/${tag}.md"
       - name: Validate the packed artifacts
-        run: bun run test:package
-      - name: Validate npm credentials
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          if [[ -z "$NODE_AUTH_TOKEN" ]]; then
-            echo "The NPM_TOKEN secret is not configured. The release will skip the npm publish."
-            exit 0
-          fi
-          npm config set //registry.npmjs.org/:_authToken '${NODE_AUTH_TOKEN}'
-          npm whoami --registry https://registry.npmjs.org
+          bun run test:package
+          version="$(jq -r .version packages/telemetry/package.json)"
+          tag="v$version"
+          rm -rf .release-pack
+          trap 'rm -rf .release-pack' EXIT
+          for pack_set in pack-1 pack-2 pack-3; do
+            destination="$PWD/.release-pack/$pack_set"
+            mkdir -p "$destination"
+            (cd packages/telemetry && bun pm pack --ignore-scripts --quiet \
+              --filename "$destination/equipe-tech-observability-${version}.tgz")
+            (cd packages/cli && bun pm pack --ignore-scripts --quiet \
+              --filename "$destination/equipe-tech-observability-cli-${version}.tgz")
+          done
+          for pack_set in pack-2 pack-3; do
+            cmp ".release-pack/pack-1/equipe-tech-observability-${version}.tgz" \
+              ".release-pack/$pack_set/equipe-tech-observability-${version}.tgz"
+            cmp ".release-pack/pack-1/equipe-tech-observability-cli-${version}.tgz" \
+              ".release-pack/$pack_set/equipe-tech-observability-cli-${version}.tgz"
+          done
+          sha256sum --check "docs/releases/${tag}.sha256"
+      - name: Query current npm versions
+        run: |
+          set -euo pipefail
+          for package in @equipe-tech/observability @equipe-tech/observability-cli; do
+            if output="$(npm view "$package" version dist-tags versions --json 2>&1)"; then
+              echo "$output"
+            elif grep -qiE "E404|is not in this registry" <<< "$output"; then
+              echo "$package has not been published yet."
+            else
+              echo "$output" >&2
+              exit 1
+            fi
+          done
+      - name: Clean preflight temporary paths
+        if: always()
+        run: rm -rf .release-pack dist-release .verification
