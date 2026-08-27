@@ -51,13 +51,20 @@ const assertArchive = (
   }
 };
 
-const cleanupTemporaryDirectory = async (): Promise<void> => {
-  const exits: Array<Promise<number>> = [];
-  for (const child of activeChildren) {
-    child.kill("SIGTERM");
-    exits.push(child.exited);
+const stopChild = async (child: ReturnType<typeof Bun.spawn>): Promise<void> => {
+  child.kill("SIGTERM");
+  const exited = await Promise.race([
+    child.exited.then(() => true),
+    Bun.sleep(2_000).then(() => false),
+  ]);
+  if (!exited) {
+    child.kill("SIGKILL");
+    await child.exited;
   }
-  await Promise.all(exits);
+};
+
+const cleanupTemporaryDirectory = async (): Promise<void> => {
+  await Promise.all([...activeChildren].map(stopChild));
   activeChildren.clear();
   if (temporaryDirectory !== "") {
     await rm(temporaryDirectory, { recursive: true, force: true });
