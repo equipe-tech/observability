@@ -3,6 +3,7 @@ dist
 *.local
 *.log
 logs
+/.verification/
 .DS_Store
 
 .env
