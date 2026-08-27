@@ -200,6 +200,7 @@ interface CounterEntry {
   readonly kind: "counter";
   readonly definition: NormalizedDefinition;
   readonly leases: Set<number>;
+  readonly residualSeries: Map<string, CounterSeries>;
   readonly seriesByLease: Map<number, Map<string, CounterSeries>>;
   readonly lifetimeSeries: Set<string>;
 }
@@ -208,6 +209,7 @@ interface HistogramEntry {
   readonly kind: "histogram";
   readonly definition: NormalizedHistogramDefinition;
   readonly leases: Set<number>;
+  readonly residualSeries: Map<string, HistogramSeries>;
   readonly seriesByLease: Map<number, Map<string, HistogramSeries>>;
   readonly lifetimeSeries: Set<string>;
 }
@@ -223,6 +225,13 @@ interface GaugeEntry {
 type CatalogEntry = CounterEntry | HistogramEntry | GaugeEntry;
 
 type MetricsTransport = (payload: MetricsPayload, signal: AbortSignal) => Promise<void>;
+
+type MetricsTransportKind = "fetch" | "layer";
+
+interface MetricsTransportBinding {
+  readonly kind: MetricsTransportKind;
+  readonly send: MetricsTransport;
+}
 
 interface RuntimeLease {
   readonly leaseId: number;
@@ -566,8 +575,9 @@ class MetricsRuntimeState {
   readonly catalog = new Map<string, CatalogEntry>();
   readonly runtimeLifetimeSeries = new Set<string>();
   readonly lifetimeSeriesByInstrument = new Map<string, Set<string>>();
+  readonly lifetimeInstrumentNames = new Set<string>();
   private readonly leases = new Set<number>();
-  private readonly transport: MetricsTransport;
+  private readonly transports = new Map<number, MetricsTransportBinding>();
   private readonly options: NormalizedOptions;
   private readonly removeFromPool: () => void;
   private readonly startTimeUnixNano = nanosNow();
@@ -578,9 +588,8 @@ class MetricsRuntimeState {
   private referenceCount = 0;
   private periodicFailureActive = false;
 
-  constructor(options: NormalizedOptions, transport: MetricsTransport, removeFromPool: () => void) {
+  constructor(options: NormalizedOptions, removeFromPool: () => void) {
     this.options = options;
-    this.transport = transport;
     this.removeFromPool = removeFromPool;
     this.timer = setInterval(() => {
       this.scheduleExport(this.options.flushTimeoutMilliseconds).then(
@@ -591,9 +600,10 @@ class MetricsRuntimeState {
     this.timer.unref?.();
   }
 
-  acquire(): RuntimeLease {
+  acquire(transport: MetricsTransportBinding): RuntimeLease {
     const leaseId = this.nextLeaseId++;
     this.leases.add(leaseId);
+    this.transports.set(leaseId, transport);
     this.referenceCount++;
     return { leaseId, state: this };
   }
@@ -627,6 +637,7 @@ class MetricsRuntimeState {
     }
     this.removeLeaseState(leaseId);
     this.leases.delete(leaseId);
+    this.transports.delete(leaseId);
     this.referenceCount--;
     if (this.referenceCount === 0) {
       if (this.timer !== undefined) {
@@ -658,6 +669,7 @@ class MetricsRuntimeState {
       kind: "counter",
       definition,
       leases: new Set([leaseId]),
+      residualSeries: new Map(),
       seriesByLease: new Map(),
       lifetimeSeries: this.lifetimeSeriesFor(definition.name),
     };
@@ -682,6 +694,7 @@ class MetricsRuntimeState {
       kind: "histogram",
       definition,
       leases: new Set([leaseId]),
+      residualSeries: new Map(),
       seriesByLease: new Map(),
       lifetimeSeries: this.lifetimeSeriesFor(definition.name),
     };
@@ -713,9 +726,6 @@ class MetricsRuntimeState {
       this.catalog.set(definition.name, entry);
     }
     if (entry.callbacks.size >= maximumCallbacks) {
-      if (entry.callbacks.size === 0) {
-        this.catalog.delete(definition.name);
-      }
       throw metricError(
         "LIMIT_EXCEEDED",
         "observableGauge",
@@ -843,28 +853,27 @@ class MetricsRuntimeState {
       return;
     }
     this.periodicFailureActive = failed;
-    process.emitWarning(
+    console.warn(
       failed
-        ? "The periodic metrics export entered a failed state. A later successful export will clear it."
-        : "The periodic metrics export recovered from its failed state.",
-      {
-        code: failed
-          ? "OBS_METRICS_PERIODIC_EXPORT_FAILED"
-          : "OBS_METRICS_PERIODIC_EXPORT_RECOVERED",
-      },
+        ? "OBS_METRICS_PERIODIC_EXPORT_FAILED: The periodic metrics export entered a failed state."
+        : "OBS_METRICS_PERIODIC_EXPORT_RECOVERED: The periodic metrics export recovered.",
     );
   }
 
   private assertInstrumentCapacity(name: string): void {
-    if (this.catalog.size >= maximumInstruments) {
+    if (this.lifetimeInstrumentNames.has(name)) {
+      return;
+    }
+    if (this.lifetimeInstrumentNames.size >= maximumInstruments) {
       throw metricError(
         "LIMIT_EXCEEDED",
         "registerInstrument",
-        `Metric runtime exceeds the ${maximumInstruments}-instrument limit while registering "${name}".`,
+        `Metric runtime exceeds the ${maximumInstruments}-instrument lifetime limit while registering "${name}".`,
         name,
         false,
       );
     }
+    this.lifetimeInstrumentNames.add(name);
   }
 
   private instrumentConflict(operation: string, name: string): MetricsError {
@@ -927,6 +936,25 @@ class MetricsRuntimeState {
     this.runtimeLifetimeSeries.add(`${entry.definition.name}:${identity}`);
   }
 
+  private transportForExport(): MetricsTransport {
+    let selected: MetricsTransportBinding | undefined;
+    for (const transport of this.transports.values()) {
+      if (selected === undefined || transport.kind === "layer") {
+        selected = transport;
+      }
+    }
+    if (selected === undefined) {
+      throw metricError(
+        "EXPORT_FAILED",
+        "flush",
+        "Metrics export has no active transport. Acquire a runtime lease before flushing.",
+        undefined,
+        false,
+      );
+    }
+    return selected.send;
+  }
+
   private scheduleExport(timeoutMilliseconds: number): Promise<FlushResult> {
     const controller = new AbortController();
     let timedOut = false;
@@ -941,8 +969,9 @@ class MetricsRuntimeState {
         );
       }
       const collection = this.collectPayload();
+      const transport = this.transportForExport();
       try {
-        await this.transport(collection.payload, controller.signal);
+        await transport(collection.payload, controller.signal);
       } catch (cause) {
         if (timedOut || controller.signal.aborted) {
           throw metricError(
@@ -1255,6 +1284,9 @@ class MetricsRuntimeState {
 
   private collectCounter(entry: CounterEntry, timeUnixNano: string): OtlpMetric {
     const combined = new Map<string, CounterSeries>();
+    for (const [identity, series] of entry.residualSeries) {
+      combined.set(identity, { attributes: series.attributes, value: series.value });
+    }
     for (const leaseSeries of entry.seriesByLease.values()) {
       for (const [identity, series] of leaseSeries) {
         const current = combined.get(identity);
@@ -1284,6 +1316,16 @@ class MetricsRuntimeState {
 
   private collectHistogram(entry: HistogramEntry, timeUnixNano: string): OtlpMetric {
     const combined = new Map<string, HistogramSeries>();
+    for (const [identity, series] of entry.residualSeries) {
+      combined.set(identity, {
+        attributes: series.attributes,
+        count: series.count,
+        sum: series.sum,
+        min: series.min,
+        max: series.max,
+        bucketCounts: [...series.bucketCounts],
+      });
+    }
     for (const leaseSeries of entry.seriesByLease.values()) {
       for (const [identity, series] of leaseSeries) {
         const current = combined.get(identity);
@@ -1475,20 +1517,77 @@ class MetricsRuntimeState {
     };
   }
 
+  private foldCounterLease(entry: CounterEntry, leaseId: number): void {
+    const leaseSeries = entry.seriesByLease.get(leaseId);
+    if (leaseSeries === undefined) {
+      return;
+    }
+    for (const [identity, series] of leaseSeries) {
+      const residual = entry.residualSeries.get(identity);
+      if (residual === undefined) {
+        entry.residualSeries.set(identity, {
+          attributes: series.attributes,
+          value: series.value,
+        });
+      } else {
+        residual.value += series.value;
+      }
+    }
+    entry.seriesByLease.delete(leaseId);
+  }
+
+  private foldHistogramLease(entry: HistogramEntry, leaseId: number): void {
+    const leaseSeries = entry.seriesByLease.get(leaseId);
+    if (leaseSeries === undefined) {
+      return;
+    }
+    for (const [identity, series] of leaseSeries) {
+      const residual = entry.residualSeries.get(identity);
+      if (residual === undefined) {
+        entry.residualSeries.set(identity, {
+          attributes: series.attributes,
+          count: series.count,
+          sum: series.sum,
+          min: series.min,
+          max: series.max,
+          bucketCounts: [...series.bucketCounts],
+        });
+      } else {
+        residual.count += series.count;
+        residual.sum += series.sum;
+        residual.min = Math.min(residual.min, series.min);
+        residual.max = Math.max(residual.max, series.max);
+        for (let index = 0; index < residual.bucketCounts.length; index++) {
+          residual.bucketCounts[index] =
+            (residual.bucketCounts[index] ?? 0) + (series.bucketCounts[index] ?? 0);
+        }
+      }
+    }
+    entry.seriesByLease.delete(leaseId);
+  }
+
   private removeLeaseState(leaseId: number): void {
     for (const [name, entry] of this.catalog) {
       entry.leases.delete(leaseId);
-      if (entry.kind === "counter" || entry.kind === "histogram") {
-        entry.seriesByLease.delete(leaseId);
+      if (entry.kind === "counter") {
+        this.foldCounterLease(entry, leaseId);
+        if (entry.leases.size === 0 && entry.residualSeries.size === 0) {
+          this.catalog.delete(name);
+        }
+      } else if (entry.kind === "histogram") {
+        this.foldHistogramLease(entry, leaseId);
+        if (entry.leases.size === 0 && entry.residualSeries.size === 0) {
+          this.catalog.delete(name);
+        }
       } else {
         for (const [callbackId, registration] of entry.callbacks) {
           if (registration.leaseId === leaseId) {
             entry.callbacks.delete(callbackId);
           }
         }
-      }
-      if (entry.leases.size === 0) {
-        this.catalog.delete(name);
+        if (entry.leases.size === 0) {
+          this.catalog.delete(name);
+        }
       }
     }
   }
@@ -1516,17 +1615,20 @@ const fetchTransport =
     }
   };
 
-const acquireRuntime = (options: NormalizedOptions, transport: MetricsTransport): RuntimeLease => {
+const acquireRuntime = (
+  options: NormalizedOptions,
+  transport: MetricsTransportBinding,
+): RuntimeLease => {
   let state = runtimePool.get(options.poolKey);
   if (state === undefined) {
-    state = new MetricsRuntimeState(options, transport, () => {
+    state = new MetricsRuntimeState(options, () => {
       if (runtimePool.get(options.poolKey) === state) {
         runtimePool.delete(options.poolKey);
       }
     });
     runtimePool.set(options.poolKey, state);
   }
-  return state.acquire();
+  return state.acquire(transport);
 };
 
 class ActiveMetrics implements Metrics {
@@ -1715,7 +1817,10 @@ export const createStandaloneMetrics = async (optionsInput: MetricsOptions): Pro
   if (!options.enabled) {
     return new DisabledMetrics();
   }
-  const lease = acquireRuntime(options, fetchTransport(options.metricsEndpoint));
+  const lease = acquireRuntime(options, {
+    kind: "fetch",
+    send: fetchTransport(options.metricsEndpoint),
+  });
   return new ActiveMetrics(lease, options.flushTimeoutMilliseconds);
 };
 
@@ -1763,7 +1868,10 @@ const makeMetricsRuntime = Effect.fn("makeMetricsRuntime")(function* (
     otlpEndpoint: config.otlpEndpoint.toString(),
     flushTimeoutMilliseconds: options.shutdownTimeoutMilliseconds,
   });
-  const lease = acquireRuntime(parsed, makeEffectTransport(parsed.metricsEndpoint, client));
+  const lease = acquireRuntime(parsed, {
+    kind: "layer",
+    send: makeEffectTransport(parsed.metricsEndpoint, client),
+  });
   yield* flusher.register(
     Effect.tryPromise(() => lease.state.flush(parsed.flushTimeoutMilliseconds)).pipe(
       Effect.catch(() => Effect.void),

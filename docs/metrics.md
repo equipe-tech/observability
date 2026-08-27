@@ -43,17 +43,17 @@ await metrics.close();
 
 ## Lifecycle
 
-`createMetrics` validates the complete configuration before acquiring a runtime lease. Equal active configurations share one runtime, registry, periodic exporter, and lifecycle queue.
+`createMetrics` validates the complete configuration before acquiring a runtime lease. Equal active configurations share one runtime, registry, periodic exporter, and lifecycle queue. `exportIntervalMilliseconds` controls periodic collection and defaults to 10,000 milliseconds.
 
-`add`, `record`, gauge registration, and unregister are synchronous. `flush` and `close` are asynchronous and bounded by `flushTimeoutMilliseconds`, which defaults to 3 seconds. A repeated `close` returns the same promise. Recording, registration, or flushing after close throws `MetricsError` with code `CLOSED`.
+`add`, `record`, gauge registration, and unregister are synchronous. `flush` and `close` are asynchronous and bounded by `flushTimeoutMilliseconds`, which defaults to 3 seconds. A repeated `close` returns the same promise. Recording, registration, or flushing after close throws `MetricsError` with code `CLOSED`. Cumulative counter and histogram values remain in the shared runtime after an individual lease closes and retain the runtime start time.
 
 Observable callbacks run synchronously immediately before periodic, manual, and final exports. One callback may return up to 100 observations. Failures omit that gauge from the current export and appear in `FlushResult.gaugeFailures` without suppressing valid instruments. Unregistering the final callback removes the gauge from later exports.
 
-Set `enabled: false` to retain validation and no-op handles without an exporter, timer, callback invocation, request, or retained runtime lease.
+Set `enabled: false` to validate configuration, instrument definitions, measurement values, and measurement attributes while returning no-op handles without an exporter, timer, callback invocation, request, or retained runtime lease. Disabled mode cannot report callback-result failures, definition conflicts, or active-runtime cardinality limits because it retains no catalog, callbacks, or series.
 
 ## Instrument identity
 
-The metric name is the instrument identity within one runtime. Repeating the exact kind, description, unit, and histogram boundaries is compatible. Any mismatch throws `INSTRUMENT_CONFLICT` before creating a partial instrument.
+The metric name is the instrument identity within one runtime. Repeating the exact kind, description, unit, and histogram boundaries is compatible. A facade definition mismatch throws `INSTRUMENT_CONFLICT` before creating a partial instrument. A name collision discovered later against a direct Effect metric rejects export with non-retryable `EXPORT_FAILED` and sends no metrics request.
 
 Names use `[A-Za-z][A-Za-z0-9_.\-/]{0,254}`. Units are `1`, `%`, or a case-sensitive ASCII unit expression such as `ms`, `By/s`, or `m/s^2`. Descriptions contain 1 to 1,024 characters without control characters. Histograms require 1 to 50 finite, strictly increasing boundaries.
 
@@ -65,7 +65,7 @@ Pass attributes as an array of `{ key, value }` items. Values are strings, finit
 
 The runtime enforces these lifetime limits:
 
-- 100 instruments per runtime
+- 100 facade instrument names per runtime lifetime
 - 1,000 series identities per instrument
 - 10,000 series identities per runtime
 - 16 callbacks per observable gauge
@@ -84,4 +84,4 @@ Synchronous validation and registration failures throw `MetricsError` with one o
 - `LIMIT_EXCEEDED`
 - `CLOSED`
 
-`flush` and the final export from `close` reject with `EXPORT_FAILED` or `FLUSH_TIMED_OUT`. Both are retryable on an open lifecycle. `close` releases the runtime lease even when its final export rejects.
+`flush` and the final export from `close` reject with `EXPORT_FAILED` or `FLUSH_TIMED_OUT`. Transport failures and timeouts are retryable on an open lifecycle. Definition and name-conflict export failures are not retryable until the conflicting instrument is renamed or aligned. `close` releases the runtime lease even when its final export rejects.

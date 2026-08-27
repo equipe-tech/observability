@@ -1,7 +1,9 @@
 import { assert, describe, it } from "vite-plus/test";
-import { Predicate, Schema } from "effect";
+import { Effect, ManagedRuntime, Metric, Option, Predicate, Schema } from "effect";
 import { createServer, type Server } from "node:http";
 import { createMetrics, MetricsError, type MetricAttribute } from "../src/Metrics.ts";
+import * as Testing from "../src/testing/index.ts";
+import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 
 const AttributeValue = Schema.Struct({
   stringValue: Schema.String.pipe(Schema.optionalKey),
@@ -12,11 +14,15 @@ const AttributeValue = Schema.Struct({
 const Attribute = Schema.Struct({ key: Schema.String, value: AttributeValue });
 const NumberPoint = Schema.Struct({
   attributes: Schema.Array(Attribute),
+  startTimeUnixNano: Schema.String,
+  timeUnixNano: Schema.String,
   asDouble: Schema.Number.pipe(Schema.optionalKey),
   asInt: Schema.Number.pipe(Schema.optionalKey),
 });
 const HistogramPoint = Schema.Struct({
   attributes: Schema.Array(Attribute),
+  startTimeUnixNano: Schema.String,
+  timeUnixNano: Schema.String,
   count: Schema.Number,
   sum: Schema.Number,
   min: Schema.Number,
@@ -149,6 +155,16 @@ const options = (endpoint: string, flushTimeoutMilliseconds = 1_000) => ({
   exportIntervalMilliseconds: 60_000,
   flushTimeoutMilliseconds,
 });
+
+const waitFor = async (condition: () => boolean, timeoutMilliseconds = 2_000): Promise<void> => {
+  const deadline = Date.now() + timeoutMilliseconds;
+  while (!condition()) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Condition did not become true within ${timeoutMilliseconds} milliseconds.`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+};
 
 describe("framework-neutral metrics", () => {
   it("exports counter, histogram, and immediately collected gauge values through real OTLP", async () => {
@@ -399,6 +415,38 @@ describe("framework-neutral metrics", () => {
     }
   });
 
+  it("enforces the instrument-name limit for the complete runtime lifetime", async () => {
+    const collector = await startCollector();
+    try {
+      const metrics = await createMetrics(options(collector.endpoint));
+      for (let index = 0; index < 100; index++) {
+        metrics
+          .observableGauge(
+            {
+              name: `lifetime.gauge.${index}`,
+              description: "Lifetime gauge",
+              unit: "1",
+            },
+            () => [{ value: index }],
+          )
+          .unregister();
+      }
+      assert.equal(
+        errorCode(() =>
+          metrics.counter({
+            name: "lifetime.counter.overflow",
+            description: "Lifetime overflow",
+            unit: "1",
+          }),
+        ),
+        "LIMIT_EXCEEDED",
+      );
+      await metrics.close();
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
   it("reports invalid gauge batches without suppressing other instruments", async () => {
     const collector = await startCollector();
     try {
@@ -427,6 +475,203 @@ describe("framework-neutral metrics", () => {
       assert.isUndefined(metricNamed(payload, "bounded.gauge"));
       await metrics.close();
     } finally {
+      await closeServer(collector.server);
+    }
+  });
+
+  it("keeps shared cumulative counter and histogram values after one lease closes", async () => {
+    const collector = await startCollector();
+    try {
+      const first = await createMetrics(options(collector.endpoint));
+      const second = await createMetrics(options(collector.endpoint));
+      first.counter({ name: "shared.counter", description: "Shared counter", unit: "1" }).add(2);
+      second.counter({ name: "shared.counter", description: "Shared counter", unit: "1" }).add(3);
+      first
+        .histogram({
+          name: "shared.histogram",
+          description: "Shared histogram",
+          unit: "ms",
+          boundaries: [10, 20],
+        })
+        .record(5);
+      const secondHistogram = second.histogram({
+        name: "shared.histogram",
+        description: "Shared histogram",
+        unit: "ms",
+        boundaries: [10, 20],
+      });
+      secondHistogram.record(15);
+
+      await first.flush();
+      await first.close();
+      await second.flush();
+
+      const beforeClose = collector.requests[0];
+      const afterClose = collector.requests[2];
+      assert.isDefined(beforeClose);
+      assert.isDefined(afterClose);
+      const initialCounter = metricNamed(beforeClose, "shared.counter")?.sum?.dataPoints[0];
+      const retainedCounter = metricNamed(afterClose, "shared.counter")?.sum?.dataPoints[0];
+      const initialHistogram = metricNamed(beforeClose, "shared.histogram")?.histogram
+        ?.dataPoints[0];
+      const retainedHistogram = metricNamed(afterClose, "shared.histogram")?.histogram
+        ?.dataPoints[0];
+      assert.equal(initialCounter?.asDouble, 5);
+      assert.equal(retainedCounter?.asDouble, 5);
+      assert.equal(retainedCounter?.startTimeUnixNano, initialCounter?.startTimeUnixNano);
+      assert.equal(initialHistogram?.count, 2);
+      assert.equal(retainedHistogram?.count, 2);
+      assert.equal(initialHistogram?.sum, 20);
+      assert.equal(retainedHistogram?.sum, 20);
+      assert.deepEqual(retainedHistogram?.bucketCounts, [1, 1, 0]);
+      assert.equal(retainedHistogram?.startTimeUnixNano, initialHistogram?.startTimeUnixNano);
+
+      second.counter({ name: "shared.counter", description: "Shared counter", unit: "1" }).add(4);
+      secondHistogram.record(25);
+      await second.flush();
+      const afterMoreMeasurements = collector.requests[3];
+      assert.isDefined(afterMoreMeasurements);
+      assert.equal(
+        metricNamed(afterMoreMeasurements, "shared.counter")?.sum?.dataPoints[0]?.asDouble,
+        9,
+      );
+      assert.equal(
+        metricNamed(afterMoreMeasurements, "shared.histogram")?.histogram?.dataPoints[0]?.count,
+        3,
+      );
+      assert.equal(
+        metricNamed(afterMoreMeasurements, "shared.histogram")?.histogram?.dataPoints[0]?.sum,
+        45,
+      );
+      await second.close();
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
+  it("exports facade and direct Effect metrics through the later layer capture transport", async () => {
+    const config = new TelemetryConfig({
+      serviceName: "mixed-metrics-test",
+      serviceVersion: "1.0.0",
+      environment: "test",
+      otlpEndpoint: new URL("http://mixed-metrics.invalid"),
+    });
+    const facade = await createMetrics({
+      serviceName: config.serviceName,
+      serviceVersion: config.serviceVersion,
+      environment: config.environment,
+      otlpEndpoint: config.otlpEndpoint.toString(),
+    });
+    const capture = await Effect.runPromise(Testing.makeCapture({ config }));
+    const runtime = ManagedRuntime.make(capture.layer);
+    try {
+      facade.counter({ name: "mixed.facade", description: "Facade counter", unit: "1" }).add(2);
+      const direct = Metric.counter("mixed.direct", {
+        description: "Direct counter",
+        attributes: { unit: "By" },
+      });
+      await runtime.runPromise(Metric.update(direct, 4));
+      await facade.flush();
+
+      const telemetry = await Effect.runPromise(capture.telemetry);
+      const facadeMetric = telemetry.metrics.find((metric) => metric.name === "mixed.facade");
+      const directMetric = telemetry.metrics.find((metric) => metric.name === "mixed.direct");
+      assert.isDefined(facadeMetric);
+      assert.isDefined(directMetric);
+      const facadePoint = facadeMetric.points[0];
+      const directPoint = directMetric.points[0];
+      assert.isDefined(facadePoint);
+      assert.isDefined(directPoint);
+      assert.equal(Option.getOrUndefined(facadePoint.value), 2);
+      assert.equal(Option.getOrUndefined(directPoint.value), 4);
+      assert.equal(directMetric.unit, "By");
+      assert.isTrue(directMetric.points.every((point) => !point.attributes.has("unit")));
+      await facade.close();
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("rejects facade and direct Effect name conflicts before sending OTLP", async () => {
+    const config = new TelemetryConfig({
+      serviceName: "mixed-conflict-test",
+      serviceVersion: "1.0.0",
+      environment: "test",
+      otlpEndpoint: new URL("http://mixed-conflict.invalid"),
+    });
+    const facade = await createMetrics({
+      serviceName: config.serviceName,
+      serviceVersion: config.serviceVersion,
+      environment: config.environment,
+      otlpEndpoint: config.otlpEndpoint.toString(),
+    });
+    const capture = await Effect.runPromise(Testing.makeCapture({ config }));
+    const runtime = ManagedRuntime.make(capture.layer);
+    try {
+      facade.counter({ name: "mixed.conflict", description: "Facade counter", unit: "1" }).add(1);
+      const direct = Metric.gauge("mixed.conflict", {
+        description: "Direct gauge",
+      });
+      await runtime.runPromise(Metric.update(direct, 3));
+      let conflict: MetricsError | undefined;
+      try {
+        await facade.flush();
+      } catch (cause) {
+        if (cause instanceof MetricsError) {
+          conflict = cause;
+        }
+      }
+      assert.isDefined(conflict);
+      assert.equal(conflict.code, "EXPORT_FAILED");
+      assert.equal(conflict.instrumentName, "mixed.conflict");
+      assert.isFalse(conflict.retryable);
+      const telemetry = await Effect.runPromise(capture.telemetry);
+      assert.equal(telemetry.metrics.length, 0);
+      assert.equal(
+        await asyncErrorCode(async () => {
+          await facade.close();
+        }),
+        "EXPORT_FAILED",
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("emits periodic failed and recovered notices once per transition", async () => {
+    const collector = await startCollector();
+    const notices: Array<string> = [];
+    const previousWarn = console.warn;
+    const captureWarning = (message?: string): void => {
+      if (message !== undefined) {
+        notices.push(message);
+      }
+    };
+    console.warn = captureWarning;
+    try {
+      collector.control.status = 503;
+      const metrics = await createMetrics({
+        ...options(collector.endpoint, 200),
+        exportIntervalMilliseconds: 15,
+      });
+      metrics.counter({ name: "periodic.total", description: "Periodic", unit: "1" }).add(1);
+      await waitFor(() => notices.length === 1 && collector.requests.length >= 1);
+      await waitFor(() => collector.requests.length >= 3);
+      assert.deepEqual(notices, [
+        "OBS_METRICS_PERIODIC_EXPORT_FAILED: The periodic metrics export entered a failed state.",
+      ]);
+
+      collector.control.status = 200;
+      await waitFor(() => notices.length === 2);
+      const recoveredRequestCount = collector.requests.length;
+      await waitFor(() => collector.requests.length >= recoveredRequestCount + 2);
+      assert.deepEqual(notices, [
+        "OBS_METRICS_PERIODIC_EXPORT_FAILED: The periodic metrics export entered a failed state.",
+        "OBS_METRICS_PERIODIC_EXPORT_RECOVERED: The periodic metrics export recovered.",
+      ]);
+      await metrics.close();
+    } finally {
+      console.warn = previousWarn;
       await closeServer(collector.server);
     }
   });
