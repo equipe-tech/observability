@@ -227,7 +227,10 @@ describe("framework-neutral metrics", () => {
       assert.equal(failed.gaugeFailures.length, 1);
       assert.equal(failure.instrumentName, "observation.invalid");
       assert.equal(failure.code, "INVALID_OBSERVATION");
-      assert.include(failure.message, 'Observable gauge "observation.invalid"');
+      assert.equal(
+        failure.message,
+        'Observable gauge "observation.invalid" produced a non-finite observation.',
+      );
       assert.isFalse(Object.hasOwn(failure, "retryable"));
       const failedPayload = collector.requests[0];
       assert.isDefined(failedPayload);
