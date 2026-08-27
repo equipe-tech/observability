@@ -1,4 +1,8 @@
 import { Context, Effect, Layer, Schema } from "effect";
+import {
+  AxiomDatasetRetentionDays,
+  AxiomDatasetRetentionInvariant,
+} from "./AxiomDatasetRetention.ts";
 import { AxiomCredentials, SentryCredentials } from "./CredentialsStore.ts";
 
 const AxiomUser = Schema.Struct({
@@ -16,15 +20,17 @@ export type AxiomDatasetKind = typeof AxiomDatasetKind.Type;
 
 export class AxiomDataset extends Schema.Class<AxiomDataset>(
   "@equipe-tech/observability-cli/AxiomDataset",
-)({
-  id: Schema.NonEmptyString,
-  name: Schema.NonEmptyString,
-  description: Schema.String,
-  kind: AxiomDatasetKind,
-  edgeDeployment: Schema.NonEmptyString.pipe(Schema.optionalKey),
-  retentionDays: Schema.Int.check(Schema.isGreaterThan(0)).pipe(Schema.optionalKey),
-  useRetentionPeriod: Schema.Boolean,
-}) {}
+)(
+  Schema.Struct({
+    id: Schema.NonEmptyString,
+    name: Schema.NonEmptyString,
+    description: Schema.String,
+    kind: AxiomDatasetKind,
+    edgeDeployment: Schema.NonEmptyString.pipe(Schema.optionalKey),
+    retentionDays: AxiomDatasetRetentionDays,
+    useRetentionPeriod: Schema.Boolean,
+  }).check(AxiomDatasetRetentionInvariant),
+) {}
 
 const AxiomDatasets = Schema.Array(AxiomDataset);
 const AxiomCapabilityActions = Schema.Array(Schema.NonEmptyString);
@@ -34,14 +40,17 @@ export const AxiomDatasetCapabilities = Schema.Record(
   AxiomDatasetCapability,
 );
 const AxiomOrganizationCapabilities = Schema.Record(Schema.NonEmptyString, AxiomCapabilityActions);
-const AxiomViewCapabilities = Schema.Record(Schema.NonEmptyString, AxiomCapabilityActions);
+const AxiomTokenDescription = Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed("")));
+const AxiomViewCapabilities = Schema.Record(Schema.NonEmptyString, AxiomCapabilityActions).pipe(
+  Schema.withDecodingDefaultKey(Effect.succeed({})),
+);
 
 export class AxiomToken extends Schema.Class<AxiomToken>(
   "@equipe-tech/observability-cli/AxiomToken",
 )({
   id: Schema.NonEmptyString,
   name: Schema.NonEmptyString,
-  description: Schema.String,
+  description: AxiomTokenDescription,
   expiresAt: Schema.String.pipe(Schema.optionalKey),
   datasetCapabilities: AxiomDatasetCapabilities,
   orgCapabilities: AxiomOrganizationCapabilities,
