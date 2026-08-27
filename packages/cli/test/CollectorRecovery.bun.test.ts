@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Schema } from "effect";
-import { access, chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 const projectRoot = fileURLToPath(new URL("../../..", import.meta.url));
 const image = "otel/opentelemetry-collector-contrib:0.159.0";
 const signalCleanupMode = process.env["OBSERVABILITY_COLLECTOR_RECOVERY_SIGNAL_TEST"] === "1";
+const signalCleanupScenario =
+  process.env["OBSERVABILITY_COLLECTOR_RECOVERY_SIGNAL_SCENARIO"] ?? "resources";
 const enabled = process.env["OBSERVABILITY_COLLECTOR_RECOVERY"] === "1" || signalCleanupMode;
 const signalReadyFile = process.env["OBSERVABILITY_COLLECTOR_RECOVERY_SIGNAL_READY_FILE"] ?? "";
 const evidenceRoot = process.env["OBSERVABILITY_COLLECTOR_RECOVERY_ARTIFACT_ROOT"] ?? "";
@@ -15,6 +17,10 @@ const runId = `obs10-${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
 const network = `${runId}-network`;
 const containers = new Set<string>();
 let root = "";
+let rootAllocation = Promise.resolve("");
+let signalHandlersInstalled = false;
+let terminationRequested = false;
+let terminationExitCode = 1;
 
 const runDocker = (args: ReadonlyArray<string>): string => {
   const result = Bun.spawnSync(["docker", ...args], {
@@ -440,14 +446,39 @@ interface SaturationResult {
 }
 
 const SignalCleanupReady = Schema.Struct({
-  root: Schema.NonEmptyString,
-  container: Schema.NonEmptyString,
-  network: Schema.NonEmptyString,
+  phase: Schema.NonEmptyString,
+  root: Schema.NonEmptyString.pipe(Schema.optionalKey),
+  container: Schema.NonEmptyString.pipe(Schema.optionalKey),
+  network: Schema.NonEmptyString.pipe(Schema.optionalKey),
   runId: Schema.NonEmptyString,
 });
 
 const decodeSignalCleanupReady = Schema.decodeUnknownSync(SignalCleanupReady);
-const cleanupSignals: ReadonlyArray<NodeJS.Signals> = ["SIGINT", "SIGTERM"];
+
+interface CollectorCleanupScenario {
+  readonly name: string;
+  readonly scenario: string;
+  readonly signals: ReadonlyArray<NodeJS.Signals>;
+  readonly expectedExitCode: number;
+}
+
+const collectorCleanupScenarios: ReadonlyArray<CollectorCleanupScenario> = [
+  { name: "active resources", scenario: "resources", signals: ["SIGINT"], expectedExitCode: 130 },
+  { name: "allocation", scenario: "allocation", signals: ["SIGTERM"], expectedExitCode: 143 },
+  {
+    name: "repeated signals",
+    scenario: "allocation",
+    signals: ["SIGINT", "SIGINT"],
+    expectedExitCode: 130,
+  },
+  {
+    name: "mixed signals",
+    scenario: "allocation",
+    signals: ["SIGTERM", "SIGINT"],
+    expectedExitCode: 143,
+  },
+  { name: "normal failure", scenario: "failure", signals: [], expectedExitCode: 1 },
+];
 
 const waitForFile = async (path: string): Promise<void> => {
   const deadline = Date.now() + 10_000;
@@ -484,6 +515,11 @@ let cleanupStarted = false;
 let cleanupResult = Promise.resolve();
 
 const cleanupResources = async (): Promise<void> => {
+  try {
+    root = await rootAllocation;
+  } catch {
+    root = "";
+  }
   for (const container of containers) {
     Bun.spawnSync(["docker", "rm", "--force", container], {
       stdout: "ignore",
@@ -533,19 +569,37 @@ const cleanup = (): Promise<void> => {
 };
 
 const terminateAfterCleanup = (exitCode: number): void => {
+  if (!terminationRequested) {
+    terminationRequested = true;
+    terminationExitCode = exitCode;
+    cleanup().then(
+      () => process.exit(terminationExitCode),
+      () => process.exit(terminationExitCode),
+    );
+    return;
+  }
   cleanup().then(
-    () => process.exit(exitCode),
-    () => process.exit(exitCode),
+    () => undefined,
+    () => undefined,
   );
 };
 
 const onSigint = (): void => terminateAfterCleanup(130);
 const onSigterm = (): void => terminateAfterCleanup(143);
 
-if (enabled) {
-  process.once("SIGINT", onSigint);
-  process.once("SIGTERM", onSigterm);
-}
+const installSignalHandlers = (): void => {
+  if (!signalHandlersInstalled) {
+    signalHandlersInstalled = true;
+    process.on("SIGINT", onSigint);
+    process.on("SIGTERM", onSigterm);
+  }
+};
+
+const beginRootAllocation = (allocate: () => Promise<string>): Promise<string> => {
+  rootAllocation = allocate();
+  installSignalHandlers();
+  return rootAllocation;
+};
 
 afterAll(async () => {
   if (!enabled) {
@@ -554,21 +608,41 @@ afterAll(async () => {
   await cleanup();
   process.off("SIGINT", onSigint);
   process.off("SIGTERM", onSigterm);
+  signalHandlersInstalled = false;
 });
 
 const signalCleanupDescribe = signalCleanupMode ? describe : describe.skip;
 
 signalCleanupDescribe("Collector recovery signal cleanup", () => {
-  test("removes the temporary root, container, and network on termination", async () => {
+  test("cleans the bounded signal scenario", async () => {
     if (signalReadyFile === "") {
       throw new Error("The signal cleanup test requires a ready file path.");
     }
-    root = await mkdtemp(join(tmpdir(), `${runId}-`));
-    runDocker(["network", "create", network]);
-    const container = `${runId}-signal`;
-    containers.add(container);
-    runDocker(["create", "--name", container, "--network", network, image]);
-    await writeFile(signalReadyFile, JSON.stringify({ root, container, network, runId }));
+    const allocate = async (): Promise<string> => {
+      if (signalCleanupScenario === "allocation") {
+        await writeFile(signalReadyFile, JSON.stringify({ phase: "allocation", runId }));
+        await Bun.sleep(250);
+      }
+      return mkdtemp(join(tmpdir(), `${runId}-`));
+    };
+    root = await beginRootAllocation(allocate);
+    if (terminationRequested) {
+      await cleanup();
+      await Bun.sleep(30_000);
+    }
+    if (signalCleanupScenario !== "allocation") {
+      runDocker(["network", "create", network]);
+      const container = `${runId}-signal`;
+      containers.add(container);
+      runDocker(["create", "--name", container, "--network", network, image]);
+      await writeFile(
+        signalReadyFile,
+        JSON.stringify({ phase: signalCleanupScenario, root, container, network, runId }),
+      );
+      if (signalCleanupScenario === "failure") {
+        throw new Error("The recovery cleanup failure test failed as requested.");
+      }
+    }
     await new Promise<never>(() => undefined);
   }, 30_000);
 });
@@ -577,7 +651,7 @@ const recoveryDescribe = enabled && !signalCleanupMode ? describe : describe.ski
 
 recoveryDescribe("Collector recovery", () => {
   test("persists every signal across restart and rejects requests at queue saturation", async () => {
-    root = await mkdtemp(join(tmpdir(), `${runId}-`));
+    root = await beginRootAllocation(() => mkdtemp(join(tmpdir(), `${runId}-`)));
     runDocker(["network", "create", network]);
     await saveEvidence("run.txt", `run_id=${runId}\nnetwork=${network}\nroot=${root}`);
     await saveEvidence(
@@ -792,8 +866,8 @@ recoveryDescribe("Collector recovery", () => {
     );
   }, 120_000);
 
-  for (const signal of cleanupSignals) {
-    test(`removes recovery resources after ${signal}`, async () => {
+  for (const scenario of collectorCleanupScenarios) {
+    test(`cleans recovery resources for ${scenario.name}`, async () => {
       const controlRoot = await mkdtemp(join(tmpdir(), "collector-cleanup-test-"));
       const readyFile = join(controlRoot, "ready.json");
       const child = Bun.spawn(
@@ -805,6 +879,7 @@ recoveryDescribe("Collector recovery", () => {
             OBSERVABILITY_COLLECTOR_RECOVERY: "0",
             OBSERVABILITY_COLLECTOR_RECOVERY_ARTIFACT_ROOT: "",
             OBSERVABILITY_COLLECTOR_RECOVERY_SIGNAL_TEST: "1",
+            OBSERVABILITY_COLLECTOR_RECOVERY_SIGNAL_SCENARIO: scenario.scenario,
             OBSERVABILITY_COLLECTOR_RECOVERY_SIGNAL_READY_FILE: readyFile,
           },
           stdout: "ignore",
@@ -820,15 +895,22 @@ recoveryDescribe("Collector recovery", () => {
         await waitForFile(readyFile);
         const content: unknown = JSON.parse(await readFile(readyFile, "utf8"));
         const ready = decodeSignalCleanupReady(content);
-        childRoot = ready.root;
-        childContainer = ready.container;
-        childNetwork = ready.network;
+        childRoot = ready.root ?? "";
+        childContainer = ready.container ?? "";
+        childNetwork = ready.network ?? "";
         childRunId = ready.runId;
-        child.kill(signal);
+        for (const signal of scenario.signals) {
+          child.kill(signal);
+        }
         const exitCode = await child.exited;
         exited = true;
-        expect(exitCode).toBe(signal === "SIGINT" ? 130 : 143);
-        await waitForAbsence(childRoot);
+        expect(exitCode).toBe(scenario.expectedExitCode);
+        if (childRoot !== "") {
+          await waitForAbsence(childRoot);
+        }
+        const remainingRoots = (await readdir(tmpdir())).filter((entry) =>
+          entry.startsWith(`${childRunId}-`),
+        );
         const remainingContainers = runDocker([
           "ps",
           "--all",
@@ -841,10 +923,11 @@ recoveryDescribe("Collector recovery", () => {
           "network",
           "ls",
           "--filter",
-          `name=${childNetwork}`,
+          `name=${childRunId}`,
           "--format",
           "{{.Name}}",
         ]);
+        expect(remainingRoots).toEqual([]);
         expect(remainingContainers).toBe("");
         expect(remainingNetworks).toBe("");
       } finally {

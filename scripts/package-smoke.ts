@@ -5,10 +5,25 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+const cleanupTestIndex = process.argv.indexOf("--signal-cleanup-test");
+const cleanupReadyFile = cleanupTestIndex === -1 ? "" : (process.argv[cleanupTestIndex + 1] ?? "");
+const cleanupScenario =
+  cleanupTestIndex === -1 ? "" : (process.argv[cleanupTestIndex + 2] ?? "idle");
+const requestedCleanupDeadline = Number(
+  cleanupTestIndex === -1 ? "3000" : (process.argv[cleanupTestIndex + 3] ?? "3000"),
+);
+const cleanupDeadlineMilliseconds =
+  Number.isFinite(requestedCleanupDeadline) && requestedCleanupDeadline > 0
+    ? requestedCleanupDeadline
+    : 3_000;
+const processGroupsSupported = process.platform !== "win32";
 let temporaryDirectory = "";
 let cleanupStarted = false;
 let cleanupResult = Promise.resolve();
+let terminationRequested = false;
+let terminationExitCode = 1;
 const activeChildren = new Set<ReturnType<typeof Bun.spawn>>();
+let allocationPromise = Promise.resolve("");
 
 type CommandResult = {
   readonly exitCode: number;
@@ -17,7 +32,13 @@ type CommandResult = {
 };
 
 const run = (command: Array<string>, cwd: string, env = process.env): Promise<CommandResult> => {
-  const child = Bun.spawn(command, { cwd, env, stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn(command, {
+    cwd,
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+    detached: processGroupsSupported,
+  });
   activeChildren.add(child);
   return Promise.all([
     child.exited,
@@ -51,21 +72,53 @@ const assertArchive = (
   }
 };
 
-const stopChild = async (child: ReturnType<typeof Bun.spawn>): Promise<void> => {
-  child.kill("SIGTERM");
-  const exited = await Promise.race([
-    child.exited.then(() => true),
-    Bun.sleep(2_000).then(() => false),
-  ]);
-  if (!exited) {
-    child.kill("SIGKILL");
-    await child.exited;
+const signalChild = (child: ReturnType<typeof Bun.spawn>, signal: NodeJS.Signals): void => {
+  if (processGroupsSupported) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      child.kill(signal);
+      return;
+    }
+  }
+  child.kill(signal);
+};
+
+const waitForChildren = async (
+  children: ReadonlyArray<ReturnType<typeof Bun.spawn>>,
+  deadline: number,
+): Promise<void> => {
+  while (Date.now() < deadline && children.some((child) => activeChildren.has(child))) {
+    await Bun.sleep(10);
   }
 };
 
-const cleanupTemporaryDirectory = async (): Promise<void> => {
-  await Promise.all([...activeChildren].map(stopChild));
+const stopChildren = async (deadline: number): Promise<void> => {
+  const children = [...activeChildren];
+  for (const child of children) {
+    signalChild(child, "SIGTERM");
+  }
+  const remaining = Math.max(0, deadline - Date.now());
+  const termDeadline = Date.now() + Math.floor(remaining / 2);
+  await waitForChildren(children, termDeadline);
+  for (const child of children) {
+    if (activeChildren.has(child)) {
+      signalChild(child, "SIGKILL");
+    }
+  }
+  await waitForChildren(children, deadline);
   activeChildren.clear();
+};
+
+const cleanupTemporaryDirectory = async (): Promise<void> => {
+  try {
+    temporaryDirectory = await allocationPromise;
+  } catch {
+    temporaryDirectory = "";
+  }
+  const deadline = Date.now() + cleanupDeadlineMilliseconds;
+  await stopChildren(deadline);
   if (temporaryDirectory !== "") {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
@@ -80,28 +133,69 @@ const cleanup = (): Promise<void> => {
 };
 
 const terminateAfterCleanup = (exitCode: number): void => {
+  if (!terminationRequested) {
+    terminationRequested = true;
+    terminationExitCode = exitCode;
+    cleanup().then(
+      () => process.exit(terminationExitCode),
+      () => process.exit(terminationExitCode),
+    );
+    return;
+  }
   cleanup().then(
-    () => process.exit(exitCode),
-    () => process.exit(exitCode),
+    () => undefined,
+    () => undefined,
   );
 };
 
 const onSigint = (): void => terminateAfterCleanup(130);
 const onSigterm = (): void => terminateAfterCleanup(143);
 
-process.once("SIGINT", onSigint);
-process.once("SIGTERM", onSigterm);
+const allocateTemporaryDirectory = async (): Promise<string> => {
+  if (cleanupScenario === "allocation") {
+    if (cleanupReadyFile === "") {
+      throw new Error("The allocation cleanup test requires a ready file path.");
+    }
+    await writeFile(cleanupReadyFile, JSON.stringify({ phase: "allocation" }));
+    await Bun.sleep(250);
+  }
+  return mkdtemp(join(tmpdir(), "observability-package-"));
+};
+
+allocationPromise = allocateTemporaryDirectory();
+process.on("SIGINT", onSigint);
+process.on("SIGTERM", onSigterm);
 
 try {
-  temporaryDirectory = await mkdtemp(join(tmpdir(), "observability-package-"));
-  const signalTestIndex = process.argv.indexOf("--signal-cleanup-test");
-  if (signalTestIndex !== -1) {
-    const readyFile = process.argv[signalTestIndex + 1];
-    if (readyFile === undefined) {
+  temporaryDirectory = await allocationPromise;
+  if (terminationRequested) {
+    await cleanup();
+    await Bun.sleep(cleanupDeadlineMilliseconds);
+  }
+  if (cleanupTestIndex !== -1) {
+    if (cleanupReadyFile === "") {
       throw new Error("The signal cleanup test requires a ready file path.");
     }
-    await writeFile(readyFile, temporaryDirectory);
-    await Bun.sleep(60_000);
+    if (cleanupScenario === "failure") {
+      await writeFile(cleanupReadyFile, JSON.stringify({ phase: "failure", temporaryDirectory }));
+      throw new Error("The package cleanup failure test failed as requested.");
+    }
+    if (cleanupScenario === "active" || cleanupScenario === "deadline") {
+      const stubborn = cleanupScenario === "deadline";
+      const descendantProgram = stubborn
+        ? 'process.on("SIGTERM", () => undefined); await Bun.sleep(60000);'
+        : "await Bun.sleep(60000);";
+      const commandProgram = [
+        stubborn ? 'process.on("SIGTERM", () => undefined);' : "",
+        `const descendant = Bun.spawn(["bun", "--eval", ${JSON.stringify(descendantProgram)}], { stdout: "ignore", stderr: "ignore" });`,
+        `await Bun.write(${JSON.stringify(cleanupReadyFile)}, JSON.stringify({ phase: "active", temporaryDirectory: ${JSON.stringify(temporaryDirectory)}, commandPid: process.pid, descendantPid: descendant.pid }));`,
+        "await Bun.sleep(60000);",
+      ].join("\n");
+      await run(["bun", "--eval", commandProgram], root);
+    } else if (cleanupScenario !== "allocation") {
+      await writeFile(cleanupReadyFile, JSON.stringify({ phase: "idle", temporaryDirectory }));
+      await Bun.sleep(60_000);
+    }
   }
 
   const cliManifest: unknown = JSON.parse(
