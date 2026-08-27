@@ -11,6 +11,23 @@ processors:
     check_interval: 1s
     limit_mib: 256
     spike_limit_mib: 64
+  transform/environment:
+    error_mode: propagate
+    trace_statements:
+      - context: resource
+        statements:
+          - 'set(resource.attributes["deployment.environment.name"], resource.attributes["deployment.environment"]) where resource.attributes["deployment.environment.name"] == nil and resource.attributes["deployment.environment"] != nil'
+          - 'set(resource.attributes["deployment.environment"], resource.attributes["deployment.environment.name"]) where resource.attributes["deployment.environment.name"] != nil'
+    log_statements:
+      - context: resource
+        statements:
+          - 'set(resource.attributes["deployment.environment.name"], resource.attributes["deployment.environment"]) where resource.attributes["deployment.environment.name"] == nil and resource.attributes["deployment.environment"] != nil'
+          - 'set(resource.attributes["deployment.environment"], resource.attributes["deployment.environment.name"]) where resource.attributes["deployment.environment.name"] != nil'
+    metric_statements:
+      - context: resource
+        statements:
+          - 'set(resource.attributes["deployment.environment.name"], resource.attributes["deployment.environment"]) where resource.attributes["deployment.environment.name"] == nil and resource.attributes["deployment.environment"] != nil'
+          - 'set(resource.attributes["deployment.environment"], resource.attributes["deployment.environment.name"]) where resource.attributes["deployment.environment.name"] != nil'
   transform/redact:
     error_mode: propagate
     trace_statements:
@@ -58,13 +75,15 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, transform/redact, redaction/sensitive, batch]
+      processors:
+        [memory_limiter, transform/environment, transform/redact, redaction/sensitive, batch]
       exporters: [otlp/viewer, file/telemetry]
     logs:
       receivers: [otlp]
-      processors: [memory_limiter, transform/redact, redaction/sensitive, batch]
+      processors:
+        [memory_limiter, transform/environment, transform/redact, redaction/sensitive, batch]
       exporters: [otlp/viewer, file/telemetry]
     metrics:
       receivers: [otlp]
-      processors: [memory_limiter, redaction/sensitive, batch]
+      processors: [memory_limiter, transform/environment, redaction/sensitive, batch]
       exporters: [otlp/viewer, file/telemetry]

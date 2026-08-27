@@ -123,7 +123,8 @@ const AxiomSpanRow = Schema.Struct({
   name: Schema.NonEmptyString,
   service_name: OptionalString,
   service_version: OptionalString,
-  environment: OptionalString,
+  environment_name: OptionalString,
+  environment_alias: OptionalString,
   events: OptionalString,
   ...AxiomRedactionRowFields,
 });
@@ -137,7 +138,8 @@ export type AxiomSpan = {
   readonly name: string;
   readonly serviceName: Option.Option<string>;
   readonly serviceVersion: Option.Option<string>;
-  readonly environment: Option.Option<string>;
+  readonly environmentName: Option.Option<string>;
+  readonly environmentAlias: Option.Option<string>;
   readonly events: Option.Option<string>;
   readonly redaction: AxiomRedactionAttributes;
 };
@@ -151,12 +153,13 @@ const toAxiomSpan = (row: typeof AxiomSpanRow.Type): AxiomSpan => ({
   name: row.name,
   serviceName: Option.fromNullishOr(row.service_name),
   serviceVersion: Option.fromNullishOr(row.service_version),
-  environment: Option.fromNullishOr(row.environment),
+  environmentName: Option.fromNullishOr(row.environment_name),
+  environmentAlias: Option.fromNullishOr(row.environment_alias),
   events: Option.fromNullishOr(row.events),
   redaction: toAxiomRedactionAttributes(row),
 });
 
-const spanProjection = `project trace_id, span_id, parent_span_id, name, service_name = ['service.name'], service_version = ['service.version'], environment = tostring(['resource.custom']['deployment.environment.name']), events = tostring(events), ${redactionProjection}`;
+const spanProjection = `project trace_id, span_id, parent_span_id, name, service_name = ['service.name'], service_version = ['service.version'], environment_name = tostring(['resource.custom']['deployment.environment.name']), environment_alias = tostring(['resource.custom']['deployment.environment']), events = tostring(events), ${redactionProjection}`;
 
 export const findRootSpan = (
   env: AxiomEnvironment,
@@ -196,6 +199,8 @@ const AxiomLogRow = Schema.Struct({
   event_kind: OptionalString,
   event_source: OptionalString,
   service_name: OptionalString,
+  environment_name: OptionalString,
+  environment_alias: OptionalString,
   body: OptionalString,
   ...AxiomRedactionRowFields,
 });
@@ -208,6 +213,8 @@ export type AxiomLog = {
   readonly eventKind: Option.Option<string>;
   readonly eventSource: Option.Option<string>;
   readonly serviceName: Option.Option<string>;
+  readonly environmentName: Option.Option<string>;
+  readonly environmentAlias: Option.Option<string>;
   readonly body: Option.Option<string>;
   readonly redaction: AxiomRedactionAttributes;
 };
@@ -218,6 +225,8 @@ const toAxiomLog = (row: typeof AxiomLogRow.Type): AxiomLog => ({
   eventKind: Option.fromNullishOr(row.event_kind),
   eventSource: Option.fromNullishOr(row.event_source),
   serviceName: Option.fromNullishOr(row.service_name),
+  environmentName: Option.fromNullishOr(row.environment_name),
+  environmentAlias: Option.fromNullishOr(row.environment_alias),
   body: Option.fromNullishOr(row.body),
   redaction: toAxiomRedactionAttributes(row),
 });
@@ -228,7 +237,7 @@ export const findLogs = (
 ): Effect.Effect<ReadonlyArray<AxiomLog>> =>
   runQuery(
     env,
-    `['${env.AXIOM_DATASET_LOGS}'] | where ['attributes.custom']['canary.run_id'] == '${runId}' | project trace_id, event_name = tostring(['attributes.custom']['event.name']), event_kind = tostring(['attributes.custom']['event.kind']), event_source = tostring(['attributes.custom']['event.source']), service_name = ['service.name'], body = tostring(body), ${redactionProjection}`,
+    `['${env.AXIOM_DATASET_LOGS}'] | where ['attributes.custom']['canary.run_id'] == '${runId}' | project trace_id, event_name = tostring(['attributes.custom']['event.name']), event_kind = tostring(['attributes.custom']['event.kind']), event_source = tostring(['attributes.custom']['event.source']), service_name = ['service.name'], environment_name = tostring(['resource.custom']['deployment.environment.name']), environment_alias = tostring(['resource.custom']['deployment.environment']), body = tostring(body), ${redactionProjection}`,
   ).pipe(
     Effect.map((rows) =>
       rows.flatMap((row) =>
@@ -247,10 +256,11 @@ export type AxiomMetric = {
 export const findMetric = (
   env: AxiomEnvironment,
   runId: string,
+  environment: string,
 ): Effect.Effect<Option.Option<AxiomMetric>> =>
   runMetricsQuery(
     env,
-    `\`${env.AXIOM_DATASET_METRICS}\`:\`canary.operations\` | where \`canary.run_id\` == "${runId}"`,
+    `\`${env.AXIOM_DATASET_METRICS}\`:\`canary.operations\` | where \`canary.run_id\` == "${runId}" and \`deployment.environment.name\` == "${environment}" and \`deployment.environment\` == "${environment}"`,
   ).pipe(
     Effect.map((content) =>
       content.includes(runId) ? Option.some({ content }) : Option.none<AxiomMetric>(),

@@ -100,7 +100,8 @@ describe("axiom query support", () => {
               name: "canary.operation",
               service_name: "observability-canary",
               service_version: "0.1.0",
-              environment: "e2e",
+              environment_name: "e2e",
+              environment_alias: "e2e",
             },
           },
         ]),
@@ -115,7 +116,8 @@ describe("axiom query support", () => {
       assert.strictEqual(span.spanId, "span-1");
       assert.deepStrictEqual(span.parentSpanId, Option.none());
       assert.deepStrictEqual(span.serviceName, Option.some("observability-canary"));
-      assert.deepStrictEqual(span.environment, Option.some("e2e"));
+      assert.deepStrictEqual(span.environmentName, Option.some("e2e"));
+      assert.deepStrictEqual(span.environmentAlias, span.environmentName);
 
       const query = stub.queries[0];
       assert.isDefined(query);
@@ -124,6 +126,14 @@ describe("axiom query support", () => {
       assert.include(query.query, "['e2e-traces']");
       assert.include(query.query, "['attributes.custom']['canary.run_id'] == 'test-run-1'");
       assert.include(query.query, "name == 'canary.operation'");
+      assert.include(
+        query.query,
+        "environment_name = tostring(['resource.custom']['deployment.environment.name'])",
+      );
+      assert.include(
+        query.query,
+        "environment_alias = tostring(['resource.custom']['deployment.environment'])",
+      );
     }),
   );
 
@@ -165,6 +175,8 @@ describe("axiom query support", () => {
               event_kind: "wide",
               event_source: null,
               service_name: "observability-canary",
+              environment_name: "e2e",
+              environment_alias: "e2e",
             },
           },
           { data: { unrelated: true } },
@@ -181,9 +193,19 @@ describe("axiom query support", () => {
       assert.deepStrictEqual(log.traceId, Option.some("trace-1"));
       assert.deepStrictEqual(log.eventKind, Option.some("wide"));
       assert.deepStrictEqual(log.eventSource, Option.none());
+      assert.deepStrictEqual(log.environmentName, Option.some("e2e"));
+      assert.deepStrictEqual(log.environmentAlias, log.environmentName);
       const query = stub.queries[0];
       assert.isDefined(query);
       assert.include(query.query, "['e2e-logs']");
+      assert.include(
+        query.query,
+        "environment_name = tostring(['resource.custom']['deployment.environment.name'])",
+      );
+      assert.include(
+        query.query,
+        "environment_alias = tostring(['resource.custom']['deployment.environment'])",
+      );
     }),
   );
 
@@ -201,7 +223,7 @@ describe("axiom query support", () => {
         ],
       });
       const stub = yield* Effect.promise(() => startStubAxiom([], metricsResponse));
-      const metric = yield* findMetric(stub.env, "test-run-1").pipe(
+      const metric = yield* findMetric(stub.env, "test-run-1", "e2e").pipe(
         Effect.ensuring(Effect.sync(() => stub.server.close())),
       );
 
@@ -211,7 +233,10 @@ describe("axiom query support", () => {
       assert.isDefined(query);
       assert.strictEqual(query.path, "/v1/query/_mpl?format=metrics-v2");
       assert.include(query.query, "`e2e-metrics`:`canary.operations`");
-      assert.include(query.query, '`canary.run_id` == "test-run-1"');
+      assert.include(
+        query.query,
+        '`canary.run_id` == "test-run-1" and `deployment.environment.name` == "e2e" and `deployment.environment` == "e2e"',
+      );
     }),
   );
 });

@@ -4,6 +4,36 @@ O pacote trata o ambiente como um atributo OpenTelemetry. `OTEL_DEPLOYMENT_ENVIR
 
 A aplicação envia os três sinais para um Collector. Ela não contém credenciais do Axiom e não conhece os nomes dos datasets.
 
+## O atributo canônico preserva consultas durante a transição
+
+O atributo canônico de resource para logs, traces e métricas é `deployment.environment.name`.
+
+O Collector também exporta `deployment.environment` como alias de transição.
+
+- Se somente o atributo canônico existe, o Collector copia seu valor para o alias.
+- Se somente o alias existe, o Collector copia seu valor para o atributo canônico.
+- Se ambos existem com valores diferentes, o atributo canônico substitui o alias.
+- Se nenhum existe, o Collector não altera o resource.
+
+A regra usa somente atributos de resource. Atributos de spans, eventos, logs ou pontos de métricas não são entradas para a migração.
+
+Use o campo canônico nas novas consultas Axiom:
+
+```apl
+['project-production-traces'] | where ['resource.custom']['deployment.environment.name'] == 'production'
+```
+
+As consultas existentes com o alias continuam válidas durante a transição:
+
+```apl
+['project-production-traces'] | where ['resource.custom']['deployment.environment'] == 'production'
+```
+
+A remoção do alias requer duas condições:
+
+- Todos os produtores suportados enviam o atributo canônico.
+- Nenhuma consulta, painel ou alerta usa o alias durante um período completo de retenção dos datasets.
+
 ## O ambiente local não usa contas externas
 
 O ambiente local usa `http://localhost:4318` como endpoint padrão. O Collector local envia os sinais para o `otel-desktop-viewer`.
