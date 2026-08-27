@@ -53,7 +53,7 @@ O [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-viewer) recebe
 app -> otel-collector (Kamal accessory) -> Axiom
 ```
 
-O Collector roda como accessory do [Kamal](https://kamal-deploy.org), com fila persistente e sem porta OTLP pública.
+O Collector roda como accessory do [Kamal](https://kamal-deploy.org), com filas persistentes limitadas por sinal e sem porta OTLP pública. Saúde e métricas internas são publicadas somente em loopback. Consulte [Operar a fila persistente do Collector](docs/collector-production-operations.md) antes do primeiro deploy.
 
 ## Estrutura
 
@@ -117,7 +117,7 @@ O comando escreve no projeto alvo:
 - `observability/collector.yaml`: configuração do OTel Collector de produção (fila persistente e exporters Axiom)
 - `observability/kamal.accessory.yml`: trecho de accessory para mesclar em `config/deploy.yml`, com os datasets `<name>-traces|logs|metrics`
 
-O comando é idempotente. Um arquivo provisionado que foi modificado localmente gera o erro `OBS_CLI_PROVISION_CONFLICT`; use `--force` para sobrescrever. Depois do merge do accessory, defina o secret `AXIOM_TOKEN` no Kamal.
+O comando é idempotente. Um arquivo provisionado que foi modificado localmente gera o erro `OBS_CLI_PROVISION_CONFLICT`; use `--force` para sobrescrever. Depois do merge do accessory, prepare o filesystem dedicado de 8 GiB, valide owner `10001:10001` e mode `0700`, e defina o secret `AXIOM_TOKEN` no Kamal. Pare produtores antes de 75% de uso ou com menos de 2 GiB livres. O procedimento completo de health, alertas, drain, backup e rotação está em [Operar a fila persistente do Collector](docs/collector-production-operations.md).
 
 ### Ambientes remotos
 

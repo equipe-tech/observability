@@ -28,6 +28,12 @@ jobs:
       - run: bun run test:package
       - run: docker run --rm -v "$PWD/packages/cli/src/assets/local.yaml:/etc/otelcol/config.yaml:ro" otel/opentelemetry-collector-contrib:0.159.0 validate --config=/etc/otelcol/config.yaml
       - run: docker run --rm -e AXIOM_TOKEN=test -e AXIOM_DATASET_TRACES=traces -e AXIOM_DATASET_LOGS=logs -e AXIOM_DATASET_METRICS=metrics -v "$PWD/packages/cli/src/assets/production.yaml:/etc/otelcol/config.yaml:ro" otel/opentelemetry-collector-contrib:0.159.0 validate --config=/etc/otelcol/config.yaml
+      - name: Collector outage, restart, and saturation proof
+        timeout-minutes: 3
+        env:
+          OBSERVABILITY_COLLECTOR_RECOVERY: "1"
+          OBSERVABILITY_COLLECTOR_RECOVERY_ARTIFACT_ROOT: ${{ runner.temp }}/collector-recovery
+        run: bun test packages/cli/test/CollectorRecovery.bun.test.ts --timeout 120000
       - run: bun packages/cli/src/main.ts dev up
       - run: curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-delay 1 http://localhost:8000/ > /dev/null
       - run: OBSERVABILITY_E2E=1 bun test:canary

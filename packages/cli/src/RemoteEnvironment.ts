@@ -786,7 +786,7 @@ export class RemoteEnvironment extends Context.Service<
           const axiom = environmentAxiom(managed);
           if (Option.isSome(axiom)) {
             variables.push(
-              ["OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318"],
+              ["OTEL_EXPORTER_OTLP_ENDPOINT", `http://${managed.project}-otel-collector:4318`],
               ["AXIOM_TOKEN", axiom.value.token],
               ["AXIOM_DATASET_TRACES", axiom.value.tracesDataset],
               ["AXIOM_DATASET_LOGS", axiom.value.logsDataset],

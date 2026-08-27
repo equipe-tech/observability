@@ -292,7 +292,7 @@ describe("built CLI provider selection", () => {
         expect(axiomExport.stdout.trim().split("\n")).toEqual([
           'OTEL_SERVICE_NAME="livro-caixa"',
           'OTEL_DEPLOYMENT_ENVIRONMENT="staging"',
-          'OTEL_EXPORTER_OTLP_ENDPOINT="http://otel-collector:4318"',
+          'OTEL_EXPORTER_OTLP_ENDPOINT="http://livro-caixa-otel-collector:4318"',
           'AXIOM_TOKEN="ingest-secret-1"',
           'AXIOM_DATASET_TRACES="livro-caixa-staging-traces"',
           'AXIOM_DATASET_LOGS="livro-caixa-staging-logs"',
@@ -430,7 +430,7 @@ describe("built CLI provider selection", () => {
         expect(combinedExport.stdout.trim().split("\n")).toEqual([
           'OTEL_SERVICE_NAME="livro-caixa"',
           'OTEL_DEPLOYMENT_ENVIRONMENT="canary"',
-          'OTEL_EXPORTER_OTLP_ENDPOINT="http://otel-collector:4318"',
+          'OTEL_EXPORTER_OTLP_ENDPOINT="http://livro-caixa-otel-collector:4318"',
           'AXIOM_TOKEN="ingest-secret-2"',
           'AXIOM_DATASET_TRACES="livro-caixa-canary-traces"',
           'AXIOM_DATASET_LOGS="livro-caixa-canary-logs"',

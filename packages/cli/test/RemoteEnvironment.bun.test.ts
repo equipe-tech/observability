@@ -280,6 +280,13 @@ describe("RemoteEnvironment", () => {
     expect(state.sentryProjectCalls).toBe(2);
     expect(state.credentials.environments).toHaveLength(1);
     expect(result.exported.split("\n")).toHaveLength(8);
+    expect(result.exported).toContain('OTEL_DEPLOYMENT_ENVIRONMENT="staging"');
+    expect(result.exported).toContain(
+      'OTEL_EXPORTER_OTLP_ENDPOINT="http://livro-caixa-otel-collector:4318"',
+    );
+    expect(result.exported).not.toContain(
+      'OTEL_EXPORTER_OTLP_ENDPOINT="http://otel-collector:4318"',
+    );
     expect(result.exported).toContain('AXIOM_TOKEN="secret-1"');
     expect(result.exported).toContain('SENTRY_DSN="https://public@sentry.example/1"');
   });
