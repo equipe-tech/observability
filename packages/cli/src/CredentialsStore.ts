@@ -23,6 +23,56 @@ export class SentryCredentials extends Schema.Class<SentryCredentials>(
   baseUrl: Schema.URLFromString,
 }) {}
 
+export const AxiomDatasetKind = Schema.Literals([
+  "axiom:events:v1",
+  "otel:logs:v1",
+  "otel:metrics:v1",
+  "otel:traces:v1",
+]);
+
+export class VerifiedAxiomDataset extends Schema.Class<VerifiedAxiomDataset>(
+  "@equipe-tech/observability-cli/VerifiedAxiomDataset",
+)({
+  id: Schema.NonEmptyString,
+  name: Schema.NonEmptyString,
+  kind: AxiomDatasetKind,
+  edgeDeployment: Schema.NonEmptyString.pipe(Schema.optionalKey),
+  retentionDays: Schema.Int.check(Schema.isGreaterThan(0)).pipe(Schema.optionalKey),
+  useRetentionPeriod: Schema.Boolean,
+}) {}
+
+const VerificationRequired = Schema.Struct({ type: Schema.Literal("verification-required") });
+const ManualCorrelation = Schema.Struct({
+  type: Schema.Literal("manual-required"),
+  groupName: Schema.NonEmptyString,
+  groupSlug: Schema.NonEmptyString,
+  tracesDataset: Schema.NonEmptyString,
+  logsDataset: Schema.NonEmptyString,
+  metricsDataset: Schema.NonEmptyString,
+});
+const ConfirmedCorrelation = Schema.Struct({
+  type: Schema.Literal("operator-confirmed"),
+  groupName: Schema.NonEmptyString,
+  groupSlug: Schema.NonEmptyString,
+  tracesDataset: Schema.NonEmptyString,
+  logsDataset: Schema.NonEmptyString,
+  metricsDataset: Schema.NonEmptyString,
+  confirmedAt: Schema.NonEmptyString,
+});
+export const AxiomCorrelationState = Schema.Union([
+  VerificationRequired,
+  ManualCorrelation,
+  ConfirmedCorrelation,
+]);
+export type AxiomCorrelationState = typeof AxiomCorrelationState.Type;
+
+const VerifiedAxiomDatasets = Schema.Struct({
+  traces: VerifiedAxiomDataset,
+  logs: VerifiedAxiomDataset,
+  metrics: VerifiedAxiomDataset,
+});
+export type VerifiedAxiomDatasets = typeof VerifiedAxiomDatasets.Type;
+
 export class AxiomEnvironment extends Schema.Class<AxiomEnvironment>(
   "@equipe-tech/observability-cli/AxiomEnvironment",
 )({
@@ -31,6 +81,8 @@ export class AxiomEnvironment extends Schema.Class<AxiomEnvironment>(
   tracesDataset: Schema.NonEmptyString,
   logsDataset: Schema.NonEmptyString,
   metricsDataset: Schema.NonEmptyString,
+  datasets: VerifiedAxiomDatasets.pipe(Schema.optionalKey),
+  correlation: AxiomCorrelationState,
 }) {}
 
 export class SentryEnvironment extends Schema.Class<SentryEnvironment>(
@@ -79,12 +131,50 @@ export class PendingAxiomMutation extends Schema.Class<PendingAxiomMutation>(
 export class CredentialsFile extends Schema.Class<CredentialsFile>(
   "@equipe-tech/observability-cli/CredentialsFile",
 )({
-  version: Schema.Literal(2),
+  version: Schema.Literal(3),
   axiom: AxiomCredentials.pipe(Schema.optionalKey),
   sentry: SentryCredentials.pipe(Schema.optionalKey),
   environments: Schema.Array(ManagedEnvironment),
   pendingAxiomMutations: Schema.Array(PendingAxiomMutation).pipe(Schema.optionalKey),
 }) {}
+
+const Version2AxiomEnvironment = Schema.Struct({
+  tokenId: Schema.NonEmptyString,
+  token: Schema.NonEmptyString,
+  tracesDataset: Schema.NonEmptyString,
+  logsDataset: Schema.NonEmptyString,
+  metricsDataset: Schema.NonEmptyString,
+});
+const Version2AxiomProviders = Schema.Struct({
+  type: Schema.Literal("axiom"),
+  axiom: Version2AxiomEnvironment,
+});
+const Version2SentryProviders = Schema.Struct({
+  type: Schema.Literal("sentry"),
+  sentry: SentryEnvironment,
+});
+const Version2CombinedProviders = Schema.Struct({
+  type: Schema.Literal("combined"),
+  axiom: Version2AxiomEnvironment,
+  sentry: SentryEnvironment,
+});
+const Version2ManagedEnvironment = Schema.Struct({
+  project: Schema.NonEmptyString,
+  environment: Schema.NonEmptyString,
+  providers: Schema.Union([
+    Version2AxiomProviders,
+    Version2SentryProviders,
+    Version2CombinedProviders,
+  ]),
+});
+const Version2CredentialsFile = Schema.Struct({
+  version: Schema.Literal(2),
+  axiom: AxiomCredentials.pipe(Schema.optionalKey),
+  sentry: SentryCredentials.pipe(Schema.optionalKey),
+  environments: Schema.Array(Version2ManagedEnvironment),
+  pendingAxiomMutations: Schema.Array(PendingAxiomMutation).pipe(Schema.optionalKey),
+});
+type Version2CredentialsFile = typeof Version2CredentialsFile.Type;
 
 const LegacyManagedEnvironment = Schema.Struct({
   project: Schema.NonEmptyString,
@@ -110,6 +200,7 @@ type LegacyCredentialsFile = typeof LegacyCredentialsFile.Type;
 const CredentialsVersion = Schema.Struct({ version: Schema.Number });
 const decodeCredentialsVersion = Schema.decodeUnknownEffect(CredentialsVersion);
 const decodeLegacyCredentialsFile = Schema.decodeUnknownEffect(LegacyCredentialsFile);
+const decodeVersion2CredentialsFile = Schema.decodeUnknownEffect(Version2CredentialsFile);
 const decodeCredentialsFile = Schema.decodeUnknownEffect(CredentialsFile);
 
 const LockOwner = Schema.Struct({
@@ -121,7 +212,8 @@ const LockOwner = Schema.Struct({
 const decodeLockOwner = Schema.decodeUnknownEffect(LockOwner);
 
 type PersistedCredentials =
-  | { readonly type: "legacy"; readonly credentials: LegacyCredentialsFile }
+  | { readonly type: "version-1"; readonly credentials: LegacyCredentialsFile }
+  | { readonly type: "version-2"; readonly credentials: Version2CredentialsFile }
   | { readonly type: "current"; readonly credentials: CredentialsFile };
 
 export class CredentialsError extends Schema.TaggedError<CredentialsError>()("CredentialsError", {
@@ -160,7 +252,7 @@ const parseCredentials = Effect.fn("parseCredentials")(function* (
     catch: invalidCredentials,
   });
   const version = yield* decodeCredentialsVersion(value).pipe(Effect.mapError(invalidCredentials));
-  if (version.version > 2) {
+  if (version.version > 3) {
     return yield* new CredentialsError({
       code: "OBS_CLI_CREDENTIALS_VERSION_UNSUPPORTED",
       message: "The credentials file was written by a newer CLI. Update the CLI and retry.",
@@ -171,9 +263,15 @@ const parseCredentials = Effect.fn("parseCredentials")(function* (
     const credentials = yield* decodeLegacyCredentialsFile(value).pipe(
       Effect.mapError(invalidCredentials),
     );
-    return { type: "legacy", credentials };
+    return { type: "version-1", credentials };
   }
   if (version.version === 2) {
+    const credentials = yield* decodeVersion2CredentialsFile(value).pipe(
+      Effect.mapError(invalidCredentials),
+    );
+    return { type: "version-2", credentials };
+  }
+  if (version.version === 3) {
     const credentials = yield* decodeCredentialsFile(value).pipe(
       Effect.mapError(invalidCredentials),
     );
@@ -182,7 +280,66 @@ const parseCredentials = Effect.fn("parseCredentials")(function* (
   return yield* invalidCredentials(version.version);
 });
 
-const migrateCredentials = (legacy: LegacyCredentialsFile): CredentialsFile => {
+const unverifiedAxiomEnvironment = (environment: {
+  readonly tokenId: string;
+  readonly token: string;
+  readonly tracesDataset: string;
+  readonly logsDataset: string;
+  readonly metricsDataset: string;
+}): AxiomEnvironment =>
+  new AxiomEnvironment({
+    tokenId: environment.tokenId,
+    token: environment.token,
+    tracesDataset: environment.tracesDataset,
+    logsDataset: environment.logsDataset,
+    metricsDataset: environment.metricsDataset,
+    correlation: { type: "verification-required" },
+  });
+
+const makeMigratedCredentials = (
+  axiom: AxiomCredentials | undefined,
+  sentry: SentryCredentials | undefined,
+  environments: ReadonlyArray<ManagedEnvironment>,
+  pendingAxiomMutations: ReadonlyArray<PendingAxiomMutation> = [],
+): CredentialsFile => {
+  const pending = pendingAxiomMutations.length === 0 ? undefined : pendingAxiomMutations;
+  if (axiom !== undefined && sentry !== undefined) {
+    return pending === undefined
+      ? new CredentialsFile({ version: 3, environments, axiom, sentry })
+      : new CredentialsFile({
+          version: 3,
+          environments,
+          axiom,
+          sentry,
+          pendingAxiomMutations: pending,
+        });
+  }
+  if (axiom !== undefined) {
+    return pending === undefined
+      ? new CredentialsFile({ version: 3, environments, axiom })
+      : new CredentialsFile({
+          version: 3,
+          environments,
+          axiom,
+          pendingAxiomMutations: pending,
+        });
+  }
+  if (sentry !== undefined) {
+    return pending === undefined
+      ? new CredentialsFile({ version: 3, environments, sentry })
+      : new CredentialsFile({
+          version: 3,
+          environments,
+          sentry,
+          pendingAxiomMutations: pending,
+        });
+  }
+  return pending === undefined
+    ? new CredentialsFile({ version: 3, environments })
+    : new CredentialsFile({ version: 3, environments, pendingAxiomMutations: pending });
+};
+
+const migrateVersion1Credentials = (legacy: LegacyCredentialsFile): CredentialsFile => {
   const environments = legacy.environments.map(
     (environment) =>
       new ManagedEnvironment({
@@ -190,7 +347,7 @@ const migrateCredentials = (legacy: LegacyCredentialsFile): CredentialsFile => {
         environment: environment.environment,
         providers: {
           type: "combined",
-          axiom: new AxiomEnvironment({
+          axiom: unverifiedAxiomEnvironment({
             tokenId: environment.axiomTokenId,
             token: environment.axiomToken,
             tracesDataset: environment.tracesDataset,
@@ -204,21 +361,38 @@ const migrateCredentials = (legacy: LegacyCredentialsFile): CredentialsFile => {
         },
       }),
   );
-  if (legacy.axiom !== undefined && legacy.sentry !== undefined) {
-    return new CredentialsFile({
-      version: 2,
-      axiom: legacy.axiom,
-      sentry: legacy.sentry,
-      environments,
+  return makeMigratedCredentials(legacy.axiom, legacy.sentry, environments);
+};
+
+const migrateVersion2Credentials = (legacy: Version2CredentialsFile): CredentialsFile => {
+  const environments = legacy.environments.map((environment) => {
+    if (environment.providers.type === "sentry") {
+      return new ManagedEnvironment({
+        project: environment.project,
+        environment: environment.environment,
+        providers: environment.providers,
+      });
+    }
+    const axiom = unverifiedAxiomEnvironment(environment.providers.axiom);
+    if (environment.providers.type === "axiom") {
+      return new ManagedEnvironment({
+        project: environment.project,
+        environment: environment.environment,
+        providers: { type: "axiom", axiom },
+      });
+    }
+    return new ManagedEnvironment({
+      project: environment.project,
+      environment: environment.environment,
+      providers: { type: "combined", axiom, sentry: environment.providers.sentry },
     });
-  }
-  if (legacy.axiom !== undefined) {
-    return new CredentialsFile({ version: 2, axiom: legacy.axiom, environments });
-  }
-  if (legacy.sentry !== undefined) {
-    return new CredentialsFile({ version: 2, sentry: legacy.sentry, environments });
-  }
-  return new CredentialsFile({ version: 2, environments });
+  });
+  return makeMigratedCredentials(
+    legacy.axiom,
+    legacy.sentry,
+    environments,
+    legacy.pendingAxiomMutations ?? [],
+  );
 };
 
 export type CredentialsAccess = {
@@ -562,7 +736,10 @@ export class CredentialsStore extends Context.Service<
         if (persisted.value.type === "current") {
           return Option.some(persisted.value.credentials);
         }
-        const migrated = migrateCredentials(persisted.value.credentials);
+        const migrated =
+          persisted.value.type === "version-1"
+            ? migrateVersion1Credentials(persisted.value.credentials)
+            : migrateVersion2Credentials(persisted.value.credentials);
         yield* save(migrated);
         return Option.some(migrated);
       });
@@ -602,4 +779,4 @@ export class CredentialsStore extends Context.Service<
 }
 
 export const emptyCredentials = (): CredentialsFile =>
-  new CredentialsFile({ version: 2, environments: [] });
+  new CredentialsFile({ version: 3, environments: [] });

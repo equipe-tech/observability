@@ -124,7 +124,7 @@ O comando é idempotente. Um arquivo provisionado que foi modificado localmente 
 
 ### Ambientes remotos
 
-A CLI autentica com Axiom e Sentry, cria recursos isolados por ambiente e salva as credenciais com modo `0600`.
+A CLI autentica com Axiom e Sentry, cria recursos isolados por ambiente e salva as credenciais com modo `0600`. Datasets Axiom usam kinds específicos por sinal, aceitam edge deployment e retenção explícitos e nunca são excluídos automaticamente. A exportação de um ambiente Axiom espera a ação manual de Correlation e `--correlation-confirmed`.
 
 Consulte estes documentos:
 
@@ -159,7 +159,7 @@ O projeto usa [Effect](https://effect.website) v4 e conventional commits.
 
 ### Release
 
-Toda preparação e publicação segue exclusivamente o [runbook de publicação coordenada](docs/release-publication-runbook.md). As notas aprovadas de `v0.2.0` são o arquivo manuscrito [docs/releases/v0.2.0.md](docs/releases/v0.2.0.md). Não crie tags, releases, assets ou publicações npm por comandos fora do gate humano documentado no runbook.
+Toda preparação e publicação segue exclusivamente o [runbook de publicação coordenada](docs/release-publication-runbook.md). As notas candidatas de `v0.2.1` são o arquivo manuscrito [docs/releases/v0.2.1.md](docs/releases/v0.2.1.md). Não crie tags, releases, assets ou publicações npm por comandos fora do gate humano documentado no runbook.
 
 ## Propriedade e transferência
 

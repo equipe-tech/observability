@@ -7,7 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag existente ainda não publicada (exemplo: v0.2.0)"
+        description: "Tag existente exata a publicar (exemplo: v0.2.1)"
+        required: true
+        type: string
+      confirm_tag:
+        description: "Repita exatamente o tag aprovado para confirmar a publicação"
         required: true
         type: string
 
@@ -29,16 +33,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
       - name: Validate tag against the package manifests
         id: meta
         env:
-          INPUT_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          INPUT_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          CONFIRM_TAG: ${{ inputs.confirm_tag || '' }}
         run: |
           set -euo pipefail
           tag="$INPUT_TAG"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            [[ "$CONFIRM_TAG" == "$tag" ]] \
+              || { echo "Publication confirmation must exactly match $tag."; exit 1; }
+            [[ "$EVENT_REF" == "refs/tags/$tag" ]] \
+              || { echo "Publication dispatch must run from the exact tag ref refs/tags/$tag."; exit 1; }
+          fi
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]] \
             || { echo "The tag $tag does not match the release tag format."; exit 1; }
+          git show-ref --verify --quiet "refs/tags/$tag" \
+            || { echo "The tag $tag does not exist in this checkout."; exit 1; }
+          tag_commit="$(git rev-list -n 1 "$tag")"
+          head_commit="$(git rev-parse HEAD)"
+          [[ "$head_commit" == "$tag_commit" ]] \
+            || { echo "HEAD $head_commit is not the exact commit for $tag ($tag_commit)."; exit 1; }
           version="${tag#v}"
           for manifest in packages/telemetry/package.json packages/cli/package.json; do
             manifest_version="$(jq -r .version "$manifest")"
@@ -64,10 +84,12 @@ jobs:
       run_deployed_canary: false
 
   release:
+    if: github.event_name == 'workflow_dispatch'
     needs:
       - tag-check
       - verify
     runs-on: ubuntu-latest
+    environment: publication
     permissions:
       contents: write
     steps:
@@ -158,10 +180,12 @@ jobs:
         run: rm -rf .release-pack dist-release release-notes.md
 
   publish-npm:
+    if: github.event_name == 'workflow_dispatch'
     needs:
       - tag-check
       - release
     runs-on: ubuntu-latest
+    environment: publication
     permissions:
       contents: read
       id-token: write

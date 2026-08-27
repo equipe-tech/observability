@@ -71,15 +71,31 @@ observability provision \
   --name livro-caixa \
   --environment staging \
   --environment production \
-  --sentry-platform node
+  --sentry-platform node \
+  --axiom-edge-deployment <edge-deployment-id> \
+  --axiom-retention-days 30
 ```
 
 O comando cria estes recursos:
 
-- seis datasets Axiom;
+- seis datasets Axiom com kinds corretos, edge deployment explícito e retenção de 30 dias;
 - dois tokens Axiom com acesso somente para ingestão;
 - um projeto Sentry chamado `livro-caixa`;
 - os assets do Collector e do accessory Kamal.
+
+Axiom Correlation exige uma ação manual. Para cada ambiente, crie no Console o grupo, slug e seleção de datasets impressos pela CLI. Depois confirme com uma leitura nova dos datasets:
+
+```sh
+observability provision \
+  --name livro-caixa \
+  --environment staging \
+  --provider axiom \
+  --axiom-edge-deployment <edge-deployment-id> \
+  --axiom-retention-days 30 \
+  --correlation-confirmed
+```
+
+A CLI não usa endpoints não documentados e não afirma que verificou o grupo remoto. Sem essa confirmação, `env export` permanece bloqueado.
 
 O comando não imprime os tokens de runtime.
 
