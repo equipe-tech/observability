@@ -43,6 +43,7 @@ Each feature file contains exactly four H2 sections in this order.
 
 - [Project asset setup](./project-provisioning.md) covers creation, idempotency, conflict protection, and forced replacement.
 - [Local stack lifecycle](./local-stack-lifecycle.md) covers launch, status, viewer readiness, and teardown.
+- [Collector production recovery](./collector-recovery.md) covers persistent queue restart, drain, saturation, health, and internal metrics.
 - [Pipeline canary](./pipeline-canary.md) covers traces, logs, metrics, browser events, and redaction.
 - [Provider authentication](./provider-authentication.md) covers protected login prompts, credential permissions, and provider status.
 - [Package delivery](./package-delivery.md) covers package files, imports, declarations, CLI help, and packaged assets.
