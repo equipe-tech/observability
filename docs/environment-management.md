@@ -58,19 +58,37 @@ A CLI cria um projeto Sentry por aplicação. O SDK Sentry envia o nome do ambie
 
 O Sentry cria a lista de ambientes observados após receber eventos. A CLI não cria ambientes Sentry separados.
 
+## Cada ambiente registra somente os providers configurados
+
+Use `--provider axiom` para configurar somente Axiom. Use `--provider sentry` para configurar somente Sentry.
+
+Repita a flag para configurar ambos. Sem a flag, um ambiente novo configura os dois providers.
+
+Um ambiente existente repete sua seleção salva quando a flag não existe. Uma seleção explícita adiciona providers e não remove estado anterior.
+
+Um ambiente Sentry não exporta variáveis Axiom. Ele também não exporta `OTEL_EXPORTER_OTLP_ENDPOINT`.
+
+Os assets gerados ainda configuram um Collector Axiom. Uma execução somente Sentry não configura as variáveis desses assets.
+
 ## A CLI separa credenciais administrativas de credenciais de runtime
 
 `observability auth login` salva os tokens administrativos no arquivo local de credenciais. O arquivo usa o modo `0600`.
 
-O provisionamento usa esses tokens para criar recursos remotos. A CLI cria um token Axiom com acesso somente para ingestão.
+O provisionamento exige credenciais somente para os providers efetivos. A CLI cria um token Axiom com acesso somente para ingestão.
 
-A CLI não grava segredos nos assets em `observability/`. `observability env export` imprime as variáveis para integração com Kamal ou outro gerenciador de segredos.
+A CLI não grava segredos nos assets em `observability/`. `observability env export` imprime as variáveis para integração com um gerenciador de segredos.
 
 ## O estado local preserva segredos que o provider não retorna
 
-O Axiom retorna o valor do token somente na criação ou na regeneração. A CLI salva esse valor no arquivo local de credenciais.
+O Axiom retorna o valor do token somente na criação ou na regeneração. A CLI salva cada ambiente logo após receber esse valor.
 
-Se esse estado local for perdido, a CLI encontra o token remoto sem acesso ao valor. Nesse caso, `--rotate-token` regenera o token e salva o novo valor.
+Uma queda entre a resposta Axiom e a gravação local cria uma janela inevitável. Uma gravação atômica não remove essa janela.
+
+Se o segredo local não existe, a CLI recusa uma repetição comum. Execute a rotação explícita do token Axiom.
+
+Se a CLI informa `OBS_CLI_REMOTE_OUTCOME_UNKNOWN`, não repita o comando sem rotação. Rode novamente com `--provider axiom --rotate-token`.
+
+A CLI preserva ambientes salvos antes de uma falha posterior. `OBS_CLI_REMOTE_PARTIAL_FAILURE` lista esses ambientes.
 
 ## Ambientes configurados e ambientes observados têm significados diferentes
 
