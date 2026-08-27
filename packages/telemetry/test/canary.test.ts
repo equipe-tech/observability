@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
-import { canaryRunId, emitCanary } from "./support/canary.ts";
+import { canaryRunId, canarySensitiveValues, emitCanary } from "./support/canary.ts";
 
 const cliManifest: unknown = JSON.parse(
   await readFile(new URL("../../cli/package.json", import.meta.url).pathname, "utf8"),
@@ -28,12 +28,18 @@ const Attribute = Schema.Struct({
   value: AttributeValue,
 });
 
+const ExportedSpanEvent = Schema.Struct({
+  name: Schema.String,
+  attributes: Schema.Array(Attribute).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+});
+
 const ExportedSpan = Schema.Struct({
   traceId: Schema.String,
   spanId: Schema.String,
   parentSpanId: Schema.String.pipe(Schema.optionalKey),
   name: Schema.String,
   attributes: Schema.Array(Attribute).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  events: Schema.Array(ExportedSpanEvent).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
 
 const ExportedResource = Schema.Struct({
@@ -51,8 +57,23 @@ const SpanExport = Schema.Struct({
 
 const ExportedLogRecord = Schema.Struct({
   traceId: Schema.String.pipe(Schema.optionalKey),
+  body: Schema.Struct({ stringValue: Schema.String.pipe(Schema.optionalKey) }),
   attributes: Schema.Array(Attribute).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
+
+const RedactedLogBody = Schema.Struct({
+  authorization: Schema.String,
+  password: Schema.String,
+  token: Schema.String,
+  email: Schema.String,
+  accessToken: Schema.String,
+  userPassword: Schema.String,
+  phoneNumber: Schema.String,
+  tokenizer: Schema.String,
+  documentation: Schema.String,
+});
+
+const decodeRedactedLogBody = Schema.decodeUnknownSync(RedactedLogBody);
 
 const LogExport = Schema.Struct({
   resourceLogs: Schema.Array(
@@ -94,6 +115,7 @@ type CanaryMetric = typeof ExportedMetric.Type;
 type CanaryMetricDataPoint = typeof MetricDataPoint.Type;
 
 type CanaryExport = {
+  readonly content: string;
   readonly spans: ReadonlyArray<{ readonly span: CanarySpan; readonly resource: CanaryResource }>;
   readonly logs: ReadonlyArray<{
     readonly log: CanaryLogRecord;
@@ -165,7 +187,7 @@ const readTelemetryExport = Effect.fn("readTelemetryExport")(function* (): Effec
       }
     }
   }
-  return { spans, logs, metrics };
+  return { content, spans, logs, metrics };
 });
 
 const findRun = Effect.fn("findRun")(function* (runId: string) {
@@ -176,6 +198,11 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
         Option.getOrUndefined(attributeValue(candidate.span.attributes, "canary.run_id")) === runId,
     );
     if (root !== undefined) {
+      const redactionSpanEvent = root.span.events.find(
+        (event) =>
+          Option.getOrUndefined(attributeValue(event.attributes, "event.name")) ===
+          "canary.redaction",
+      );
       const child = telemetryExport.spans.find(
         (candidate) =>
           candidate.span.parentSpanId === root.span.spanId &&
@@ -195,6 +222,13 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
           Option.getOrUndefined(attributeValue(candidate.log.attributes, "event.name")) ===
             "canary.browser",
       );
+      const redactionLog = telemetryExport.logs.find(
+        (candidate) =>
+          Option.getOrUndefined(attributeValue(candidate.log.attributes, "canary.run_id")) ===
+            runId &&
+          Option.getOrUndefined(attributeValue(candidate.log.attributes, "event.name")) ===
+            "canary.redaction",
+      );
       const metric = telemetryExport.metrics.find(
         (candidate) =>
           candidate.metric.name === "canary.operations" &&
@@ -202,12 +236,23 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
             runId,
       );
       if (
+        redactionSpanEvent !== undefined &&
         child !== undefined &&
         log !== undefined &&
         browserLog !== undefined &&
+        redactionLog !== undefined &&
         metric !== undefined
       ) {
-        return { root, child, log, browserLog, metric };
+        return {
+          exportContent: telemetryExport.content,
+          root,
+          redactionSpanEvent,
+          child,
+          log,
+          browserLog,
+          redactionLog,
+          metric,
+        };
       }
     }
     yield* Effect.sleep("500 millis");
@@ -272,6 +317,53 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
         );
         assert.strictEqual(run.metric.metric.name, "canary.operations");
         assert.strictEqual(run.metric.dataPoint.asDouble, 1);
+
+        const sensitive = canarySensitiveValues(runId);
+        for (const marker of sensitive.leakMarkers) {
+          assert.notInclude(run.exportContent, marker);
+        }
+        for (const preservedValue of sensitive.preservedValues) {
+          assert.include(run.exportContent, preservedValue);
+        }
+
+        const redactedBody = Option.getOrThrow(
+          Option.fromNullishOr(run.redactionLog.log.body.stringValue),
+        );
+        const decodedRedactedBody = decodeRedactedLogBody(JSON.parse(redactedBody));
+        for (const value of [
+          decodedRedactedBody.authorization,
+          decodedRedactedBody.password,
+          decodedRedactedBody.token,
+          decodedRedactedBody.email,
+          decodedRedactedBody.accessToken,
+          decodedRedactedBody.userPassword,
+          decodedRedactedBody.phoneNumber,
+        ]) {
+          assert.strictEqual(value, "[REDACTED]");
+        }
+        assert.strictEqual(decodedRedactedBody.tokenizer, sensitive.tokenizerValue);
+        assert.strictEqual(decodedRedactedBody.documentation, sensitive.documentationValue);
+
+        const redactedAttributeKeys: ReadonlyArray<string> = [
+          "authorization",
+          "password",
+          "accessToken",
+          "userPassword",
+          "phoneNumber",
+        ];
+        const redactedAttributeSets = [
+          run.root.span.attributes,
+          run.redactionSpanEvent.attributes,
+          run.redactionLog.log.attributes,
+          run.metric.dataPoint.attributes,
+        ];
+        for (const attributes of redactedAttributeSets) {
+          for (const key of redactedAttributeKeys) {
+            assert.strictEqual(Option.getOrThrow(attributeValue(attributes, key)), "****");
+          }
+        }
+        assert.include(redactedBody, "[REDACTED]");
+        assert.include(run.redactionSpanEvent.name, "[REDACTED]");
 
         for (const signalResource of [run.log.resource, run.metric.resource]) {
           assert.strictEqual(

@@ -5,12 +5,15 @@ import {
   decodeAxiomEnvironment,
   findChildSpan,
   findLogs,
+  findMetric,
   findRootSpan,
   type AxiomEnvironment,
   type AxiomLog,
+  type AxiomMetric,
+  type AxiomRedactionAttributes,
   type AxiomSpan,
 } from "./support/axiom.ts";
-import { canaryRunId, emitCanary } from "./support/canary.ts";
+import { canaryRunId, canarySensitiveValues, emitCanary } from "./support/canary.ts";
 
 const deployedEnabled = process.env["OBSERVABILITY_E2E_DEPLOYED"] === "1";
 
@@ -19,6 +22,8 @@ type DeployedRun = {
   readonly child: AxiomSpan;
   readonly completed: AxiomLog;
   readonly browser: AxiomLog;
+  readonly redaction: AxiomLog;
+  readonly metric: AxiomMetric;
 };
 
 const findDeployedRun = Effect.fn("findDeployedRun")(function* (
@@ -30,10 +35,25 @@ const findDeployedRun = Effect.fn("findDeployedRun")(function* (
     if (Option.isSome(root)) {
       const child = yield* findChildSpan(env, root.value.traceId);
       const logs = yield* findLogs(env, runId);
+      const metric = yield* findMetric(env, runId);
       const completed = logs.find((log) => log.eventName === "canary.completed");
       const browser = logs.find((log) => log.eventName === "canary.browser");
-      if (Option.isSome(child) && completed !== undefined && browser !== undefined) {
-        return { root: root.value, child: child.value, completed, browser };
+      const redaction = logs.find((log) => log.eventName === "canary.redaction");
+      if (
+        Option.isSome(child) &&
+        completed !== undefined &&
+        browser !== undefined &&
+        redaction !== undefined &&
+        Option.isSome(metric)
+      ) {
+        return {
+          root: root.value,
+          child: child.value,
+          completed,
+          browser,
+          redaction,
+          metric: metric.value,
+        };
       }
     }
     yield* Effect.sleep("3 seconds");
@@ -41,9 +61,36 @@ const findDeployedRun = Effect.fn("findDeployedRun")(function* (
   return yield* Effect.die(`The deployed canary run ${runId} was not found in Axiom.`);
 });
 
+const redactionAttributeValues = (attributes: AxiomRedactionAttributes): ReadonlyArray<string> => [
+  Option.getOrThrow(attributes.authorization),
+  Option.getOrThrow(attributes.password),
+  Option.getOrThrow(attributes.accessToken),
+  Option.getOrThrow(attributes.userPassword),
+  Option.getOrThrow(attributes.phoneNumber),
+  Option.getOrThrow(attributes.safeMessage),
+];
+
+const assertRedactionAttributes = (
+  attributes: AxiomRedactionAttributes,
+  sensitive: ReturnType<typeof canarySensitiveValues>,
+): void => {
+  for (const value of [
+    attributes.authorization,
+    attributes.password,
+    attributes.accessToken,
+    attributes.userPassword,
+    attributes.phoneNumber,
+  ]) {
+    assert.deepStrictEqual(value, Option.some("****"));
+  }
+  assert.deepStrictEqual(attributes.tokenizer, Option.some(sensitive.tokenizerValue));
+  assert.deepStrictEqual(attributes.documentation, Option.some(sensitive.documentationValue));
+  assert.include(Option.getOrThrow(attributes.safeMessage), "****");
+};
+
 describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
   it.live(
-    "exports correlated traces and logs through the production collector to Axiom",
+    "exports redacted traces, logs and metrics through the production collector to Axiom",
     () =>
       Effect.gen(function* () {
         const axiom = yield* decodeAxiomEnvironment(process.env).pipe(Effect.orDie);
@@ -75,6 +122,31 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
 
         assert.deepStrictEqual(run.browser.eventSource, Option.some("browser"));
         assert.deepStrictEqual(run.browser.eventKind, Option.some("wide"));
+
+        const sensitive = canarySensitiveValues(runId);
+        assertRedactionAttributes(run.root.redaction, sensitive);
+        assertRedactionAttributes(run.redaction.redaction, sensitive);
+
+        const rootEvents = Option.getOrThrow(run.root.events);
+        const redactedBody = Option.getOrThrow(run.redaction.body);
+        const exportedContent = [
+          rootEvents,
+          redactedBody,
+          run.metric.content,
+          ...redactionAttributeValues(run.root.redaction),
+          ...redactionAttributeValues(run.redaction.redaction),
+        ];
+        for (const content of exportedContent) {
+          for (const marker of sensitive.leakMarkers) {
+            assert.notInclude(content, marker);
+          }
+        }
+        for (const preservedValue of sensitive.preservedValues) {
+          assert.include(run.metric.content, preservedValue);
+        }
+        assert.include(run.metric.content, "****");
+        assert.include(rootEvents, "[REDACTED]");
+        assert.include(redactedBody, "[REDACTED]");
       }),
     240_000,
   );

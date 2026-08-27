@@ -135,7 +135,14 @@ OBSERVABILITY_E2E=1 bun test:canary
 
 ### Canário deployed (Axiom)
 
-O alvo `deployed` roda o mesmo canário contra a fronteira de aceitação real: aplicação -> Collector com a configuração de produção -> Axiom -> consulta APL. Requisitos: um Collector local com `production.yaml` apontado para datasets E2E dedicados e as variáveis `AXIOM_TOKEN`, `AXIOM_DATASET_TRACES` e `AXIOM_DATASET_LOGS`.
+O alvo `deployed` roda o canário na fronteira de aceitação real. A fronteira é aplicação -> Collector -> Axiom. O teste usa APL para traces e logs. O teste usa MPL para métricas.
+
+Use `production.yaml` com datasets E2E dedicados. Defina estas variáveis:
+
+- `AXIOM_TOKEN`.
+- `AXIOM_DATASET_TRACES`.
+- `AXIOM_DATASET_LOGS`.
+- `AXIOM_DATASET_METRICS`.
 
 ```sh
 OBSERVABILITY_E2E_DEPLOYED=1 bun test:canary:deployed

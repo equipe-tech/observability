@@ -5,6 +5,7 @@ import {
   decodeAxiomEnvironment,
   findChildSpan,
   findLogs,
+  findMetric,
   findRootSpan,
   type AxiomEnvironment,
 } from "./support/axiom.ts";
@@ -15,11 +16,17 @@ const decodeAddressInfo = Schema.decodeUnknownOption(AddressInfo);
 type RecordedQuery = {
   readonly path: string;
   readonly authorization: string;
-  readonly apl: string;
+  readonly query: string;
 };
 
-const QueryBody = Schema.Struct({ apl: Schema.String, startTime: Schema.String });
-const decodeQueryBody = Schema.decodeUnknownOption(QueryBody);
+const AplQueryBody = Schema.Struct({ apl: Schema.String, startTime: Schema.String });
+const MplQueryBody = Schema.Struct({
+  mpl: Schema.String,
+  startTime: Schema.String,
+  endTime: Schema.String,
+});
+const decodeAplQueryBody = Schema.decodeUnknownOption(AplQueryBody);
+const decodeMplQueryBody = Schema.decodeUnknownOption(MplQueryBody);
 
 type StubAxiom = {
   readonly env: AxiomEnvironment;
@@ -27,7 +34,10 @@ type StubAxiom = {
   readonly server: Server;
 };
 
-const startStubAxiom = (matches: ReadonlyArray<{ readonly data: unknown }>): Promise<StubAxiom> =>
+const startStubAxiom = (
+  matches: ReadonlyArray<{ readonly data: unknown }>,
+  metricsResponse = "{}",
+): Promise<StubAxiom> =>
   new Promise((resolve, reject) => {
     const queries: Array<RecordedQuery> = [];
     const server = createServer((request, response) => {
@@ -39,14 +49,23 @@ const startStubAxiom = (matches: ReadonlyArray<{ readonly data: unknown }>): Pro
         const parsed = Effect.runSync(
           Effect.try((): unknown => JSON.parse(body)).pipe(Effect.option),
         );
-        const query = parsed.pipe(Option.flatMap(decodeQueryBody));
+        const apl = parsed.pipe(
+          Option.flatMap(decodeAplQueryBody),
+          Option.map((query) => query.apl),
+        );
+        const mpl = parsed.pipe(
+          Option.flatMap(decodeMplQueryBody),
+          Option.map((query) => query.mpl),
+        );
         queries.push({
           path: request.url ?? "",
           authorization: request.headers.authorization ?? "",
-          apl: Option.match(query, { onNone: () => "", onSome: (value) => value.apl }),
+          query: Option.getOrElse(apl, () => Option.getOrElse(mpl, () => "")),
         });
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ matches }));
+        response.end(
+          request.url?.startsWith("/v1/query/_mpl") ? metricsResponse : JSON.stringify({ matches }),
+        );
       });
     });
     server.listen(0, "127.0.0.1", () => {
@@ -61,6 +80,7 @@ const startStubAxiom = (matches: ReadonlyArray<{ readonly data: unknown }>): Pro
           AXIOM_TOKEN: "stub-token",
           AXIOM_DATASET_TRACES: "e2e-traces",
           AXIOM_DATASET_LOGS: "e2e-logs",
+          AXIOM_DATASET_METRICS: "e2e-metrics",
         }),
       );
       resolve({ env, queries, server });
@@ -101,9 +121,9 @@ describe("axiom query support", () => {
       assert.isDefined(query);
       assert.strictEqual(query.path, "/v1/datasets/_apl?format=legacy");
       assert.strictEqual(query.authorization, "Bearer stub-token");
-      assert.include(query.apl, "['e2e-traces']");
-      assert.include(query.apl, "['attributes.custom']['canary.run_id'] == 'test-run-1'");
-      assert.include(query.apl, "name == 'canary.operation'");
+      assert.include(query.query, "['e2e-traces']");
+      assert.include(query.query, "['attributes.custom']['canary.run_id'] == 'test-run-1'");
+      assert.include(query.query, "name == 'canary.operation'");
     }),
   );
 
@@ -129,8 +149,8 @@ describe("axiom query support", () => {
       assert.deepStrictEqual(Option.getOrThrow(child).parentSpanId, Option.some("span-1"));
       const query = stub.queries[0];
       assert.isDefined(query);
-      assert.include(query.apl, "trace_id == 'trace-1'");
-      assert.include(query.apl, "name == 'canary.child'");
+      assert.include(query.query, "trace_id == 'trace-1'");
+      assert.include(query.query, "name == 'canary.child'");
     }),
   );
 
@@ -163,7 +183,35 @@ describe("axiom query support", () => {
       assert.deepStrictEqual(log.eventSource, Option.none());
       const query = stub.queries[0];
       assert.isDefined(query);
-      assert.include(query.apl, "['e2e-logs']");
+      assert.include(query.query, "['e2e-logs']");
+    }),
+  );
+
+  it.live("queries the metrics dataset with MPL and returns the complete response", () =>
+    Effect.gen(function* () {
+      const metricsResponse = JSON.stringify({
+        series: [
+          {
+            tags: {
+              "canary.run_id": "test-run-1",
+              accessToken: "****",
+              tokenizer: "tokenizer-control",
+            },
+          },
+        ],
+      });
+      const stub = yield* Effect.promise(() => startStubAxiom([], metricsResponse));
+      const metric = yield* findMetric(stub.env, "test-run-1").pipe(
+        Effect.ensuring(Effect.sync(() => stub.server.close())),
+      );
+
+      assert.isTrue(Option.isSome(metric));
+      assert.include(Option.getOrThrow(metric).content, "tokenizer-control");
+      const query = stub.queries[0];
+      assert.isDefined(query);
+      assert.strictEqual(query.path, "/v1/query/_mpl?format=metrics-v2");
+      assert.include(query.query, "`e2e-metrics`:`canary.operations`");
+      assert.include(query.query, '`canary.run_id` == "test-run-1"');
     }),
   );
 });
