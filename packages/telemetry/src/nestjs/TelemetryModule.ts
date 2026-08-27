@@ -7,12 +7,13 @@ import type {
   ModuleMetadata,
   NestInterceptor,
   OnApplicationShutdown,
+  OnModuleInit,
   OptionalFactoryDependency,
   Provider,
 } from "@nestjs/common";
 import { Module } from "@nestjs/common";
 import { APP_INTERCEPTOR, HttpAdapterHost } from "@nestjs/core";
-import { Duration, Effect, ManagedRuntime, Option, Schema } from "effect";
+import { Duration, Effect, Layer, ManagedRuntime, Option, Schema } from "effect";
 import type { OtlpExporter } from "effect/unstable/observability";
 import { OtlpExporter as Otlp } from "effect/unstable/observability";
 import type { Observable } from "rxjs";
@@ -301,6 +302,67 @@ class EnabledTelemetryIntegration implements TelemetryIntegration {
   }
 }
 
+class DeferredTelemetryInterceptor implements NestInterceptor {
+  #target: NestInterceptor | undefined;
+
+  setTarget(target: NestInterceptor): void {
+    this.#target = target;
+  }
+
+  intercept(
+    context: ExecutionContext,
+    next: CallHandler,
+  ): Observable<unknown> | Promise<Observable<unknown>> {
+    return this.#target?.intercept(context, next) ?? next.handle();
+  }
+}
+
+class PendingTelemetryIntegration implements TelemetryIntegration, OnModuleInit {
+  readonly interceptor = new DeferredTelemetryInterceptor();
+  readonly #application: WeakKey;
+  readonly #options: EnabledNormalizedOptions;
+  readonly #state: ApplicationRuntimeState;
+  readonly #overrides: TelemetryModuleTestingOverrides;
+  #integration: EnabledTelemetryIntegration | undefined;
+
+  constructor(
+    application: WeakKey,
+    options: EnabledNormalizedOptions,
+    state: ApplicationRuntimeState,
+    overrides: TelemetryModuleTestingOverrides,
+  ) {
+    this.#application = application;
+    this.#options = options;
+    this.#state = state;
+    this.#overrides = overrides;
+  }
+
+  async onModuleInit(): Promise<void> {
+    const lease = await acquireApplicationRuntime(
+      this.#application,
+      this.#state,
+      this.#options,
+      this.#overrides,
+    );
+    this.#integration = new EnabledTelemetryIntegration(
+      lease.runtime,
+      lease.flusher,
+      this.#options,
+      lease.release,
+      this.#overrides.beforeRequestDrain ?? (() => undefined),
+    );
+    this.interceptor.setTarget(this.#integration.interceptor);
+  }
+
+  beforeApplicationShutdown(): void | Promise<void> {
+    return this.#integration?.beforeApplicationShutdown();
+  }
+
+  onApplicationShutdown(): void | Promise<void> {
+    return this.#integration?.onApplicationShutdown();
+  }
+}
+
 const ASYNC_OPTIONS = Symbol("TelemetryModuleAsyncOptions");
 const NORMALIZED_OPTIONS = Symbol("TelemetryModuleNormalizedOptions");
 const TELEMETRY_INTEGRATION = Symbol("TelemetryModuleIntegration");
@@ -323,6 +385,12 @@ interface RuntimeLease {
 }
 
 export interface TelemetryModuleTestingOverrides {
+  readonly scopedResource?:
+    | {
+        readonly acquire: () => void | Promise<void>;
+        readonly release: () => void | Promise<void>;
+      }
+    | undefined;
   readonly startupProbe?: (() => void | Promise<void>) | undefined;
   readonly beforeRequestDrain?: (() => void | Promise<void>) | undefined;
   readonly beforeRuntimeDispose?: (() => void | Promise<void>) | undefined;
@@ -354,13 +422,22 @@ const createSharedRuntime = async (
 ): Promise<SharedRuntime> => {
   let runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, never> | undefined;
   try {
-    runtime = ManagedRuntime.make(
-      layer(options.config, {
-        shutdownTimeout: Duration.millis(options.shutdownTimeoutMilliseconds),
-      }),
-    );
-    await (overrides.startupProbe ?? (() => undefined))();
+    let runtimeLayer = layer(options.config, {
+      shutdownTimeout: Duration.millis(options.shutdownTimeoutMilliseconds),
+    });
+    if (overrides.scopedResource !== undefined) {
+      const resource = overrides.scopedResource;
+      const resourceLayer = Layer.effectDiscard(
+        Effect.acquireRelease(
+          Effect.promise(() => Promise.resolve(resource.acquire())),
+          () => Effect.promise(() => Promise.resolve(resource.release())),
+        ),
+      );
+      runtimeLayer = Layer.merge(runtimeLayer, resourceLayer);
+    }
+    runtime = ManagedRuntime.make(runtimeLayer);
     await runtime.context();
+    await (overrides.startupProbe ?? (() => undefined))();
     const flusher = await runtime.runPromise(Otlp.Flusher);
     return { runtime, flusher };
   } catch (cause) {
@@ -445,38 +522,36 @@ const acquireRuntime = async (
   return { runtime: shared.runtime, flusher: shared.flusher, release };
 };
 
+const registerApplicationRuntime = (
+  application: WeakKey,
+  options: EnabledNormalizedOptions,
+): ApplicationRuntimeState => {
+  const key = runtimeKey(options);
+  const state = applicationRuntimes.get(application);
+  if (state === undefined) {
+    const registered = { key, releases: new Set<() => Promise<void>>(), failed: false };
+    applicationRuntimes.set(application, registered);
+    return registered;
+  }
+  if (state.key !== key) {
+    state.failed = true;
+  }
+  return state;
+};
+
 const acquireApplicationRuntime = async (
   application: WeakKey,
+  state: ApplicationRuntimeState,
   options: EnabledNormalizedOptions,
   overrides: TelemetryModuleTestingOverrides,
 ): Promise<RuntimeLease> => {
-  const key = runtimeKey(options);
-  let state = applicationRuntimes.get(application);
-  if (state !== undefined && state.key !== key) {
-    state.failed = true;
-    await Promise.all(Array.from(state.releases, (release) => release()));
+  if (state.failed) {
     applicationRuntimes.delete(application);
     throw new InvalidTelemetryModuleOptions(
       new Error("TelemetryModule imports in one application must use one runtime configuration."),
     );
   }
-  if (state === undefined) {
-    state = { key, releases: new Set(), failed: false };
-    applicationRuntimes.set(application, state);
-  }
-  await Promise.resolve();
-  if (state.failed) {
-    throw new InvalidTelemetryModuleOptions(
-      new Error("TelemetryModule imports in one application must use one runtime configuration."),
-    );
-  }
   const lease = await acquireRuntime(options, overrides);
-  if (state.failed) {
-    await lease.release();
-    throw new InvalidTelemetryModuleOptions(
-      new Error("TelemetryModule imports in one application must use one runtime configuration."),
-    );
-  }
   const release = (): Promise<void> => {
     state.releases.delete(release);
     if (state.releases.size === 0) {
@@ -488,21 +563,19 @@ const acquireApplicationRuntime = async (
   return { runtime: lease.runtime, flusher: lease.flusher, release };
 };
 
-const makeIntegration = async (
+const makeIntegration = (
   options: NormalizedOptions,
   application: WeakKey,
   overrides: TelemetryModuleTestingOverrides,
-): Promise<TelemetryIntegration> => {
+): TelemetryIntegration => {
   if (!options.enabled) {
     return new DisabledTelemetryIntegration();
   }
-  const lease = await acquireApplicationRuntime(application, options, overrides);
-  return new EnabledTelemetryIntegration(
-    lease.runtime,
-    lease.flusher,
+  return new PendingTelemetryIntegration(
+    application,
     options,
-    lease.release,
-    overrides.beforeRequestDrain ?? (() => undefined),
+    registerApplicationRuntime(application, options),
+    overrides,
   );
 };
 

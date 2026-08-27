@@ -265,7 +265,7 @@ describe("TelemetryModule", () => {
   it("wraps startup failure, disposes partial runtime resources, and preserves its cause", async () => {
     const capture = await makeOtlpCapture();
     const startupCause = new Error("startup probe failed");
-    let disposals = 0;
+    const lifecycle: Array<string> = [];
 
     class AppModule {}
     Module({
@@ -273,28 +273,43 @@ describe("TelemetryModule", () => {
         telemetryModuleForTesting(
           { useFactory: () => enabledOptions(capture.endpoint) },
           {
+            scopedResource: {
+              acquire: () => {
+                lifecycle.push("resource-acquired");
+              },
+              release: () => {
+                lifecycle.push("resource-finalized");
+              },
+            },
             startupProbe: () => {
+              lifecycle.push("startup-probe");
+              assert.deepStrictEqual(lifecycle, ["resource-acquired", "startup-probe"]);
               throw startupCause;
             },
-            onRuntimeDisposed: () => disposals++,
           },
         ),
       ],
     })(AppModule);
 
+    const app = await NestFactory.create(AppModule, {
+      logger: false,
+      abortOnError: false,
+    });
     try {
-      const failure = await NestFactory.create(AppModule, {
-        logger: false,
-        abortOnError: false,
-      }).then(
+      const failure = await app.init().then(
         () => undefined,
         (cause) => cause,
       );
       assert.instanceOf(failure, TelemetryStartupError);
       assert.strictEqual(failure?.code, "OBS_TELEMETRY_STARTUP_FAILED");
       assert.strictEqual(failure?.cause, startupCause);
-      assert.strictEqual(disposals, 1);
+      assert.deepStrictEqual(lifecycle, [
+        "resource-acquired",
+        "startup-probe",
+        "resource-finalized",
+      ]);
     } finally {
+      await app.close().catch(() => undefined);
       await capture.close();
     }
   });
@@ -354,34 +369,47 @@ describe("TelemetryModule", () => {
 
   it("rejects duplicate imports with different runtime configurations", async () => {
     const capture = await makeOtlpCapture();
-    let disposals = 0;
+    let resourceAcquisitions = 0;
+    const acquisitionResource = {
+      acquire: () => {
+        resourceAcquisitions++;
+      },
+      release: () => undefined,
+    };
 
     class AppModule {}
     Module({
       imports: [
         telemetryModuleForTesting(
           { useFactory: () => enabledOptions(capture.endpoint) },
-          { onRuntimeDisposed: () => disposals++ },
+          { scopedResource: acquisitionResource },
         ),
         telemetryModuleForTesting(
-          { useFactory: () => enabledOptions(`${capture.endpoint}/alternate`) },
-          { onRuntimeDisposed: () => disposals++ },
+          {
+            useFactory: async () => {
+              await new Promise((resolve) => setTimeout(resolve, 50));
+              return enabledOptions(`${capture.endpoint}/alternate`);
+            },
+          },
+          { scopedResource: acquisitionResource },
         ),
       ],
     })(AppModule);
 
+    const app = await NestFactory.create(AppModule, {
+      logger: false,
+      abortOnError: false,
+    });
     try {
-      const failure = await NestFactory.create(AppModule, {
-        logger: false,
-        abortOnError: false,
-      }).then(
+      const failure = await app.init().then(
         () => undefined,
         (cause) => cause,
       );
       assert.instanceOf(failure, InvalidTelemetryModuleOptions);
       assert.strictEqual(failure?.code, "OBS_TELEMETRY_INVALID_MODULE_OPTIONS");
-      assert.strictEqual(disposals, 0);
+      assert.strictEqual(resourceAcquisitions, 0);
     } finally {
+      await app.close().catch(() => undefined);
       await capture.close();
     }
   });
@@ -412,6 +440,7 @@ describe("TelemetryModule", () => {
       ],
     })(FirstModule);
     const first = await NestFactory.create(FirstModule, { logger: false });
+    await first.init();
     const firstClose = first.close();
     await disposalStarted;
 
@@ -422,7 +451,8 @@ describe("TelemetryModule", () => {
       ],
     })(SecondModule);
     let secondStarted = false;
-    const secondCreation = NestFactory.create(SecondModule, { logger: false }).then((app) => {
+    const secondCreation = NestFactory.create(SecondModule, { logger: false }).then(async (app) => {
+      await app.init();
       secondStarted = true;
       return app;
     });
@@ -456,6 +486,7 @@ describe("TelemetryModule", () => {
     })(AppModule);
 
     const app = await NestFactory.create(AppModule, { logger: false });
+    await app.init();
     try {
       const failure = await app.close().then(
         () => undefined,
@@ -490,6 +521,7 @@ describe("TelemetryModule", () => {
     })(AppModule);
 
     const app = await NestFactory.create(AppModule, { logger: false });
+    await app.init();
     try {
       const failure = await app.close().then(
         () => undefined,
