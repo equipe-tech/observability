@@ -1,5 +1,6 @@
 export {
   BrowserTelemetryClientDeliveryError,
+  BrowserTelemetryClientShutdownError,
   createBrowserTelemetryClient,
 } from "./BrowserClient.ts";
 export type {

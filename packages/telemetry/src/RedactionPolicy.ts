@@ -180,7 +180,7 @@ const sanitizeJson = (source: JsonValue): Option.Option<string> => {
       continue;
     }
     if (Predicate.isString(current.source)) {
-      current.assign(replaceCoreValues(current.source));
+      current.assign(replaceCoreValues(replaceStructuredAssignments(current.source)));
       continue;
     }
     if (Array.isArray(current.source)) {

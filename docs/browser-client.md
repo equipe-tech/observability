@@ -10,6 +10,7 @@ const telemetry = createBrowserTelemetryClient({
   maxBatchSize: 32,
   maxQueueSize: 256,
   flushIntervalMs: 5_000,
+  shutdownTimeoutMs: 2_000,
 });
 
 telemetry.emit("checkout.completed", { "page.path": "/checkout" });
@@ -17,7 +18,9 @@ await telemetry.flush();
 await telemetry.dispose();
 ```
 
-`emit` and `pending` are synchronous. `flush` and `dispose` return Promises. Concurrent flushes share one delivery operation. A rejected delivery keeps the same sanitized batch queued for a later flush. Disposal clears the client-owned interval, waits for active delivery, flushes remaining events, and is idempotent. A disposed client ignores new events and explicit flushes. A failed final delivery rejects disposal and remains visible through `pending`.
+`emit` and `pending` are synchronous. `flush` and `dispose` return Promises. Concurrent flushes share one delivery operation. A rejected delivery keeps the same sanitized batch queued for a later flush. Empty event names use the valid bounded name `browser.event`. Non-positive numeric options use their documented defaults.
+
+Disposal clears the client-owned interval, settles an active failed flush, and makes one final queued delivery attempt. Calls share one idempotent disposal Promise. The default finite shutdown deadline is 2,000 milliseconds and can be configured with positive `shutdownTimeoutMs`. At the deadline, the client aborts every active transport signal and rejects with `BrowserTelemetryClientShutdownError`. Disposal still settles by the deadline when a custom transport ignores abort. The sanitized active batch remains counted by `pending`. A disposed client ignores new events and explicit flushes. A final delivery failure rejects disposal and retains its sanitized batch.
 
 Set `disabled: true` when browser telemetry is off. A disabled client creates no interval, calls no transport, ignores events, reports zero pending events, and resolves flush and disposal.
 

@@ -6,10 +6,11 @@ import {
   maxEventsPerBatch,
 } from "../BrowserEvents.ts";
 import type { WideEventFields } from "../WideEvent.ts";
-import { BrowserClientEngine } from "./BrowserClient.ts";
+import { BrowserClientEngine, normalizePositiveInteger } from "./BrowserClient.ts";
 
 export {
   BrowserTelemetryClientDeliveryError,
+  BrowserTelemetryClientShutdownError,
   createBrowserTelemetryClient,
 } from "./BrowserClient.ts";
 export type {
@@ -104,9 +105,10 @@ const makeBrowserTelemetry = Effect.fn("makeBrowserTelemetry")(function* (
   const flushInterval = Duration.fromInputUnsafe(options?.flushInterval ?? "5 seconds");
   const engine = new BrowserClientEngine({
     disabled: false,
-    maxBatchSize: Math.min(options?.maxBatchSize ?? 32, maxEventsPerBatch),
-    maxQueueSize: options?.maxQueueSize ?? 256,
-    flushIntervalMs: Duration.toMillis(flushInterval),
+    maxBatchSize: Math.min(normalizePositiveInteger(options?.maxBatchSize, 32), maxEventsPerBatch),
+    maxQueueSize: normalizePositiveInteger(options?.maxQueueSize, 256),
+    flushIntervalMs: normalizePositiveInteger(Duration.toMillis(flushInterval), 5_000),
+    shutdownTimeoutMs: 2_000,
     transport: (batch) =>
       new Promise<void>((resolve, reject) => {
         Effect.runCallback(

@@ -224,7 +224,16 @@ try {
   const browserBytes = await Bun.file(browserBundle).bytes();
   const emptyBytes = await Bun.file(emptyBundle).bytes();
   const browserGzip = Bun.gzipSync(browserBytes, { level: 9 });
+  const reproducedBrowserGzip = Bun.gzipSync(browserBytes, { level: 9 });
   const emptyGzip = Bun.gzipSync(emptyBytes, { level: 9 });
+  if (
+    browserGzip.byteLength !== reproducedBrowserGzip.byteLength ||
+    !browserGzip.every((byte, index) => byte === reproducedBrowserGzip[index])
+  ) {
+    throw new Error("The isolated browser facade gzip output is not reproducible.");
+  }
+  const facadeGzipDeltaBytes = browserGzip.byteLength - emptyGzip.byteLength;
+  const facadeGzipRegressionCeilingBytes = 80_000;
   const evidence = join(root, ".verification/observability/obs-11-browser-facade");
   await rm(evidence, { recursive: true, force: true });
   await mkdir(evidence, { recursive: true });
@@ -245,7 +254,9 @@ try {
         browserMinifiedGzipBytes: browserGzip.byteLength,
         emptyMinifiedBytes: emptyBytes.byteLength,
         emptyMinifiedGzipBytes: emptyGzip.byteLength,
-        facadeMinifiedGzipDeltaBytes: browserGzip.byteLength - emptyGzip.byteLength,
+        facadeMinifiedGzipDeltaBytes: facadeGzipDeltaBytes,
+        facadeGzipRegressionCeilingBytes,
+        gzipReproductionMatched: true,
         hibouBudgetBytes: 550_000,
         hibouBaselineAssessed: false,
         budgetChanged: false,
@@ -255,6 +266,11 @@ try {
       2,
     ),
   );
+  if (facadeGzipDeltaBytes > facadeGzipRegressionCeilingBytes) {
+    throw new Error(
+      `The isolated browser facade gzip delta is ${facadeGzipDeltaBytes} bytes, above the ${facadeGzipRegressionCeilingBytes} byte regression ceiling.`,
+    );
+  }
 
   const executable = join(consumer, "node_modules/.bin/observability");
   const help = await run([executable, "--help"], consumer);

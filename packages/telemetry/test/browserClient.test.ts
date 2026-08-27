@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   BrowserTelemetryClientDeliveryError,
+  BrowserTelemetryClientShutdownError,
   createBrowserTelemetryClient,
   type BrowserTelemetryClientBatch,
   type BrowserTelemetryClientTransport,
@@ -10,12 +11,15 @@ import { sensitiveFieldReplacement, sensitiveTextReplacement } from "../src/Reda
 const deferred = (): {
   readonly promise: Promise<void>;
   readonly resolve: () => void;
+  readonly reject: (error: Error) => void;
 } => {
   let complete = (): void => undefined;
-  const promise = new Promise<void>((resolve) => {
+  let fail = (_error: Error): void => undefined;
+  const promise = new Promise<void>((resolve, reject) => {
     complete = resolve;
+    fail = reject;
   });
-  return { promise, resolve: complete };
+  return { promise, resolve: complete, reject: fail };
 };
 
 describe("browser telemetry client", () => {
@@ -70,6 +74,82 @@ describe("browser telemetry client", () => {
     await firstFlush;
     expect(batches.map((batch) => batch.events[0]?.name)).toEqual(["first", "second"]);
     expect(client.pending()).toBe(0);
+    await client.dispose();
+  });
+
+  it("settles a failed active flush and retries its queued batch during disposal", async () => {
+    const active = deferred();
+    const batches: Array<BrowserTelemetryClientBatch> = [];
+    const client = createBrowserTelemetryClient({
+      transport: async (batch) => {
+        batches.push(batch);
+        if (batches.length === 1) await active.promise;
+      },
+      flushIntervalMs: 60_000,
+      shutdownTimeoutMs: 200,
+    });
+    client.emit("active-failure");
+    const flush = client.flush();
+    const disposal = client.dispose();
+    active.reject(new Error("active failed"));
+    await expect(flush).rejects.toThrow("active failed");
+    await disposal;
+    expect(batches).toHaveLength(2);
+    expect(batches[1]).toEqual(batches[0]);
+    expect(client.pending()).toBe(0);
+  });
+
+  it("aborts a hung transport at the shutdown deadline with one disposal promise", async () => {
+    let aborted = false;
+    const client = createBrowserTelemetryClient({
+      transport: (_batch, signal) =>
+        new Promise<void>((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            aborted = true;
+            reject(new Error("aborted"));
+          });
+        }),
+      flushIntervalMs: 60_000,
+      shutdownTimeoutMs: 20,
+    });
+    client.emit("hung");
+    client.flush().catch(() => undefined);
+    const disposal = client.dispose();
+    expect(client.dispose()).toBe(disposal);
+    await expect(disposal).rejects.toMatchObject({
+      code: "OBS_BROWSER_EVENTS_SHUTDOWN_TIMEOUT",
+      retryable: true,
+      timeoutMs: 20,
+    });
+    expect(aborted).toBe(true);
+    expect(client.pending()).toBe(1);
+  });
+
+  it("bounds disposal when a custom transport ignores abort", async () => {
+    const client = createBrowserTelemetryClient({
+      transport: async () => new Promise<void>(() => undefined),
+      flushIntervalMs: 60_000,
+      shutdownTimeoutMs: 20,
+    });
+    client.emit("abort-ignored");
+    client.flush().catch(() => undefined);
+    const startedAt = Date.now();
+    await expect(client.dispose()).rejects.toBeInstanceOf(BrowserTelemetryClientShutdownError);
+    expect(Date.now() - startedAt).toBeLessThan(200);
+    expect(client.pending()).toBe(1);
+  });
+
+  it("uses a valid bounded fallback for empty names", async () => {
+    const batches: Array<BrowserTelemetryClientBatch> = [];
+    const client = createBrowserTelemetryClient({
+      transport: async (batch) => {
+        batches.push(batch);
+      },
+      flushIntervalMs: 60_000,
+    });
+    client.emit("");
+    await client.flush();
+    expect(batches[0]?.events[0]?.name).toBe("browser.event");
     await client.dispose();
   });
 

@@ -27,6 +27,7 @@ export type BrowserTelemetryClientConfig = {
   readonly maxBatchSize?: number;
   readonly maxQueueSize?: number;
   readonly flushIntervalMs?: number;
+  readonly shutdownTimeoutMs?: number;
   readonly transport?: BrowserTelemetryClientTransport;
 };
 
@@ -50,14 +51,30 @@ export class BrowserTelemetryClientDeliveryError extends Error {
   }
 }
 
+export class BrowserTelemetryClientShutdownError extends Error {
+  readonly code = "OBS_BROWSER_EVENTS_SHUTDOWN_TIMEOUT";
+  readonly retryable = true;
+
+  constructor(readonly timeoutMs: number) {
+    super(
+      `Browser telemetry shutdown exceeded ${timeoutMs} milliseconds. The client aborted active delivery and retained its sanitized batch.`,
+    );
+    this.name = "BrowserTelemetryClientShutdownError";
+  }
+}
+
 const defaultEndpoint = "/_telemetry/events";
 const defaultMaxBatchSize = 32;
 const defaultMaxQueueSize = 256;
 const defaultFlushIntervalMs = 5_000;
+const defaultShutdownTimeoutMs = 2_000;
 const maxBatchSizeLimit = 64;
+const fallbackEventName = "browser.event";
 
-const positiveInteger = (value: number | undefined, fallback: number): number =>
+export const normalizePositiveInteger = (value: number | undefined, fallback: number): number =>
   value === undefined || !Number.isSafeInteger(value) || value <= 0 ? fallback : value;
+
+const positiveInteger = normalizePositiveInteger;
 
 const fetchTransport =
   (endpoint: string): BrowserTelemetryClientTransport =>
@@ -92,13 +109,21 @@ type BrowserClientEngineOptions = {
   readonly maxBatchSize: number;
   readonly maxQueueSize: number;
   readonly flushIntervalMs: number;
+  readonly shutdownTimeoutMs: number;
   readonly transport: BrowserTelemetryClientTransport;
   readonly startTimer: boolean;
+};
+
+type ActiveDelivery = {
+  readonly events: Array<BrowserTelemetryClientEvent>;
+  abandoned: boolean;
 };
 
 export class BrowserClientEngine implements BrowserTelemetryClient {
   private events: Array<BrowserTelemetryClientEvent> = [];
   private activeFlush: Promise<void> | undefined;
+  private activeDelivery: ActiveDelivery | undefined;
+  private readonly activeControllers = new Set<AbortController>();
   private disposal: Promise<void> | undefined;
   private disposed = false;
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -114,9 +139,10 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
 
   emit(name: string, fields: BrowserTelemetryClientFields = {}): void {
     if (this.options.disabled || this.disposed) return;
+    const sanitizedName = sanitizeBrowserEventName(name);
     const event: BrowserTelemetryClientEvent = {
       id: crypto.randomUUID(),
-      name: sanitizeBrowserEventName(name),
+      name: sanitizedName.length === 0 ? fallbackEventName : sanitizedName,
       occurredAt: Date.now(),
       fields: sanitizeBrowserFields(fields),
     };
@@ -147,10 +173,42 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
       clearInterval(this.timer);
       this.timer = undefined;
     }
-    this.disposal = this.options.disabled
-      ? Promise.resolve()
-      : (this.activeFlush ?? Promise.resolve()).then(() => this.flushQueued(true));
+    this.disposal = this.options.disabled ? Promise.resolve() : this.shutdown();
     return this.disposal;
+  }
+
+  private async shutdown(): Promise<void> {
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      deadlineTimer = setTimeout(() => {
+        for (const controller of this.activeControllers) controller.abort();
+        this.abandonActiveDelivery();
+        reject(new BrowserTelemetryClientShutdownError(this.options.shutdownTimeoutMs));
+      }, this.options.shutdownTimeoutMs);
+    });
+    try {
+      if (this.activeFlush !== undefined) {
+        try {
+          await Promise.race([this.activeFlush, deadline]);
+        } catch (cause) {
+          if (cause instanceof BrowserTelemetryClientShutdownError) throw cause;
+        }
+      }
+      await Promise.race([this.flushQueued(true), deadline]);
+    } finally {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+    }
+  }
+
+  private abandonActiveDelivery(): void {
+    if (this.activeDelivery === undefined || this.activeDelivery.abandoned) return;
+    this.activeDelivery.abandoned = true;
+    const requeued = [...this.activeDelivery.events, ...this.events];
+    this.events = requeued.slice(0, this.options.maxQueueSize);
+    this.droppedEvents += Math.max(0, requeued.length - this.options.maxQueueSize);
+    this.activeDelivery = undefined;
+    this.activeControllers.clear();
+    this.activeFlush = undefined;
   }
 
   private flushQueued(allowDisposed = false): Promise<void> {
@@ -158,14 +216,22 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
     const run = async (): Promise<void> => {
       while (this.events.length > 0 && (!this.disposed || allowDisposed)) {
         const batchEvents = this.events.splice(0, this.options.maxBatchSize);
+        const delivery: ActiveDelivery = { events: batchEvents, abandoned: false };
+        const controller = new AbortController();
+        this.activeDelivery = delivery;
+        this.activeControllers.add(controller);
         try {
-          const controller = new AbortController();
           await this.options.transport({ version: 1, events: batchEvents }, controller.signal);
+          if (delivery.abandoned) return;
         } catch (cause) {
+          if (delivery.abandoned) return;
           const requeued = [...batchEvents, ...this.events];
           this.events = requeued.slice(0, this.options.maxQueueSize);
           this.droppedEvents += Math.max(0, requeued.length - this.options.maxQueueSize);
           throw cause;
+        } finally {
+          this.activeControllers.delete(controller);
+          if (this.activeDelivery === delivery) this.activeDelivery = undefined;
         }
       }
     };
@@ -188,6 +254,7 @@ export const createBrowserTelemetryClient = (
     maxBatchSize,
     maxQueueSize: positiveInteger(config.maxQueueSize, defaultMaxQueueSize),
     flushIntervalMs: positiveInteger(config.flushIntervalMs, defaultFlushIntervalMs),
+    shutdownTimeoutMs: positiveInteger(config.shutdownTimeoutMs, defaultShutdownTimeoutMs),
     transport: config.transport ?? fetchTransport(config.endpoint ?? defaultEndpoint),
     startTimer: true,
   });

@@ -4,7 +4,7 @@
 
 ## Sink boundary
 
-Sanitization runs before a `BrowserEvent` is constructed and before the event enters the in-memory queue. Recording transports, retry batches, periodic flushes, finalizers, and fetch transports therefore receive only the sanitized representation.
+Sanitization runs before a `BrowserEvent` is constructed and before the event enters the in-memory queue. An empty sanitized event name becomes the bounded name `browser.event`, so queued events always satisfy the wire schema. Recording transports, retry batches, periodic flushes, finalizers, and fetch transports therefore receive only the sanitized representation.
 
 `BrowserTelemetry` has no console sink. This policy does not cover application-owned console calls and does not add console interception.
 
@@ -29,7 +29,7 @@ The following content becomes `[REDACTED]` within safe string values and event n
 - RSA, EC, OpenSSH, and generic private-key blocks
 - Sensitive `key=value` and `key:value` assignments, including quoted values
 
-Valid serialized JSON beginning with an object or array is parsed and sanitized iteratively. Values under sensitive property keys become `[REDACTED]`, credential-bearing keys disappear, credential patterns are replaced in string leaves, array order is retained, and compact valid JSON is emitted. Traversal is limited to 32 levels and 1,024 values. Inputs beyond either limit become `[REDACTED]`.
+Valid serialized JSON beginning with an object or array is parsed and sanitized iteratively. Values under sensitive property keys become `[REDACTED]`, credential-bearing keys disappear, credential patterns and structured sensitive assignments are replaced in string leaves, array order is retained, and compact valid JSON is emitted. Traversal is limited to 32 levels and 1,024 values. Inputs beyond either limit become `[REDACTED]`.
 
 Malformed JSON-like text containing a sensitive term becomes `[REDACTED]`. Browser structured-text handling is intentionally stricter than the Collector policy because the browser can parse a bounded JSON string before queue insertion.
 
