@@ -1,5 +1,6 @@
 import { Effect, Layer, Option, Ref, Schema, type Exit } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { OtlpExporter } from "effect/unstable/observability";
 import { layerOtlp } from "../Telemetry.ts";
 import { TelemetryConfig } from "../TelemetryConfig.ts";
 
@@ -12,9 +13,12 @@ export type CapturedSpan = {
   readonly spanId: string;
   readonly parentSpanId: Option.Option<string>;
   readonly name: string;
+  readonly kind: number;
   readonly statusCode: number;
   readonly statusMessage: Option.Option<string>;
   readonly attributes: CapturedAttributes;
+  readonly eventNames: ReadonlyArray<string>;
+  readonly linkedSpanIds: ReadonlyArray<string>;
   readonly resourceAttributes: CapturedAttributes;
 };
 
@@ -72,11 +76,18 @@ const ExportedSpan = Schema.Struct({
   spanId: Schema.String,
   parentSpanId: Schema.String.pipe(Schema.optionalKey),
   name: Schema.String,
+  kind: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   status: Schema.Struct({
     code: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
     message: Schema.String.pipe(Schema.optionalKey),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({ code: 0 }))),
   attributes: Attributes,
+  events: Schema.Array(Schema.Struct({ name: Schema.String })).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  links: Schema.Array(Schema.Struct({ spanId: Schema.String })).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
 });
 
 const SpanExport = Schema.Struct({
@@ -200,9 +211,12 @@ const decodeCapturedTelemetry = Effect.fn("decodeCapturedTelemetry")(function* (
               spanId: span.spanId,
               parentSpanId: Option.fromNullishOr(span.parentSpanId),
               name: span.name,
+              kind: span.kind,
               statusCode: span.status.code,
               statusMessage: Option.fromNullishOr(span.status.message),
               attributes: toAttributes(span.attributes),
+              eventNames: span.events.map((event) => event.name),
+              linkedSpanIds: span.links.map((link) => link.spanId),
               resourceAttributes,
             });
           }
@@ -262,7 +276,7 @@ export type RunOptions = {
 };
 
 export type TelemetryCapture = {
-  readonly layer: Layer.Layer<never>;
+  readonly layer: Layer.Layer<OtlpExporter.Flusher>;
   readonly telemetry: Effect.Effect<CapturedTelemetry>;
 };
 
