@@ -1,15 +1,11 @@
-import { Clock, Context, Duration, Effect, Layer, Predicate, Ref, Schema } from "effect";
+import { Clock, Context, Duration, Effect, Layer, Ref, Schema } from "effect";
 import {
   BrowserEvent,
   BrowserEventBatch,
   encodeBrowserEventBatch,
-  maxEventNameLength,
   maxEventsPerBatch,
-  maxFieldKeyLength,
-  maxFieldsPerEvent,
-  maxFieldValueLength,
-  type BrowserEventFields,
 } from "../BrowserEvents.ts";
+import { sanitizeBrowserEventName, sanitizeBrowserFields } from "../RedactionPolicy.ts";
 import type { WideEventFields } from "../WideEvent.ts";
 
 export {
@@ -93,20 +89,6 @@ type EventQueue = {
   readonly dropped: number;
 };
 
-const clampFields = (fields: WideEventFields): BrowserEventFields => {
-  const clamped: { [attribute: string]: string | number | boolean } = {};
-  let count = 0;
-  for (const [key, value] of Object.entries(fields)) {
-    if (key === "" || count >= maxFieldsPerEvent) {
-      continue;
-    }
-    const boundedKey = key.slice(0, maxFieldKeyLength);
-    clamped[boundedKey] = Predicate.isString(value) ? value.slice(0, maxFieldValueLength) : value;
-    count += 1;
-  }
-  return clamped;
-};
-
 const makeBrowserTelemetry = Effect.fn("makeBrowserTelemetry")(function* (
   options?: BrowserTelemetryOptions,
 ) {
@@ -121,9 +103,9 @@ const makeBrowserTelemetry = Effect.fn("makeBrowserTelemetry")(function* (
       const occurredAt = yield* Clock.currentTimeMillis;
       const event = new BrowserEvent({
         id: crypto.randomUUID(),
-        name: name.slice(0, maxEventNameLength),
+        name: sanitizeBrowserEventName(name),
         occurredAt,
-        fields: clampFields(fields ?? {}),
+        fields: sanitizeBrowserFields(fields ?? {}),
       });
       yield* Ref.update(queue, (state) =>
         state.events.length >= maxQueueSize

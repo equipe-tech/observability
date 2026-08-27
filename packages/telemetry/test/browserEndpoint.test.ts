@@ -59,7 +59,7 @@ const postEvents = (baseUrl: string, body: string): Promise<Response> =>
   });
 
 describe("browser events endpoint", () => {
-  it("accepts a valid batch with 202 and correlates the events to the request trace", async () => {
+  it("accepts a valid batch with 202 while the telemetry route stays excluded", async () => {
     const harness = await startApp(true);
     const response = await postEvents(
       harness.baseUrl,
@@ -81,22 +81,17 @@ describe("browser events endpoint", () => {
     assert.deepStrictEqual(await response.json(), { accepted: 2 });
 
     const telemetry = await harness.close();
-    const boundary = telemetry.spans.find(
-      (span) => span.name === "POST BrowserEventsController.events",
-    );
-    assert.isDefined(boundary);
-    assert.strictEqual(boundary.statusCode, 1);
-    assert.strictEqual(attributeOrUndefined(boundary.attributes, "http.response.status_code"), 202);
+    const boundary = telemetry.spans.find((span) => span.name.includes("/_telemetry/events"));
+    assert.isUndefined(boundary);
 
     const checkout = telemetry.logs.find(
       (log) => attributeOrUndefined(log.attributes, "event.name") === "checkout.completed",
     );
     assert.isDefined(checkout);
     assert.strictEqual(attributeOrUndefined(checkout.attributes, "event.source"), "browser");
-    assert.deepStrictEqual(checkout.traceId, Option.some(boundary.traceId));
   }, 30_000);
 
-  it("rejects an invalid batch with the public contract and the trace correlation id", async () => {
+  it("rejects an invalid batch with the public contract and a safe correlation id", async () => {
     const harness = await startApp(true);
     const response = await postEvents(harness.baseUrl, JSON.stringify({ nonsense: true }));
 
@@ -108,13 +103,9 @@ describe("browser events endpoint", () => {
     assert.notInclude(JSON.stringify(payload), "    at ");
 
     const telemetry = await harness.close();
-    const boundary = telemetry.spans.find(
-      (span) => span.name === "POST BrowserEventsController.events",
-    );
-    assert.isDefined(boundary);
-    assert.strictEqual(boundary.statusCode, 1);
-    assert.strictEqual(attributeOrUndefined(boundary.attributes, "http.response.status_code"), 400);
-    assert.strictEqual(rejection.correlationId, boundary.traceId);
+    const boundary = telemetry.spans.find((span) => span.name.includes("/_telemetry/events"));
+    assert.isUndefined(boundary);
+    assert.isTrue(rejection.correlationId.length > 0);
   }, 30_000);
 
   it("answers 400 to a malformed JSON body", async () => {

@@ -4,11 +4,13 @@ Use este guia para configurar Axiom e Sentry para `development`, `staging`, e `p
 
 ## Preparar os tokens administrativos
 
+Prepare somente os tokens dos providers selecionados.
+
 1. Crie um personal access token no Axiom.
 2. Conceda ao token acesso para gerenciar datasets e API tokens.
 3. Copie o identificador da organização Axiom.
 4. Crie um organization auth token no Sentry.
-5. Conceda ao token os escopos `org:read`, `project:read`, e `project:write`.
+5. Conceda ao token os escopos `org:read`, `project:read` e `project:write`.
 6. Copie os slugs da organização e do time Sentry.
 
 Não use tokens administrativos no runtime da aplicação. Esses tokens podem alterar recursos da organização.
@@ -33,13 +35,13 @@ observability auth login sentry \
 
 Cole o organization auth token no prompt protegido.
 
-Valide as duas conexões:
+Valide as conexões salvas:
 
 ```sh
 observability auth status
 ```
 
-A saída mostra a identidade Axiom, a organização Sentry, e o caminho do arquivo de credenciais.
+A saída mostra cada identidade disponível e o caminho do arquivo de credenciais.
 
 ## Iniciar a observabilidade local
 
@@ -81,6 +83,20 @@ O comando cria estes recursos:
 
 O comando não imprime os tokens de runtime.
 
+Para configurar somente Axiom, adicione `--provider axiom`. Para configurar somente Sentry, adicione `--provider sentry`.
+
+Para selecionar ambos explicitamente, repita a flag:
+
+```sh
+observability provision \
+  --name livro-caixa \
+  --environment staging \
+  --provider axiom \
+  --provider sentry
+```
+
+Sem a flag, um ambiente novo usa ambos. Um ambiente existente repete seus providers salvos.
+
 ## Adicionar as variáveis ao deploy
 
 Exporte as variáveis de `staging`:
@@ -91,9 +107,9 @@ observability env export \
   --environment staging
 ```
 
-A saída contém `AXIOM_TOKEN` e `SENTRY_DSN`. Não salve essa saída em um arquivo versionado.
+A saída contém somente variáveis dos providers salvos. Não salve essa saída em um arquivo versionado.
 
-Adicione os valores ao gerenciador de segredos do ambiente. Adicione as variáveis `OTEL_*` e `AXIOM_DATASET_*` ao destino Kamal.
+Adicione os valores ao gerenciador de segredos do ambiente. Adicione variáveis Axiom ao destino Kamal somente quando o ambiente usa Axiom.
 
 Repita o processo para `production`:
 
@@ -123,7 +139,10 @@ Se o arquivo local de credenciais foi perdido, regenere o token do ambiente:
 observability provision \
   --name livro-caixa \
   --environment staging \
+  --provider axiom \
   --rotate-token
 ```
 
 Atualize o segredo `AXIOM_TOKEN` antes do próximo deploy. O token anterior deixa de funcionar imediatamente.
+
+Não execute uma repetição comum após `OBS_CLI_REMOTE_OUTCOME_UNKNOWN`. Use a rotação explícita para recuperar o estado.
