@@ -120,13 +120,16 @@ const normalizedMethod = (
   request: WeakKey,
 ): { readonly method: string; readonly original: Option.Option<string> } =>
   decodeHttpRequestBoundary(request).pipe(
-    Option.map((boundary) => boundary.method.toUpperCase()),
     Option.match({
       onNone: () => ({ method: "_OTHER", original: Option.none() }),
-      onSome: (method) =>
-        knownMethods.has(method)
-          ? { method, original: Option.none() }
-          : { method: "_OTHER", original: Option.some(method) },
+      onSome: (boundary) => {
+        const normalized = boundary.method.toUpperCase();
+        const method = knownMethods.has(normalized) ? normalized : "_OTHER";
+        return {
+          method,
+          original: boundary.method === method ? Option.none() : Option.some(boundary.method),
+        };
+      },
     }),
   );
 

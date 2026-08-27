@@ -617,6 +617,19 @@ describe("nestjs TelemetryInterceptor", () => {
     assert.isTrue(Option.isNone(tracker.register({ interrupt: () => interruptions++ })));
   });
 
+  it("preserves lowercase known methods when normalization changes the emitted method", () => {
+    const lowercaseMethod = inspectHttpServerRequest({
+      method: "get",
+      route: { path: "/items" },
+      originalUrl: "/items",
+      socket: {},
+    });
+    assert.isTrue(Option.isSome(lowercaseMethod));
+    assert.strictEqual(Option.getOrThrow(lowercaseMethod).method, "GET");
+    assert.deepStrictEqual(Option.getOrThrow(lowercaseMethod).methodOriginal, Option.some("get"));
+    assert.strictEqual(Option.getOrThrow(lowercaseMethod).spanName, "GET /items");
+  });
+
   it("bounds unknown methods and omits unsafe paths at the parsed boundary", () => {
     const unknownMethod = inspectHttpServerRequest({
       method: "brew",
@@ -626,7 +639,7 @@ describe("nestjs TelemetryInterceptor", () => {
     });
     assert.isTrue(Option.isSome(unknownMethod));
     assert.strictEqual(Option.getOrThrow(unknownMethod).method, "_OTHER");
-    assert.deepStrictEqual(Option.getOrThrow(unknownMethod).methodOriginal, Option.some("BREW"));
+    assert.deepStrictEqual(Option.getOrThrow(unknownMethod).methodOriginal, Option.some("brew"));
     assert.strictEqual(Option.getOrThrow(unknownMethod).spanName, "HTTP /items/:id");
     assert.deepStrictEqual(
       Option.getOrThrow(unknownMethod).urlPath,
