@@ -410,6 +410,7 @@ const runtimePool = new Map<string, RuntimePoolEntry>();
 
 interface ApplicationRuntimeState {
   readonly key: string;
+  readonly requestWideEventTraceCorrelation: RequestWideEventTraceCorrelation | undefined;
   readonly releases: Set<() => Promise<void>>;
   failed: boolean;
 }
@@ -538,11 +539,19 @@ const registerApplicationRuntime = (
   const key = runtimeKey(options);
   const state = applicationRuntimes.get(application);
   if (state === undefined) {
-    const registered = { key, releases: new Set<() => Promise<void>>(), failed: false };
+    const registered = {
+      key,
+      requestWideEventTraceCorrelation: options.requestWideEventTraceCorrelation,
+      releases: new Set<() => Promise<void>>(),
+      failed: false,
+    };
     applicationRuntimes.set(application, registered);
     return registered;
   }
-  if (state.key !== key) {
+  if (
+    state.key !== key ||
+    state.requestWideEventTraceCorrelation !== options.requestWideEventTraceCorrelation
+  ) {
     state.failed = true;
   }
   return state;
@@ -557,7 +566,7 @@ const acquireApplicationRuntime = async (
   if (state.failed) {
     applicationRuntimes.delete(application);
     throw new InvalidTelemetryModuleOptions(
-      new Error("TelemetryModule imports in one application must use one runtime configuration."),
+      new Error("TelemetryModule imports in one application must use one telemetry configuration."),
     );
   }
   const lease = await acquireRuntime(options, overrides);

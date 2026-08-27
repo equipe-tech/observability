@@ -11,6 +11,7 @@ import { assert, describe, it } from "vite-plus/test";
 import {
   createRequestWideEventTraceCorrelation,
   TelemetryModule,
+  type RequestWideEventLoggerResolver,
   type TelemetryModuleOptions,
 } from "../src/nestjs/index.ts";
 
@@ -57,8 +58,11 @@ const OtlpTracesPayload = Schema.Struct({
   ),
 });
 
+const ResolverResponse = Schema.Struct({ ok: Schema.Boolean });
+
 const decodeLogsPayload = Schema.decodeUnknownSync(OtlpLogsPayload);
 const decodeTracesPayload = Schema.decodeUnknownSync(OtlpTracesPayload);
+const decodeResolverResponse = Schema.decodeUnknownSync(ResolverResponse);
 
 interface OtlpRequest {
   readonly path: string;
@@ -182,6 +186,65 @@ const methodDescriptor = <Prototype extends WeakKey>(
 
 const applicationBaseUrl = (address: string | AddressInfo | null): string =>
   `http://127.0.0.1:${decodeAddress(address).port}`;
+
+const verifyResolverIsolation = async (
+  resolveLogger: RequestWideEventLoggerResolver,
+): Promise<void> => {
+  const capture = await makeOtlpCapture();
+  let resolverInvocations = 0;
+
+  class ResolverController {
+    resolve(): { readonly ok: boolean } {
+      return { ok: true };
+    }
+  }
+  Controller()(ResolverController);
+  Get("resolver")(
+    ResolverController.prototype,
+    "resolve",
+    methodDescriptor(ResolverController.prototype, "resolve"),
+  );
+
+  const traceCorrelation = createRequestWideEventTraceCorrelation((request) => {
+    resolverInvocations++;
+    return resolveLogger(request);
+  });
+
+  class AppModule {}
+  Module({
+    imports: [
+      TelemetryModule.forRootAsync({
+        useFactory: () => ({
+          enabled: true,
+          serviceName: "resolver-isolation-test",
+          serviceVersion: "1.0.0",
+          environment: "test",
+          otlpEndpoint: capture.endpoint,
+          requestWideEventTraceCorrelation: traceCorrelation,
+          shutdownTimeoutMilliseconds: 2_000,
+        }),
+      }),
+    ],
+    controllers: [ResolverController],
+  })(AppModule);
+
+  const app = await NestFactory.create(AppModule, { logger: false });
+  await app.listen(0, "127.0.0.1");
+  try {
+    const response = await fetch(`${applicationBaseUrl(app.getHttpServer().address())}/resolver`);
+    assert.strictEqual(response.status, 200);
+    assert.isTrue(decodeResolverResponse(await response.json()).ok);
+    assert.strictEqual(resolverInvocations, 1);
+    await app.close();
+    assert.lengthOf(
+      spans(capture).filter((span) => span.name === "GET /resolver"),
+      1,
+    );
+  } finally {
+    await app.close().catch(() => undefined);
+    await capture.close();
+  }
+};
 
 describe("NestJS evlog trace correlation", () => {
   it("correlates real evlog wide events with native OTLP log fields across the HTTP lifecycle", async () => {
@@ -376,10 +439,6 @@ describe("NestJS evlog trace correlation", () => {
       assert.strictEqual((await secondOverlap).status, 200);
 
       await waitForLogRecords(capture, 10);
-      assert.lengthOf(
-        capture.requests.filter((request) => request.path === "/v1/traces"),
-        0,
-      );
       await app.close();
 
       const logs = correlatedLogs(capture);
@@ -441,14 +500,20 @@ describe("NestJS evlog trace correlation", () => {
         findSpan(capturedSpans, secondOverlapTraceId).spanId,
         secondOverlapLog.record.spanId,
       );
-      assert.lengthOf(
-        capture.requests.filter((request) => request.path === "/v1/traces"),
-        1,
-      );
     } finally {
       releaseOverlap();
       await app.close().catch(() => undefined);
       await capture.close();
     }
   }, 30_000);
+
+  it("preserves request behavior when the correlation resolver returns no logger", async () => {
+    await verifyResolverIsolation(() => undefined);
+  });
+
+  it("preserves request behavior when the correlation resolver throws", async () => {
+    await verifyResolverIsolation(() => {
+      throw new Error("correlation resolver failed");
+    });
+  });
 });

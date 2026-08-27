@@ -6,7 +6,7 @@ O adapter segue OpenTelemetry HTTP Semantic Conventions v1.44.0 para spans de se
 
 Use `TelemetryModule.forRootAsync` para resolver a configuração pelo container do Nest e registrar o interceptor globalmente. A factory pode ser síncrona ou assíncrona e recebe os tokens declarados em `inject`.
 
-A opção `enabled: false` não exige identidade ou endpoint e não cria runtime, exporter, timer ou requisição de rede. A configuração habilitada é analisada durante o bootstrap. Valores inválidos e imports duplicados com configurações diferentes rejeitam o bootstrap com `InvalidTelemetryModuleOptions` e código `OBS_TELEMETRY_INVALID_MODULE_OPTIONS`.
+A opção `enabled: false` não exige identidade ou endpoint e não cria runtime, exporter, timer ou requisição de rede. A configuração habilitada é analisada durante o bootstrap. Valores inválidos e imports duplicados com configurações diferentes rejeitam o bootstrap com `InvalidTelemetryModuleOptions` e código `OBS_TELEMETRY_INVALID_MODULE_OPTIONS`. Dois imports habilitados devem omitir `requestWideEventTraceCorrelation` ou passar a mesma instância do adapter. Instâncias diferentes são um conflito determinístico detectado depois das factories e antes da aquisição do runtime, inclusive quando uma factory termina depois da outra.
 
 Uma falha depois da configuração válida, durante a construção ou aquisição do runtime, rejeita o bootstrap com `TelemetryStartupError` e código `OBS_TELEMETRY_STARTUP_FAILED`. O módulo descarta recursos parcialmente adquiridos antes de propagar essa falha. Uma rejeição da factory do chamador é propagada sem conversão.
 
@@ -14,15 +14,19 @@ No encerramento, o módulo fecha a admissão de spans, aguarda ou interrompe req
 
 O suporte usa NestJS com Express. O adapter não declara suporte ao Fastify.
 
-## Correlação com eventos amplos
+## Adapter de correlação com eventos amplos
 
-`createRequestWideEventTraceCorrelation` adapta um logger de evento amplo que oferece `set`. Passe o resultado em `requestWideEventTraceCorrelation` nas opções habilitadas de `TelemetryModule` ou `TelemetryInterceptor`. A API pública do adapter não expõe Effect e o pacote não depende de evlog em runtime.
+`createRequestWideEventTraceCorrelation` adapta um logger de evento amplo que oferece `set`. Passe o resultado em `requestWideEventTraceCorrelation` nas opções habilitadas de `TelemetryModule` ou `TelemetryInterceptor`. Somente as declarações públicas desse contrato de correlação, incluindo a factory, a classe e seus tipos auxiliares, são livres de referências a Effect. Essa garantia não descreve todas as exportações do entrypoint NestJS. O pacote não depende de evlog em runtime.
 
 Com evlog, importe `EvlogModule` antes de `TelemetryModule` para que o middleware do evlog crie o logger e o anexe à requisição antes dos interceptors do Nest. O `TelemetryInterceptor` cria o único span de servidor e grava `traceId` e `spanId` no logger antes de executar o handler. Não registre um segundo interceptor de correlação.
 
-O evlog continua dono do AsyncLocalStorage, do evento por requisição, da amostragem e do drain. O adapter de telemetria mantém somente o WeakMap de requisição para span e não retém logger ou identificadores. Rotas sem span ativo não recebem correlação. Falhas ou ausência do logger são ignoradas e não alteram a resposta.
+O evlog continua dono do AsyncLocalStorage, do evento por requisição, da amostragem e do drain. Durante uma requisição instrumentada, o adapter de telemetria mantém a associação entre a requisição e o span no WeakMap, uma entrada no conjunto de requisições em voo e closures e listeners de ciclo de vida da resposta. A finalização por `finish`, `close`, cancelamento ou interrupção remove a associação, libera a entrada em voo e remove os listeners. O adapter de correlação não armazena requisições, loggers ou identificadores.
 
-Em sucesso, HTTP 4xx e defeitos, os identificadores já estão no evento quando a resposta finaliza. Em cancelamento ou fechamento prematuro, eles permanecem no evento emitido no `close`. Um pai remoto não amostrado ainda fornece os identificadores ao evento, embora o span não seja exportado. Um `traceparent` malformado inicia um novo trace local.
+Rotas sem span ativo não recebem correlação. Um resolver que não encontra logger ou lança uma exceção é isolado e não altera a execução nem a resposta da requisição. Em sucesso, HTTP 4xx e defeitos, os identificadores já estão no evento quando a resposta finaliza. Em cancelamento ou fechamento prematuro, eles permanecem no evento emitido no `close`. Um pai remoto não amostrado ainda fornece os identificadores ao evento, embora o span não seja exportado. Um `traceparent` malformado inicia um novo trace local.
+
+`log.fork()` cria um logger e um evento amplo filho em background. O filho não herda automaticamente `traceId` nem `spanId` gravados no logger da requisição original. Quando um filho precisa de correlação, o consumidor deve fornecê-la explicitamente no próprio logger filho.
+
+Guards do Nest executam antes dos interceptors. Uma rejeição de guard não cria o span de servidor deste interceptor e não recebe a correlação deste adapter. Consumidores que precisam cobrir rejeições de guard devem instrumentar esse caminho separadamente.
 
 O drain OTLP do logger deve mapear os campos superiores `traceId` e `spanId` para os campos nativos do LogRecord. Copiar esses valores apenas para atributos arbitrários não atende ao contrato de correlação.
 

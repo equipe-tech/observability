@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import { Schema } from "effect";
 import { assert, describe, it } from "vite-plus/test";
 import {
+  createRequestWideEventTraceCorrelation,
   InvalidTelemetryModuleOptions,
   TelemetryModule,
   TelemetryShutdownError,
@@ -390,6 +391,63 @@ describe("TelemetryModule", () => {
             useFactory: async () => {
               await new Promise((resolve) => setTimeout(resolve, 50));
               return enabledOptions(`${capture.endpoint}/alternate`);
+            },
+          },
+          { scopedResource: acquisitionResource },
+        ),
+      ],
+    })(AppModule);
+
+    const app = await NestFactory.create(AppModule, {
+      logger: false,
+      abortOnError: false,
+    });
+    try {
+      const failure = await app.init().then(
+        () => undefined,
+        (cause) => cause,
+      );
+      assert.instanceOf(failure, InvalidTelemetryModuleOptions);
+      assert.strictEqual(failure?.code, "OBS_TELEMETRY_INVALID_MODULE_OPTIONS");
+      assert.strictEqual(resourceAcquisitions, 0);
+    } finally {
+      await app.close().catch(() => undefined);
+      await capture.close();
+    }
+  });
+
+  it("rejects differing correlation adapters before runtime acquisition", async () => {
+    const capture = await makeOtlpCapture();
+    let resourceAcquisitions = 0;
+    const acquisitionResource = {
+      acquire: () => {
+        resourceAcquisitions++;
+      },
+      release: () => undefined,
+    };
+    const firstCorrelation = createRequestWideEventTraceCorrelation(() => undefined);
+    const secondCorrelation = createRequestWideEventTraceCorrelation(() => undefined);
+
+    class AppModule {}
+    Module({
+      imports: [
+        telemetryModuleForTesting(
+          {
+            useFactory: () => ({
+              ...enabledOptions(capture.endpoint),
+              requestWideEventTraceCorrelation: firstCorrelation,
+            }),
+          },
+          { scopedResource: acquisitionResource },
+        ),
+        telemetryModuleForTesting(
+          {
+            useFactory: async () => {
+              await new Promise((resolve) => setTimeout(resolve, 50));
+              return {
+                ...enabledOptions(capture.endpoint),
+                requestWideEventTraceCorrelation: secondCorrelation,
+              };
             },
           },
           { scopedResource: acquisitionResource },
