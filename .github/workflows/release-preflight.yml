@@ -69,3 +69,6 @@ jobs:
               exit 1
             fi
           done
+      - name: Clean preflight temporary paths
+        if: always()
+        run: rm -rf .release-pack dist-release .verification

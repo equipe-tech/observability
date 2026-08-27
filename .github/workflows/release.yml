@@ -153,6 +153,9 @@ jobs:
             grep -qx "$expected" <<< "$assets" \
               || { echo "The release is missing the asset $expected."; exit 1; }
           done
+      - name: Clean release temporary paths
+        if: always()
+        run: rm -rf .release-pack dist-release release-notes.md
 
   publish-npm:
     needs:
@@ -252,3 +255,6 @@ jobs:
               exit $status
             fi
           done
+      - name: Clean npm publication temporary paths
+        if: always()
+        run: rm -rf .release-pack dist-release

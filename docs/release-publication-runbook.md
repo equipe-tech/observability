@@ -58,22 +58,40 @@ docker run --rm \
   validate --config=/etc/otelcol/config.yaml
 
 recovery_root="$(mktemp -d)"
+cleanup_recovery() {
+  rm -rf "$recovery_root"
+}
+trap cleanup_recovery EXIT
+trap 'exit 128' HUP INT TERM
 OBSERVABILITY_COLLECTOR_RECOVERY=1 \
 OBSERVABILITY_COLLECTOR_RECOVERY_ARTIFACT_ROOT="$recovery_root" \
   bun test packages/cli/test/CollectorRecovery.bun.test.ts --timeout 120000
+cleanup_recovery
+trap - EXIT HUP INT TERM
 ```
 
 Rode o canário local sem credenciais com um único diretório de estado:
 
 ```sh
 state="$(mktemp -d)"
+stack_started=false
+cleanup_stack() {
+  if [[ "$stack_started" == "true" ]]; then
+    OBSERVABILITY_HOME="$state" bun packages/cli/src/main.ts dev down || true
+  fi
+  rm -rf "$state"
+}
+trap cleanup_stack EXIT
+trap 'exit 128' HUP INT TERM
+stack_started=true
 OBSERVABILITY_HOME="$state" bun packages/cli/src/main.ts dev up
-trap 'OBSERVABILITY_HOME="$state" bun packages/cli/src/main.ts dev down' EXIT
 curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-delay 1 \
   http://localhost:8000/ >/dev/null
 OBSERVABILITY_HOME="$state" OBSERVABILITY_E2E=1 bun test:canary
 OBSERVABILITY_HOME="$state" bun packages/cli/src/main.ts dev down
-trap - EXIT
+stack_started=false
+rm -rf "$state"
+trap - EXIT HUP INT TERM
 ```
 
 ## Tarballs aprováveis
@@ -88,6 +106,7 @@ cleanup() {
   rm -rf "$pack_root" dist-release
 }
 trap cleanup EXIT
+trap 'exit 128' HUP INT TERM
 bun run build
 for pack_set in pack-1 pack-2 pack-3; do
   destination="$pack_root/$pack_set"
@@ -126,7 +145,7 @@ npm publish "./dist-release/equipe-tech-observability-0.2.0.tgz" \
 npm publish "./dist-release/equipe-tech-observability-cli-0.2.0.tgz" \
   --access public --tag latest --provenance --dry-run
 cleanup
-trap - EXIT
+trap - EXIT HUP INT TERM
 ```
 
 Os seis SHA-256 devem coincidir exatamente com `docs/releases/v0.2.0.sha256`. Os três conjuntos usam diretórios vazios e nomes determinísticos; compare `pack-1` com `pack-2` e `pack-3` antes da aprovação. Confira nomes, versões, repository, homepage, bugs e engines dos manifests empacotados, export maps, todos os `.d.ts`, modo executável da CLI, assets do Collector e Kamal, READMEs, licenças na raiz e em `dist`, dependency ranges e ausência de `workspace:`, fontes, testes, credenciais e arquivos alheios.
