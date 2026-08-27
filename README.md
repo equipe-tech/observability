@@ -70,14 +70,14 @@ repos/                repositórios vendorados para agentes (gitignored)
 
 O pacote `@equipe-tech/observability` publica um subpath por runtime:
 
-| Subpath     | Conteúdo                                                                                                                     |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `./node`    | `runMain` (telemetria do ambiente, interrupção em `SIGINT`/`SIGTERM`, flush no shutdown) e ingestão de eventos do browser    |
-| `./nestjs`  | `TelemetryInterceptor` (spans de fronteira HTTP), `withRequestSpan` e `createBrowserEventsController` (`/_telemetry/events`) |
-| `./browser` | `BrowserTelemetry` (fila limitada, batch e flush de wide events para `/_telemetry/events`) com transporte `fetch` injetável  |
-| `./testing` | Captura em memória dos exports OTLP reais (`run`, `makeCapture`) para asserts de spans, logs e métricas em testes            |
+| Subpath     | Conteúdo                                                                                                                                    |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `./node`    | `runMain` (telemetria do ambiente, interrupção em `SIGINT`/`SIGTERM`, flush no shutdown) e ingestão de eventos do browser                   |
+| `./nestjs`  | `TelemetryInterceptor` (spans de fronteira HTTP), `withRequestSpan` e `createBrowserEventsController` (`/_telemetry/events`)                |
+| `./browser` | `createBrowserTelemetryClient` imperativo e `BrowserTelemetry` compatível com Effect, ambos com fila limitada, batch e transporte injetável |
+| `./testing` | Captura em memória dos exports OTLP reais (`run`, `makeCapture`) para asserts de spans, logs e métricas em testes                           |
 
-O contrato do endpoint `/_telemetry/events` vive em `BrowserEvents` no entrypoint raiz. O servidor faz o parse com `parseBrowserEventBatch` e re-emite os eventos como wide events com atributos de servidor (`event.source`, `browser.event.id`). O cliente sanitiza nomes e campos antes da fila conforme a [política de dados da telemetria do browser](docs/browser-telemetry-data-policy.md).
+O [cliente imperativo do browser](docs/browser-client.md) publica `emit`, `flush`, `pending` e `dispose` sem tipos Effect e documenta o ciclo de vida React suportado. O contrato do endpoint `/_telemetry/events` vive em `BrowserEvents` no entrypoint raiz. O servidor faz o parse com `parseBrowserEventBatch` e re-emite os eventos como wide events com atributos de servidor (`event.source`, `browser.event.id`). O cliente sanitiza nomes e campos antes da fila conforme a [política de dados da telemetria do browser](docs/browser-telemetry-data-policy.md).
 
 O adapter `./nestjs` publica o endpoint pronto: registre `createBrowserEventsController(runtime)` nos controllers do módulo. O controller responde `202 { accepted }` e rejeita batches inválidos com `400 { code, message, correlationId }`. O valor `correlationId` é um identificador seguro para suporte. O limite de corpo bruto pertence ao transporte HTTP; o Express responde `413` acima do limite configurado.
 
