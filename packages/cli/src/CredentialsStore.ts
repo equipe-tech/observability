@@ -1,4 +1,4 @@
-import { Clock, Context, Effect, Fiber, FileSystem, Layer, Option, Path, Schema } from "effect";
+import { Clock, Context, Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
 import { homedir } from "node:os";
 
 const CredentialsEnvironment = Schema.Struct({
@@ -288,11 +288,13 @@ export class CredentialsStore extends Context.Service<
         const heartbeat = yield* Clock.currentTimeMillis;
         const target = heartbeatPath(nonce);
         const temporaryPath = `${target}.${crypto.randomUUID()}.tmp`;
-        yield* fs
-          .writeFileString(temporaryPath, `${heartbeat}\n`, { mode: 0o600 })
-          .pipe(Effect.mapError(credentialsFailure));
-        yield* fs.chmod(temporaryPath, 0o600).pipe(Effect.mapError(credentialsFailure));
-        yield* fs.rename(temporaryPath, target).pipe(Effect.mapError(credentialsFailure));
+        yield* Effect.gen(function* () {
+          yield* fs
+            .writeFileString(temporaryPath, `${heartbeat}\n`, { mode: 0o600 })
+            .pipe(Effect.mapError(credentialsFailure));
+          yield* fs.chmod(temporaryPath, 0o600).pipe(Effect.mapError(credentialsFailure));
+          yield* fs.rename(temporaryPath, target).pipe(Effect.mapError(credentialsFailure));
+        }).pipe(Effect.ensuring(fs.remove(temporaryPath, { force: true }).pipe(Effect.ignore)));
       });
 
       const lockOwner = Effect.fn("CredentialsStore.lockOwner")(function* (ownerPath: string) {
@@ -304,6 +306,15 @@ export class CredentialsStore extends Context.Service<
           Effect.flatMap(decodeLockOwner),
           Effect.option,
         );
+      });
+
+      const assertLockOwnership = Effect.fn("CredentialsStore.assertLockOwnership")(function* (
+        nonce: string,
+      ) {
+        const owner = yield* lockOwner(lockOwnerPath);
+        if (Option.isNone(owner) || owner.value.nonce !== nonce) {
+          return yield* credentialsFailure("credentials-lock-ownership-lost");
+        }
       });
 
       const lockAge = Effect.fn("CredentialsStore.lockAge")(function* () {
@@ -326,6 +337,48 @@ export class CredentialsStore extends Context.Service<
         return 0;
       });
 
+      const artifactAge = Effect.fn("CredentialsStore.artifactAge")(function* (
+        artifactPath: string,
+      ) {
+        const now = yield* Clock.currentTimeMillis;
+        const info = yield* fs.stat(artifactPath).pipe(Effect.option);
+        if (Option.isSome(info) && Option.isSome(info.value.mtime)) {
+          return Option.some(now - info.value.mtime.value.getTime());
+        }
+        return Option.none<number>();
+      });
+
+      const cleanupStaleLockArtifacts = Effect.fn("CredentialsStore.cleanupStaleLockArtifacts")(
+        function* () {
+          const owner = yield* lockOwner(lockOwnerPath);
+          const activeNonce = Option.map(owner, (current) => current.nonce);
+          const entries = yield* fs.readDirectory(root).pipe(Effect.mapError(credentialsFailure));
+          for (const entry of entries) {
+            const candidate = entry.startsWith(".credentials.lock.candidate-");
+            const heartbeat = entry.startsWith(".credentials.heartbeat-");
+            const tombstone =
+              entry.startsWith(".credentials.lock.released-") ||
+              entry.startsWith(".credentials.lock.stale-");
+            if (!candidate && !heartbeat && !tombstone) {
+              continue;
+            }
+            if (heartbeat) {
+              const nonce = entry.slice(".credentials.heartbeat-".length);
+              if (Option.contains(activeNonce, nonce)) {
+                continue;
+              }
+            }
+            const artifactPath = path.join(root, entry);
+            const age = yield* artifactAge(artifactPath);
+            if (Option.isSome(age) && age.value > 60_000) {
+              yield* fs
+                .remove(artifactPath, { recursive: candidate || tombstone, force: true })
+                .pipe(Effect.mapError(credentialsFailure));
+            }
+          }
+        },
+      );
+
       const reclaimStaleLock = Effect.fn("CredentialsStore.reclaimStaleLock")(function* () {
         const age = yield* lockAge();
         if (age <= 30_000) {
@@ -340,6 +393,22 @@ export class CredentialsStore extends Context.Service<
         if (!renamed) {
           return false;
         }
+        const reclaimedOwner = yield* lockOwner(path.join(tombstone, "owner.json"));
+        const sameGeneration = Option.match(owner, {
+          onNone: () => Option.isNone(reclaimedOwner),
+          onSome: (observed) =>
+            Option.isSome(reclaimedOwner) && reclaimedOwner.value.nonce === observed.nonce,
+        });
+        if (!sameGeneration) {
+          const restored = yield* fs.rename(tombstone, lockPath).pipe(
+            Effect.as(true),
+            Effect.catch(() => Effect.succeed(false)),
+          );
+          if (!restored) {
+            return yield* credentialsFailure("credentials-lock-reclaim-generation-changed");
+          }
+          return false;
+        }
         yield* fs
           .remove(tombstone, { recursive: true, force: true })
           .pipe(Effect.mapError(credentialsFailure));
@@ -351,6 +420,7 @@ export class CredentialsStore extends Context.Service<
 
       const acquireLock = Effect.fn("CredentialsStore.acquireLock")(function* () {
         yield* prepareRoot();
+        yield* cleanupStaleLockArtifacts();
         const nonce = crypto.randomUUID();
         const candidatePath = `${lockPath}.candidate-${nonce}`;
         const started = yield* Clock.currentTimeMillis;
@@ -398,6 +468,7 @@ export class CredentialsStore extends Context.Service<
       const heartbeat = Effect.fn("CredentialsStore.heartbeat")(function* (nonce: string) {
         while (true) {
           yield* Effect.sleep("1 second");
+          yield* assertLockOwnership(nonce);
           yield* writeHeartbeat(nonce);
         }
       });
@@ -405,9 +476,21 @@ export class CredentialsStore extends Context.Service<
       const releaseLock = Effect.fn("CredentialsStore.releaseLock")(function* (nonce: string) {
         const owner = yield* lockOwner(lockOwnerPath);
         if (Option.isSome(owner) && owner.value.nonce === nonce) {
-          yield* fs
-            .remove(lockPath, { recursive: true, force: true })
-            .pipe(Effect.mapError(credentialsFailure));
+          const tombstone = `${lockPath}.released-${nonce}-${crypto.randomUUID()}`;
+          const renamed = yield* fs.rename(lockPath, tombstone).pipe(
+            Effect.as(true),
+            Effect.catch(() => Effect.succeed(false)),
+          );
+          if (renamed) {
+            const releasedOwner = yield* lockOwner(path.join(tombstone, "owner.json"));
+            if (Option.isSome(releasedOwner) && releasedOwner.value.nonce === nonce) {
+              yield* fs
+                .remove(tombstone, { recursive: true, force: true })
+                .pipe(Effect.mapError(credentialsFailure));
+            } else {
+              return yield* credentialsFailure("credentials-lock-generation-changed");
+            }
+          }
         }
         yield* fs.remove(heartbeatPath(nonce), { force: true }).pipe(Effect.ignore);
       });
@@ -469,7 +552,9 @@ export class CredentialsStore extends Context.Service<
         }).pipe(Effect.ensuring(fs.remove(temporaryPath, { force: true }).pipe(Effect.ignore)));
       });
 
-      const loadCurrentUnlocked = Effect.fn("CredentialsStore.loadCurrentUnlocked")(function* () {
+      const loadCurrentUnlocked = Effect.fn("CredentialsStore.loadCurrentUnlocked")(function* (
+        save: CredentialsAccess["save"],
+      ) {
         const persisted = yield* loadPersisted();
         if (Option.isNone(persisted)) {
           return Option.none<CredentialsFile>();
@@ -478,24 +563,23 @@ export class CredentialsStore extends Context.Service<
           return Option.some(persisted.value.credentials);
         }
         const migrated = migrateCredentials(persisted.value.credentials);
-        yield* saveUnlocked(migrated);
+        yield* save(migrated);
         return Option.some(migrated);
       });
 
-      const access: CredentialsAccess = {
-        load: loadCurrentUnlocked,
-        save: saveUnlocked,
-      };
-
       const exclusive: ExclusiveCredentials = (use) =>
         Effect.acquireUseRelease(
-          Effect.gen(function* () {
-            const nonce = yield* acquireLock();
-            const fiber = yield* heartbeat(nonce).pipe(Effect.forkChild);
-            return { nonce, fiber };
-          }),
-          () => use(access),
-          ({ fiber, nonce }) => Fiber.interrupt(fiber).pipe(Effect.andThen(releaseLock(nonce))),
+          acquireLock(),
+          (nonce) => {
+            const save = (credentials: CredentialsFile): Effect.Effect<void, CredentialsError> =>
+              assertLockOwnership(nonce).pipe(Effect.andThen(saveUnlocked(credentials)));
+            const access: CredentialsAccess = {
+              load: () => loadCurrentUnlocked(save),
+              save,
+            };
+            return use(access).pipe(Effect.raceFirst(heartbeat(nonce)));
+          },
+          releaseLock,
         );
 
       const load = Effect.fn("CredentialsStore.load")(function* () {

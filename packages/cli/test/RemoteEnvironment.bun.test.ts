@@ -56,7 +56,10 @@ const makeRemoteLayer = (options: RemoteOptions = {}) => {
   let sentryDsnCalls = 0;
   let failedDataset = Option.none<string>();
   let failSentry = false;
-  let failedTokenMutationStatus = Option.none<number>();
+  let failedTokenMutation = Option.none<{
+    readonly status: number;
+    readonly code: "OBS_CLI_REMOTE_FAILED" | "OBS_CLI_REMOTE_INVALID_RESPONSE";
+  }>();
   let failedSaveCall = Option.none<number>();
   let saveCalls = 0;
 
@@ -113,14 +116,13 @@ const makeRemoteLayer = (options: RemoteOptions = {}) => {
         return tokens;
       }),
     createToken: (_credentials, name) => {
-      if (Option.isSome(failedTokenMutationStatus)) {
-        const status = failedTokenMutationStatus.value;
+      if (Option.isSome(failedTokenMutation)) {
         return Effect.fail(
           new RemoteApiError({
-            code: status === 201 ? "OBS_CLI_REMOTE_INVALID_RESPONSE" : "OBS_CLI_REMOTE_FAILED",
+            code: failedTokenMutation.value.code,
             message: "Axiom token mutation failed.",
             provider: "Axiom",
-            status,
+            status: failedTokenMutation.value.status,
             cause: name,
           }),
         );
@@ -175,8 +177,13 @@ const makeRemoteLayer = (options: RemoteOptions = {}) => {
     failSentry: () => {
       failSentry = true;
     },
-    failTokenMutation: (status = 201) => {
-      failedTokenMutationStatus = Option.some(status);
+    failTokenMutation: (
+      status = 201,
+      code:
+        | "OBS_CLI_REMOTE_FAILED"
+        | "OBS_CLI_REMOTE_INVALID_RESPONSE" = "OBS_CLI_REMOTE_INVALID_RESPONSE",
+    ) => {
+      failedTokenMutation = Option.some({ status, code });
     },
     failSaveAt: (call: number) => {
       failedSaveCall = Option.some(call);
@@ -532,9 +539,25 @@ describe("RemoteEnvironment", () => {
     expect(remote.state().credentials.environments).toHaveLength(0);
   });
 
+  test("clears pending state only for definite HTTP 4xx token rejection", async () => {
+    const remote = makeRemoteLayer();
+    remote.failTokenMutation(400, "OBS_CLI_REMOTE_FAILED");
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* RemoteEnvironment;
+        return yield* Effect.flip(
+          service.provision("livro-caixa", ["staging"], ["axiom"], "node", false),
+        );
+      }).pipe(Effect.provide(remote.layer)),
+    );
+
+    expect(error._tag).toBe("RemoteApiError");
+    expect(remote.state().credentials.pendingAxiomMutations).toBeUndefined();
+  });
+
   test("classifies HTTP 5xx token mutation responses as outcome unknown", async () => {
     const remote = makeRemoteLayer();
-    remote.failTokenMutation(503);
+    remote.failTokenMutation(503, "OBS_CLI_REMOTE_FAILED");
     const error = await Effect.runPromise(
       Effect.gen(function* () {
         const service = yield* RemoteEnvironment;
@@ -554,7 +577,7 @@ describe("RemoteEnvironment", () => {
 
   test("classifies token mutation transport failures as outcome unknown", async () => {
     const remote = makeRemoteLayer();
-    remote.failTokenMutation(0);
+    remote.failTokenMutation(0, "OBS_CLI_REMOTE_FAILED");
     const error = await Effect.runPromise(
       Effect.gen(function* () {
         const service = yield* RemoteEnvironment;
@@ -571,6 +594,52 @@ describe("RemoteEnvironment", () => {
     expect(remote.state().credentials.pendingAxiomMutations).toEqual([
       { project: "livro-caixa", environment: "staging" },
     ]);
+  });
+
+  test("keeps pending state for successful-status token body failures", async () => {
+    for (const status of [200, 201]) {
+      const remote = makeRemoteLayer();
+      remote.failTokenMutation(status, "OBS_CLI_REMOTE_FAILED");
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const service = yield* RemoteEnvironment;
+          return yield* Effect.flip(
+            service.provision("livro-caixa", ["staging"], ["axiom"], "node", false),
+          );
+        }).pipe(Effect.provide(remote.layer)),
+      );
+
+      expect(error._tag).toBe("RemoteEnvironmentError");
+      if (error._tag === "RemoteEnvironmentError") {
+        expect(error.code).toBe("OBS_CLI_REMOTE_OUTCOME_UNKNOWN");
+      }
+      expect(remote.state().credentials.pendingAxiomMutations).toEqual([
+        { project: "livro-caixa", environment: "staging" },
+      ]);
+    }
+  });
+
+  test("keeps pending state for unexpected successful token statuses", async () => {
+    for (const status of [202, 204]) {
+      const remote = makeRemoteLayer();
+      remote.failTokenMutation(status, "OBS_CLI_REMOTE_FAILED");
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const service = yield* RemoteEnvironment;
+          return yield* Effect.flip(
+            service.provision("livro-caixa", ["staging"], ["axiom"], "node", false),
+          );
+        }).pipe(Effect.provide(remote.layer)),
+      );
+
+      expect(error._tag).toBe("RemoteEnvironmentError");
+      if (error._tag === "RemoteEnvironmentError") {
+        expect(error.code).toBe("OBS_CLI_REMOTE_OUTCOME_UNKNOWN");
+      }
+      expect(remote.state().credentials.pendingAxiomMutations).toEqual([
+        { project: "livro-caixa", environment: "staging" },
+      ]);
+    }
   });
 
   test("classifies a failed checkpoint after token creation as outcome unknown", async () => {

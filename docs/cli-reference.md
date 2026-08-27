@@ -56,7 +56,7 @@ A seleção é aditiva. Selecionar Axiom em um ambiente Sentry adiciona Axiom se
 
 Axiom cria três datasets e um token de ingestão por ambiente. Sentry usa um projeto para todos os ambientes da aplicação.
 
-`--rotate-token` exige Axiom em todos os ambientes solicitados. A CLI marca a mutação como pendente antes da chamada ao Axiom e salva o novo segredo após cada ambiente. Uma falha de transporte, resposta ilegível ou HTTP 5xx exige outra rotação explícita.
+`--rotate-token` exige Axiom em todos os ambientes solicitados. A CLI marca a mutação como pendente antes da chamada ao Axiom e salva o novo segredo após cada ambiente. Uma falha de transporte, resposta ilegível, HTTP 5xx ou status 2xx inesperado exige outra rotação explícita.
 
 `--force` afeta somente os assets locais. A flag não sobrescreve recursos remotos.
 

@@ -371,7 +371,11 @@ const mutationOutcomeUnknown = (
   error: RemoteApiError,
   completed: ReadonlyArray<string>,
 ): RemoteApiError | RemoteEnvironmentError => {
-  if (error.status > 0 && error.status < 500 && error.code !== "OBS_CLI_REMOTE_INVALID_RESPONSE") {
+  if (
+    error.status >= 400 &&
+    error.status < 500 &&
+    error.code !== "OBS_CLI_REMOTE_INVALID_RESPONSE"
+  ) {
     return partialFailure(error, completed);
   }
   const completedText = completed.length === 0 ? "none" : completed.join(", ");

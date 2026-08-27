@@ -1,7 +1,7 @@
 import { BunServices } from "@effect/platform-bun";
 import { describe, expect, test } from "bun:test";
-import { Clock, Effect, FileSystem, Option, Schema } from "effect";
-import { chmod, mkdir, rm } from "node:fs/promises";
+import { Clock, Effect, FileSystem, Layer, Option, Schema } from "effect";
+import { access, chmod, mkdir, rename, rm, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import {
   AxiomCredentials,
@@ -59,6 +59,18 @@ const withCredentialsHome = async <A>(
     }
   }
 };
+
+const exists = (path: string): Promise<boolean> =>
+  access(path).then(
+    () => true,
+    () => false,
+  );
+
+const within = <A>(promise: Promise<A>, operation: string): Promise<A> =>
+  Promise.race([
+    promise,
+    Bun.sleep(5_000).then(() => Promise.reject(new Error(`${operation} timed out`))),
+  ]);
 
 const administrativeCredentials = () => ({
   axiom: new AxiomCredentials({ token: "xapt-secret", organizationId: "org-id" }),
@@ -253,6 +265,216 @@ describe("CredentialsStore", () => {
       await contender;
       expect(contenderFinished).toBeTrue();
       await rm(join(root, `.credentials.heartbeat-${staleNonce}`), { force: true });
+    }),
+  );
+
+  test.serial("releases one generation before a contender acquires", () =>
+    withCredentialsHome("observability-release-race-", async (root) => {
+      const realFileSystem = await Effect.runPromise(
+        Effect.gen(function* () {
+          return yield* FileSystem.FileSystem;
+        }).pipe(Effect.provide(BunServices.layer)),
+      );
+      let signalRemovalStarted = (): void => {};
+      let signalAllowRemoval = (): void => {};
+      const removalStarted = new Promise<void>((resolve) => {
+        signalRemovalStarted = resolve;
+      });
+      const allowRemoval = new Promise<void>((resolve) => {
+        signalAllowRemoval = resolve;
+      });
+      let interceptRelease = true;
+      let releaseTombstone = "";
+      const controlledFileSystem = FileSystem.FileSystem.of({
+        ...realFileSystem,
+        remove: (target, options) => {
+          if (interceptRelease && target.includes(".credentials.lock.released-")) {
+            interceptRelease = false;
+            releaseTombstone = target;
+            signalRemovalStarted();
+            return Effect.promise(() => allowRemoval).pipe(
+              Effect.andThen(realFileSystem.remove(target, options)),
+            );
+          }
+          return realFileSystem.remove(target, options);
+        },
+      });
+      const storeLayer = CredentialsStore.layer.pipe(
+        Layer.provide(Layer.succeed(FileSystem.FileSystem, controlledFileSystem)),
+      );
+      let signalOwnerAcquired = (): void => {};
+      let signalOwnerRelease = (): void => {};
+      let signalContenderAcquired = (): void => {};
+      let signalContenderRelease = (): void => {};
+      const ownerAcquired = new Promise<void>((resolve) => {
+        signalOwnerAcquired = resolve;
+      });
+      const ownerRelease = new Promise<void>((resolve) => {
+        signalOwnerRelease = resolve;
+      });
+      const contenderAcquired = new Promise<void>((resolve) => {
+        signalContenderAcquired = resolve;
+      });
+      const contenderRelease = new Promise<void>((resolve) => {
+        signalContenderRelease = resolve;
+      });
+      const owner = Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* CredentialsStore;
+          yield* store.exclusive(() =>
+            Effect.gen(function* () {
+              yield* Effect.sync(signalOwnerAcquired);
+              yield* Effect.promise(() => ownerRelease);
+            }),
+          );
+        }).pipe(Effect.provide(storeLayer), Effect.provide(BunServices.layer)),
+      );
+      await within(ownerAcquired, "owner acquisition");
+      const ownerBeforeRelease = decodePersistedLockOwner(
+        JSON.parse(await Bun.file(join(root, ".credentials.lock", "owner.json")).text()),
+      );
+      const contender = Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* CredentialsStore;
+          yield* store.exclusive(() =>
+            Effect.gen(function* () {
+              yield* Effect.sync(signalContenderAcquired);
+              yield* Effect.promise(() => contenderRelease);
+            }),
+          );
+        }).pipe(Effect.provide(storeLayer), Effect.provide(BunServices.layer)),
+      );
+
+      signalOwnerRelease();
+      await within(removalStarted, "release tombstone rename");
+      expect(releaseTombstone).toContain(ownerBeforeRelease.nonce);
+      await within(contenderAcquired, "contender acquisition");
+      const contenderOwner = decodePersistedLockOwner(
+        JSON.parse(await Bun.file(join(root, ".credentials.lock", "owner.json")).text()),
+      );
+      expect(contenderOwner.nonce).not.toBe(ownerBeforeRelease.nonce);
+      signalAllowRemoval();
+      await within(owner, "owner release");
+      const ownerAfterRemoval = decodePersistedLockOwner(
+        JSON.parse(await Bun.file(join(root, ".credentials.lock", "owner.json")).text()),
+      );
+      expect(ownerAfterRemoval.nonce).toBe(contenderOwner.nonce);
+      signalContenderRelease();
+      await within(contender, "contender release");
+      expect(await exists(join(root, ".credentials.lock"))).toBeFalse();
+    }),
+  );
+
+  test.serial("interrupts the owner when its heartbeat cannot be persisted", () =>
+    withCredentialsHome("observability-heartbeat-failure-", async (root) => {
+      const backup = `${root}.backup`;
+      let signalAcquired = (): void => {};
+      const acquired = new Promise<void>((resolve) => {
+        signalAcquired = resolve;
+      });
+      const failed = Effect.runPromise(
+        Effect.flip(
+          Effect.gen(function* () {
+            const store = yield* CredentialsStore;
+            yield* store.exclusive(() =>
+              Effect.gen(function* () {
+                yield* Effect.sync(signalAcquired);
+                yield* Effect.never;
+              }),
+            );
+          }).pipe(Effect.provide(CredentialsStore.layer), Effect.provide(BunServices.layer)),
+        ),
+      );
+      await within(acquired, "heartbeat owner acquisition");
+      await rename(root, backup);
+      await Bun.write(root, "blocked");
+      try {
+        const error = await within(failed, "heartbeat failure");
+        expect(error.code).toBe("OBS_CLI_CREDENTIALS_FAILED");
+      } finally {
+        await rm(root, { force: true });
+        await rename(backup, root);
+      }
+    }),
+  );
+
+  test.serial("interrupts an owner after its lock generation is replaced", () =>
+    withCredentialsHome("observability-generation-loss-", async (root) => {
+      const lockPath = join(root, ".credentials.lock");
+      const displacedPath = join(root, ".credentials.lock.displaced");
+      const replacementNonce = "replacement-owner";
+      let signalAcquired = (): void => {};
+      const acquired = new Promise<void>((resolve) => {
+        signalAcquired = resolve;
+      });
+      const failed = Effect.runPromise(
+        Effect.flip(
+          Effect.gen(function* () {
+            const store = yield* CredentialsStore;
+            yield* store.exclusive(() =>
+              Effect.gen(function* () {
+                yield* Effect.sync(signalAcquired);
+                yield* Effect.never;
+              }),
+            );
+          }).pipe(Effect.provide(CredentialsStore.layer), Effect.provide(BunServices.layer)),
+        ),
+      );
+      await within(acquired, "generation owner acquisition");
+      const displacedOwner = decodePersistedLockOwner(
+        JSON.parse(await Bun.file(join(lockPath, "owner.json")).text()),
+      );
+      await rename(lockPath, displacedPath);
+      await mkdir(lockPath, { mode: 0o700 });
+      await Bun.write(
+        join(lockPath, "owner.json"),
+        `${JSON.stringify({ nonce: replacementNonce, pid: process.pid, heartbeat: Date.now() })}\n`,
+      );
+      await chmod(join(lockPath, "owner.json"), 0o600);
+      await Bun.write(join(root, `.credentials.heartbeat-${replacementNonce}`), `${Date.now()}\n`);
+
+      const error = await within(failed, "generation ownership failure");
+      expect(error.code).toBe("OBS_CLI_CREDENTIALS_FAILED");
+      const replacementOwner = decodePersistedLockOwner(
+        JSON.parse(await Bun.file(join(lockPath, "owner.json")).text()),
+      );
+      expect(replacementOwner.nonce).toBe(replacementNonce);
+      expect(replacementOwner.nonce).not.toBe(displacedOwner.nonce);
+      await rm(lockPath, { recursive: true, force: true });
+      await rm(displacedPath, { recursive: true, force: true });
+      await rm(join(root, `.credentials.heartbeat-${replacementNonce}`), { force: true });
+    }),
+  );
+
+  test.serial("removes only stale lock candidates and orphan heartbeats", () =>
+    withCredentialsHome("observability-lock-cleanup-", async (root) => {
+      const staleNonce = "stale-candidate";
+      const freshNonce = "fresh-candidate";
+      const staleCandidate = join(root, `.credentials.lock.candidate-${staleNonce}`);
+      const staleHeartbeat = join(root, `.credentials.heartbeat-${staleNonce}`);
+      const freshCandidate = join(root, `.credentials.lock.candidate-${freshNonce}`);
+      const freshHeartbeat = join(root, `.credentials.heartbeat-${freshNonce}`);
+      await mkdir(staleCandidate, { mode: 0o700 });
+      await Bun.write(staleHeartbeat, `${Date.now() - 120_000}\n`);
+      await mkdir(freshCandidate, { mode: 0o700 });
+      await Bun.write(freshHeartbeat, `${Date.now()}\n`);
+      const old = new Date(Date.now() - 120_000);
+      await utimes(staleCandidate, old, old);
+      await utimes(staleHeartbeat, old, old);
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* CredentialsStore;
+          yield* store.save(new CredentialsFile({ version: 2, environments: [] }));
+        }).pipe(Effect.provide(CredentialsStore.layer), Effect.provide(BunServices.layer)),
+      );
+
+      expect(await exists(staleCandidate)).toBeFalse();
+      expect(await exists(staleHeartbeat)).toBeFalse();
+      expect(await exists(freshCandidate)).toBeTrue();
+      expect(await exists(freshHeartbeat)).toBeTrue();
+      await rm(freshCandidate, { recursive: true, force: true });
+      await rm(freshHeartbeat, { force: true });
     }),
   );
 

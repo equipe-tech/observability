@@ -86,7 +86,7 @@ Uma queda entre a resposta Axiom e a gravação local cria uma janela inevitáve
 
 Antes de criar ou regenerar o token, a CLI salva uma marca de mutação pendente. Se o processo cair, uma repetição comum e `observability env export` recusam o segredo local possivelmente inválido. Execute a rotação explícita do token Axiom.
 
-Se a resposta de mutação for ilegível, retornar HTTP 5xx ou falhar no transporte, a CLI informa `OBS_CLI_REMOTE_OUTCOME_UNKNOWN`. Não repita o comando sem rotação. Rode novamente com `--provider axiom --rotate-token`.
+Se a resposta de mutação for ilegível, retornar HTTP 5xx, usar um status 2xx inesperado ou falhar no transporte, a CLI informa `OBS_CLI_REMOTE_OUTCOME_UNKNOWN`. Não repita o comando sem rotação. Rode novamente com `--provider axiom --rotate-token`.
 
 A CLI preserva ambientes salvos antes de uma falha posterior. `OBS_CLI_REMOTE_PARTIAL_FAILURE` lista esses ambientes.
 
