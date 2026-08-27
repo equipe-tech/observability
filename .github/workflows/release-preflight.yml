@@ -39,11 +39,22 @@ jobs:
           bun run test:package
           version="$(jq -r .version packages/telemetry/package.json)"
           tag="v$version"
-          mkdir -p dist-release
-          (cd packages/telemetry && bun pm pack --ignore-scripts --quiet \
-            --filename "$PWD/../../dist-release/equipe-tech-observability-${version}.tgz")
-          (cd packages/cli && bun pm pack --ignore-scripts --quiet \
-            --filename "$PWD/../../dist-release/equipe-tech-observability-cli-${version}.tgz")
+          rm -rf .release-pack
+          trap 'rm -rf .release-pack' EXIT
+          for pack_set in pack-1 pack-2 pack-3; do
+            destination="$PWD/.release-pack/$pack_set"
+            mkdir -p "$destination"
+            (cd packages/telemetry && bun pm pack --ignore-scripts --quiet \
+              --filename "$destination/equipe-tech-observability-${version}.tgz")
+            (cd packages/cli && bun pm pack --ignore-scripts --quiet \
+              --filename "$destination/equipe-tech-observability-cli-${version}.tgz")
+          done
+          for pack_set in pack-2 pack-3; do
+            cmp ".release-pack/pack-1/equipe-tech-observability-${version}.tgz" \
+              ".release-pack/$pack_set/equipe-tech-observability-${version}.tgz"
+            cmp ".release-pack/pack-1/equipe-tech-observability-cli-${version}.tgz" \
+              ".release-pack/$pack_set/equipe-tech-observability-cli-${version}.tgz"
+          done
           sha256sum --check "docs/releases/${tag}.sha256"
       - name: Query current npm versions
         run: |

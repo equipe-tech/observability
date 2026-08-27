@@ -9,6 +9,8 @@ Este runbook prepara uma publicação, mas separa todas as mutações por um gat
 - O commit aprovado está no histórico de `origin/master` antes da criação do tag.
 - Os tarballs aprovados contêm READMEs, licença Apache-2.0, declarações, entrypoints e assets esperados.
 - O workflow usa OpenID Connect com `id-token: write` e `npm publish --provenance`.
+- A publicação exige `NPM_TOKEN`, autenticação confirmada por `npm whoami` e as variáveis de requisição OIDC do GitHub. A ausência de qualquer requisito falha o job.
+- A verificação acionada pela release não recebe AXIOM_TOKEN nem outro secret de provider e não executa o canário deployed.
 - Nenhum comando de mutação desta página roda sem aprovação do responsável pela release.
 
 ## Preflight sem mutação externa
@@ -78,10 +80,18 @@ trap - EXIT
 
 ```sh
 set -euo pipefail
-artifact_dir="$(mktemp -d)"
-reproduction_dir="$(mktemp -d)"
+pack_root="$PWD/.release-pack"
+evidence_root="$PWD/.verification/observability/obs-9-release"
+rm -rf "$pack_root" "$evidence_root" dist-release
+mkdir -p "$evidence_root"
+cleanup() {
+  rm -rf "$pack_root" dist-release
+}
+trap cleanup EXIT
 bun run build
-for destination in "$artifact_dir" "$reproduction_dir"; do
+for pack_set in pack-1 pack-2 pack-3; do
+  destination="$pack_root/$pack_set"
+  mkdir -p "$destination"
   (
     cd packages/telemetry
     bun pm pack --ignore-scripts --quiet \
@@ -93,28 +103,33 @@ for destination in "$artifact_dir" "$reproduction_dir"; do
       --filename "$destination/equipe-tech-observability-cli-0.2.0.tgz"
   )
 done
-cmp "$artifact_dir/equipe-tech-observability-0.2.0.tgz" \
-  "$reproduction_dir/equipe-tech-observability-0.2.0.tgz"
-cmp "$artifact_dir/equipe-tech-observability-cli-0.2.0.tgz" \
-  "$reproduction_dir/equipe-tech-observability-cli-0.2.0.tgz"
-tar -tzf "$artifact_dir/equipe-tech-observability-0.2.0.tgz" | sort
-tar -tzf "$artifact_dir/equipe-tech-observability-cli-0.2.0.tgz" | sort
-shasum -a 256 "$artifact_dir"/*.tgz
-(
-  cd "$PWD"
-  rm -rf dist-release
-  mkdir dist-release
-  cp "$artifact_dir"/*.tgz dist-release/
-  shasum -a 256 -c docs/releases/v0.2.0.sha256
-  rm -rf dist-release
-)
-npm publish "$artifact_dir/equipe-tech-observability-0.2.0.tgz" \
+{
+  for pack_set in pack-2 pack-3; do
+    cmp "$pack_root/pack-1/equipe-tech-observability-0.2.0.tgz" \
+      "$pack_root/$pack_set/equipe-tech-observability-0.2.0.tgz"
+    echo "observability pack-1 and $pack_set are byte-identical"
+    cmp "$pack_root/pack-1/equipe-tech-observability-cli-0.2.0.tgz" \
+      "$pack_root/$pack_set/equipe-tech-observability-cli-0.2.0.tgz"
+    echo "observability-cli pack-1 and $pack_set are byte-identical"
+  done
+  sha256sum .release-pack/pack-*/*.tgz
+  sha256sum --check docs/releases/v0.2.0.sha256
+} | tee "$evidence_root/triple-pack.txt"
+tar -tzf "$pack_root/pack-1/equipe-tech-observability-0.2.0.tgz" | sort \
+  > "$evidence_root/observability-files.txt"
+tar -tzf "$pack_root/pack-1/equipe-tech-observability-cli-0.2.0.tgz" | sort \
+  > "$evidence_root/observability-cli-files.txt"
+mkdir dist-release
+cp "$pack_root/pack-1"/*.tgz dist-release/
+npm publish "./dist-release/equipe-tech-observability-0.2.0.tgz" \
   --access public --tag latest --provenance --dry-run
-npm publish "$artifact_dir/equipe-tech-observability-cli-0.2.0.tgz" \
+npm publish "./dist-release/equipe-tech-observability-cli-0.2.0.tgz" \
   --access public --tag latest --provenance --dry-run
+cleanup
+trap - EXIT
 ```
 
-Os SHA-256 devem coincidir exatamente com `docs/releases/v0.2.0.sha256`. Empacote duas vezes em diretórios vazios e use `cmp` nos pares antes da aprovação. Confira nomes, versões, repository, homepage, bugs e engines dos manifests empacotados, export maps, todos os `.d.ts`, modo executável da CLI, assets do Collector e Kamal, READMEs, licenças na raiz e em `dist`, dependency ranges e ausência de `workspace:`, fontes, testes, credenciais e arquivos alheios.
+Os seis SHA-256 devem coincidir exatamente com `docs/releases/v0.2.0.sha256`. Os três conjuntos usam diretórios vazios e nomes determinísticos; compare `pack-1` com `pack-2` e `pack-3` antes da aprovação. Confira nomes, versões, repository, homepage, bugs e engines dos manifests empacotados, export maps, todos os `.d.ts`, modo executável da CLI, assets do Collector e Kamal, READMEs, licenças na raiz e em `dist`, dependency ranges e ausência de `workspace:`, fontes, testes, credenciais e arquivos alheios.
 
 Instale esses mesmos tarballs em diretórios temporários Node e Bun. Importe raiz, metrics, node, nestjs, browser, browser/client e testing. Compile consumidores NestJS 10 e 11, execute o cliente de browser empacotado e confirme o gate gzip. Execute `observability --help`, `dev status` e provisionamento local. `bun run test:package` automatiza essa matriz; uma instalação Node separada confirma a resolução fora do Bun.
 

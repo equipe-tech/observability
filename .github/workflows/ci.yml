@@ -10,6 +10,10 @@ on:
       ref:
         required: false
         type: string
+      run_deployed_canary:
+        default: true
+        required: false
+        type: boolean
     secrets:
       AXIOM_TOKEN:
         required: false
@@ -49,6 +53,7 @@ jobs:
       - if: always()
         run: bun packages/cli/src/main.ts dev down
       - name: deployed canary
+        if: ${{ github.event_name != 'workflow_call' || inputs.run_deployed_canary }}
         env:
           AXIOM_TOKEN: ${{ secrets.AXIOM_TOKEN }}
           AXIOM_DATASET_TRACES: ${{ vars.AXIOM_DATASET_TRACES }}
