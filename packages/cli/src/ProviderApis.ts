@@ -35,6 +35,12 @@ const decodeAxiomTokenSecret = Schema.decodeUnknownEffect(AxiomTokenSecret);
 const decodeSentryOrganization = Schema.decodeUnknownEffect(SentryOrganization);
 const decodeSentryProject = Schema.decodeUnknownEffect(SentryProject);
 const decodeSentryClientKeys = Schema.decodeUnknownEffect(SentryClientKeys);
+const AxiomTestEnvironment = Schema.Struct({
+  NODE_ENV: Schema.NonEmptyString.pipe(Schema.optionalKey),
+  OBSERVABILITY_CLI_TEST_AXIOM_BASE_URL: Schema.NonEmptyString.pipe(Schema.optionalKey),
+});
+const decodeAxiomTestEnvironment = Schema.decodeUnknownEffect(AxiomTestEnvironment);
+const decodeAxiomTestUrl = Schema.decodeUnknownEffect(Schema.URLFromString);
 
 export class RemoteApiError extends Schema.TaggedError<RemoteApiError>()("RemoteApiError", {
   code: Schema.Literals([
@@ -50,6 +56,48 @@ export class RemoteApiError extends Schema.TaggedError<RemoteApiError>()("Remote
 
 type Provider = "Axiom" | "Sentry";
 
+const invalidAxiomTestEndpoint = (cause: unknown): RemoteApiError =>
+  new RemoteApiError({
+    code: "OBS_CLI_REMOTE_FAILED",
+    message: "The internal Axiom test endpoint is invalid.",
+    provider: "Axiom",
+    status: 0,
+    cause,
+  });
+
+const resolveAxiomBaseUrl = Effect.fn("resolveAxiomBaseUrl")(function* () {
+  const environment = yield* decodeAxiomTestEnvironment(process.env).pipe(
+    Effect.mapError(invalidAxiomTestEndpoint),
+  );
+  const configured = environment.OBSERVABILITY_CLI_TEST_AXIOM_BASE_URL;
+  if (configured === undefined) {
+    return new URL("https://api.axiom.co");
+  }
+  if (environment.NODE_ENV !== "test") {
+    return yield* invalidAxiomTestEndpoint("NODE_ENV");
+  }
+  const endpoint = yield* decodeAxiomTestUrl(configured).pipe(
+    Effect.mapError(invalidAxiomTestEndpoint),
+  );
+  const host = endpoint.hostname;
+  const ipv4Loopback = /^127(?:[.]\d{1,3}){3}$/.test(host);
+  const ipv6Loopback = host === "[::1]";
+  const hasCredentials = endpoint.username !== "" || endpoint.password !== "";
+  if (endpoint.protocol !== "http:" || (!ipv4Loopback && !ipv6Loopback) || hasCredentials) {
+    return yield* invalidAxiomTestEndpoint(configured);
+  }
+  if (ipv4Loopback) {
+    const octets = host.split(".").map(Number);
+    if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+      return yield* invalidAxiomTestEndpoint(configured);
+    }
+  }
+  return endpoint;
+});
+
+const axiomUrl = (baseUrl: URL, remotePath: string): string =>
+  new URL(remotePath, `${baseUrl.toString().replace(/\/$/, "")}/`).toString();
+
 type RemoteResponse = {
   readonly status: number;
   readonly content: string;
@@ -61,24 +109,13 @@ const remoteRequest = Effect.fn("remoteRequest")(function* (
   init: RequestInit,
 ): Effect.fn.Return<RemoteResponse, RemoteApiError> {
   const response = yield* Effect.tryPromise({
-    try: (signal) => fetch(url, { ...init, signal }),
+    try: (signal) => fetch(url, { ...init, redirect: "error", signal }),
     catch: (cause) =>
       new RemoteApiError({
         code: "OBS_CLI_REMOTE_FAILED",
         message: `${provider} could not be reached. Check the network connection and retry.`,
         provider,
         status: 0,
-        cause,
-      }),
-  });
-  const content = yield* Effect.tryPromise({
-    try: () => response.text(),
-    catch: (cause) =>
-      new RemoteApiError({
-        code: "OBS_CLI_REMOTE_FAILED",
-        message: `${provider} returned an unreadable response. Retry the command.`,
-        provider,
-        status: response.status,
         cause,
       }),
   });
@@ -91,6 +128,17 @@ const remoteRequest = Effect.fn("remoteRequest")(function* (
       cause: response.status,
     });
   }
+  const content = yield* Effect.tryPromise({
+    try: () => response.text(),
+    catch: (cause) =>
+      new RemoteApiError({
+        code: "OBS_CLI_REMOTE_FAILED",
+        message: `${provider} returned an unreadable response. Retry the command.`,
+        provider,
+        status: response.status,
+        cause,
+      }),
+  });
   return { status: response.status, content };
 });
 
@@ -163,82 +211,85 @@ export class AxiomApi extends Context.Service<
     ): Effect.Effect<{ readonly id: string; readonly token: string }, RemoteApiError>;
   }
 >()("@equipe-tech/observability-cli/AxiomApi") {
-  static readonly layer = Layer.succeed(
+  static readonly layer = Layer.effect(
     AxiomApi,
-    AxiomApi.of({
-      identity: Effect.fn("AxiomApi.identity")(function* (credentials) {
-        const response = yield* remoteRequest("Axiom", "https://api.axiom.co/v2/user", {
-          headers: axiomHeaders(credentials),
-        });
-        yield* expectStatus("Axiom", response, [200]);
-        const value = yield* parseRemoteJson("Axiom", response);
-        const user = yield* decodeAxiomUser(value).pipe(
-          Effect.mapError((cause) => invalidResponse("Axiom", response.status, cause)),
-        );
-        return user.email;
-      }),
-      datasets: Effect.fn("AxiomApi.datasets")(function* (credentials) {
-        const response = yield* remoteRequest("Axiom", "https://api.axiom.co/v2/datasets", {
-          headers: axiomHeaders(credentials),
-        });
-        yield* expectStatus("Axiom", response, [200]);
-        const value = yield* parseRemoteJson("Axiom", response);
-        const datasets = yield* decodeAxiomDatasets(value).pipe(
-          Effect.mapError((cause) => invalidResponse("Axiom", response.status, cause)),
-        );
-        return datasets.map((dataset) => dataset.name);
-      }),
-      createDataset: Effect.fn("AxiomApi.createDataset")(function* (credentials, name) {
-        const response = yield* remoteRequest("Axiom", "https://api.axiom.co/v2/datasets", {
-          method: "POST",
-          headers: axiomHeaders(credentials),
-          body: JSON.stringify({ name, description: `OpenTelemetry data for ${name}` }),
-        });
-        yield* expectStatus("Axiom", response, [200, 201, 409]);
-      }),
-      tokens: Effect.fn("AxiomApi.tokens")(function* (credentials) {
-        const response = yield* remoteRequest("Axiom", "https://api.axiom.co/v2/tokens", {
-          headers: axiomHeaders(credentials),
-        });
-        yield* expectStatus("Axiom", response, [200]);
-        const value = yield* parseRemoteJson("Axiom", response);
-        return yield* decodeAxiomTokens(value).pipe(
-          Effect.mapError((cause) => invalidResponse("Axiom", response.status, cause)),
-        );
-      }),
-      createToken: Effect.fn("AxiomApi.createToken")(function* (credentials, name, datasets) {
-        const datasetCapabilities = Object.fromEntries(
-          datasets.map((dataset) => [dataset, { ingest: ["create"] }]),
-        );
-        const response = yield* remoteRequest("Axiom", "https://api.axiom.co/v2/tokens", {
-          method: "POST",
-          headers: axiomHeaders(credentials),
-          body: JSON.stringify({
-            name,
-            description: `Collector ingest token for ${name}`,
-            datasetCapabilities,
-            orgCapabilities: {},
-            viewCapabilities: {},
-          }),
-        });
-        yield* expectStatus("Axiom", response, [200, 201]);
-        const value = yield* parseRemoteJson("Axiom", response);
-        return yield* decodeAxiomTokenSecret(value).pipe(
-          Effect.mapError((cause) => invalidResponse("Axiom", response.status, cause)),
-        );
-      }),
-      regenerateToken: Effect.fn("AxiomApi.regenerateToken")(function* (credentials, id) {
-        const response = yield* remoteRequest(
-          "Axiom",
-          `https://api.axiom.co/v2/tokens/${encodeURIComponent(id)}/regenerate`,
-          { method: "POST", headers: axiomHeaders(credentials) },
-        );
-        yield* expectStatus("Axiom", response, [200]);
-        const value = yield* parseRemoteJson("Axiom", response);
-        return yield* decodeAxiomTokenSecret(value).pipe(
-          Effect.mapError((cause) => invalidResponse("Axiom", response.status, cause)),
-        );
-      }),
+    Effect.gen(function* () {
+      const baseUrl = yield* resolveAxiomBaseUrl();
+      return AxiomApi.of({
+        identity: Effect.fn("AxiomApi.identity")(function* (credentials) {
+          const response = yield* remoteRequest("Axiom", axiomUrl(baseUrl, "/v2/user"), {
+            headers: axiomHeaders(credentials),
+          });
+          yield* expectStatus("Axiom", response, [200]);
+          const value = yield* parseRemoteJson("Axiom", response);
+          const user = yield* decodeAxiomUser(value).pipe(
+            Effect.mapError((cause) => invalidResponse("Axiom", response.status, cause)),
+          );
+          return user.email;
+        }),
+        datasets: Effect.fn("AxiomApi.datasets")(function* (credentials) {
+          const response = yield* remoteRequest("Axiom", axiomUrl(baseUrl, "/v2/datasets"), {
+            headers: axiomHeaders(credentials),
+          });
+          yield* expectStatus("Axiom", response, [200]);
+          const value = yield* parseRemoteJson("Axiom", response);
+          const datasets = yield* decodeAxiomDatasets(value).pipe(
+            Effect.mapError((cause) => invalidResponse("Axiom", response.status, cause)),
+          );
+          return datasets.map((dataset) => dataset.name);
+        }),
+        createDataset: Effect.fn("AxiomApi.createDataset")(function* (credentials, name) {
+          const response = yield* remoteRequest("Axiom", axiomUrl(baseUrl, "/v2/datasets"), {
+            method: "POST",
+            headers: axiomHeaders(credentials),
+            body: JSON.stringify({ name, description: `OpenTelemetry data for ${name}` }),
+          });
+          yield* expectStatus("Axiom", response, [200, 201, 409]);
+        }),
+        tokens: Effect.fn("AxiomApi.tokens")(function* (credentials) {
+          const response = yield* remoteRequest("Axiom", axiomUrl(baseUrl, "/v2/tokens"), {
+            headers: axiomHeaders(credentials),
+          });
+          yield* expectStatus("Axiom", response, [200]);
+          const value = yield* parseRemoteJson("Axiom", response);
+          return yield* decodeAxiomTokens(value).pipe(
+            Effect.mapError((cause) => invalidResponse("Axiom", response.status, cause)),
+          );
+        }),
+        createToken: Effect.fn("AxiomApi.createToken")(function* (credentials, name, datasets) {
+          const datasetCapabilities = Object.fromEntries(
+            datasets.map((dataset) => [dataset, { ingest: ["create"] }]),
+          );
+          const response = yield* remoteRequest("Axiom", axiomUrl(baseUrl, "/v2/tokens"), {
+            method: "POST",
+            headers: axiomHeaders(credentials),
+            body: JSON.stringify({
+              name,
+              description: `Collector ingest token for ${name}`,
+              datasetCapabilities,
+              orgCapabilities: {},
+              viewCapabilities: {},
+            }),
+          });
+          yield* expectStatus("Axiom", response, [200, 201]);
+          const value = yield* parseRemoteJson("Axiom", response);
+          return yield* decodeAxiomTokenSecret(value).pipe(
+            Effect.mapError((cause) => invalidResponse("Axiom", response.status, cause)),
+          );
+        }),
+        regenerateToken: Effect.fn("AxiomApi.regenerateToken")(function* (credentials, id) {
+          const response = yield* remoteRequest(
+            "Axiom",
+            axiomUrl(baseUrl, `/v2/tokens/${encodeURIComponent(id)}/regenerate`),
+            { method: "POST", headers: axiomHeaders(credentials) },
+          );
+          yield* expectStatus("Axiom", response, [200]);
+          const value = yield* parseRemoteJson("Axiom", response);
+          return yield* decodeAxiomTokenSecret(value).pipe(
+            Effect.mapError((cause) => invalidResponse("Axiom", response.status, cause)),
+          );
+        }),
+      });
     }),
   );
 }

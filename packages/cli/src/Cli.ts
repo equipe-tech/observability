@@ -2,7 +2,15 @@ import { Console, Effect, Option, Path, Redacted } from "effect";
 import { Command, Flag, Prompt } from "effect/unstable/cli";
 import { DockerCompose } from "./DockerCompose.ts";
 import { ProvisionAssets } from "./ProvisionAssets.ts";
-import { Authentication, RemoteEnvironment } from "./RemoteEnvironment.ts";
+import {
+  Authentication,
+  environmentAxiom,
+  environmentProviderNames,
+  environmentSentry,
+  parseProviderSelection,
+  RemoteEnvironment,
+  validateRemoteProvisionRequest,
+} from "./RemoteEnvironment.ts";
 import { StackAssets } from "./StackAssets.ts";
 
 const composeFile = Flag.string("file").pipe(
@@ -144,6 +152,11 @@ const provisionEnvironments = Flag.string("environment").pipe(
   Flag.atMost(10),
 );
 
+const provisionProviders = Flag.string("provider").pipe(
+  Flag.withDescription("Provider remoto. Use axiom ou sentry e repita para selecionar ambos"),
+  Flag.atMost(10),
+);
+
 const provisionPlatform = Flag.string("sentry-platform").pipe(
   Flag.withDescription("Plataforma do projeto Sentry"),
   Flag.withDefault("node"),
@@ -161,42 +174,72 @@ const provision = Command.make(
     name: provisionName,
     force: provisionForce,
     environments: provisionEnvironments,
+    providers: provisionProviders,
     platform: provisionPlatform,
     rotateToken: provisionRotateToken,
   },
-  Effect.fn(function* ({ dir, environments, force, name, platform, rotateToken }) {
+  Effect.fn(function* ({ dir, environments, force, name, platform, providers, rotateToken }) {
+    const selectedProviders = yield* parseProviderSelection(providers);
     const assets = yield* ProvisionAssets;
     const projectName = yield* assets.resolveName(dir, name);
+    const uniqueEnvironments = [...new Set(environments)];
+    if (uniqueEnvironments.length > 0) {
+      yield* validateRemoteProvisionRequest(projectName, uniqueEnvironments);
+    }
     const files = yield* assets.provision(dir, Option.some(projectName), force);
     for (const file of files) {
       yield* Console.log(`${file.action}  ${file.relativePath}`);
     }
-    yield* Console.log(
-      "Merge observability/kamal.accessory.yml into config/deploy.yml and set the AXIOM_TOKEN secret.",
-    );
 
-    const uniqueEnvironments = [...new Set(environments)];
-    if (uniqueEnvironments.length > 0) {
-      const remote = yield* RemoteEnvironment;
-      const configured = yield* remote.provision(
-        projectName,
-        uniqueEnvironments,
-        platform,
-        rotateToken,
+    if (uniqueEnvironments.length === 0) {
+      yield* Console.log(
+        "Merge observability/kamal.accessory.yml into config/deploy.yml and set the AXIOM_TOKEN secret.",
       );
-      for (const environment of configured) {
-        yield* Console.log(
-          `configured  ${environment.project}/${environment.environment} (${environment.tracesDataset}, ${environment.logsDataset}, ${environment.metricsDataset})`,
+      return;
+    }
+
+    const remote = yield* RemoteEnvironment;
+    const configured = yield* remote.provision(
+      projectName,
+      uniqueEnvironments,
+      selectedProviders,
+      platform,
+      rotateToken,
+    );
+    for (const environment of configured) {
+      const providerNames = environmentProviderNames(environment).join(",");
+      const parts = [
+        `configured  ${environment.project}/${environment.environment}`,
+        `providers=${providerNames}`,
+      ];
+      const axiom = environmentAxiom(environment);
+      if (Option.isSome(axiom)) {
+        parts.push(
+          `datasets=${axiom.value.tracesDataset},${axiom.value.logsDataset},${axiom.value.metricsDataset}`,
         );
       }
+      const sentry = environmentSentry(environment);
+      if (Option.isSome(sentry)) {
+        parts.push(`sentry-project=${sentry.value.project}`);
+      }
+      yield* Console.log(parts.join("  "));
+    }
+    if (configured.some((environment) => Option.isSome(environmentAxiom(environment)))) {
       yield* Console.log(
-        `Run observability env export --name ${projectName} --environment <environment> to print deploy variables.`,
+        "Merge observability/kamal.accessory.yml into config/deploy.yml and set the AXIOM_TOKEN secret.",
+      );
+    } else {
+      yield* Console.log(
+        "The generated Collector assets require Axiom variables and are not configured by this Sentry-only command.",
       );
     }
+    yield* Console.log(
+      `Run observability env export --name ${projectName} --environment <environment> to print deploy variables.`,
+    );
   }),
 ).pipe(
   Command.withDescription(
-    "Provisiona os assets locais e, com --environment, os recursos Axiom e Sentry",
+    "Provisiona os assets locais e, com --environment, os providers remotos selecionados",
   ),
 );
 
@@ -217,9 +260,18 @@ const environmentList = Command.make(
       return;
     }
     for (const environment of environments) {
-      yield* Console.log(
-        `${environment.project}/${environment.environment}  axiom=${environment.tracesDataset},${environment.logsDataset},${environment.metricsDataset}  sentry=${environment.sentryProject}`,
-      );
+      const parts = [`${environment.project}/${environment.environment}`];
+      const axiom = environmentAxiom(environment);
+      if (Option.isSome(axiom)) {
+        parts.push(
+          `axiom=${axiom.value.tracesDataset},${axiom.value.logsDataset},${axiom.value.metricsDataset}`,
+        );
+      }
+      const sentry = environmentSentry(environment);
+      if (Option.isSome(sentry)) {
+        parts.push(`sentry=${sentry.value.project}`);
+      }
+      yield* Console.log(parts.join("  "));
     }
   }),
 ).pipe(Command.withDescription("Lista os ambientes configurados por esta CLI"));
