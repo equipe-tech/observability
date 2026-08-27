@@ -49,28 +49,30 @@ const runQuery = (env: AxiomEnvironment, apl: string): Effect.Effect<ReadonlyArr
     return decoded.matches.map((match) => match.data);
   });
 
-const runMetricsQuery = (env: AxiomEnvironment, mpl: string): Effect.Effect<string> =>
-  Effect.gen(function* () {
-    const response = yield* Effect.promise((signal) =>
-      fetch(`${env.AXIOM_URL}/v1/query/_mpl?format=metrics-v2`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${env.AXIOM_TOKEN}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ mpl, startTime: queryStartTime(), endTime: queryEndTime() }),
-        signal,
-      }),
+const runMetricsQuery = Effect.fn("runMetricsQuery")(function* (
+  env: AxiomEnvironment,
+  mpl: string,
+): Effect.fn.Return<string, never> {
+  const response = yield* Effect.promise((signal) =>
+    fetch(`${env.AXIOM_URL}/v1/query/_mpl?format=metrics-v2`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.AXIOM_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ mpl, startTime: queryStartTime(), endTime: queryEndTime() }),
+      signal,
+    }),
+  );
+  const payload: unknown = yield* Effect.promise(() => response.json());
+  if (!response.ok) {
+    return yield* Effect.die(
+      `Axiom metrics query failed with status ${response.status}: ${JSON.stringify(payload).slice(0, 500)}`,
     );
-    const payload: unknown = yield* Effect.promise(() => response.json());
-    if (!response.ok) {
-      return yield* Effect.die(
-        `Axiom metrics query failed with status ${response.status}: ${JSON.stringify(payload).slice(0, 500)}`,
-      );
-    }
-    const decoded = yield* decodeMetricsResponse(payload).pipe(Effect.orDie);
-    return JSON.stringify(decoded);
-  });
+  }
+  const decoded = yield* decodeMetricsResponse(payload).pipe(Effect.orDie);
+  return JSON.stringify(decoded);
+});
 
 const OptionalString = Schema.NullOr(Schema.String).pipe(Schema.optionalKey);
 
