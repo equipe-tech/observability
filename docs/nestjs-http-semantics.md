@@ -2,6 +2,14 @@
 
 O adapter segue OpenTelemetry HTTP Semantic Conventions v1.44.0 para spans de servidor.
 
+## Módulo e ciclo de vida
+
+Use `TelemetryModule.forRootAsync` para resolver a configuração pelo container do Nest e registrar o interceptor globalmente. A factory pode ser síncrona ou assíncrona e recebe os tokens declarados em `inject`.
+
+A opção `enabled: false` não exige identidade ou endpoint e não cria runtime, exporter, timer ou requisição de rede. A configuração habilitada é analisada durante o bootstrap. Valores inválidos rejeitam o bootstrap com `InvalidTelemetryModuleOptions`.
+
+No encerramento, o módulo fecha a admissão de spans, aguarda requisições ativas dentro do prazo configurado, faz flush do exporter compartilhado e descarta o runtime uma única vez. O prazo padrão é 5 segundos. Falhas de drain, flush ou descarte são reportadas como `TelemetryShutdownError` depois da tentativa de descarte.
+
 O suporte usa NestJS com Express. O adapter não declara suporte ao Fastify.
 
 ## Nomes e rotas

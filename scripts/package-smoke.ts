@@ -115,6 +115,54 @@ try {
     assertArchive(listing.stdout, packageSpec.required, ["package/src/", "package/test/"]);
   }
 
+  for (const nestMajor of [10, 11]) {
+    const nestConsumer = join(temporaryDirectory, `nestjs-${nestMajor}-consumer`);
+    await mkdir(nestConsumer, { recursive: true });
+    await writeFile(
+      join(nestConsumer, "package.json"),
+      JSON.stringify({
+        private: true,
+        type: "module",
+        dependencies: {
+          "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
+          "@nestjs/common": `^${nestMajor}.0.0`,
+          "@nestjs/core": `^${nestMajor}.0.0`,
+          "@nestjs/platform-express": `^${nestMajor}.0.0`,
+          "reflect-metadata": "^0.2.2",
+          rxjs: "^7.8.2",
+        },
+      }),
+    );
+    requireSuccess(
+      await run(["bun", "install"], nestConsumer),
+      `Installing the Nest ${nestMajor} packed consumer`,
+    );
+    for (const nestPackage of ["common", "core", "platform-express"]) {
+      const manifest: unknown = JSON.parse(
+        await readFile(
+          join(nestConsumer, "node_modules/@nestjs", nestPackage, "package.json"),
+          "utf8",
+        ),
+      );
+      const version = Schema.decodeUnknownSync(Schema.Struct({ version: Schema.NonEmptyString }))(
+        manifest,
+      ).version;
+      if (!version.startsWith(`${nestMajor}.`)) {
+        throw new Error(
+          `The Nest ${nestMajor} matrix installed @nestjs/${nestPackage} ${version}.`,
+        );
+      }
+    }
+    await writeFile(
+      join(nestConsumer, "app.ts"),
+      "import 'reflect-metadata';\nimport { Controller, Get, Module } from '@nestjs/common';\nimport { NestFactory } from '@nestjs/core';\nimport { TelemetryModule } from '@equipe-tech/observability/nestjs';\nclass AppController { ping() { return { ok: true }; } }\nController()(AppController);\nconst descriptor = Object.getOwnPropertyDescriptor(AppController.prototype, 'ping');\nif (!descriptor) throw new Error('Missing ping descriptor.');\nGet('ping')(AppController.prototype, 'ping', descriptor);\nclass AppModule {}\nModule({ imports: [TelemetryModule.forRootAsync({ useFactory: async () => ({ enabled: false }) })], controllers: [AppController] })(AppModule);\nconst app = await NestFactory.create(AppModule, { logger: false });\nawait app.listen(0, '127.0.0.1');\nconst address = app.getHttpServer().address();\nif (!address || typeof address === 'string') throw new Error('Missing server address.');\nconst response = await fetch(`http://127.0.0.1:${address.port}/ping`);\nif (response.status !== 200 || (await response.json()).ok !== true) throw new Error('Packed Nest request failed.');\nawait app.close();\n",
+    );
+    requireSuccess(
+      await run(["bun", "app.ts"], nestConsumer),
+      `Executing the Nest ${nestMajor} packed consumer`,
+    );
+  }
+
   const consumer = join(temporaryDirectory, "consumer outside repository");
   await mkdir(consumer, { recursive: true });
   await writeFile(

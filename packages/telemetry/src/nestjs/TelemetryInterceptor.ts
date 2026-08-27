@@ -144,6 +144,9 @@ export class TelemetryInterceptor<RuntimeError> implements NestInterceptor {
   #instrument(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     const httpContext = context.switchToHttp();
     const request = httpContext.getRequest<RequestReference>();
+    if (requestSpans.has(request)) {
+      return next.handle();
+    }
     const requestDetails = this.#routePolicy.inspect(request);
     if (Option.isNone(requestDetails)) {
       return next.handle();
