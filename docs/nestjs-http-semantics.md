@@ -2,6 +2,16 @@
 
 O adapter segue OpenTelemetry HTTP Semantic Conventions v1.44.0 para spans de servidor.
 
+## Módulo e ciclo de vida
+
+Use `TelemetryModule.forRootAsync` para resolver a configuração pelo container do Nest e registrar o interceptor globalmente. A factory pode ser síncrona ou assíncrona e recebe os tokens declarados em `inject`.
+
+A opção `enabled: false` não exige identidade ou endpoint e não cria runtime, exporter, timer ou requisição de rede. A configuração habilitada é analisada durante o bootstrap. Valores inválidos e imports duplicados com configurações diferentes rejeitam o bootstrap com `InvalidTelemetryModuleOptions` e código `OBS_TELEMETRY_INVALID_MODULE_OPTIONS`.
+
+Uma falha depois da configuração válida, durante a construção ou aquisição do runtime, rejeita o bootstrap com `TelemetryStartupError` e código `OBS_TELEMETRY_STARTUP_FAILED`. O módulo descarta recursos parcialmente adquiridos antes de propagar essa falha. Uma rejeição da factory do chamador é propagada sem conversão.
+
+No encerramento, o módulo fecha a admissão de spans, aguarda ou interrompe requisições ativas e faz flush do exporter compartilhado dentro de um único prazo. O prazo padrão é 5 segundos. O descarte começa depois desse prazo operacional e sempre é aguardado, portanto o tempo total de `app.close()` pode exceder o prazo para garantir a liberação dos recursos. Falhas de drain, interrupção, flush ou descarte são reportadas como `TelemetryShutdownError` com código `OBS_TELEMETRY_SHUTDOWN_FAILED` depois da tentativa de descarte.
+
 O suporte usa NestJS com Express. O adapter não declara suporte ao Fastify.
 
 ## Nomes e rotas
@@ -51,5 +61,3 @@ Mensagens de exceção não entram no status de spans HTTP.
 O adapter exclui `/health` e `/_telemetry/events` por padrão.
 
 A opção `healthRouteTemplates` adiciona templates exatos. Ela não remove as exclusões padrão.
-
-O desligamento futuro do módulo pode fechar a admissão, aguardar requisições ativas e interromper somente os spans restantes.

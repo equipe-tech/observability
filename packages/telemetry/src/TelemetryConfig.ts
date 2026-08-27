@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 
-const OtlpEndpoint = Schema.URLFromString.check(
+export const OtlpEndpoint = Schema.URLFromString.check(
   Schema.makeFilter(
     (url) =>
       (url.protocol === "http:" || url.protocol === "https:") &&
