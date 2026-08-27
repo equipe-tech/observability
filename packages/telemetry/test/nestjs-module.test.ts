@@ -9,8 +9,10 @@ import {
   InvalidTelemetryModuleOptions,
   TelemetryModule,
   TelemetryShutdownError,
+  TelemetryStartupError,
   type TelemetryModuleOptions,
 } from "../src/nestjs/index.ts";
+import { telemetryModuleForTesting } from "../src/nestjs/TelemetryModule.ts";
 
 const AddressBoundary = Schema.Struct({ port: Schema.Number });
 const decodeAddress = Schema.decodeUnknownSync(AddressBoundary);
@@ -163,6 +165,47 @@ describe("TelemetryModule", () => {
     }
   }, 30_000);
 
+  it("accepts explicit undefined optional configuration and applies defaults", async () => {
+    const capture = await makeOtlpCapture();
+    const ModuleController = makeController();
+
+    class AppModule {}
+    Module({
+      imports: [
+        TelemetryModule.forRootAsync({
+          imports: undefined,
+          inject: undefined,
+          useFactory: () => ({
+            enabled: true,
+            serviceName: "nestjs-undefined-test",
+            serviceVersion: "1.0.0",
+            environment: "test",
+            otlpEndpoint: capture.endpoint,
+            healthRouteTemplates: undefined,
+            proxyPolicy: undefined,
+            shutdownTimeoutMilliseconds: undefined,
+          }),
+        }),
+      ],
+      controllers: [ModuleController],
+    })(AppModule);
+
+    const app = await NestFactory.create(AppModule, { logger: false });
+    await app.listen(0, "127.0.0.1");
+    try {
+      const response = await fetch(`${applicationBaseUrl(app.getHttpServer().address())}/ping`);
+      assert.strictEqual(response.status, 200);
+      await app.close();
+      assert.lengthOf(
+        capture.requests.filter((request) => request.path === "/v1/traces"),
+        1,
+      );
+    } finally {
+      await app.close().catch(() => undefined);
+      await capture.close();
+    }
+  });
+
   it("keeps disabled mode inert without identity, timers, or network requests", async () => {
     const capture = await makeOtlpCapture();
     const ModuleController = makeController();
@@ -219,6 +262,43 @@ describe("TelemetryModule", () => {
     assert.strictEqual(failure?.code, "OBS_TELEMETRY_INVALID_MODULE_OPTIONS");
   });
 
+  it("wraps startup failure, disposes partial runtime resources, and preserves its cause", async () => {
+    const capture = await makeOtlpCapture();
+    const startupCause = new Error("startup probe failed");
+    let disposals = 0;
+
+    class AppModule {}
+    Module({
+      imports: [
+        telemetryModuleForTesting(
+          { useFactory: () => enabledOptions(capture.endpoint) },
+          {
+            startupProbe: () => {
+              throw startupCause;
+            },
+            onRuntimeDisposed: () => disposals++,
+          },
+        ),
+      ],
+    })(AppModule);
+
+    try {
+      const failure = await NestFactory.create(AppModule, {
+        logger: false,
+        abortOnError: false,
+      }).then(
+        () => undefined,
+        (cause) => cause,
+      );
+      assert.instanceOf(failure, TelemetryStartupError);
+      assert.strictEqual(failure?.code, "OBS_TELEMETRY_STARTUP_FAILED");
+      assert.strictEqual(failure?.cause, startupCause);
+      assert.strictEqual(disposals, 1);
+    } finally {
+      await capture.close();
+    }
+  });
+
   it("propagates an async configuration factory rejection unchanged", async () => {
     const factoryFailure = new Error("configuration service unavailable");
 
@@ -272,19 +352,175 @@ describe("TelemetryModule", () => {
     }
   }, 30_000);
 
+  it("rejects duplicate imports with different runtime configurations", async () => {
+    const capture = await makeOtlpCapture();
+    let disposals = 0;
+
+    class AppModule {}
+    Module({
+      imports: [
+        telemetryModuleForTesting(
+          { useFactory: () => enabledOptions(capture.endpoint) },
+          { onRuntimeDisposed: () => disposals++ },
+        ),
+        telemetryModuleForTesting(
+          { useFactory: () => enabledOptions(`${capture.endpoint}/alternate`) },
+          { onRuntimeDisposed: () => disposals++ },
+        ),
+      ],
+    })(AppModule);
+
+    try {
+      const failure = await NestFactory.create(AppModule, {
+        logger: false,
+        abortOnError: false,
+      }).then(
+        () => undefined,
+        (cause) => cause,
+      );
+      assert.instanceOf(failure, InvalidTelemetryModuleOptions);
+      assert.strictEqual(failure?.code, "OBS_TELEMETRY_INVALID_MODULE_OPTIONS");
+      assert.strictEqual(disposals, 0);
+    } finally {
+      await capture.close();
+    }
+  });
+
+  it("fences runtime acquisition until the last release finishes", async () => {
+    const capture = await makeOtlpCapture();
+    let beginDisposal: (() => void) | undefined;
+    const disposalStarted = new Promise<void>((resolve) => {
+      beginDisposal = resolve;
+    });
+    let finishDisposal: (() => void) | undefined;
+    const disposalGate = new Promise<void>((resolve) => {
+      finishDisposal = resolve;
+    });
+
+    class FirstModule {}
+    Module({
+      imports: [
+        telemetryModuleForTesting(
+          { useFactory: () => enabledOptions(capture.endpoint) },
+          {
+            beforeRuntimeDispose: async () => {
+              beginDisposal?.();
+              await disposalGate;
+            },
+          },
+        ),
+      ],
+    })(FirstModule);
+    const first = await NestFactory.create(FirstModule, { logger: false });
+    const firstClose = first.close();
+    await disposalStarted;
+
+    class SecondModule {}
+    Module({
+      imports: [
+        TelemetryModule.forRootAsync({ useFactory: () => enabledOptions(capture.endpoint) }),
+      ],
+    })(SecondModule);
+    let secondStarted = false;
+    const secondCreation = NestFactory.create(SecondModule, { logger: false }).then((app) => {
+      secondStarted = true;
+      return app;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.isFalse(secondStarted);
+    finishDisposal?.();
+    await firstClose;
+    const second = await secondCreation;
+    assert.isTrue(secondStarted);
+    await second.close();
+    await capture.close();
+  });
+
+  it("disposes the runtime after a drain failure and reports a typed shutdown failure", async () => {
+    const capture = await makeOtlpCapture();
+    let disposals = 0;
+
+    class AppModule {}
+    Module({
+      imports: [
+        telemetryModuleForTesting(
+          { useFactory: () => enabledOptions(capture.endpoint) },
+          {
+            beforeRequestDrain: () => {
+              throw new Error("request drain failed");
+            },
+            onRuntimeDisposed: () => disposals++,
+          },
+        ),
+      ],
+    })(AppModule);
+
+    const app = await NestFactory.create(AppModule, { logger: false });
+    try {
+      const failure = await app.close().then(
+        () => undefined,
+        (cause) => cause,
+      );
+      assert.instanceOf(failure, TelemetryShutdownError);
+      assert.strictEqual(failure?.code, "OBS_TELEMETRY_SHUTDOWN_FAILED");
+      assert.strictEqual(disposals, 1);
+    } finally {
+      await app.close().catch(() => undefined);
+      await capture.close();
+    }
+  });
+
+  it("reports disposal preparation failure only after runtime disposal completes", async () => {
+    const capture = await makeOtlpCapture();
+    let disposals = 0;
+
+    class AppModule {}
+    Module({
+      imports: [
+        telemetryModuleForTesting(
+          { useFactory: () => enabledOptions(capture.endpoint) },
+          {
+            beforeRuntimeDispose: () => {
+              throw new Error("disposal preparation failed");
+            },
+            onRuntimeDisposed: () => disposals++,
+          },
+        ),
+      ],
+    })(AppModule);
+
+    const app = await NestFactory.create(AppModule, { logger: false });
+    try {
+      const failure = await app.close().then(
+        () => undefined,
+        (cause) => cause,
+      );
+      assert.instanceOf(failure, TelemetryShutdownError);
+      assert.strictEqual(failure?.code, "OBS_TELEMETRY_SHUTDOWN_FAILED");
+      assert.strictEqual(disposals, 1);
+    } finally {
+      await app.close().catch(() => undefined);
+      await capture.close();
+    }
+  });
+
   it("bounds a stalled flush, disposes the runtime, and reports a typed shutdown failure", async () => {
     const capture = await makeOtlpCapture(1_000);
+    let disposals = 0;
     const ModuleController = makeController();
 
     class AppModule {}
     Module({
       imports: [
-        TelemetryModule.forRootAsync({
-          useFactory: () => ({
-            ...enabledOptions(capture.endpoint),
-            shutdownTimeoutMilliseconds: 25,
-          }),
-        }),
+        telemetryModuleForTesting(
+          {
+            useFactory: () => ({
+              ...enabledOptions(capture.endpoint),
+              shutdownTimeoutMilliseconds: 25,
+            }),
+          },
+          { onRuntimeDisposed: () => disposals++ },
+        ),
       ],
       controllers: [ModuleController],
     })(AppModule);
@@ -300,6 +536,7 @@ describe("TelemetryModule", () => {
       );
       assert.instanceOf(failure, TelemetryShutdownError);
       assert.strictEqual(failure?.code, "OBS_TELEMETRY_SHUTDOWN_FAILED");
+      assert.strictEqual(disposals, 1);
     } finally {
       await app.close().catch(() => undefined);
       await capture.close();

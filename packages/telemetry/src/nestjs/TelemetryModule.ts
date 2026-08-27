@@ -11,13 +11,13 @@ import type {
   Provider,
 } from "@nestjs/common";
 import { Module } from "@nestjs/common";
-import { APP_INTERCEPTOR } from "@nestjs/core";
+import { APP_INTERCEPTOR, HttpAdapterHost } from "@nestjs/core";
 import { Duration, Effect, ManagedRuntime, Option, Schema } from "effect";
 import type { OtlpExporter } from "effect/unstable/observability";
 import { OtlpExporter as Otlp } from "effect/unstable/observability";
 import type { Observable } from "rxjs";
 import { layer } from "../Telemetry.ts";
-import { TelemetryConfig } from "../TelemetryConfig.ts";
+import { OtlpEndpoint, TelemetryConfig } from "../TelemetryConfig.ts";
 import { telemetryRoutePolicy, type ProxyPolicy } from "./HttpRoutePolicy.ts";
 import { TelemetryInterceptor, TelemetryRequestTracker } from "./TelemetryInterceptor.ts";
 
@@ -34,7 +34,8 @@ export type TelemetryModuleOptions =
       readonly shutdownTimeoutMilliseconds?: number | undefined;
     };
 
-export interface TelemetryModuleAsyncOptions extends Pick<ModuleMetadata, "imports"> {
+export interface TelemetryModuleAsyncOptions {
+  readonly imports?: ModuleMetadata["imports"] | undefined;
   readonly inject?: Array<InjectionToken | OptionalFactoryDependency> | undefined;
   readonly useFactory: (
     ...dependencies: Array<never>
@@ -89,15 +90,6 @@ export class TelemetryShutdownError extends Error {
 const Identity = Schema.NonEmptyString.check(
   Schema.makeFilter((value) => value.trim() === value, { expected: "a nonempty trimmed string" }),
 );
-const Endpoint = Schema.URLFromString.check(
-  Schema.makeFilter(
-    (url) =>
-      (url.protocol === "http:" || url.protocol === "https:") &&
-      url.username === "" &&
-      url.password === "",
-    { expected: "an HTTP or HTTPS URL without credentials" },
-  ),
-);
 const ShutdownTimeout = Schema.Number.check(
   Schema.isInt(),
   Schema.makeFilter((value) => Number.isSafeInteger(value) && value > 0, {
@@ -109,10 +101,16 @@ const EnabledOptions = Schema.Struct({
   serviceName: Identity,
   serviceVersion: Identity,
   environment: Identity,
-  otlpEndpoint: Endpoint,
-  healthRouteTemplates: Schema.Array(Schema.String).pipe(Schema.optionalKey),
-  proxyPolicy: Schema.Literals(["direct", "framework"]).pipe(Schema.optionalKey),
-  shutdownTimeoutMilliseconds: ShutdownTimeout.pipe(Schema.optionalKey),
+  otlpEndpoint: OtlpEndpoint,
+  healthRouteTemplates: Schema.Union([Schema.Array(Schema.String), Schema.Undefined]).pipe(
+    Schema.optionalKey,
+  ),
+  proxyPolicy: Schema.Union([Schema.Literals(["direct", "framework"]), Schema.Undefined]).pipe(
+    Schema.optionalKey,
+  ),
+  shutdownTimeoutMilliseconds: Schema.Union([ShutdownTimeout, Schema.Undefined]).pipe(
+    Schema.optionalKey,
+  ),
 });
 const DisabledOptions = Schema.Struct({ enabled: Schema.Literal(false) });
 const ModuleOptions = Schema.Union([DisabledOptions, EnabledOptions]);
@@ -184,6 +182,7 @@ class EnabledTelemetryIntegration implements TelemetryIntegration {
   readonly #requestTracker: TelemetryRequestTracker;
   readonly #shutdownTimeoutMilliseconds: number;
   readonly #releaseRuntime: () => Promise<void>;
+  readonly #beforeRequestDrain: () => void | Promise<void>;
   #shutdownPromise: Promise<void> | undefined;
   #disposePromise: Promise<void> | undefined;
   #shutdownError: TelemetryShutdownError | undefined;
@@ -193,10 +192,12 @@ class EnabledTelemetryIntegration implements TelemetryIntegration {
     flusher: OtlpExporter.Flusher["Service"],
     options: EnabledNormalizedOptions,
     releaseRuntime: () => Promise<void>,
+    beforeRequestDrain: () => void | Promise<void>,
   ) {
     this.#runtime = runtime;
     this.#flusher = flusher;
     this.#releaseRuntime = releaseRuntime;
+    this.#beforeRequestDrain = beforeRequestDrain;
     this.#requestTracker = new TelemetryRequestTracker();
     this.#shutdownTimeoutMilliseconds = options.shutdownTimeoutMilliseconds;
     this.interceptor = new TelemetryInterceptor(runtime, {
@@ -212,12 +213,17 @@ class EnabledTelemetryIntegration implements TelemetryIntegration {
   }
 
   async onApplicationShutdown(): Promise<void> {
-    await this.beforeApplicationShutdown();
-    this.#disposePromise ??= this.#releaseRuntime();
     try {
-      await this.#disposePromise;
+      await this.beforeApplicationShutdown();
     } catch (cause) {
-      this.#shutdownError ??= new TelemetryShutdownError(cause);
+      this.#recordShutdownError(cause);
+    } finally {
+      this.#disposePromise ??= this.#releaseRuntime();
+      try {
+        await this.#disposePromise;
+      } catch (cause) {
+        this.#recordShutdownError(cause);
+      }
     }
     if (this.#shutdownError !== undefined) {
       throw this.#shutdownError;
@@ -226,15 +232,28 @@ class EnabledTelemetryIntegration implements TelemetryIntegration {
 
   async #shutdown(): Promise<void> {
     const deadline = Date.now() + this.#shutdownTimeoutMilliseconds;
-    this.#requestTracker.closeAdmission();
-    const idle = await this.#withinDeadline(this.#requestTracker.waitForIdle(), deadline);
-    if (!idle) {
-      this.#requestTracker.interruptActive();
-      await this.#requestTracker.waitForIdle();
+    try {
+      this.#requestTracker.closeAdmission();
+      await this.#beforeRequestDrain();
+      const idle = await this.#withinDeadline(this.#requestTracker.waitForIdle(), deadline);
+      if (!idle) {
+        this.#requestTracker.interruptActive();
+        const interrupted = await this.#withinDeadline(
+          this.#requestTracker.waitForIdle(),
+          deadline,
+        );
+        if (!interrupted) {
+          this.#recordShutdownError(
+            new Error("The telemetry request interruption exhausted the shutdown deadline."),
+          );
+        }
+      }
+    } catch (cause) {
+      this.#recordShutdownError(cause);
     }
     const remaining = Math.max(0, deadline - Date.now());
     if (remaining === 0) {
-      this.#shutdownError = new TelemetryShutdownError(
+      this.#recordShutdownError(
         new Error("The telemetry request drain exhausted the shutdown deadline."),
       );
       return;
@@ -244,13 +263,22 @@ class EnabledTelemetryIntegration implements TelemetryIntegration {
         this.#flusher.flush.pipe(Effect.timeoutOption(Duration.millis(remaining))),
       );
       if (Option.isNone(flushed)) {
-        this.#shutdownError = new TelemetryShutdownError(
-          new Error("The telemetry flush exceeded the shutdown deadline."),
-        );
+        this.#recordShutdownError(new Error("The telemetry flush exceeded the shutdown deadline."));
       }
     } catch (cause) {
-      this.#shutdownError = new TelemetryShutdownError(cause);
+      this.#recordShutdownError(cause);
     }
+  }
+
+  #recordShutdownError(cause: unknown): void {
+    if (this.#shutdownError === undefined) {
+      this.#shutdownError =
+        cause instanceof TelemetryShutdownError ? cause : new TelemetryShutdownError(cause);
+      return;
+    }
+    this.#shutdownError = new TelemetryShutdownError(
+      new AggregateError([this.#shutdownError.cause, cause]),
+    );
   }
 
   async #withinDeadline(operation: Promise<void>, deadline: number): Promise<boolean> {
@@ -280,7 +308,12 @@ const TELEMETRY_INTEGRATION = Symbol("TelemetryModuleIntegration");
 interface SharedRuntime {
   readonly runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, never>;
   readonly flusher: OtlpExporter.Flusher["Service"];
+}
+
+interface RuntimePoolEntry {
+  readonly shared: Promise<SharedRuntime>;
   references: number;
+  closing: Promise<void> | undefined;
 }
 
 interface RuntimeLease {
@@ -289,7 +322,22 @@ interface RuntimeLease {
   readonly release: () => Promise<void>;
 }
 
-const runtimePool = new Map<string, Promise<SharedRuntime>>();
+export interface TelemetryModuleTestingOverrides {
+  readonly startupProbe?: (() => void | Promise<void>) | undefined;
+  readonly beforeRequestDrain?: (() => void | Promise<void>) | undefined;
+  readonly beforeRuntimeDispose?: (() => void | Promise<void>) | undefined;
+  readonly onRuntimeDisposed?: (() => void) | undefined;
+}
+
+const runtimePool = new Map<string, RuntimePoolEntry>();
+
+interface ApplicationRuntimeState {
+  readonly key: string;
+  readonly releases: Set<() => Promise<void>>;
+  failed: boolean;
+}
+
+const applicationRuntimes = new WeakMap<WeakKey, ApplicationRuntimeState>();
 
 const runtimeKey = (options: EnabledNormalizedOptions): string =>
   JSON.stringify([
@@ -300,95 +348,205 @@ const runtimeKey = (options: EnabledNormalizedOptions): string =>
     options.shutdownTimeoutMilliseconds,
   ]);
 
-const createSharedRuntime = async (options: EnabledNormalizedOptions): Promise<SharedRuntime> => {
-  const runtime = ManagedRuntime.make(
-    layer(options.config, {
-      shutdownTimeout: Duration.millis(options.shutdownTimeoutMilliseconds),
-    }),
-  );
+const createSharedRuntime = async (
+  options: EnabledNormalizedOptions,
+  overrides: TelemetryModuleTestingOverrides,
+): Promise<SharedRuntime> => {
+  let runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, never> | undefined;
   try {
+    runtime = ManagedRuntime.make(
+      layer(options.config, {
+        shutdownTimeout: Duration.millis(options.shutdownTimeoutMilliseconds),
+      }),
+    );
+    await (overrides.startupProbe ?? (() => undefined))();
     await runtime.context();
     const flusher = await runtime.runPromise(Otlp.Flusher);
-    return { runtime, flusher, references: 0 };
+    return { runtime, flusher };
   } catch (cause) {
-    try {
-      await runtime.dispose();
-    } catch (disposeCause) {
-      throw new TelemetryStartupError(new AggregateError([cause, disposeCause]));
+    if (runtime !== undefined) {
+      try {
+        await runtime.dispose();
+        overrides.onRuntimeDisposed?.();
+      } catch (disposeCause) {
+        throw new TelemetryStartupError(new AggregateError([cause, disposeCause]));
+      }
     }
     throw new TelemetryStartupError(cause);
   }
 };
 
-const acquireRuntime = async (options: EnabledNormalizedOptions): Promise<RuntimeLease> => {
+const acquireRuntime = async (
+  options: EnabledNormalizedOptions,
+  overrides: TelemetryModuleTestingOverrides,
+): Promise<RuntimeLease> => {
   const key = runtimeKey(options);
-  let sharedPromise = runtimePool.get(key);
-  if (sharedPromise === undefined) {
-    sharedPromise = createSharedRuntime(options);
-    runtimePool.set(key, sharedPromise);
-    sharedPromise.catch(() => {
-      if (runtimePool.get(key) === sharedPromise) {
+  let entry = runtimePool.get(key);
+  if (entry?.closing !== undefined) {
+    try {
+      await entry.closing;
+    } catch (cause) {
+      throw new TelemetryStartupError(cause);
+    }
+    entry = runtimePool.get(key);
+  }
+  if (entry === undefined) {
+    const shared = createSharedRuntime(options, overrides);
+    entry = { shared, references: 0, closing: undefined };
+    runtimePool.set(key, entry);
+    try {
+      await shared;
+    } catch (cause) {
+      if (runtimePool.get(key) === entry) {
         runtimePool.delete(key);
       }
-    });
+      throw cause;
+    }
   }
-  const shared = await sharedPromise;
-  shared.references++;
+  const shared = await entry.shared;
+  entry.references++;
   let releasePromise: Promise<void> | undefined;
   const release = (): Promise<void> => {
     if (releasePromise !== undefined) {
       return releasePromise;
     }
-    shared.references--;
-    if (shared.references > 0) {
+    entry.references--;
+    if (entry.references > 0) {
       releasePromise = Promise.resolve();
       return releasePromise;
     }
-    if (runtimePool.get(key) === sharedPromise) {
-      runtimePool.delete(key);
-    }
-    releasePromise = shared.runtime.dispose();
+    entry.closing = (async () => {
+      let failure: Error | undefined;
+      try {
+        await overrides.beforeRuntimeDispose?.();
+      } catch (cause) {
+        failure = new Error("Telemetry runtime disposal preparation failed.", { cause });
+      }
+      try {
+        await shared.runtime.dispose();
+        overrides.onRuntimeDisposed?.();
+      } catch (cause) {
+        failure =
+          failure === undefined
+            ? new Error("Telemetry runtime disposal failed.", { cause })
+            : new AggregateError([failure, cause]);
+      }
+      if (failure !== undefined) {
+        throw failure;
+      }
+    })().finally(() => {
+      if (runtimePool.get(key) === entry) {
+        runtimePool.delete(key);
+      }
+    });
+    releasePromise = entry.closing;
     return releasePromise;
   };
   return { runtime: shared.runtime, flusher: shared.flusher, release };
 };
 
-const makeIntegration = async (options: NormalizedOptions): Promise<TelemetryIntegration> => {
+const acquireApplicationRuntime = async (
+  application: WeakKey,
+  options: EnabledNormalizedOptions,
+  overrides: TelemetryModuleTestingOverrides,
+): Promise<RuntimeLease> => {
+  const key = runtimeKey(options);
+  let state = applicationRuntimes.get(application);
+  if (state !== undefined && state.key !== key) {
+    state.failed = true;
+    await Promise.all(Array.from(state.releases, (release) => release()));
+    applicationRuntimes.delete(application);
+    throw new InvalidTelemetryModuleOptions(
+      new Error("TelemetryModule imports in one application must use one runtime configuration."),
+    );
+  }
+  if (state === undefined) {
+    state = { key, releases: new Set(), failed: false };
+    applicationRuntimes.set(application, state);
+  }
+  await Promise.resolve();
+  if (state.failed) {
+    throw new InvalidTelemetryModuleOptions(
+      new Error("TelemetryModule imports in one application must use one runtime configuration."),
+    );
+  }
+  const lease = await acquireRuntime(options, overrides);
+  if (state.failed) {
+    await lease.release();
+    throw new InvalidTelemetryModuleOptions(
+      new Error("TelemetryModule imports in one application must use one runtime configuration."),
+    );
+  }
+  const release = (): Promise<void> => {
+    state.releases.delete(release);
+    if (state.releases.size === 0) {
+      applicationRuntimes.delete(application);
+    }
+    return lease.release();
+  };
+  state.releases.add(release);
+  return { runtime: lease.runtime, flusher: lease.flusher, release };
+};
+
+const makeIntegration = async (
+  options: NormalizedOptions,
+  application: WeakKey,
+  overrides: TelemetryModuleTestingOverrides,
+): Promise<TelemetryIntegration> => {
   if (!options.enabled) {
     return new DisabledTelemetryIntegration();
   }
-  const lease = await acquireRuntime(options);
-  return new EnabledTelemetryIntegration(lease.runtime, lease.flusher, options, lease.release);
+  const lease = await acquireApplicationRuntime(application, options, overrides);
+  return new EnabledTelemetryIntegration(
+    lease.runtime,
+    lease.flusher,
+    options,
+    lease.release,
+    overrides.beforeRequestDrain ?? (() => undefined),
+  );
 };
+
+const makeTelemetryModule = (
+  options: TelemetryModuleAsyncOptions,
+  overrides: TelemetryModuleTestingOverrides = {},
+): DynamicModule => {
+  const providers: Array<Provider> = [
+    {
+      provide: ASYNC_OPTIONS,
+      inject: options.inject ?? [],
+      useFactory: options.useFactory,
+    },
+    {
+      provide: NORMALIZED_OPTIONS,
+      inject: [ASYNC_OPTIONS],
+      useFactory: parseModuleOptions,
+    },
+    {
+      provide: TELEMETRY_INTEGRATION,
+      inject: [NORMALIZED_OPTIONS, HttpAdapterHost],
+      useFactory: (normalized: NormalizedOptions, application: HttpAdapterHost) =>
+        makeIntegration(normalized, application, overrides),
+    },
+    {
+      provide: APP_INTERCEPTOR,
+      inject: [TELEMETRY_INTEGRATION],
+      useFactory: (integration: TelemetryIntegration) => integration.interceptor,
+    },
+  ];
+  if (options.imports === undefined) {
+    return { module: TelemetryModule, providers };
+  }
+  return { module: TelemetryModule, imports: options.imports, providers };
+};
+
+export const telemetryModuleForTesting = (
+  options: TelemetryModuleAsyncOptions,
+  overrides: TelemetryModuleTestingOverrides,
+): DynamicModule => makeTelemetryModule(options, overrides);
 
 export class TelemetryModule {
   static forRootAsync(options: TelemetryModuleAsyncOptions): DynamicModule {
-    const providers: Array<Provider> = [
-      {
-        provide: ASYNC_OPTIONS,
-        inject: options.inject ?? [],
-        useFactory: options.useFactory,
-      },
-      {
-        provide: NORMALIZED_OPTIONS,
-        inject: [ASYNC_OPTIONS],
-        useFactory: parseModuleOptions,
-      },
-      {
-        provide: TELEMETRY_INTEGRATION,
-        inject: [NORMALIZED_OPTIONS],
-        useFactory: makeIntegration,
-      },
-      {
-        provide: APP_INTERCEPTOR,
-        inject: [TELEMETRY_INTEGRATION],
-        useFactory: (integration: TelemetryIntegration) => integration.interceptor,
-      },
-    ];
-    if (options.imports === undefined) {
-      return { module: TelemetryModule, providers };
-    }
-    return { module: TelemetryModule, imports: options.imports, providers };
+    return makeTelemetryModule(options);
   }
 }
 

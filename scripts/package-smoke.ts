@@ -128,6 +128,7 @@ try {
           "@nestjs/common": `^${nestMajor}.0.0`,
           "@nestjs/core": `^${nestMajor}.0.0`,
           "@nestjs/platform-express": `^${nestMajor}.0.0`,
+          "@types/node": "^22.0.0",
           "reflect-metadata": "^0.2.2",
           rxjs: "^7.8.2",
         },
@@ -155,7 +156,28 @@ try {
     }
     await writeFile(
       join(nestConsumer, "app.ts"),
-      "import 'reflect-metadata';\nimport { Controller, Get, Module } from '@nestjs/common';\nimport { NestFactory } from '@nestjs/core';\nimport { TelemetryModule } from '@equipe-tech/observability/nestjs';\nclass AppController { ping() { return { ok: true }; } }\nController()(AppController);\nconst descriptor = Object.getOwnPropertyDescriptor(AppController.prototype, 'ping');\nif (!descriptor) throw new Error('Missing ping descriptor.');\nGet('ping')(AppController.prototype, 'ping', descriptor);\nclass AppModule {}\nModule({ imports: [TelemetryModule.forRootAsync({ useFactory: async () => ({ enabled: false }) })], controllers: [AppController] })(AppModule);\nconst app = await NestFactory.create(AppModule, { logger: false });\nawait app.listen(0, '127.0.0.1');\nconst address = app.getHttpServer().address();\nif (!address || typeof address === 'string') throw new Error('Missing server address.');\nconst response = await fetch(`http://127.0.0.1:${address.port}/ping`);\nif (response.status !== 200 || (await response.json()).ok !== true) throw new Error('Packed Nest request failed.');\nawait app.close();\n",
+      "import 'reflect-metadata';\nimport { Controller, Get, Module } from '@nestjs/common';\nimport { NestFactory } from '@nestjs/core';\nimport { TelemetryModule } from '@equipe-tech/observability/nestjs';\nclass AppController { ping() { return { ok: true }; } }\nController()(AppController);\nconst descriptor = Object.getOwnPropertyDescriptor(AppController.prototype, 'ping');\nif (!descriptor) throw new Error('Missing ping descriptor.');\nGet('ping')(AppController.prototype, 'ping', descriptor);\nclass AppModule {}\nModule({ imports: [TelemetryModule.forRootAsync({ imports: undefined, inject: undefined, useFactory: async () => ({ enabled: false }) })], controllers: [AppController] })(AppModule);\nconst app = await NestFactory.create(AppModule, { logger: false });\nawait app.listen(0, '127.0.0.1');\nconst address = app.getHttpServer().address();\nif (!address || typeof address === 'string') throw new Error('Missing server address.');\nconst response = await fetch(`http://127.0.0.1:${address.port}/ping`);\nif (response.status !== 200 || (await response.json()).ok !== true) throw new Error('Packed Nest request failed.');\nawait app.close();\n",
+    );
+    await writeFile(
+      join(nestConsumer, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          target: "ESNext",
+          module: "Preserve",
+          moduleResolution: "Bundler",
+          strict: true,
+          noEmit: true,
+          types: ["node"],
+        },
+        include: ["app.ts"],
+      }),
+    );
+    requireSuccess(
+      await run(
+        ["bun", join(root, "node_modules/typescript/bin/tsc"), "-p", "tsconfig.json"],
+        nestConsumer,
+      ),
+      `Type-checking the Nest ${nestMajor} packed consumer`,
     );
     requireSuccess(
       await run(["bun", "app.ts"], nestConsumer),
