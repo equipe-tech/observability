@@ -525,6 +525,22 @@ describe("built CLI provider selection", () => {
         ).toBeFalse();
         expect(server.requests).toHaveLength(0);
 
+        const invalidEnvironmentTarget = join(root, "invalid-environment-target");
+        const invalidEnvironment = await runCli(
+          provisionArgs(invalidEnvironmentTarget, "Production US", ["sentry"]),
+          stateRoot,
+          invalidEnvironmentTarget,
+          server,
+        );
+        expect(invalidEnvironment.exitCode).toBe(1);
+        expect(invalidEnvironment.stderr).toContain("OBS_CLI_REMOTE_INVALID_ENVIRONMENT");
+        expect(
+          await Bun.file(
+            join(invalidEnvironmentTarget, "observability", "collector.yaml"),
+          ).exists(),
+        ).toBeFalse();
+        expect(server.requests).toHaveLength(0);
+
         const missing = await runCli(
           provisionArgs(target, "staging", ["axiom"]),
           stateRoot,
@@ -624,6 +640,44 @@ describe("built CLI provider selection", () => {
         ).toHaveLength(1);
         assertNoSecretOutput(rotated);
 
+        const rotatedDocument = JSON.parse(await Bun.file(migrationPath).text());
+        rotatedDocument.pendingAxiomMutations = [{ project: "livro-caixa", environment: "legacy" }];
+        await Bun.write(migrationPath, `${JSON.stringify(rotatedDocument, undefined, 2)}\n`);
+        await chmod(migrationPath, 0o600);
+        const requestsBeforeUnresolvedRetry = server.requests.length;
+        const unresolvedExport = await runCli(
+          ["env", "export", "--name", "livro-caixa", "--environment", "legacy"],
+          migrationRoot,
+          migrationTarget,
+          server,
+        );
+        expect(unresolvedExport.exitCode).toBe(1);
+        expect(unresolvedExport.stderr).toContain("OBS_CLI_REMOTE_TOKEN_UNAVAILABLE");
+        expect(server.requests).toHaveLength(requestsBeforeUnresolvedRetry);
+        const unresolvedRetry = await runCli(
+          provisionArgs(migrationTarget, "legacy", ["axiom"]),
+          migrationRoot,
+          migrationTarget,
+          server,
+        );
+        expect(unresolvedRetry.exitCode).toBe(1);
+        expect(unresolvedRetry.stderr).toContain("OBS_CLI_REMOTE_TOKEN_UNAVAILABLE");
+        expect(unresolvedRetry.stderr).toContain("--rotate-token");
+        expect(server.requests).toHaveLength(requestsBeforeUnresolvedRetry);
+        const recoveredRotation = await runCli(
+          [...provisionArgs(migrationTarget, "legacy", ["axiom"]), "--rotate-token"],
+          migrationRoot,
+          migrationTarget,
+          server,
+        );
+        expect(recoveredRotation.exitCode).toBe(0);
+        expect(
+          JSON.parse(await Bun.file(migrationPath).text()).pendingAxiomMutations,
+        ).toBeUndefined();
+        assertNoSecretOutput(unresolvedExport);
+        assertNoSecretOutput(unresolvedRetry);
+        assertNoSecretOutput(recoveredRotation);
+
         const sentryFailureRoot = join(root, "sentry-failure-state");
         const sentryFailureTarget = join(root, "sentry-failure-target");
         await writeCredentials(sentryFailureRoot, server.url, ["axiom", "sentry"]);
@@ -688,7 +742,35 @@ describe("built CLI provider selection", () => {
         expect(unknown.exitCode).toBe(1);
         expect(unknown.stderr).toContain("OBS_CLI_REMOTE_OUTCOME_UNKNOWN");
         expect((await readPersisted(unknownRoot)).environments).toHaveLength(0);
+        expect(
+          JSON.parse(await Bun.file(join(unknownRoot, "credentials.json")).text()),
+        ).toMatchObject({
+          pendingAxiomMutations: [{ project: "livro-caixa", environment: "unknown" }],
+        });
+        const requestsBeforeUnknownRetry = server.requests.length;
+        const unknownRetry = await runCli(
+          provisionArgs(unknownTarget, "unknown", ["axiom"]),
+          unknownRoot,
+          unknownTarget,
+          server,
+        );
+        expect(unknownRetry.exitCode).toBe(1);
+        expect(unknownRetry.stderr).toContain("OBS_CLI_REMOTE_TOKEN_UNAVAILABLE");
+        expect(server.requests).toHaveLength(requestsBeforeUnknownRetry);
+        const unknownRecovery = await runCli(
+          [...provisionArgs(unknownTarget, "unknown", ["axiom"]), "--rotate-token"],
+          unknownRoot,
+          unknownTarget,
+          server,
+        );
+        expect(unknownRecovery.exitCode).toBe(0);
+        expect(
+          JSON.parse(await Bun.file(join(unknownRoot, "credentials.json")).text())
+            .pendingAxiomMutations,
+        ).toBeUndefined();
         assertNoSecretOutput(unknown);
+        assertNoSecretOutput(unknownRetry);
+        assertNoSecretOutput(unknownRecovery);
 
         const concurrentRoot = join(root, "concurrent-state");
         const concurrentTarget = join(root, "concurrent-target");

@@ -6,6 +6,7 @@ import {
   CredentialsError,
   CredentialsFile,
   CredentialsStore,
+  PendingAxiomMutation,
   SentryCredentials,
 } from "../src/CredentialsStore.ts";
 import { AxiomApi, RemoteApiError, SentryApi } from "../src/ProviderApis.ts";
@@ -55,13 +56,15 @@ const makeRemoteLayer = (options: RemoteOptions = {}) => {
   let sentryDsnCalls = 0;
   let failedDataset = Option.none<string>();
   let failSentry = false;
-  let failTokenMutation = false;
-  let failSave = false;
+  let failedTokenMutationStatus = Option.none<number>();
+  let failedSaveCall = Option.none<number>();
+  let saveCalls = 0;
 
   const access: CredentialsAccess = {
     load: () => Effect.succeed(Option.some(credentials)),
     save: (next) => {
-      if (failSave) {
+      saveCalls += 1;
+      if (Option.contains(failedSaveCall, saveCalls)) {
         return Effect.fail(
           new CredentialsError({
             code: "OBS_CLI_CREDENTIALS_FAILED",
@@ -110,13 +113,14 @@ const makeRemoteLayer = (options: RemoteOptions = {}) => {
         return tokens;
       }),
     createToken: (_credentials, name) => {
-      if (failTokenMutation) {
+      if (Option.isSome(failedTokenMutationStatus)) {
+        const status = failedTokenMutationStatus.value;
         return Effect.fail(
           new RemoteApiError({
-            code: "OBS_CLI_REMOTE_INVALID_RESPONSE",
-            message: "Axiom returned an invalid response.",
+            code: status === 201 ? "OBS_CLI_REMOTE_INVALID_RESPONSE" : "OBS_CLI_REMOTE_FAILED",
+            message: "Axiom token mutation failed.",
             provider: "Axiom",
-            status: 201,
+            status,
             cause: name,
           }),
         );
@@ -171,11 +175,42 @@ const makeRemoteLayer = (options: RemoteOptions = {}) => {
     failSentry: () => {
       failSentry = true;
     },
-    failTokenMutation: () => {
-      failTokenMutation = true;
+    failTokenMutation: (status = 201) => {
+      failedTokenMutationStatus = Option.some(status);
     },
-    failSave: () => {
-      failSave = true;
+    failSaveAt: (call: number) => {
+      failedSaveCall = Option.some(call);
+    },
+    markPendingAxiomMutation: (project: string, environment: string) => {
+      const pendingAxiomMutations = [new PendingAxiomMutation({ project, environment })];
+      credentials =
+        credentials.axiom !== undefined && credentials.sentry !== undefined
+          ? new CredentialsFile({
+              version: 2,
+              axiom: credentials.axiom,
+              sentry: credentials.sentry,
+              environments: credentials.environments,
+              pendingAxiomMutations,
+            })
+          : credentials.axiom !== undefined
+            ? new CredentialsFile({
+                version: 2,
+                axiom: credentials.axiom,
+                environments: credentials.environments,
+                pendingAxiomMutations,
+              })
+            : credentials.sentry !== undefined
+              ? new CredentialsFile({
+                  version: 2,
+                  sentry: credentials.sentry,
+                  environments: credentials.environments,
+                  pendingAxiomMutations,
+                })
+              : new CredentialsFile({
+                  version: 2,
+                  environments: credentials.environments,
+                  pendingAxiomMutations,
+                });
     },
     state: () => ({
       credentials,
@@ -187,6 +222,7 @@ const makeRemoteLayer = (options: RemoteOptions = {}) => {
       axiomTokenLists,
       sentryProjectCalls,
       sentryDsnCalls,
+      saveCalls,
     }),
   };
 };
@@ -384,6 +420,58 @@ describe("RemoteEnvironment", () => {
     }
   });
 
+  test("rejects a stale local token after an unresolved mutation until explicit rotation", async () => {
+    const remote = makeRemoteLayer();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* RemoteEnvironment;
+        yield* service.provision("livro-caixa", ["production"], ["axiom"], "node", false);
+      }).pipe(Effect.provide(remote.layer)),
+    );
+    remote.markPendingAxiomMutation("livro-caixa", "production");
+    const callsBeforeRecovery = remote.state();
+    const exportError = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* RemoteEnvironment;
+        return yield* Effect.flip(service.export("livro-caixa", "production"));
+      }).pipe(Effect.provide(remote.layer)),
+    );
+    expect(exportError._tag).toBe("RemoteEnvironmentError");
+    if (exportError._tag === "RemoteEnvironmentError") {
+      expect(exportError.code).toBe("OBS_CLI_REMOTE_TOKEN_UNAVAILABLE");
+    }
+
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* RemoteEnvironment;
+        return yield* Effect.flip(
+          service.provision("livro-caixa", ["production"], ["axiom"], "node", false),
+        );
+      }).pipe(Effect.provide(remote.layer)),
+    );
+
+    expect(error._tag).toBe("RemoteEnvironmentError");
+    if (error._tag === "RemoteEnvironmentError") {
+      expect(error.code).toBe("OBS_CLI_REMOTE_TOKEN_UNAVAILABLE");
+      expect(error.message).toContain("--rotate-token");
+    }
+    expect(remote.state().axiomDatasetLists).toBe(callsBeforeRecovery.axiomDatasetLists);
+    expect(remote.state().axiomTokenLists).toBe(callsBeforeRecovery.axiomTokenLists);
+
+    const recovered = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* RemoteEnvironment;
+        return yield* service.provision("livro-caixa", ["production"], ["axiom"], "node", true);
+      }).pipe(Effect.provide(remote.layer)),
+    );
+    const recoveredEnvironment = recovered[0];
+    expect(recoveredEnvironment).toBeDefined();
+    if (recoveredEnvironment !== undefined) {
+      expect(Option.getOrThrow(environmentAxiom(recoveredEnvironment)).token).toBe("rotated-1");
+    }
+    expect(remote.state().credentials.pendingAxiomMutations).toBeUndefined();
+  });
+
   test("rejects rotation before provider calls when any environment excludes Axiom", async () => {
     const remote = makeRemoteLayer();
     await Effect.runPromise(
@@ -444,9 +532,50 @@ describe("RemoteEnvironment", () => {
     expect(remote.state().credentials.environments).toHaveLength(0);
   });
 
+  test("classifies HTTP 5xx token mutation responses as outcome unknown", async () => {
+    const remote = makeRemoteLayer();
+    remote.failTokenMutation(503);
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* RemoteEnvironment;
+        return yield* Effect.flip(
+          service.provision("livro-caixa", ["staging"], ["axiom"], "node", false),
+        );
+      }).pipe(Effect.provide(remote.layer)),
+    );
+
+    expect(error._tag).toBe("RemoteEnvironmentError");
+    if (error._tag === "RemoteEnvironmentError") {
+      expect(error.code).toBe("OBS_CLI_REMOTE_OUTCOME_UNKNOWN");
+      expect(error.message).toContain("Rotate the token");
+    }
+    expect(remote.state().credentials.environments).toHaveLength(0);
+  });
+
+  test("classifies token mutation transport failures as outcome unknown", async () => {
+    const remote = makeRemoteLayer();
+    remote.failTokenMutation(0);
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* RemoteEnvironment;
+        return yield* Effect.flip(
+          service.provision("livro-caixa", ["staging"], ["axiom"], "node", false),
+        );
+      }).pipe(Effect.provide(remote.layer)),
+    );
+
+    expect(error._tag).toBe("RemoteEnvironmentError");
+    if (error._tag === "RemoteEnvironmentError") {
+      expect(error.code).toBe("OBS_CLI_REMOTE_OUTCOME_UNKNOWN");
+    }
+    expect(remote.state().credentials.pendingAxiomMutations).toEqual([
+      { project: "livro-caixa", environment: "staging" },
+    ]);
+  });
+
   test("classifies a failed checkpoint after token creation as outcome unknown", async () => {
     const remote = makeRemoteLayer();
-    remote.failSave();
+    remote.failSaveAt(2);
     const error = await Effect.runPromise(
       Effect.gen(function* () {
         const service = yield* RemoteEnvironment;

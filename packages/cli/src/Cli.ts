@@ -9,6 +9,7 @@ import {
   environmentSentry,
   parseProviderSelection,
   RemoteEnvironment,
+  validateRemoteProvisionRequest,
 } from "./RemoteEnvironment.ts";
 import { StackAssets } from "./StackAssets.ts";
 
@@ -181,12 +182,15 @@ const provision = Command.make(
     const selectedProviders = yield* parseProviderSelection(providers);
     const assets = yield* ProvisionAssets;
     const projectName = yield* assets.resolveName(dir, name);
+    const uniqueEnvironments = [...new Set(environments)];
+    if (uniqueEnvironments.length > 0) {
+      yield* validateRemoteProvisionRequest(projectName, uniqueEnvironments);
+    }
     const files = yield* assets.provision(dir, Option.some(projectName), force);
     for (const file of files) {
       yield* Console.log(`${file.action}  ${file.relativePath}`);
     }
 
-    const uniqueEnvironments = [...new Set(environments)];
     if (uniqueEnvironments.length === 0) {
       yield* Console.log(
         "Merge observability/kamal.accessory.yml into config/deploy.yml and set the AXIOM_TOKEN secret.",

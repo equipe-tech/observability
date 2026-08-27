@@ -8,6 +8,7 @@ import {
   CredentialsStore,
   emptyCredentials,
   ManagedEnvironment,
+  PendingAxiomMutation,
   SentryCredentials,
   SentryEnvironment,
 } from "./CredentialsStore.ts";
@@ -114,6 +115,18 @@ export const environmentDatasets = Effect.fn("environmentDatasets")(function* (
   return names;
 });
 
+export const validateRemoteProvisionRequest = Effect.fn("validateRemoteProvisionRequest")(
+  function* (
+    project: string,
+    environments: ReadonlyArray<string>,
+  ): Effect.fn.Return<void, RemoteEnvironmentError> {
+    for (const rawEnvironment of environments) {
+      const environment = yield* parseEnvironmentName(rawEnvironment);
+      yield* environmentDatasets(project, environment);
+    }
+  },
+);
+
 export const environmentAxiom = (
   environment: ManagedEnvironment,
 ): Option.Option<AxiomEnvironment> => {
@@ -170,7 +183,26 @@ const makeCredentialsFile = (
   axiom: AxiomCredentials | undefined,
   sentry: SentryCredentials | undefined,
   environments: ReadonlyArray<ManagedEnvironment>,
+  pendingAxiomMutations: ReadonlyArray<PendingAxiomMutation> = [],
 ): CredentialsFile => {
+  if (pendingAxiomMutations.length > 0) {
+    if (axiom !== undefined && sentry !== undefined) {
+      return new CredentialsFile({
+        version: 2,
+        axiom,
+        sentry,
+        environments,
+        pendingAxiomMutations,
+      });
+    }
+    if (axiom !== undefined) {
+      return new CredentialsFile({ version: 2, axiom, environments, pendingAxiomMutations });
+    }
+    if (sentry !== undefined) {
+      return new CredentialsFile({ version: 2, sentry, environments, pendingAxiomMutations });
+    }
+    return new CredentialsFile({ version: 2, environments, pendingAxiomMutations });
+  }
   if (axiom !== undefined && sentry !== undefined) {
     return new CredentialsFile({ version: 2, axiom, sentry, environments });
   }
@@ -183,18 +215,61 @@ const makeCredentialsFile = (
   return new CredentialsFile({ version: 2, environments });
 };
 
+const pendingAxiomMutations = (credentials: CredentialsFile): ReadonlyArray<PendingAxiomMutation> =>
+  credentials.pendingAxiomMutations ?? [];
+
+const hasPendingAxiomMutation = (
+  credentials: CredentialsFile,
+  project: string,
+  environment: string,
+): boolean =>
+  pendingAxiomMutations(credentials).some(
+    (pending) => pending.project === project && pending.environment === environment,
+  );
+
+const markAxiomMutationPending = (
+  credentials: CredentialsFile,
+  project: string,
+  environment: string,
+): CredentialsFile =>
+  makeCredentialsFile(credentials.axiom, credentials.sentry, credentials.environments, [
+    ...pendingAxiomMutations(credentials).filter(
+      (pending) => pending.project !== project || pending.environment !== environment,
+    ),
+    new PendingAxiomMutation({ project, environment }),
+  ]);
+
+const clearPendingAxiomMutation = (
+  credentials: CredentialsFile,
+  project: string,
+  environment: string,
+): CredentialsFile =>
+  makeCredentialsFile(
+    credentials.axiom,
+    credentials.sentry,
+    credentials.environments,
+    pendingAxiomMutations(credentials).filter(
+      (pending) => pending.project !== project || pending.environment !== environment,
+    ),
+  );
+
 const replaceEnvironment = (
   credentials: CredentialsFile,
   environment: ManagedEnvironment,
 ): CredentialsFile =>
-  makeCredentialsFile(credentials.axiom, credentials.sentry, [
-    ...credentials.environments.filter(
-      (candidate) =>
-        candidate.project !== environment.project ||
-        candidate.environment !== environment.environment,
-    ),
-    environment,
-  ]);
+  makeCredentialsFile(
+    credentials.axiom,
+    credentials.sentry,
+    [
+      ...credentials.environments.filter(
+        (candidate) =>
+          candidate.project !== environment.project ||
+          candidate.environment !== environment.environment,
+      ),
+      environment,
+    ],
+    pendingAxiomMutations(credentials),
+  );
 
 const currentCredentials = Effect.fn("currentCredentials")(function* (
   access: CredentialsAccess,
@@ -296,11 +371,7 @@ const mutationOutcomeUnknown = (
   error: RemoteApiError,
   completed: ReadonlyArray<string>,
 ): RemoteApiError | RemoteEnvironmentError => {
-  if (
-    error.status !== 0 &&
-    error.code !== "OBS_CLI_REMOTE_INVALID_RESPONSE" &&
-    (error.status < 200 || error.status >= 300)
-  ) {
+  if (error.status > 0 && error.status < 500 && error.code !== "OBS_CLI_REMOTE_INVALID_RESPONSE") {
     return partialFailure(error, completed);
   }
   const completedText = completed.length === 0 ? "none" : completed.join(", ");
@@ -348,7 +419,12 @@ export class Authentication extends Context.Service<
             Effect.gen(function* () {
               const current = yield* currentCredentials(access);
               yield* access.save(
-                makeCredentialsFile(credentials, current.sentry, current.environments),
+                makeCredentialsFile(
+                  credentials,
+                  current.sentry,
+                  current.environments,
+                  pendingAxiomMutations(current),
+                ),
               );
             }),
           );
@@ -362,7 +438,12 @@ export class Authentication extends Context.Service<
               Effect.gen(function* () {
                 const current = yield* currentCredentials(access);
                 yield* access.save(
-                  makeCredentialsFile(current.axiom, credentials, current.environments),
+                  makeCredentialsFile(
+                    current.axiom,
+                    credentials,
+                    current.environments,
+                    pendingAxiomMutations(current),
+                  ),
                 );
               }),
             );
@@ -436,17 +517,23 @@ export class RemoteEnvironment extends Context.Service<
             ReadonlyArray<ManagedEnvironment>,
             CredentialsError | RemoteApiError | RemoteEnvironmentError
           > {
+            const validated: Array<{
+              readonly name: string;
+              readonly datasets: EnvironmentDatasets;
+            }> = [];
+            for (const rawEnvironment of environments) {
+              const name = yield* parseEnvironmentName(rawEnvironment);
+              validated.push({ name, datasets: yield* environmentDatasets(project, name) });
+            }
             return yield* store.exclusive((access) =>
               Effect.gen(function* () {
                 let credentials = yield* currentCredentials(access);
                 const requested: Array<RequestedEnvironment> = [];
-                for (const rawEnvironment of environments) {
-                  const name = yield* parseEnvironmentName(rawEnvironment);
-                  const datasets = yield* environmentDatasets(project, name);
-                  const existing = existingEnvironment(credentials, project, name);
+                for (const environment of validated) {
+                  const existing = existingEnvironment(credentials, project, environment.name);
                   requested.push({
-                    name,
-                    datasets,
+                    name: environment.name,
+                    datasets: environment.datasets,
                     existing,
                     providers: effectiveProviders(explicitProviders, existing),
                   });
@@ -460,6 +547,21 @@ export class RemoteEnvironment extends Context.Service<
                     message:
                       "Token rotation requires Axiom for every requested environment. Select --provider axiom or remove --rotate-token.",
                     cause: "rotate-token",
+                  });
+                }
+                if (
+                  !rotateToken &&
+                  requested.some(
+                    (environment) =>
+                      environment.providers.includes("axiom") &&
+                      hasPendingAxiomMutation(credentials, project, environment.name),
+                  )
+                ) {
+                  return yield* new RemoteEnvironmentError({
+                    code: "OBS_CLI_REMOTE_TOKEN_UNAVAILABLE",
+                    message:
+                      "A previous Axiom token mutation did not reach a durable checkpoint. Rerun with --rotate-token.",
+                    cause: "pending-axiom-mutation",
                   });
                 }
 
@@ -529,14 +631,30 @@ export class RemoteEnvironment extends Context.Service<
                       let token: { readonly id: string; readonly token: string };
                       if (rotateToken) {
                         tokenMutated = true;
+                        credentials = markAxiomMutationPending(credentials, project, request.name);
+                        yield* access.save(credentials);
                         token = yield* (
                           remoteToken === undefined
                             ? axiomApi.createToken(axiomCredentials.value, tokenName, datasetNames)
                             : axiomApi.regenerateToken(axiomCredentials.value, remoteToken.id)
                         ).pipe(
-                          Effect.catchTag("RemoteApiError", (error) =>
-                            Effect.fail(mutationOutcomeUnknown(error, completed)),
-                          ),
+                          Effect.catchTag("RemoteApiError", (error) => {
+                            const classified = mutationOutcomeUnknown(error, completed);
+                            if (
+                              classified._tag === "RemoteEnvironmentError" &&
+                              classified.code === "OBS_CLI_REMOTE_OUTCOME_UNKNOWN"
+                            ) {
+                              return Effect.fail(classified);
+                            }
+                            credentials = clearPendingAxiomMutation(
+                              credentials,
+                              project,
+                              request.name,
+                            );
+                            return access
+                              .save(credentials)
+                              .pipe(Effect.andThen(Effect.fail(classified)));
+                          }),
                         );
                         if (remoteToken === undefined) {
                           existingTokens.push({ id: token.id, name: tokenName });
@@ -561,12 +679,28 @@ export class RemoteEnvironment extends Context.Service<
                         });
                       } else {
                         tokenMutated = true;
+                        credentials = markAxiomMutationPending(credentials, project, request.name);
+                        yield* access.save(credentials);
                         token = yield* axiomApi
                           .createToken(axiomCredentials.value, tokenName, datasetNames)
                           .pipe(
-                            Effect.catchTag("RemoteApiError", (error) =>
-                              Effect.fail(mutationOutcomeUnknown(error, completed)),
-                            ),
+                            Effect.catchTag("RemoteApiError", (error) => {
+                              const classified = mutationOutcomeUnknown(error, completed);
+                              if (
+                                classified._tag === "RemoteEnvironmentError" &&
+                                classified.code === "OBS_CLI_REMOTE_OUTCOME_UNKNOWN"
+                              ) {
+                                return Effect.fail(classified);
+                              }
+                              credentials = clearPendingAxiomMutation(
+                                credentials,
+                                project,
+                                request.name,
+                              );
+                              return access
+                                .save(credentials)
+                                .pipe(Effect.andThen(Effect.fail(classified)));
+                            }),
                           );
                         existingTokens.push({ id: token.id, name: tokenName });
                       }
@@ -588,6 +722,7 @@ export class RemoteEnvironment extends Context.Service<
                     });
                     credentials = replaceEnvironment(credentials, environment);
                     if (tokenMutated) {
+                      credentials = clearPendingAxiomMutation(credentials, project, request.name);
                       yield* access.save(credentials).pipe(
                         Effect.mapError(
                           (error) =>
@@ -619,12 +754,24 @@ export class RemoteEnvironment extends Context.Service<
         list,
         export: Effect.fn("RemoteEnvironment.export")(function* (project, rawEnvironment) {
           const environment = yield* parseEnvironmentName(rawEnvironment);
-          const environments = yield* list(Option.some(project));
-          const managed = environments.find((candidate) => candidate.environment === environment);
+          const credentials = Option.getOrElse(yield* store.load(), emptyCredentials);
+          const managed = credentials.environments.find(
+            (candidate) => candidate.project === project && candidate.environment === environment,
+          );
           if (managed === undefined) {
             return yield* new RemoteEnvironmentError({
               code: "OBS_CLI_REMOTE_ENVIRONMENT_NOT_FOUND",
               message: `Environment ${project}/${environment} is not configured. Run observability provision with --environment ${environment}.`,
+              cause: `${project}/${environment}`,
+            });
+          }
+          if (
+            hasPendingAxiomMutation(credentials, project, environment) &&
+            Option.isSome(environmentAxiom(managed))
+          ) {
+            return yield* new RemoteEnvironmentError({
+              code: "OBS_CLI_REMOTE_TOKEN_UNAVAILABLE",
+              message: `The stored token for ${project}/${environment} may be stale after an unresolved mutation. Rerun provisioning with --provider axiom --rotate-token before exporting it.`,
               cause: `${project}/${environment}`,
             });
           }

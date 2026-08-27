@@ -1,7 +1,7 @@
 import { BunServices } from "@effect/platform-bun";
 import { describe, expect, test } from "bun:test";
 import { Clock, Effect, FileSystem, Option, Schema } from "effect";
-import { chmod, mkdir } from "node:fs/promises";
+import { chmod, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   AxiomCredentials,
@@ -11,7 +11,13 @@ import {
 } from "../src/CredentialsStore.ts";
 
 const PersistedVersion = Schema.Struct({ version: Schema.Number });
+const PersistedLockOwner = Schema.Struct({
+  nonce: Schema.NonEmptyString,
+  pid: Schema.Int,
+  heartbeat: Schema.Number,
+});
 const decodePersistedVersion = Schema.decodeUnknownSync(PersistedVersion);
+const decodePersistedLockOwner = Schema.decodeUnknownSync(PersistedLockOwner);
 
 const makeAdvancingClock = (): Clock.Clock => {
   let current = 0;
@@ -184,6 +190,69 @@ describe("CredentialsStore", () => {
       );
 
       expect(error.code).toBe("OBS_CLI_CREDENTIALS_BUSY");
+    }),
+  );
+
+  test.serial("binds delayed heartbeats to one lock generation", () =>
+    withCredentialsHome("observability-lock-generation-", async (root) => {
+      const lockPath = join(root, ".credentials.lock");
+      const ownerPath = join(lockPath, "owner.json");
+      const staleNonce = "stale-owner";
+      await mkdir(lockPath, { recursive: true, mode: 0o700 });
+      await Bun.write(
+        ownerPath,
+        `${JSON.stringify({ nonce: staleNonce, pid: 1, heartbeat: Date.now() - 60_000 })}\n`,
+      );
+      await chmod(ownerPath, 0o600);
+
+      let signalAcquired = (): void => {};
+      let signalRelease = (): void => {};
+      const acquired = new Promise<void>((resolve) => {
+        signalAcquired = resolve;
+      });
+      const release = new Promise<void>((resolve) => {
+        signalRelease = resolve;
+      });
+      const owner = Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* CredentialsStore;
+          yield* store.exclusive(() =>
+            Effect.gen(function* () {
+              yield* Effect.sync(signalAcquired);
+              yield* Effect.promise(() => release);
+            }),
+          );
+        }).pipe(Effect.provide(CredentialsStore.layer), Effect.provide(BunServices.layer)),
+      );
+      await acquired;
+
+      const currentOwner = decodePersistedLockOwner(JSON.parse(await Bun.file(ownerPath).text()));
+      expect(currentOwner.nonce).not.toBe(staleNonce);
+      expect(
+        await Bun.file(join(root, `.credentials.heartbeat-${currentOwner.nonce}`)).exists(),
+      ).toBeTrue();
+      await Bun.write(join(root, `.credentials.heartbeat-${staleNonce}`), `${Date.now()}\n`);
+      const ownerAfterDelayedHeartbeat = decodePersistedLockOwner(
+        JSON.parse(await Bun.file(ownerPath).text()),
+      );
+      expect(ownerAfterDelayedHeartbeat.nonce).toBe(currentOwner.nonce);
+
+      let contenderFinished = false;
+      const contender = Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* CredentialsStore;
+          yield* store.save(new CredentialsFile({ version: 2, environments: [] }));
+        }).pipe(Effect.provide(CredentialsStore.layer), Effect.provide(BunServices.layer)),
+      ).then(() => {
+        contenderFinished = true;
+      });
+      await Bun.sleep(150);
+      expect(contenderFinished).toBeFalse();
+      signalRelease();
+      await owner;
+      await contender;
+      expect(contenderFinished).toBeTrue();
+      await rm(join(root, `.credentials.heartbeat-${staleNonce}`), { force: true });
     }),
   );
 

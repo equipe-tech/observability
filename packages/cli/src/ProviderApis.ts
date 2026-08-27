@@ -109,24 +109,13 @@ const remoteRequest = Effect.fn("remoteRequest")(function* (
   init: RequestInit,
 ): Effect.fn.Return<RemoteResponse, RemoteApiError> {
   const response = yield* Effect.tryPromise({
-    try: (signal) => fetch(url, { ...init, signal }),
+    try: (signal) => fetch(url, { ...init, redirect: "error", signal }),
     catch: (cause) =>
       new RemoteApiError({
         code: "OBS_CLI_REMOTE_FAILED",
         message: `${provider} could not be reached. Check the network connection and retry.`,
         provider,
         status: 0,
-        cause,
-      }),
-  });
-  const content = yield* Effect.tryPromise({
-    try: () => response.text(),
-    catch: (cause) =>
-      new RemoteApiError({
-        code: "OBS_CLI_REMOTE_FAILED",
-        message: `${provider} returned an unreadable response. Retry the command.`,
-        provider,
-        status: response.status,
         cause,
       }),
   });
@@ -139,6 +128,17 @@ const remoteRequest = Effect.fn("remoteRequest")(function* (
       cause: response.status,
     });
   }
+  const content = yield* Effect.tryPromise({
+    try: () => response.text(),
+    catch: (cause) =>
+      new RemoteApiError({
+        code: "OBS_CLI_REMOTE_FAILED",
+        message: `${provider} returned an unreadable response. Retry the command.`,
+        provider,
+        status: response.status,
+        cause,
+      }),
+  });
   return { status: response.status, content };
 });
 
