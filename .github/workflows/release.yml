@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag existente para reprocessar (exemplo: v0.2.0)"
+        description: "Tag existente ainda não publicada (exemplo: v0.2.0)"
         required: true
         type: string
 
@@ -59,7 +59,10 @@ jobs:
   verify:
     needs: tag-check
     uses: ./.github/workflows/ci.yml
-    secrets: inherit
+    with:
+      ref: ${{ needs.tag-check.outputs.tag }}
+    secrets:
+      AXIOM_TOKEN: ${{ secrets.AXIOM_TOKEN }}
 
   release:
     needs:
@@ -78,8 +81,9 @@ jobs:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       - run: bun run build
-      - name: Pack release tarballs
+      - name: Pack and verify release tarballs
         env:
+          TAG: ${{ needs.tag-check.outputs.tag }}
           VERSION: ${{ needs.tag-check.outputs.version }}
         run: |
           set -euo pipefail
@@ -88,6 +92,10 @@ jobs:
             --filename "$PWD/../../dist-release/equipe-tech-observability-${VERSION}.tgz")
           (cd packages/cli && bun pm pack --ignore-scripts --quiet \
             --filename "$PWD/../../dist-release/equipe-tech-observability-cli-${VERSION}.tgz")
+          checksum_file="docs/releases/${TAG}.sha256"
+          [[ -f "$checksum_file" ]] \
+            || { echo "The release checksum file is missing: $checksum_file"; exit 1; }
+          sha256sum --check "$checksum_file"
           ls -l dist-release
       - name: Generate release notes
         env:
@@ -107,9 +115,8 @@ jobs:
           PRERELEASE: ${{ needs.tag-check.outputs.prerelease }}
         run: |
           set -euo pipefail
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft \
-            | grep -q false; then
-            echo "The release $TAG is already published. Assets are re-uploaded with --clobber only."
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "The release $TAG already exists. Existing assets will not be replaced."
           else
             create_args=(release create "$TAG" --repo "$GITHUB_REPOSITORY" \
               --title "$TAG" --notes-file release-notes.md --verify-tag)
@@ -117,8 +124,8 @@ jobs:
               create_args+=(--prerelease)
             fi
             gh "${create_args[@]}"
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" dist-release/*
           fi
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" dist-release/* --clobber
       - name: Verify the release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -143,11 +150,14 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag-check.outputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: "https://registry.npmjs.org"
-      - name: Download the release tarballs
+      - name: Download and verify the release tarballs
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.tag-check.outputs.tag }}
@@ -156,6 +166,10 @@ jobs:
           mkdir -p dist-release
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
             --pattern "*.tgz" --dir dist-release
+          checksum_file="docs/releases/${TAG}.sha256"
+          [[ -f "$checksum_file" ]] \
+            || { echo "The release checksum file is missing: $checksum_file"; exit 1; }
+          sha256sum --check "$checksum_file"
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

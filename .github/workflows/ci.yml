@@ -6,6 +6,13 @@ on:
     branches:
       - master
   workflow_call:
+    inputs:
+      ref:
+        required: false
+        type: string
+    secrets:
+      AXIOM_TOKEN:
+        required: false
 
 permissions:
   contents: read
@@ -16,6 +23,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - name: Configure the observability state directory
         run: echo "OBSERVABILITY_HOME=${RUNNER_TEMP}/observability" >> "$GITHUB_ENV"
       - uses: oven-sh/setup-bun@v2

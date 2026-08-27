@@ -159,19 +159,7 @@ O projeto usa [Effect](https://effect.website) v4 e conventional commits.
 
 ### Release
 
-```sh
-bun scripts/release.ts patch          # ou minor, major, x.y.z, x.y.z-rc.1
-git push origin master --follow-tags
-```
-
-O script alinha as versões dos dois pacotes, cria o commit `chore: release vX.Y.Z` e a tag anotada. O push da tag dispara o workflow `release`:
-
-1. `tag-check` valida o formato da tag e a igualdade com os manifests.
-2. `verify` roda o CI completo, incluindo o canário local e, com secrets, o deployed.
-3. `release` empacota os tarballs, gera as notas a partir dos conventional commits e cria o GitHub Release com os assets.
-4. `publish-npm` baixa os tarballs do release e publica no npm com o dist-tag correto (`latest`, ou `alpha`/`beta`/`rc` para pré-releases). Sem o secret `NPM_TOKEN`, o passo é pulado com aviso.
-
-O workflow `release-preflight` (manual) valida a configuração antes de criar a tag: versões alinhadas, notas, empacotamento e credenciais npm.
+Toda preparação e publicação segue exclusivamente o [runbook de publicação coordenada](docs/release-publication-runbook.md). As notas aprovadas de `v0.2.0` são o arquivo manuscrito [docs/releases/v0.2.0.md](docs/releases/v0.2.0.md). Não crie tags, releases, assets ou publicações npm por comandos fora do gate humano documentado no runbook.
 
 ## Propriedade e transferência
 

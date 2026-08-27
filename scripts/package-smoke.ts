@@ -59,6 +59,7 @@ try {
       directory: join(root, "packages/telemetry"),
       archive: "telemetry.tgz",
       required: [
+        "package/LICENSE",
         "package/README.md",
         "package/dist/LICENSE",
         "package/dist/index.js",
@@ -83,6 +84,7 @@ try {
       directory: join(root, "packages/cli"),
       archive: "cli.tgz",
       required: [
+        "package/LICENSE",
         "package/README.md",
         "package/dist/LICENSE",
         "package/dist/main.js",
@@ -117,6 +119,15 @@ try {
     );
     requireSuccess(listing, `Reading ${packageSpec.archive}`);
     assertArchive(listing.stdout, packageSpec.required, ["package/src/", "package/test/"]);
+    const packedLicense = await run(
+      ["tar", "-xOf", join(temporaryDirectory, packageSpec.archive), "package/LICENSE"],
+      temporaryDirectory,
+    );
+    requireSuccess(packedLicense, `Reading the root license from ${packageSpec.archive}`);
+    const repositoryLicense = await readFile(join(root, "LICENSE"), "utf8");
+    if (packedLicense.stdout !== repositoryLicense) {
+      throw new Error(`The package root license differs in ${packageSpec.archive}.`);
+    }
   }
 
   for (const nestMajor of [10, 11]) {
