@@ -1,12 +1,26 @@
-import { Clock, Context, Duration, Effect, Layer, Ref, Schema } from "effect";
+import { Cause, Context, Duration, Effect, Exit, Layer, Option, Schema } from "effect";
 import {
   BrowserEvent,
   BrowserEventBatch,
   encodeBrowserEventBatch,
   maxEventsPerBatch,
 } from "../BrowserEvents.ts";
-import { sanitizeBrowserEventName, sanitizeBrowserFields } from "../RedactionPolicy.ts";
 import type { WideEventFields } from "../WideEvent.ts";
+import { BrowserClientEngine, normalizePositiveInteger } from "./BrowserClient.ts";
+
+export {
+  BrowserTelemetryClientDeliveryError,
+  BrowserTelemetryClientShutdownError,
+  createBrowserTelemetryClient,
+} from "./BrowserClient.ts";
+export type {
+  BrowserTelemetryClient,
+  BrowserTelemetryClientBatch,
+  BrowserTelemetryClientConfig,
+  BrowserTelemetryClientEvent,
+  BrowserTelemetryClientFields,
+  BrowserTelemetryClientTransport,
+} from "./BrowserClient.ts";
 
 export {
   BrowserEvent,
@@ -84,67 +98,66 @@ export type BrowserTelemetryOptions = {
   readonly flushInterval?: Duration.Input;
 };
 
-type EventQueue = {
-  readonly events: ReadonlyArray<BrowserEvent>;
-  readonly dropped: number;
-};
-
 const makeBrowserTelemetry = Effect.fn("makeBrowserTelemetry")(function* (
   options?: BrowserTelemetryOptions,
 ) {
   const transport = yield* BrowserEventTransport;
-  const maxBatchSize = Math.min(options?.maxBatchSize ?? 32, maxEventsPerBatch);
-  const maxQueueSize = options?.maxQueueSize ?? 256;
   const flushInterval = Duration.fromInputUnsafe(options?.flushInterval ?? "5 seconds");
-  const queue = yield* Ref.make<EventQueue>({ events: [], dropped: 0 });
+  const engine = new BrowserClientEngine({
+    disabled: false,
+    maxBatchSize: Math.min(normalizePositiveInteger(options?.maxBatchSize, 32), maxEventsPerBatch),
+    maxQueueSize: normalizePositiveInteger(options?.maxQueueSize, 256),
+    flushIntervalMs: normalizePositiveInteger(Duration.toMillis(flushInterval), 5_000),
+    shutdownTimeoutMs: 2_000,
+    transport: (batch) =>
+      new Promise<void>((resolve, reject) => {
+        Effect.runCallback(
+          transport.send(
+            new BrowserEventBatch({
+              version: 1,
+              events: batch.events.map((event) => new BrowserEvent(event)),
+            }),
+          ),
+          {
+            onExit: (exit) => {
+              if (Exit.isSuccess(exit)) {
+                resolve();
+                return;
+              }
+              const failure = Cause.findErrorOption(exit.cause);
+              reject(Option.isSome(failure) ? failure.value : Cause.squash(exit.cause));
+            },
+          },
+        );
+      }),
+    startTimer: false,
+  });
 
-  const emit = (name: string, fields?: WideEventFields): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      const occurredAt = yield* Clock.currentTimeMillis;
-      const event = new BrowserEvent({
-        id: crypto.randomUUID(),
-        name: sanitizeBrowserEventName(name),
-        occurredAt,
-        fields: sanitizeBrowserFields(fields ?? {}),
-      });
-      yield* Ref.update(queue, (state) =>
-        state.events.length >= maxQueueSize
-          ? { events: [...state.events.slice(1), event], dropped: state.dropped + 1 }
-          : { events: [...state.events, event], dropped: state.dropped },
-      );
-    });
-
-  const flush: Effect.Effect<void, BrowserEventDeliveryError> = Effect.gen(function* () {
-    while (true) {
-      const batchEvents = yield* Ref.modify(queue, (state) => [
-        state.events.slice(0, maxBatchSize),
-        { events: state.events.slice(maxBatchSize), dropped: state.dropped },
-      ]);
-      if (batchEvents.length === 0) {
-        return;
-      }
-      yield* transport.send(new BrowserEventBatch({ version: 1, events: batchEvents })).pipe(
-        Effect.tapError(() =>
-          Ref.update(queue, (state) => {
-            const requeued = [...batchEvents, ...state.events];
-            return {
-              events: requeued.slice(0, maxQueueSize),
-              dropped: state.dropped + Math.max(0, requeued.length - maxQueueSize),
-            };
+  const flush = Effect.tryPromise({
+    try: () => engine.flush(),
+    catch: (cause) =>
+      cause instanceof BrowserEventDeliveryError
+        ? cause
+        : new BrowserEventDeliveryError({
+            code: "OBS_BROWSER_EVENTS_DELIVERY_FAILED",
+            message:
+              "The browser events could not be sent. The events stay queued and the next flush retries the same batch.",
+            retryable: true,
+            cause,
           }),
-        ),
-      );
-    }
   });
 
   yield* Effect.forkScoped(flush.pipe(Effect.ignore, Effect.delay(flushInterval), Effect.forever));
-  yield* Effect.addFinalizer(() => flush.pipe(Effect.ignore));
+  yield* Effect.addFinalizer(() =>
+    Effect.tryPromise({ try: () => engine.dispose(), catch: () => undefined }).pipe(Effect.ignore),
+  );
 
   return {
-    emit,
+    emit: (name: string, fields?: WideEventFields) =>
+      Effect.sync(() => engine.emit(name, fields ?? {})),
     flush: () => flush,
-    pending: () => Ref.get(queue).pipe(Effect.map((state) => state.events.length)),
-    dropped: () => Ref.get(queue).pipe(Effect.map((state) => state.dropped)),
+    pending: () => Effect.sync(() => engine.pending()),
+    dropped: () => Effect.sync(() => engine.dropped()),
   };
 });
 

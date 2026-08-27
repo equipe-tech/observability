@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Layer, Option, Schema } from "effect";
+import { Duration, Effect, Layer, Option, Schema } from "effect";
 import { createServer, type Server } from "node:http";
 import {
   BrowserEventBatch,
@@ -64,6 +64,29 @@ describe("BrowserTelemetry", () => {
       const long = event.fields["page.long"];
       assert.strictEqual(String(long).length, maxFieldValueLength);
       assert.strictEqual(Object.keys(event.fields).length, 32);
+    }),
+  );
+
+  it.live("normalizes non-positive queue and interval options", () =>
+    Effect.gen(function* () {
+      for (const value of [0, -1]) {
+        const sent: RecordedBatches = [];
+        yield* Effect.gen(function* () {
+          const telemetry = yield* BrowserTelemetry;
+          yield* telemetry.emit("", {});
+          yield* telemetry.flush();
+          assert.strictEqual(yield* telemetry.pending(), 0);
+        }).pipe(
+          Effect.provide(
+            BrowserTelemetry.layer({
+              maxBatchSize: value,
+              maxQueueSize: value,
+              flushInterval: Duration.millis(value),
+            }).pipe(Layer.provide(recordingTransport(sent))),
+          ),
+        );
+        assert.strictEqual(sent[0]?.events[0]?.name, "browser.event");
+      }
     }),
   );
 
@@ -269,6 +292,10 @@ describe("BrowserEventTransport.layerFetch", () => {
       const secret = crypto.randomUUID().replaceAll("-", "");
       const bodies: Array<string> = [];
       const endpoint = yield* Effect.promise(() => startEndpoint(200, bodies));
+      const nestedJson = JSON.stringify({
+        object: { assignment: `authorization=${secret}`, ordinary: "authorization guide" },
+        array: [`password:${secret}`, "ordinary value"],
+      });
       const fields: WideEventFields = Object.fromEntries([
         ["authorization", secret],
         ["note", `before Bearer ${secret} after`],
@@ -277,6 +304,7 @@ describe("BrowserEventTransport.layerFetch", () => {
         ["constructor", "safe-constructor"],
         ["hasOwnProperty", "safe-has-own-property"],
         ["__proto__", "safe-proto"],
+        ["nested.json", nestedJson],
       ]);
       Object.defineProperty(fields, "nested", { value: { token: secret }, enumerable: true });
       yield* Effect.gen(function* () {
@@ -298,7 +326,11 @@ describe("BrowserEventTransport.layerFetch", () => {
       assert.include(body, sensitiveFieldReplacement);
       assert.include(body, sensitiveTextReplacement);
       assert.include(body, "tokenizer");
-      assert.notInclude(body, "nested");
+      assert.notInclude(body, '"nested":');
+      assert.include(body, `authorization=${sensitiveTextReplacement}`);
+      assert.include(body, `password:${sensitiveTextReplacement}`);
+      assert.include(body, "authorization guide");
+      assert.include(body, "ordinary value");
       assert.include(body, '"toString":"safe-to-string"');
       assert.include(body, '"constructor":"safe-constructor"');
       assert.include(body, '"hasOwnProperty":"safe-has-own-property"');

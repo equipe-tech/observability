@@ -15,6 +15,8 @@ const SanitizedJson = Schema.fromJsonString(
       email: Schema.String,
       display: Schema.String,
       escaped: Schema.String,
+      assignment: Schema.String,
+      ordinary: Schema.String,
     }),
     events: Schema.Array(Schema.Struct({ token: Schema.String, note: Schema.String })),
   }),
@@ -139,9 +141,11 @@ describe("browser telemetry redaction policy", () => {
         email: secret,
         display: `Bearer ${secret}`,
         escaped: `quoted "Bearer ${secret}"`,
+        assignment: `authorization=${secret}`,
+        ordinary: "authorization guide",
       },
       events: [
-        { token: secret, note: `sk_${secret}` },
+        { token: secret, note: `password:${secret}` },
         { token: secret, note: "ordinary value" },
       ],
     });
@@ -154,6 +158,10 @@ describe("browser telemetry redaction policy", () => {
     const decoded = decodeSanitizedJson(fields.json);
     assert.strictEqual(decoded.profile.email, sensitiveTextReplacement);
     assert.strictEqual(decoded.profile.escaped, `quoted "${sensitiveTextReplacement}"`);
+    assert.strictEqual(decoded.profile.assignment, `authorization=${sensitiveTextReplacement}`);
+    assert.strictEqual(decoded.profile.ordinary, "authorization guide");
+    assert.strictEqual(decoded.events[0]?.note, `password:${sensitiveTextReplacement}`);
+    assert.strictEqual(decoded.events[1]?.note, "ordinary value");
     assert.strictEqual(decoded.events[0]?.token, sensitiveTextReplacement);
     assert.strictEqual(decoded.events[1]?.token, sensitiveTextReplacement);
     assert.notInclude(JSON.stringify(fields), secret);
