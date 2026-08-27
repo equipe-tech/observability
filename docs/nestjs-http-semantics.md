@@ -14,6 +14,18 @@ No encerramento, o módulo fecha a admissão de spans, aguarda ou interrompe req
 
 O suporte usa NestJS com Express. O adapter não declara suporte ao Fastify.
 
+## Correlação com eventos amplos
+
+`createRequestWideEventTraceCorrelation` adapta um logger de evento amplo que oferece `set`. Passe o resultado em `requestWideEventTraceCorrelation` nas opções habilitadas de `TelemetryModule` ou `TelemetryInterceptor`. A API pública do adapter não expõe Effect e o pacote não depende de evlog em runtime.
+
+Com evlog, importe `EvlogModule` antes de `TelemetryModule` para que o middleware do evlog crie o logger e o anexe à requisição antes dos interceptors do Nest. O `TelemetryInterceptor` cria o único span de servidor e grava `traceId` e `spanId` no logger antes de executar o handler. Não registre um segundo interceptor de correlação.
+
+O evlog continua dono do AsyncLocalStorage, do evento por requisição, da amostragem e do drain. O adapter de telemetria mantém somente o WeakMap de requisição para span e não retém logger ou identificadores. Rotas sem span ativo não recebem correlação. Falhas ou ausência do logger são ignoradas e não alteram a resposta.
+
+Em sucesso, HTTP 4xx e defeitos, os identificadores já estão no evento quando a resposta finaliza. Em cancelamento ou fechamento prematuro, eles permanecem no evento emitido no `close`. Um pai remoto não amostrado ainda fornece os identificadores ao evento, embora o span não seja exportado. Um `traceparent` malformado inicia um novo trace local.
+
+O drain OTLP do logger deve mapear os campos superiores `traceId` e `spanId` para os campos nativos do LogRecord. Copiar esses valores apenas para atributos arbitrários não atende ao contrato de correlação.
+
 ## Nomes e rotas
 
 O nome usa o método normalizado e o template completo da rota.

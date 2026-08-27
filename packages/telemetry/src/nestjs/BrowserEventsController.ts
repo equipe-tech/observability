@@ -6,7 +6,8 @@ import {
   InvalidBrowserEventBatch,
   type BrowserEventIngestReceipt,
 } from "../node/BrowserEventIngest.ts";
-import { requestSpan, withRequestSpan, type RequestReference } from "./TelemetryInterceptor.ts";
+import type { RequestReference } from "./RequestWideEventTraceCorrelation.ts";
+import { requestSpan, withRequestSpan } from "./TelemetryInterceptor.ts";
 
 export const defaultBrowserEventsPath = "_telemetry/events";
 

@@ -8,6 +8,10 @@ import {
   type ProxyPolicy,
   type TelemetryRoutePolicy,
 } from "./HttpRoutePolicy.ts";
+import type {
+  RequestReference,
+  RequestWideEventTraceCorrelation,
+} from "./RequestWideEventTraceCorrelation.ts";
 
 const TraceparentRequest = Schema.Struct({
   headers: Schema.Struct({
@@ -42,8 +46,6 @@ const decodeHttpErrorBoundary = Schema.decodeUnknownOption(HttpErrorBoundary);
 const decodeErrorType = Schema.decodeUnknownOption(ErrorType);
 const decodeHeadersSent = Schema.decodeUnknownOption(Schema.Boolean);
 const decodeResponseEmitter = Schema.decodeUnknownOption(Schema.instanceOf(EventEmitter));
-
-export type RequestReference = WeakKey;
 
 const requestSpans = new WeakMap<RequestReference, Tracer.Span>();
 
@@ -109,12 +111,14 @@ export type TelemetryInterceptorOptions = {
   readonly healthRouteTemplates?: ReadonlyArray<string> | undefined;
   readonly proxyPolicy?: ProxyPolicy | undefined;
   readonly requestTracker?: TelemetryRequestTracker | undefined;
+  readonly requestWideEventTraceCorrelation?: RequestWideEventTraceCorrelation | undefined;
 };
 
 export class TelemetryInterceptor<RuntimeError> implements NestInterceptor {
   readonly #runtime: ManagedRuntime.ManagedRuntime<never, RuntimeError>;
   readonly #routePolicy: TelemetryRoutePolicy;
   readonly #requestTracker: TelemetryRequestTracker;
+  readonly #requestWideEventTraceCorrelation: RequestWideEventTraceCorrelation | undefined;
   #tracer: Tracer.Tracer | undefined;
   #clock: Clock.Clock | undefined;
 
@@ -128,6 +132,7 @@ export class TelemetryInterceptor<RuntimeError> implements NestInterceptor {
       proxyPolicy: options.proxyPolicy,
     });
     this.#requestTracker = options.requestTracker ?? new TelemetryRequestTracker();
+    this.#requestWideEventTraceCorrelation = options.requestWideEventTraceCorrelation;
   }
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
@@ -204,6 +209,10 @@ export class TelemetryInterceptor<RuntimeError> implements NestInterceptor {
       span.attribute("server.address", details.serverAddress.value);
     }
     requestSpans.set(request, span);
+    this.#requestWideEventTraceCorrelation?.correlate(request, {
+      traceId: span.traceId,
+      spanId: span.spanId,
+    });
     const response = httpContext.getResponse<RequestReference>();
     const responseEmitter = decodeResponseEmitter(response);
 

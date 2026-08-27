@@ -9,9 +9,16 @@ export {
   TelemetryInterceptor,
   TelemetryRequestTracker,
   withRequestSpan,
-  type RequestReference,
   type TelemetryInterceptorOptions,
 } from "./TelemetryInterceptor.ts";
+export {
+  createRequestWideEventTraceCorrelation,
+  RequestWideEventTraceCorrelation,
+  type RequestReference,
+  type RequestWideEventLogger,
+  type RequestWideEventLoggerResolver,
+  type ServerSpanCorrelation,
+} from "./RequestWideEventTraceCorrelation.ts";
 export type { ProxyPolicy, TelemetryRoutePolicyOptions } from "./HttpRoutePolicy.ts";
 export {
   InvalidTelemetryModuleOptions,

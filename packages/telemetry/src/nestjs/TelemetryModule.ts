@@ -20,6 +20,7 @@ import type { Observable } from "rxjs";
 import { layer } from "../Telemetry.ts";
 import { OtlpEndpoint, TelemetryConfig } from "../TelemetryConfig.ts";
 import { telemetryRoutePolicy, type ProxyPolicy } from "./HttpRoutePolicy.ts";
+import { RequestWideEventTraceCorrelation } from "./RequestWideEventTraceCorrelation.ts";
 import { TelemetryInterceptor, TelemetryRequestTracker } from "./TelemetryInterceptor.ts";
 
 export type TelemetryModuleOptions =
@@ -32,6 +33,7 @@ export type TelemetryModuleOptions =
       readonly otlpEndpoint: string;
       readonly healthRouteTemplates?: ReadonlyArray<string> | undefined;
       readonly proxyPolicy?: ProxyPolicy | undefined;
+      readonly requestWideEventTraceCorrelation?: RequestWideEventTraceCorrelation | undefined;
       readonly shutdownTimeoutMilliseconds?: number | undefined;
     };
 
@@ -109,6 +111,10 @@ const EnabledOptions = Schema.Struct({
   proxyPolicy: Schema.Union([Schema.Literals(["direct", "framework"]), Schema.Undefined]).pipe(
     Schema.optionalKey,
   ),
+  requestWideEventTraceCorrelation: Schema.Union([
+    Schema.instanceOf(RequestWideEventTraceCorrelation),
+    Schema.Undefined,
+  ]).pipe(Schema.optionalKey),
   shutdownTimeoutMilliseconds: Schema.Union([ShutdownTimeout, Schema.Undefined]).pipe(
     Schema.optionalKey,
   ),
@@ -126,6 +132,7 @@ interface EnabledNormalizedOptions {
   readonly config: TelemetryConfig;
   readonly healthRouteTemplates: ReadonlyArray<string> | undefined;
   readonly proxyPolicy: ProxyPolicy;
+  readonly requestWideEventTraceCorrelation: RequestWideEventTraceCorrelation | undefined;
   readonly shutdownTimeoutMilliseconds: number;
 }
 
@@ -151,6 +158,7 @@ const parseModuleOptions = (input: TelemetryModuleOptions): NormalizedOptions =>
       }),
       healthRouteTemplates: options.healthRouteTemplates,
       proxyPolicy: options.proxyPolicy ?? "direct",
+      requestWideEventTraceCorrelation: options.requestWideEventTraceCorrelation,
       shutdownTimeoutMilliseconds: options.shutdownTimeoutMilliseconds ?? 5_000,
     };
   } catch (cause) {
@@ -205,6 +213,7 @@ class EnabledTelemetryIntegration implements TelemetryIntegration {
       healthRouteTemplates: options.healthRouteTemplates,
       proxyPolicy: options.proxyPolicy,
       requestTracker: this.#requestTracker,
+      requestWideEventTraceCorrelation: options.requestWideEventTraceCorrelation,
     });
   }
 

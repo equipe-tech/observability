@@ -183,6 +183,7 @@ describe("TelemetryModule", () => {
             otlpEndpoint: capture.endpoint,
             healthRouteTemplates: undefined,
             proxyPolicy: undefined,
+            requestWideEventTraceCorrelation: undefined,
             shutdownTimeoutMilliseconds: undefined,
           }),
         }),
