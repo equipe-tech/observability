@@ -5,13 +5,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const temporaryDirectory = await mkdtemp(join(tmpdir(), "observability-package-"));
-const cliManifest: unknown = JSON.parse(
-  await readFile(join(root, "packages/cli/package.json"), "utf8"),
-);
-const cliVersion = Schema.decodeUnknownSync(Schema.Struct({ version: Schema.NonEmptyString }))(
-  cliManifest,
-).version;
+let temporaryDirectory = "";
+let cleanupStarted = false;
+let cleanupResult = Promise.resolve();
+const activeChildren = new Set<ReturnType<typeof Bun.spawn>>();
 
 type CommandResult = {
   readonly exitCode: number;
@@ -21,11 +18,14 @@ type CommandResult = {
 
 const run = (command: Array<string>, cwd: string, env = process.env): Promise<CommandResult> => {
   const child = Bun.spawn(command, { cwd, env, stdout: "pipe", stderr: "pipe" });
+  activeChildren.add(child);
   return Promise.all([
     child.exited,
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
-  ]).then(([exitCode, stdout, stderr]) => ({ exitCode, stdout, stderr }));
+  ])
+    .then(([exitCode, stdout, stderr]) => ({ exitCode, stdout, stderr }))
+    .finally(() => activeChildren.delete(child));
 };
 
 const requireSuccess = (result: CommandResult, operation: string): void => {
@@ -51,7 +51,59 @@ const assertArchive = (
   }
 };
 
+const cleanupTemporaryDirectory = async (): Promise<void> => {
+  const exits: Array<Promise<number>> = [];
+  for (const child of activeChildren) {
+    child.kill("SIGTERM");
+    exits.push(child.exited);
+  }
+  await Promise.all(exits);
+  activeChildren.clear();
+  if (temporaryDirectory !== "") {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+};
+
+const cleanup = (): Promise<void> => {
+  if (!cleanupStarted) {
+    cleanupStarted = true;
+    cleanupResult = cleanupTemporaryDirectory();
+  }
+  return cleanupResult;
+};
+
+const terminateAfterCleanup = (exitCode: number): void => {
+  cleanup().then(
+    () => process.exit(exitCode),
+    () => process.exit(exitCode),
+  );
+};
+
+const onSigint = (): void => terminateAfterCleanup(130);
+const onSigterm = (): void => terminateAfterCleanup(143);
+
+process.once("SIGINT", onSigint);
+process.once("SIGTERM", onSigterm);
+
 try {
+  temporaryDirectory = await mkdtemp(join(tmpdir(), "observability-package-"));
+  const signalTestIndex = process.argv.indexOf("--signal-cleanup-test");
+  if (signalTestIndex !== -1) {
+    const readyFile = process.argv[signalTestIndex + 1];
+    if (readyFile === undefined) {
+      throw new Error("The signal cleanup test requires a ready file path.");
+    }
+    await writeFile(readyFile, temporaryDirectory);
+    await Bun.sleep(60_000);
+  }
+
+  const cliManifest: unknown = JSON.parse(
+    await readFile(join(root, "packages/cli/package.json"), "utf8"),
+  );
+  const cliVersion = Schema.decodeUnknownSync(Schema.Struct({ version: Schema.NonEmptyString }))(
+    cliManifest,
+  ).version;
+
   requireSuccess(await run(["bun", "run", "build"], root), "The package build");
 
   const packages = [
@@ -466,5 +518,7 @@ try {
     throw new Error("The packed CLI did not render the Kamal accessory template.");
   }
 } finally {
-  await rm(temporaryDirectory, { recursive: true, force: true });
+  await cleanup();
+  process.off("SIGINT", onSigint);
+  process.off("SIGTERM", onSigterm);
 }

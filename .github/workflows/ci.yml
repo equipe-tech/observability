@@ -76,3 +76,6 @@ jobs:
           OBSERVABILITY_E2E_DEPLOYED=1 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:24318 bun test:canary:deployed
       - if: always()
         run: docker rm -f otel-production 2>/dev/null || true
+      - name: Clean runner observability state
+        if: always()
+        run: rm -rf "$OBSERVABILITY_HOME" "${RUNNER_TEMP}/collector-recovery"
