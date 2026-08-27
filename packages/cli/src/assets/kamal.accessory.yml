@@ -1,13 +1,23 @@
 accessories:
   otel-collector:
+    service: "{{name}}-otel-collector"
     image: otel/opentelemetry-collector-contrib:0.159.0
     roles:
       - web
     cmd: --config=/etc/otelcol/collector.yaml
     files:
       - observability/collector.yaml:/etc/otelcol/collector.yaml
-    volumes:
-      - otel-collector-queue:/var/lib/otelcol/queue
+    directories:
+      - local: /var/lib/observability/{{name}}/collector/queue
+        remote: /var/lib/otelcol/queue
+        mode: "0700"
+        owner: "10001:10001"
+    port: "127.0.0.1:13133:13133"
+    options:
+      publish:
+        - "127.0.0.1:8888:8888"
+      restart: unless-stopped
+      user: "10001:10001"
     env:
       secret:
         - AXIOM_TOKEN

@@ -70,6 +70,8 @@ try {
         "package/dist/nestjs/index.d.ts",
         "package/dist/browser/index.js",
         "package/dist/browser/index.d.ts",
+        "package/dist/browser/client.js",
+        "package/dist/browser/client.d.ts",
         "package/dist/testing/index.js",
         "package/dist/testing/index.d.ts",
       ],
@@ -142,7 +144,7 @@ try {
       [
         "bun",
         "-e",
-        "import { Telemetry, WideEvent } from '@equipe-tech/observability'; import { createMetrics } from '@equipe-tech/observability/metrics'; import { runMain, ingestBrowserEvents } from '@equipe-tech/observability/node'; import { BrowserTelemetry } from '@equipe-tech/observability/browser'; import { run } from '@equipe-tech/observability/testing'; if (!Telemetry.layer || !WideEvent.emit || !createMetrics || !runMain || !ingestBrowserEvents || !BrowserTelemetry.layer || !run) process.exit(1);",
+        "import { Telemetry, WideEvent } from '@equipe-tech/observability'; import { createMetrics } from '@equipe-tech/observability/metrics'; import { runMain, ingestBrowserEvents } from '@equipe-tech/observability/node'; import { BrowserTelemetry } from '@equipe-tech/observability/browser'; import { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client'; import { run } from '@equipe-tech/observability/testing'; if (!Telemetry.layer || !WideEvent.emit || !createMetrics || !runMain || !ingestBrowserEvents || !BrowserTelemetry.layer || !createBrowserTelemetryClient || !run) process.exit(1);",
       ],
       consumer,
     ),
@@ -150,7 +152,7 @@ try {
   );
   await writeFile(
     join(consumer, "index.ts"),
-    "import { TelemetryConfig } from '@equipe-tech/observability';\nimport { layer } from '@equipe-tech/observability/node';\nimport { BrowserTelemetry } from '@equipe-tech/observability/browser';\nimport { run } from '@equipe-tech/observability/testing';\nconst config = new TelemetryConfig({ serviceName: 'test', serviceVersion: '1.0.0', environment: 'test', otlpEndpoint: new URL('http://localhost:4318') });\nvoid config;\nvoid layer;\nvoid BrowserTelemetry;\nvoid run;\n",
+    "import { TelemetryConfig } from '@equipe-tech/observability';\nimport { layer } from '@equipe-tech/observability/node';\nimport { BrowserTelemetry } from '@equipe-tech/observability/browser';\nimport { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client';\nimport { run } from '@equipe-tech/observability/testing';\nconst config = new TelemetryConfig({ serviceName: 'test', serviceVersion: '1.0.0', environment: 'test', otlpEndpoint: new URL('http://localhost:4318') });\nvoid config;\nvoid layer;\nvoid BrowserTelemetry;\nvoid createBrowserTelemetryClient;\nvoid run;\n",
   );
   await writeFile(
     join(consumer, "metrics-consumer.ts"),
@@ -187,6 +189,105 @@ try {
     ),
     "Checking the telemetry declarations",
   );
+  const browserClientDeclaration = await readFile(
+    join(consumer, "node_modules/@equipe-tech/observability/dist/browser/BrowserClient.d.ts"),
+    "utf8",
+  );
+  if (/\bEffect\b|from ["']effect["']/.test(browserClientDeclaration)) {
+    throw new Error("The imperative browser client declaration exposes an Effect type.");
+  }
+
+  const browserSmokeSource = [
+    "import { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client';",
+    "const batches = [];",
+    "const client = createBrowserTelemetryClient({ transport: async (batch) => { batches.push(batch); }, flushIntervalMs: 60000 });",
+    "client.emit('packed.browser', { source: 'package-smoke' });",
+    "if (client.pending() !== 1) throw new Error('The packed browser client did not queue synchronously.');",
+    "await client.flush();",
+    "await client.dispose();",
+    "if (batches.length !== 1 || batches[0].events[0]?.name !== 'packed.browser') throw new Error('The packed browser client did not deliver through its public transport boundary.');",
+  ].join("\n");
+  const browserSmokeEntry = join(consumer, "browser-smoke.ts");
+  const emptyEntry = join(consumer, "empty.ts");
+  const browserBundle = join(consumer, "browser-smoke.min.js");
+  const emptyBundle = join(consumer, "empty.min.js");
+  await writeFile(browserSmokeEntry, browserSmokeSource);
+  await writeFile(emptyEntry, "export {};\n");
+  requireSuccess(
+    await run(
+      [
+        "bun",
+        "build",
+        browserSmokeEntry,
+        "--target=browser",
+        "--minify",
+        `--outfile=${browserBundle}`,
+      ],
+      consumer,
+    ),
+    "Bundling the packed browser facade",
+  );
+  requireSuccess(
+    await run(
+      ["bun", "build", emptyEntry, "--target=browser", "--minify", `--outfile=${emptyBundle}`],
+      consumer,
+    ),
+    "Bundling the empty browser baseline",
+  );
+  requireSuccess(
+    await run(["bun", browserBundle], consumer),
+    "Executing the packed browser bundle",
+  );
+  const browserBytes = await Bun.file(browserBundle).bytes();
+  const emptyBytes = await Bun.file(emptyBundle).bytes();
+  const browserGzip = Bun.gzipSync(browserBytes, { level: 9 });
+  const reproducedBrowserGzip = Bun.gzipSync(browserBytes, { level: 9 });
+  const emptyGzip = Bun.gzipSync(emptyBytes, { level: 9 });
+  if (
+    browserGzip.byteLength !== reproducedBrowserGzip.byteLength ||
+    !browserGzip.every((byte, index) => byte === reproducedBrowserGzip[index])
+  ) {
+    throw new Error("The isolated browser facade gzip output is not reproducible.");
+  }
+  const facadeGzipDeltaBytes = browserGzip.byteLength - emptyGzip.byteLength;
+  const facadeGzipRegressionCeilingBytes = 80_000;
+  const evidence = join(root, ".verification/observability/obs-11-browser-facade");
+  await rm(evidence, { recursive: true, force: true });
+  await mkdir(evidence, { recursive: true });
+  await Bun.write(join(evidence, "browser-smoke.ts"), browserSmokeSource);
+  await Bun.write(join(evidence, "browser-smoke.min.js"), browserBytes);
+  await Bun.write(join(evidence, "browser-smoke.min.js.gz"), browserGzip);
+  await Bun.write(join(evidence, "empty.min.js"), emptyBytes);
+  await Bun.write(join(evidence, "empty.min.js.gz"), emptyGzip);
+  await Bun.write(
+    join(evidence, "evidence.json"),
+    JSON.stringify(
+      {
+        command:
+          "bun build browser-smoke.ts --target=browser --minify --outfile=browser-smoke.min.js",
+        baselineCommand: "bun build empty.ts --target=browser --minify --outfile=empty.min.js",
+        source: "packed @equipe-tech/observability ./browser/client public export only",
+        browserMinifiedBytes: browserBytes.byteLength,
+        browserMinifiedGzipBytes: browserGzip.byteLength,
+        emptyMinifiedBytes: emptyBytes.byteLength,
+        emptyMinifiedGzipBytes: emptyGzip.byteLength,
+        facadeMinifiedGzipDeltaBytes: facadeGzipDeltaBytes,
+        facadeGzipRegressionCeilingBytes,
+        gzipReproductionMatched: true,
+        hibouBudgetBytes: 550_000,
+        hibouBaselineAssessed: false,
+        budgetChanged: false,
+        bunVersion: Bun.version,
+      },
+      undefined,
+      2,
+    ),
+  );
+  if (facadeGzipDeltaBytes > facadeGzipRegressionCeilingBytes) {
+    throw new Error(
+      `The isolated browser facade gzip delta is ${facadeGzipDeltaBytes} bytes, above the ${facadeGzipRegressionCeilingBytes} byte regression ceiling.`,
+    );
+  }
 
   const executable = join(consumer, "node_modules/.bin/observability");
   const help = await run([executable, "--help"], consumer);

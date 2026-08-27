@@ -41,15 +41,22 @@ observability provision \
   [--name <project>] \
   [--force] \
   [--environment <name>]... \
+  [--provider <axiom|sentry>]... \
   [--sentry-platform <platform>] \
   [--rotate-token]
 ```
 
-Sem `--environment`, o comando gera somente os assets locais. Esse comportamento mantém compatibilidade com versões anteriores.
+Sem `--environment`, o comando gera somente os assets locais. As flags remotas válidas não fazem chamadas externas nesse modo.
 
-Cada `--environment` cria três datasets Axiom e um token de ingestão. Todos os ambientes usam o mesmo projeto Sentry.
+Repita `--provider` para selecionar os dois providers. Valores duplicados produzem uma seleção única.
 
-`--rotate-token` regenera um token Axiom existente. A CLI salva o novo valor no arquivo local de credenciais.
+Sem `--provider`, um ambiente novo configura Axiom e Sentry. Um ambiente existente repete os providers salvos.
+
+A seleção é aditiva. Selecionar Axiom em um ambiente Sentry adiciona Axiom sem remover Sentry.
+
+Axiom cria três datasets e um token de ingestão por ambiente. Sentry usa um projeto para todos os ambientes da aplicação.
+
+`--rotate-token` exige Axiom em todos os ambientes solicitados. A CLI marca a mutação como pendente antes da chamada ao Axiom e salva o novo segredo após cada ambiente. Uma falha de transporte, resposta ilegível, HTTP 5xx ou status 2xx inesperado exige outra rotação explícita.
 
 `--force` afeta somente os assets locais. A flag não sobrescreve recursos remotos.
 
@@ -69,18 +76,19 @@ observability env export \
   --environment <name>
 ```
 
-O comando imprime estas variáveis no formato dotenv:
+O comando sempre imprime `OTEL_SERVICE_NAME` e `OTEL_DEPLOYMENT_ENVIRONMENT`.
 
-- `OTEL_SERVICE_NAME`
-- `OTEL_DEPLOYMENT_ENVIRONMENT`
+Um ambiente Axiom também imprime:
+
 - `OTEL_EXPORTER_OTLP_ENDPOINT`
 - `AXIOM_TOKEN`
 - `AXIOM_DATASET_TRACES`
 - `AXIOM_DATASET_LOGS`
 - `AXIOM_DATASET_METRICS`
-- `SENTRY_DSN`
 
-A saída contém segredos. A CLI não mascara a saída desse comando.
+Um ambiente Sentry imprime `SENTRY_DSN`.
+
+Um ambiente combinado imprime a união dessas variáveis. A saída contém segredos e não aplica mascaramento.
 
 ## Arquivo de credenciais
 
@@ -88,7 +96,13 @@ O caminho padrão é `~/.local/state/observability/credentials.json`. `OBSERVABI
 
 A CLI cria o diretório com modo `0700`. A CLI cria o arquivo com modo `0600`.
 
-O arquivo contém tokens administrativos, tokens de ingestão, DSNs, e o estado dos ambientes. A CLI recusa um arquivo acessível por grupo ou outros usuários.
+O arquivo contém tokens administrativos, tokens de ingestão, DSNs e o estado dos ambientes. A CLI recusa um arquivo acessível por outros usuários.
+
+A CLI atual migra o formato de versão 1 para a versão 2 antes de uma chamada externa. A migração preserva os segredos e o modo `0600`.
+
+Não use uma versão antiga da CLI após a migração. Versões antigas não leem o formato de versão 2.
+
+A CLI serializa atualizações com um lock entre processos. Um comando espera no máximo 30 segundos por outra atualização.
 
 ## Convenção de nomes
 
@@ -108,15 +122,22 @@ O nome do token Axiom segue este formato:
 
 ## Erros remotos
 
-| Código                                 | Significado                                                            |
-| -------------------------------------- | ---------------------------------------------------------------------- |
-| `OBS_CLI_CREDENTIALS_INVALID`          | O arquivo ou a configuração de credenciais não passa no parse.         |
-| `OBS_CLI_CREDENTIALS_INSECURE`         | O arquivo de credenciais permite acesso para grupo ou outros usuários. |
-| `OBS_CLI_CREDENTIALS_FAILED`           | A CLI não consegue acessar o arquivo de credenciais.                   |
-| `OBS_CLI_REMOTE_CREDENTIALS_MISSING`   | O provisionamento remoto não encontra as duas credenciais.             |
-| `OBS_CLI_REMOTE_UNAUTHORIZED`          | O provider recusa a credencial ou o acesso à organização.              |
-| `OBS_CLI_REMOTE_FAILED`                | A requisição falha ou o provider retorna um status inesperado.         |
-| `OBS_CLI_REMOTE_INVALID_RESPONSE`      | A resposta do provider não passa no parse.                             |
-| `OBS_CLI_REMOTE_INVALID_ENVIRONMENT`   | O ambiente ou o nome derivado de um dataset é inválido.                |
-| `OBS_CLI_REMOTE_TOKEN_UNAVAILABLE`     | O token existe no Axiom, mas a CLI não possui o valor secreto.         |
-| `OBS_CLI_REMOTE_ENVIRONMENT_NOT_FOUND` | O arquivo local não contém o projeto e o ambiente solicitados.         |
+| Código                                        | Significado                                                    |
+| --------------------------------------------- | -------------------------------------------------------------- |
+| `OBS_CLI_CREDENTIALS_INVALID`                 | O arquivo ou a configuração de credenciais não passa no parse. |
+| `OBS_CLI_CREDENTIALS_INSECURE`                | O arquivo de credenciais permite acesso para outros usuários.  |
+| `OBS_CLI_CREDENTIALS_FAILED`                  | A CLI não consegue acessar o arquivo de credenciais.           |
+| `OBS_CLI_CREDENTIALS_VERSION_UNSUPPORTED`     | Uma CLI antiga não lê a versão do arquivo.                     |
+| `OBS_CLI_CREDENTIALS_BUSY`                    | Outro processo mantém o lock de atualização.                   |
+| `OBS_CLI_REMOTE_CREDENTIALS_MISSING`          | Uma seleção combinada não encontra as duas credenciais.        |
+| `OBS_CLI_REMOTE_PROVIDER_CREDENTIALS_MISSING` | Um provider selecionado não tem credenciais.                   |
+| `OBS_CLI_REMOTE_INVALID_PROVIDER`             | `--provider` não contém `axiom` ou `sentry`.                   |
+| `OBS_CLI_REMOTE_UNAUTHORIZED`                 | O provider recusa a credencial ou o acesso à organização.      |
+| `OBS_CLI_REMOTE_FAILED`                       | A requisição falha ou o provider retorna um status inesperado. |
+| `OBS_CLI_REMOTE_INVALID_RESPONSE`             | A resposta do provider não passa no parse.                     |
+| `OBS_CLI_REMOTE_INVALID_ENVIRONMENT`          | O ambiente ou o nome derivado de um dataset é inválido.        |
+| `OBS_CLI_REMOTE_ROTATION_NOT_SELECTED`        | Uma rotação inclui um ambiente sem Axiom.                      |
+| `OBS_CLI_REMOTE_TOKEN_UNAVAILABLE`            | O token existe no Axiom, mas a CLI não possui o valor secreto. |
+| `OBS_CLI_REMOTE_PARTIAL_FAILURE`              | Um ambiente falha após a CLI salvar ambientes anteriores.      |
+| `OBS_CLI_REMOTE_OUTCOME_UNKNOWN`              | Uma mutação do token Axiom não tem resultado local confirmado. |
+| `OBS_CLI_REMOTE_ENVIRONMENT_NOT_FOUND`        | O arquivo local não contém o projeto e o ambiente solicitados. |

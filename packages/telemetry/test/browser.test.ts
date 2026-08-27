@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Layer, Option, Schema } from "effect";
+import { Duration, Effect, Layer, Option, Schema } from "effect";
 import { createServer, type Server } from "node:http";
 import {
   BrowserEventBatch,
@@ -8,9 +8,12 @@ import {
   BrowserTelemetry,
   maxFieldValueLength,
 } from "../src/browser/index.ts";
+import { sensitiveFieldReplacement, sensitiveTextReplacement } from "../src/RedactionPolicy.ts";
+import type { WideEventFields } from "../src/WideEvent.ts";
 
 const AddressInfo = Schema.Struct({ port: Schema.Number });
 const decodeAddressInfo = Schema.decodeUnknownOption(AddressInfo);
+const decodeBrowserEventBatch = Schema.decodeUnknownSync(BrowserEventBatch);
 
 type RecordedBatches = Array<BrowserEventBatch>;
 
@@ -61,6 +64,29 @@ describe("BrowserTelemetry", () => {
       const long = event.fields["page.long"];
       assert.strictEqual(String(long).length, maxFieldValueLength);
       assert.strictEqual(Object.keys(event.fields).length, 32);
+    }),
+  );
+
+  it.live("normalizes non-positive queue and interval options", () =>
+    Effect.gen(function* () {
+      for (const value of [0, -1]) {
+        const sent: RecordedBatches = [];
+        yield* Effect.gen(function* () {
+          const telemetry = yield* BrowserTelemetry;
+          yield* telemetry.emit("", {});
+          yield* telemetry.flush();
+          assert.strictEqual(yield* telemetry.pending(), 0);
+        }).pipe(
+          Effect.provide(
+            BrowserTelemetry.layer({
+              maxBatchSize: value,
+              maxQueueSize: value,
+              flushInterval: Duration.millis(value),
+            }).pipe(Layer.provide(recordingTransport(sent))),
+          ),
+        );
+        assert.strictEqual(sent[0]?.events[0]?.name, "browser.event");
+      }
     }),
   );
 
@@ -122,6 +148,56 @@ describe("BrowserTelemetry", () => {
         assert.strictEqual(yield* telemetry.pending(), 0);
       }).pipe(Effect.provide(BrowserTelemetry.layer().pipe(Layer.provide(flakyTransport))));
       assert.strictEqual(sent.length, 1);
+    }),
+  );
+
+  it.live("redacts before queueing and preserves the sanitized batch across retry", () =>
+    Effect.gen(function* () {
+      const secret = crypto.randomUUID().replaceAll("-", "");
+      const attempts: RecordedBatches = [];
+      let sends = 0;
+      const flakyTransport = Layer.succeed(
+        BrowserEventTransport,
+        BrowserEventTransport.of({
+          send: (batch) =>
+            Effect.suspend(() => {
+              attempts.push(batch);
+              sends += 1;
+              if (sends === 1) {
+                return Effect.fail(
+                  new BrowserEventDeliveryError({
+                    code: "OBS_BROWSER_EVENTS_DELIVERY_FAILED",
+                    message: "The network failed and the sanitized batch remains queued.",
+                    retryable: true,
+                    cause: "network",
+                  }),
+                );
+              }
+              return Effect.void;
+            }),
+        }),
+      );
+      const fields: WideEventFields = {
+        authorization: secret,
+        note: `Bearer ${secret}`,
+        control: "tokenizer",
+      };
+      Object.defineProperty(fields, "nested", { value: { secret }, enumerable: true });
+      yield* Effect.gen(function* () {
+        const telemetry = yield* BrowserTelemetry;
+        yield* telemetry.emit(`checkout token=${secret}`, fields);
+        yield* telemetry.flush().pipe(Effect.flip);
+        assert.strictEqual(yield* telemetry.pending(), 1);
+        yield* telemetry.flush();
+      }).pipe(Effect.provide(BrowserTelemetry.layer().pipe(Layer.provide(flakyTransport))));
+      assert.strictEqual(attempts.length, 2);
+      assert.deepStrictEqual(attempts[0], attempts[1]);
+      const serialized = JSON.stringify(attempts);
+      assert.notInclude(serialized, secret);
+      assert.include(serialized, sensitiveFieldReplacement);
+      assert.include(serialized, sensitiveTextReplacement);
+      assert.notInclude(serialized, "nested");
+      assert.include(serialized, "tokenizer");
     }),
   );
 
@@ -208,6 +284,65 @@ describe("BrowserEventTransport.layerFetch", () => {
       assert.isDefined(body);
       assert.include(body, "fetch.delivered");
       assert.include(body, '"version":1');
+    }),
+  );
+
+  it.live("sends only sanitized event data to a real loopback endpoint", () =>
+    Effect.gen(function* () {
+      const secret = crypto.randomUUID().replaceAll("-", "");
+      const bodies: Array<string> = [];
+      const endpoint = yield* Effect.promise(() => startEndpoint(200, bodies));
+      const nestedJson = JSON.stringify({
+        object: { assignment: `authorization=${secret}`, ordinary: "authorization guide" },
+        array: [`password:${secret}`, "ordinary value"],
+      });
+      const fields: WideEventFields = Object.fromEntries([
+        ["authorization", secret],
+        ["note", `before Bearer ${secret} after`],
+        ["control", "tokenizer"],
+        ["toString", "safe-to-string"],
+        ["constructor", "safe-constructor"],
+        ["hasOwnProperty", "safe-has-own-property"],
+        ["__proto__", "safe-proto"],
+        ["nested.json", nestedJson],
+      ]);
+      Object.defineProperty(fields, "nested", { value: { token: secret }, enumerable: true });
+      yield* Effect.gen(function* () {
+        const telemetry = yield* BrowserTelemetry;
+        yield* telemetry.emit(`checkout authorization=${secret}`, fields);
+        yield* telemetry.flush();
+      }).pipe(
+        Effect.provide(
+          BrowserTelemetry.layer().pipe(
+            Layer.provide(BrowserEventTransport.layerFetch({ endpoint: endpoint.url })),
+          ),
+        ),
+        Effect.ensuring(Effect.sync(() => endpoint.server.close())),
+      );
+      assert.strictEqual(bodies.length, 1);
+      const body = bodies[0];
+      assert.isDefined(body);
+      assert.notInclude(body, secret);
+      assert.include(body, sensitiveFieldReplacement);
+      assert.include(body, sensitiveTextReplacement);
+      assert.include(body, "tokenizer");
+      assert.notInclude(body, '"nested":');
+      assert.include(body, `authorization=${sensitiveTextReplacement}`);
+      assert.include(body, `password:${sensitiveTextReplacement}`);
+      assert.include(body, "authorization guide");
+      assert.include(body, "ordinary value");
+      assert.include(body, '"toString":"safe-to-string"');
+      assert.include(body, '"constructor":"safe-constructor"');
+      assert.include(body, '"hasOwnProperty":"safe-has-own-property"');
+      assert.include(body, '"__proto__":"safe-proto"');
+      const batch = decodeBrowserEventBatch(JSON.parse(body));
+      assert.strictEqual(batch.version, 1);
+      assert.strictEqual(batch.events.length, 1);
+      const event = batch.events[0];
+      assert.isDefined(event);
+      for (const key of ["toString", "constructor", "hasOwnProperty", "__proto__"]) {
+        assert.isTrue(Object.prototype.hasOwnProperty.call(event.fields, key));
+      }
     }),
   );
 

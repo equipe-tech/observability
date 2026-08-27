@@ -53,7 +53,7 @@ O [otel-desktop-viewer](https://github.com/CtrlSpice/otel-desktop-viewer) recebe
 app -> otel-collector (Kamal accessory) -> Axiom
 ```
 
-O Collector roda como accessory do [Kamal](https://kamal-deploy.org), com fila persistente e sem porta OTLP pública.
+O Collector roda como accessory do [Kamal](https://kamal-deploy.org), com filas persistentes limitadas por sinal e sem porta OTLP pública. Saúde e métricas internas são publicadas somente em loopback. Consulte [Operar a fila persistente do Collector](docs/collector-production-operations.md) antes do primeiro deploy.
 
 ## Estrutura
 
@@ -70,15 +70,15 @@ repos/                repositórios vendorados para agentes (gitignored)
 
 O pacote `@equipe-tech/observability` publica um subpath por runtime:
 
-| Subpath     | Conteúdo                                                                                                                     |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `./metrics` | Facade sem dependência de framework para counters, histogramas, gauges observáveis, flush e close                            |
-| `./node`    | `runMain` (telemetria do ambiente, interrupção em `SIGINT`/`SIGTERM`, flush no shutdown) e ingestão de eventos do browser    |
-| `./nestjs`  | `TelemetryInterceptor` (spans de fronteira HTTP), `withRequestSpan` e `createBrowserEventsController` (`/_telemetry/events`) |
-| `./browser` | `BrowserTelemetry` (fila limitada, batch e flush de wide events para `/_telemetry/events`) com transporte `fetch` injetável  |
-| `./testing` | Captura em memória dos exports OTLP reais (`run`, `makeCapture`) para asserts de spans, logs e métricas em testes            |
+| Subpath     | Conteúdo                                                                                                                                    |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `./metrics` | Facade sem dependência de framework para counters, histogramas, gauges observáveis, flush e close                                           |
+| `./node`    | `runMain` (telemetria do ambiente, interrupção em `SIGINT`/`SIGTERM`, flush no shutdown) e ingestão de eventos do browser                   |
+| `./nestjs`  | `TelemetryInterceptor` (spans de fronteira HTTP), `withRequestSpan` e `createBrowserEventsController` (`/_telemetry/events`)                |
+| `./browser` | `createBrowserTelemetryClient` imperativo e `BrowserTelemetry` compatível com Effect, ambos com fila limitada, batch e transporte injetável |
+| `./testing` | Captura em memória dos exports OTLP reais (`run`, `makeCapture`) para asserts de spans, logs e métricas em testes                           |
 
-O contrato do endpoint `/_telemetry/events` vive em `BrowserEvents` no entrypoint raiz. O servidor faz o parse com `parseBrowserEventBatch` e re-emite os eventos como wide events com atributos de servidor (`event.source`, `browser.event.id`).
+O [cliente imperativo do browser](docs/browser-client.md) publica `emit`, `flush`, `pending` e `dispose` sem tipos Effect e documenta o ciclo de vida React suportado. O contrato do endpoint `/_telemetry/events` vive em `BrowserEvents` no entrypoint raiz. O servidor faz o parse com `parseBrowserEventBatch` e re-emite os eventos como wide events com atributos de servidor (`event.source`, `browser.event.id`). O cliente sanitiza nomes e campos antes da fila conforme a [política de dados da telemetria do browser](docs/browser-telemetry-data-policy.md).
 
 O adapter `./nestjs` publica o endpoint pronto: registre `createBrowserEventsController(runtime)` nos controllers do módulo. O controller responde `202 { accepted }` e rejeita batches inválidos com `400 { code, message, correlationId }`. O valor `correlationId` é um identificador seguro para suporte. O limite de corpo bruto pertence ao transporte HTTP; o Express responde `413` acima do limite configurado.
 
@@ -120,7 +120,7 @@ O comando escreve no projeto alvo:
 - `observability/collector.yaml`: configuração do OTel Collector de produção (fila persistente e exporters Axiom)
 - `observability/kamal.accessory.yml`: trecho de accessory para mesclar em `config/deploy.yml`, com os datasets `<name>-traces|logs|metrics`
 
-O comando é idempotente. Um arquivo provisionado que foi modificado localmente gera o erro `OBS_CLI_PROVISION_CONFLICT`; use `--force` para sobrescrever. Depois do merge do accessory, defina o secret `AXIOM_TOKEN` no Kamal.
+O comando é idempotente. Um arquivo provisionado que foi modificado localmente gera o erro `OBS_CLI_PROVISION_CONFLICT`; use `--force` para sobrescrever. Depois do merge do accessory, prepare o filesystem dedicado de 8 GiB, valide owner `10001:10001` e mode `0700`, e defina o secret `AXIOM_TOKEN` no Kamal. Pare produtores antes de 75% de uso ou com menos de 2 GiB livres. O procedimento completo de health, alertas, drain, backup e rotação está em [Operar a fila persistente do Collector](docs/collector-production-operations.md).
 
 ### Ambientes remotos
 

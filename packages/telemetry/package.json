@@ -28,6 +28,10 @@
       "types": "./dist/browser/index.d.ts",
       "import": "./dist/browser/index.js"
     },
+    "./browser/client": {
+      "types": "./dist/browser/client.d.ts",
+      "import": "./dist/browser/client.js"
+    },
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js"
