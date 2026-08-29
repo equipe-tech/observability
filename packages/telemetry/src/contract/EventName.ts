@@ -2,8 +2,9 @@ import { Schema } from "effect";
 
 const eventNamePattern = /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){1,3}$/;
 const attributeNamePattern = /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/;
-const identifierPattern =
-  /^(?:[0-9a-f]{6,}|[a-z0-9_]*[0-9]{4,}[a-z0-9_]*|[0-9a-f]{8}_[0-9a-f_]{27,})$/;
+const numericIdentifierPattern = /^\d+$/;
+const uuidIdentifierPattern = /^[0-9a-f]{8}(?:_[0-9a-f]{4}){3}_[0-9a-f]{12}$/;
+const longIdentifierPattern = /^(?=[a-z0-9_]{12,}$)(?=.*[a-z])(?=.*\d)[a-z0-9_]+$/;
 
 const reservedEventParts = new Set([
   "production",
@@ -52,7 +53,13 @@ export const isValidEventName = (name: string): boolean => {
   }
   return name
     .split(".")
-    .every((part) => !reservedEventParts.has(part) && !identifierPattern.test(part));
+    .every(
+      (part) =>
+        !reservedEventParts.has(part) &&
+        !numericIdentifierPattern.test(part) &&
+        !uuidIdentifierPattern.test(part) &&
+        !longIdentifierPattern.test(part),
+    );
 };
 
 export const isValidAttributeName = (name: string): boolean =>

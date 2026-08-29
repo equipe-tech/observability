@@ -40,28 +40,8 @@ export const defineEventDefinitions = <const Events extends EventDefinitionsInpu
   events: Events,
 ): Events => events;
 
-export type MetricAttributeDefinitionInput = {
-  readonly classification: AttributeClassification;
-  readonly required: boolean;
-  readonly allowedValues?: ReadonlyArray<string>;
-  readonly maximumCardinality: number;
-};
-
-export type MetricAttributeDefinitionsInput = {
-  readonly [attributeName: string]: MetricAttributeDefinitionInput;
-};
-
-export type MetricDefinitionInput = {
-  readonly name: string;
-  readonly description: string;
-  readonly unit: string;
-  readonly kind: "counter" | "histogram" | "gauge";
-  readonly attributes: MetricAttributeDefinitionsInput;
-  readonly boundaries?: ReadonlyArray<number>;
-};
-
 export type MetricDefinitionsInput = {
-  readonly [alias: string]: MetricDefinitionInput;
+  readonly [alias: string]: typeof Schema.Json.Type;
 };
 
 export type AuditActionDefinitionInput = {
@@ -115,12 +95,65 @@ export type TelemetryContract<Definition extends TelemetryContractInput> = {
   readonly eventByAlias: ReadonlyMap<string, CompiledEventDefinition>;
   readonly eventByName: ReadonlyMap<EventName, CompiledEventDefinition>;
   readonly auditActionByAlias: ReadonlyMap<string, CompiledAuditActionDefinition>;
+  readonly auditActionByName: ReadonlyMap<string, CompiledAuditActionDefinition>;
   readonly metrics: Definition["metrics"];
 };
 
+const attributeClassifications = new Set<string>(["public", "internal", "sensitive", "forbidden"]);
 const eventKinds = new Set<string>(["request", "operation", "domain", "defect", "audit"]);
+const eventSeverities = new Set<string>(["debug", "info", "warn", "error", "fatal"]);
+const eventOutcomes = new Set<string>(["success", "failure", "cancelled"]);
 const auditActionPattern = /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/;
-const decodeEventName = Schema.decodeUnknownEffect(EventName);
+const canonicalSinkFields = new Set([
+  "event.name",
+  "event.kind",
+  "event.type",
+  "event.severity",
+  "event.outcome",
+  "event.timestamp",
+  "event.duration_ms",
+  "http.request.method",
+  "http.route",
+  "http.response.status_code",
+  "error.type",
+  "error.message",
+  "error.retryable",
+  "audit.action",
+  "audit.actor.kind",
+  "audit.actor.id",
+  "audit.resource.type",
+  "audit.resource.id",
+  "request.id",
+  "run.id",
+]);
+const AttributeDefinitionDocument = Schema.Struct({
+  classification: Schema.String,
+  required: Schema.Boolean,
+  metricLabel: Schema.Boolean,
+});
+const EventDefinitionDocument = Schema.Struct({
+  name: Schema.String,
+  kind: Schema.String,
+  defaultSeverity: Schema.String,
+  mandatory: Schema.Boolean,
+  sampling: Schema.Struct({
+    kind: Schema.String,
+    rate: Schema.Number.pipe(Schema.optionalKey),
+  }),
+  attributes: Schema.Record(Schema.String, AttributeDefinitionDocument),
+});
+const AuditActionDefinitionDocument = Schema.Struct({
+  action: Schema.String,
+  resourceType: Schema.String,
+  allowedOutcomes: Schema.Array(Schema.String),
+});
+const TelemetryContractDocument = Schema.Struct({
+  version: Schema.Number,
+  events: Schema.Record(Schema.String, EventDefinitionDocument),
+  metrics: Schema.Record(Schema.String, Schema.Any),
+  auditActions: Schema.Record(Schema.String, AuditActionDefinitionDocument),
+});
+const decodeTelemetryContractDocument = Schema.decodeUnknownEffect(TelemetryContractDocument);
 
 const issue = (
   code: ContractIssueCode,
@@ -129,6 +162,7 @@ const issue = (
     readonly eventAlias?: string;
     readonly eventName?: string;
     readonly attributeName?: string;
+    readonly auditActionAlias?: string;
   } = {},
 ): ContractIssue => ({ code, message, ...context });
 
@@ -174,6 +208,15 @@ const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<Contra
         ),
       );
     }
+    if (!eventSeverities.has(event.defaultSeverity)) {
+      issues.push(
+        issue(
+          "OBS_CONTRACT_INVALID_DEFAULT_SEVERITY",
+          `Event "${event.name}" has an invalid default severity. Use debug, info, warn, error, or fatal.`,
+          { eventAlias: alias, eventName: event.name },
+        ),
+      );
+    }
     if (event.sampling.kind === "rate") {
       if (
         !Number.isFinite(event.sampling.rate) ||
@@ -207,23 +250,24 @@ const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<Contra
           ),
         );
       }
-      if (attributeName.startsWith("event.")) {
+      if (canonicalSinkFields.has(attributeName)) {
         issues.push(
           issue(
             "OBS_CONTRACT_RESERVED_ATTRIBUTE_NAME",
-            `Attribute "${attributeName}" uses the reserved event namespace. Rename the application attribute outside event.*.`,
+            `Attribute "${attributeName}" is a canonical sink field. Rename the application attribute.`,
             { eventAlias: alias, eventName: event.name, attributeName },
           ),
         );
       }
       if (
+        !attributeClassifications.has(attribute.classification) ||
         (attribute.classification === "sensitive" && attribute.metricLabel) ||
         (attribute.classification === "forbidden" && attribute.required)
       ) {
         issues.push(
           issue(
             "OBS_CONTRACT_INVALID_ATTRIBUTE_DEFINITION",
-            `Attribute "${attributeName}" has incompatible classification flags. Remove metricLabel from sensitive attributes and required from forbidden attributes.`,
+            `Attribute "${attributeName}" has an invalid classification or incompatible flags. Use public or internal, remove metricLabel from sensitive attributes, and remove required from forbidden attributes.`,
             { eventAlias: alias, eventName: event.name, attributeName },
           ),
         );
@@ -235,12 +279,14 @@ const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<Contra
       action.action.length > 128 ||
       !auditActionPattern.test(action.action) ||
       action.resourceType.length === 0 ||
-      action.allowedOutcomes.length === 0
+      action.allowedOutcomes.length === 0 ||
+      action.allowedOutcomes.some((outcome) => !eventOutcomes.has(outcome))
     ) {
       issues.push(
         issue(
           "OBS_CONTRACT_INVALID_AUDIT_ACTION",
           `Audit action "${alias}" is invalid. Use a dotted lowercase action, a resource type, and at least one allowed outcome.`,
+          { auditActionAlias: alias },
         ),
       );
     }
@@ -253,6 +299,22 @@ export const defineTelemetryContract = Effect.fn("defineTelemetryContract")(func
 >(
   definition: Definition & StaticEventNames<Definition>,
 ): Effect.fn.Return<TelemetryContract<Definition>, InvalidTelemetryContract> {
+  const documentIsInvalid = yield* decodeTelemetryContractDocument(definition).pipe(
+    Effect.match({ onFailure: () => true, onSuccess: () => false }),
+  );
+  if (documentIsInvalid) {
+    return yield* new InvalidTelemetryContract({
+      code: "OBS_CONTRACT_INVALID",
+      message:
+        "Telemetry contract has an invalid outer document. Provide version, events, metrics, and auditActions records.",
+      issues: [
+        issue(
+          "OBS_CONTRACT_INVALID_DOCUMENT",
+          "Telemetry contract document is malformed. Provide version, events, metrics, and auditActions records.",
+        ),
+      ],
+    });
+  }
   const issues = collectIssues(definition);
   if (issues.length > 0) {
     return yield* new InvalidTelemetryContract({
@@ -265,7 +327,7 @@ export const defineTelemetryContract = Effect.fn("defineTelemetryContract")(func
   const eventByAlias = new Map<string, CompiledEventDefinition>();
   const eventByName = new Map<EventName, CompiledEventDefinition>();
   for (const [alias, event] of Object.entries(definition.events)) {
-    const name = yield* decodeEventName(event.name).pipe(Effect.orDie);
+    const name = EventName.make(event.name);
     const attributes = new Map(Object.entries(event.attributes));
     const compiled = {
       alias,
@@ -284,8 +346,11 @@ export const defineTelemetryContract = Effect.fn("defineTelemetryContract")(func
     eventByName.set(name, compiled);
   }
   const auditActionByAlias = new Map<string, CompiledAuditActionDefinition>();
+  const auditActionByName = new Map<string, CompiledAuditActionDefinition>();
   for (const [alias, action] of Object.entries(definition.auditActions)) {
-    auditActionByAlias.set(alias, { alias, ...action });
+    const compiled = { alias, ...action };
+    auditActionByAlias.set(alias, compiled);
+    auditActionByName.set(action.action, compiled);
   }
   return {
     version: 1,
@@ -294,6 +359,7 @@ export const defineTelemetryContract = Effect.fn("defineTelemetryContract")(func
     eventByAlias,
     eventByName,
     auditActionByAlias,
+    auditActionByName,
     metrics: definition.metrics,
   };
 });

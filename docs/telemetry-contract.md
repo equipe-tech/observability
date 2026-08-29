@@ -38,11 +38,17 @@ O produtor aceita somente aliases do contrato. O alias selecionado determina os 
 
 ## Nomes
 
-Um nome de evento tem de duas a quatro partes separadas por pontos e no máximo 128 caracteres. Cada parte começa com uma letra minúscula e aceita letras minúsculas, números e sublinhados. Partes que representam ambiente, severidade, resultado ou identificador são inválidas.
+Um nome de evento tem de duas a quatro partes separadas por pontos e no máximo 128 caracteres. Cada parte começa com uma letra minúscula e aceita letras minúsculas, números e sublinhados. Partes que representam ambiente, severidade ou resultado são inválidas. A regra de identificadores rejeita partes somente numéricas, UUIDs com sublinhados e partes de pelo menos 12 caracteres que misturam letras e números. Palavras comuns formadas apenas por letras, como `decade` e `facade`, continuam válidas.
 
 `browser.error` é a exceção obrigatória para a palavra `error`. O contrato rejeita outras partes de resultado ou severidade, como `payment.failure` e `worker.errored`.
 
-Nomes de atributos usam partes minúsculas separadas por pontos e têm no máximo 128 caracteres. O namespace `event.*` é reservado para campos canônicos e não pode aparecer em `attributes`. Valores de atributos são strings, números finitos ou booleanos.
+Nomes de atributos usam pelo menos duas partes minúsculas separadas por pontos e têm no máximo 128 caracteres. Valores de atributos são strings, números finitos ou booleanos.
+
+O contrato reserva os campos canônicos exatos `event.name`, `event.kind`, `event.type`, `event.severity`, `event.outcome`, `event.timestamp`, `event.duration_ms`, `http.request.method`, `http.route`, `http.response.status_code`, `error.type`, `error.message`, `error.retryable`, `audit.action`, `audit.actor.kind`, `audit.actor.id`, `audit.resource.type`, `audit.resource.id`, `request.id` e `run.id`. Outros campos nesses namespaces continuam disponíveis para atributos da aplicação.
+
+A classificação não escolhe destino ou provedor. O produtor rejeita valores fornecidos para atributos `sensitive` e `forbidden` antes do sink. O OBS-47 adicionará transformações de política. Até essa entrega, o contrato nunca encaminha esses valores sem transformação.
+
+O registro `metrics` permanece opaco nesta fundação. O OBS-52 define e valida cada definição de métrica.
 
 ## Eventos canônicos
 
@@ -52,9 +58,9 @@ A união `TelemetryEvent` tem cinco variantes.
 - `operation` exige `outcome` e `durationMs`.
 - `domain` exige `outcome`.
 - `defect` exige contexto de erro. O resultado é sempre `failure`.
-- `audit` exige `outcome` e contexto de auditoria.
+- `audit` exige `outcome` e contexto de auditoria. A ação precisa existir em `auditActions`; o tipo de recurso e o resultado precisam corresponder à definição.
 
-Timestamps usam RFC 3339 em UTC e terminam em `Z`. Durações são números finitos maiores ou iguais a zero. `EventSeverity` e `EventOutcome` são uniões fechadas independentes. Severidade não escolhe destino ou provedor.
+Timestamps representam datas reais em RFC 3339 UTC e terminam em `Z`. Durações são números finitos maiores ou iguais a zero. `EventSeverity` e `EventOutcome` são uniões fechadas independentes. O compilador do contrato valida a severidade padrão. Severidade não escolhe destino ou provedor.
 
 ## Amostragem
 

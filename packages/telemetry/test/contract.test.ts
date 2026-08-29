@@ -1,8 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Exit, Option } from "effect";
+import { Effect, Option } from "effect";
 import {
   defineEventDefinitions,
   defineTelemetryContract,
+  isValidEventName,
   makeEventProducer,
   organizationEvents,
   telemetryContractDefinition,
@@ -13,6 +14,7 @@ import {
   contractIssueFixtures,
   makeCollectingTelemetryEventSink,
   organizationEventFixtures,
+  telemetryEventErrorFixtures,
   withFixedSampling,
 } from "../src/testing/contract.ts";
 
@@ -68,6 +70,22 @@ const issueCodes = (error: { readonly issues: ReadonlyArray<{ readonly code: str
   error.issues.map((contractIssue) => contractIssue.code);
 
 describe("defineTelemetryContract", () => {
+  it("exports every reachable contract issue code", () => {
+    assert.sameMembers(Array.from(contractIssueFixtures), [
+      "OBS_CONTRACT_INVALID_DOCUMENT",
+      "OBS_CONTRACT_INVALID_VERSION",
+      "OBS_CONTRACT_INVALID_EVENT_NAME",
+      "OBS_CONTRACT_DUPLICATE_EVENT_NAME",
+      "OBS_CONTRACT_INVALID_EVENT_KIND",
+      "OBS_CONTRACT_INVALID_DEFAULT_SEVERITY",
+      "OBS_CONTRACT_INVALID_ATTRIBUTE_NAME",
+      "OBS_CONTRACT_RESERVED_ATTRIBUTE_NAME",
+      "OBS_CONTRACT_INVALID_ATTRIBUTE_DEFINITION",
+      "OBS_CONTRACT_INVALID_SAMPLING_RATE",
+      "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+    ]);
+  });
+
   it.effect("compiles aliases, canonical names, metrics and audit actions", () =>
     Effect.gen(function* () {
       const contract = yield* compileApplicationContract;
@@ -124,6 +142,12 @@ describe("defineTelemetryContract", () => {
         "OBS_CONTRACT_INVALID_SAMPLING_RATE",
       ]);
       assert.include(error.message, "issue(s)");
+      const duplicate = error.issues.find(
+        (entry) => entry.code === "OBS_CONTRACT_DUPLICATE_EVENT_NAME",
+      );
+      assert.strictEqual(duplicate?.eventAlias, "Second");
+      assert.strictEqual(duplicate?.eventName, "payment.failed.production");
+      assert.include(duplicate?.message ?? "", "declared by aliases");
     }),
   );
 
@@ -248,6 +272,193 @@ describe("defineTelemetryContract", () => {
       assert.include(issueCodes(error), "OBS_CONTRACT_RESERVED_ATTRIBUTE_NAME");
       assert.include(contractIssueFixtures, "OBS_CONTRACT_RESERVED_ATTRIBUTE_NAME");
       assert.strictEqual(error.issues[0]?.attributeName, "event.outcome");
+      assert.include(error.issues[0]?.message ?? "", "canonical sink field");
+    }),
+  );
+
+  it.effect("rejects malformed outer input with a typed document issue", () =>
+    Effect.gen(function* () {
+      const error = yield* defineTelemetryContract(JSON.parse("{}")).pipe(Effect.flip);
+      assert.strictEqual(error.code, "OBS_CONTRACT_INVALID");
+      assert.strictEqual(
+        error.message,
+        "Telemetry contract has an invalid outer document. Provide version, events, metrics, and auditActions records.",
+      );
+      assert.deepStrictEqual(error.issues, [
+        {
+          code: "OBS_CONTRACT_INVALID_DOCUMENT",
+          message:
+            "Telemetry contract document is malformed. Provide version, events, metrics, and auditActions records.",
+        },
+      ]);
+      const nested = yield* defineTelemetryContract(
+        JSON.parse('{"version":1,"events":{"Broken":null},"metrics":{},"auditActions":{}}'),
+      ).pipe(Effect.flip);
+      assert.strictEqual(nested.issues[0]?.code, "OBS_CONTRACT_INVALID_DOCUMENT");
+    }),
+  );
+
+  it.effect("validates default severity and every exact canonical sink field", () =>
+    Effect.gen(function* () {
+      const canonicalFields = [
+        "event.name",
+        "event.kind",
+        "event.type",
+        "event.severity",
+        "event.outcome",
+        "event.timestamp",
+        "event.duration_ms",
+        "http.request.method",
+        "http.route",
+        "http.response.status_code",
+        "error.type",
+        "error.message",
+        "error.retryable",
+        "audit.action",
+        "audit.actor.kind",
+        "audit.actor.id",
+        "audit.resource.type",
+        "audit.resource.id",
+        "request.id",
+        "run.id",
+      ];
+      const attributes = Object.fromEntries(
+        canonicalFields.map((name) => [
+          name,
+          { classification: "public", required: false, metricLabel: false },
+        ]),
+      );
+      attributes["http.application_field"] = {
+        classification: "public",
+        required: false,
+        metricLabel: false,
+      };
+      const error = yield* defineTelemetryContract(
+        JSON.parse(
+          JSON.stringify({
+            version: 1,
+            events: {
+              Invalid: {
+                name: "probe.completed",
+                kind: "domain",
+                defaultSeverity: "notice",
+                mandatory: true,
+                sampling: { kind: "always" },
+                attributes,
+              },
+            },
+            metrics: {},
+            auditActions: {},
+          }),
+        ),
+      ).pipe(Effect.flip);
+      assert.include(issueCodes(error), "OBS_CONTRACT_INVALID_DEFAULT_SEVERITY");
+      assert.strictEqual(
+        error.issues.filter((entry) => entry.code === "OBS_CONTRACT_RESERVED_ATTRIBUTE_NAME")
+          .length,
+        canonicalFields.length,
+      );
+      assert.notInclude(
+        error.issues.map((entry) => entry.attributeName),
+        "http.application_field",
+      );
+    }),
+  );
+
+  it.effect("rejects invalid contract issue categories with safe context", () =>
+    Effect.gen(function* () {
+      const error = yield* defineTelemetryContract(
+        JSON.parse(`{
+        "version": 2,
+        "events": {
+          "Bad": {
+            "name": "event.production",
+            "kind": "other",
+            "defaultSeverity": "notice",
+            "mandatory": false,
+            "sampling": { "kind": "rate", "rate": 0 },
+            "attributes": {
+              "bad": { "classification": "sensitive", "required": true, "metricLabel": true }
+            }
+          }
+        },
+        "metrics": { "FutureMetric": { "opaque": true } },
+        "auditActions": {
+          "BadAction": { "action": "BAD", "resourceType": "", "allowedOutcomes": ["unknown"] }
+        }
+      }`),
+      ).pipe(Effect.flip);
+      assert.sameMembers(issueCodes(error), [
+        "OBS_CONTRACT_INVALID_VERSION",
+        "OBS_CONTRACT_INVALID_EVENT_NAME",
+        "OBS_CONTRACT_INVALID_EVENT_KIND",
+        "OBS_CONTRACT_INVALID_DEFAULT_SEVERITY",
+        "OBS_CONTRACT_INVALID_SAMPLING_RATE",
+        "OBS_CONTRACT_INVALID_ATTRIBUTE_NAME",
+        "OBS_CONTRACT_INVALID_ATTRIBUTE_DEFINITION",
+        "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+      ]);
+      const messageFragments = new Map([
+        ["OBS_CONTRACT_INVALID_VERSION", "version is invalid"],
+        ["OBS_CONTRACT_INVALID_EVENT_NAME", "is invalid"],
+        ["OBS_CONTRACT_INVALID_EVENT_KIND", "invalid kind"],
+        ["OBS_CONTRACT_INVALID_DEFAULT_SEVERITY", "invalid default severity"],
+        ["OBS_CONTRACT_INVALID_SAMPLING_RATE", "invalid sampling rate"],
+        ["OBS_CONTRACT_INVALID_ATTRIBUTE_NAME", "is invalid"],
+        [
+          "OBS_CONTRACT_INVALID_ATTRIBUTE_DEFINITION",
+          "invalid classification or incompatible flags",
+        ],
+        ["OBS_CONTRACT_INVALID_AUDIT_ACTION", "is invalid"],
+      ]);
+      for (const entry of error.issues) {
+        assert.include(entry.message, messageFragments.get(entry.code) ?? "unreachable");
+      }
+      const eventIssue = error.issues.find(
+        (entry) => entry.code === "OBS_CONTRACT_INVALID_EVENT_KIND",
+      );
+      assert.strictEqual(eventIssue?.eventAlias, "Bad");
+      assert.strictEqual(eventIssue?.eventName, "event.production");
+      const auditIssue = error.issues.find(
+        (entry) => entry.code === "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+      );
+      assert.strictEqual(auditIssue?.auditActionAlias, "BadAction");
+    }),
+  );
+
+  it.effect("accepts ordinary words while rejecting identifier segments", () =>
+    Effect.gen(function* () {
+      const contract = yield* defineTelemetryContract({
+        version: 1,
+        events: {
+          Decade: {
+            name: "billing.decade",
+            kind: "domain",
+            defaultSeverity: "info",
+            mandatory: false,
+            sampling: { kind: "always" },
+            attributes: {},
+          },
+          Facade: {
+            name: "cache.facade",
+            kind: "domain",
+            defaultSeverity: "info",
+            mandatory: false,
+            sampling: { kind: "always" },
+            attributes: {},
+          },
+        },
+        metrics: {},
+        auditActions: {},
+      });
+      assert.lengthOf(contract.eventNames, 2);
+      for (const name of [
+        "job.12345",
+        "job.550e8400_e29b_41d4_a716_446655440000",
+        "job.customer1234567890",
+      ]) {
+        assert.isFalse(isValidEventName(name));
+      }
     }),
   );
 
@@ -319,6 +530,20 @@ describe("organization contracts", () => {
 });
 
 describe("contract event producer", () => {
+  it("exports every reachable event error code", () => {
+    assert.sameMembers(Array.from(telemetryEventErrorFixtures), [
+      "OBS_EVENT_UNKNOWN_NAME",
+      "OBS_EVENT_UNDECLARED_ATTRIBUTE",
+      "OBS_EVENT_MISSING_ATTRIBUTE",
+      "OBS_EVENT_INVALID_FIELD",
+      "OBS_EVENT_INVALID_OUTCOME",
+      "OBS_EVENT_RESTRICTED_ATTRIBUTE",
+      "OBS_EVENT_UNKNOWN_AUDIT_ACTION",
+      "OBS_EVENT_INVALID_AUDIT_RESOURCE",
+      "OBS_EVENT_INVALID_AUDIT_OUTCOME",
+    ]);
+  });
+
   it.effect("records a valid event and derives its canonical fields", () =>
     Effect.gen(function* () {
       const contract = yield* compileApplicationContract;
@@ -403,55 +628,257 @@ describe("contract event producer", () => {
     }),
   );
 
-  it.effect(
-    "rejects unknown aliases, undeclared attributes and invalid fields before the sink",
-    () =>
-      Effect.gen(function* () {
-        const contract: TelemetryContract<TelemetryContractInput> =
-          yield* compileApplicationContract;
-        const sink = yield* makeCollectingTelemetryEventSink();
-        const producer = makeEventProducer(contract);
-        const unknownAlias = yield* producer
-          .emit("MissingAlias", { outcome: "success", attributes: {} })
-          .pipe(Effect.provide(sink.layer), Effect.exit);
-        assert.isTrue(Exit.isFailure(unknownAlias));
-        const undeclared = yield* producer
-          .emit("DomainChanged", {
-            outcome: "success",
-            attributes: { "subscription.plan": "team", "subscription.secret": "no" },
-          })
-          .pipe(Effect.provide(sink.layer), Effect.exit);
-        assert.isTrue(Exit.isFailure(undeclared));
-        const invalidDuration = yield* producer
-          .emit("RequestCompleted", {
-            outcome: "success",
-            durationMs: Number.NaN,
-            http: { method: "GET", route: "/", statusCode: 200 },
-            attributes: {},
-          })
-          .pipe(Effect.provide(sink.layer), Effect.exit);
-        assert.isTrue(Exit.isFailure(invalidDuration));
-        assert.lengthOf(yield* sink.events, 0);
-      }),
-  );
-
-  it.effect("rejects missing required attributes and non-UTC timestamps before the sink", () =>
+  it.effect("returns discriminated errors for aliases and attributes before the sink", () =>
     Effect.gen(function* () {
       const contract: TelemetryContract<TelemetryContractInput> = yield* compileApplicationContract;
       const sink = yield* makeCollectingTelemetryEventSink();
       const producer = makeEventProducer(contract);
-      const missing = yield* producer
-        .emit("DomainChanged", { outcome: "success", attributes: {} })
-        .pipe(Effect.provide(sink.layer), Effect.exit);
-      assert.isTrue(Exit.isFailure(missing));
-      const timestamp = yield* producer
+      const unknownAlias = yield* producer
+        .emit("MissingAlias", { outcome: "success", attributes: {} })
+        .pipe(Effect.provide(sink.layer), Effect.flip);
+      assert.deepStrictEqual(
+        {
+          code: unknownAlias.code,
+          eventAlias: unknownAlias.eventAlias,
+          eventName: unknownAlias.eventName,
+          attributeName: unknownAlias.attributeName,
+        },
+        {
+          code: "OBS_EVENT_UNKNOWN_NAME",
+          eventAlias: "MissingAlias",
+          eventName: undefined,
+          attributeName: undefined,
+        },
+      );
+      assert.include(unknownAlias.message, "not declared");
+      const undeclared = yield* producer
         .emit("DomainChanged", {
           outcome: "success",
-          timestamp: "2026-01-01T00:00:00+00:00",
-          attributes: { "subscription.plan": "team" },
+          attributes: { "subscription.plan": "team", "subscription.secret": "no" },
         })
-        .pipe(Effect.provide(sink.layer), Effect.exit);
-      assert.isTrue(Exit.isFailure(timestamp));
+        .pipe(Effect.provide(sink.layer), Effect.flip);
+      assert.strictEqual(undeclared.code, "OBS_EVENT_UNDECLARED_ATTRIBUTE");
+      assert.strictEqual(undeclared.eventName, "subscription.changed");
+      assert.strictEqual(undeclared.attributeName, "subscription.secret");
+      assert.include(undeclared.message, "does not declare");
+      const missing = yield* producer
+        .emit("DomainChanged", { outcome: "success", attributes: {} })
+        .pipe(Effect.provide(sink.layer), Effect.flip);
+      assert.strictEqual(missing.code, "OBS_EVENT_MISSING_ATTRIBUTE");
+      assert.strictEqual(missing.eventName, "subscription.changed");
+      assert.strictEqual(missing.attributeName, "subscription.plan");
+      assert.include(missing.message, "missing required attribute");
+      assert.lengthOf(yield* sink.events, 0);
+    }),
+  );
+
+  it.effect("parses timestamp, duration, outcome, severity and nested contexts", () =>
+    Effect.gen(function* () {
+      const contract: TelemetryContract<TelemetryContractInput> = yield* compileApplicationContract;
+      const sink = yield* makeCollectingTelemetryEventSink();
+      const producer = makeEventProducer(contract);
+      const cases = [
+        {
+          alias: "RequestCompleted",
+          payload: {
+            outcome: "success",
+            durationMs: 1,
+            http: { method: "", route: "/", statusCode: 200 },
+            attributes: {},
+          },
+          code: "OBS_EVENT_INVALID_FIELD",
+          field: "http",
+        },
+        {
+          alias: "RequestCompleted",
+          payload: {
+            outcome: "success",
+            durationMs: Number.NaN,
+            http: { method: "GET", route: "/", statusCode: 200 },
+            attributes: {},
+          },
+          code: "OBS_EVENT_INVALID_FIELD",
+          field: "event.duration_ms",
+        },
+        {
+          alias: "DomainChanged",
+          payload: {
+            outcome: "success",
+            timestamp: "2026-02-30T00:00:00Z",
+            attributes: { "subscription.plan": "team" },
+          },
+          code: "OBS_EVENT_INVALID_FIELD",
+          field: "event.timestamp",
+        },
+        {
+          alias: "DomainChanged",
+          payload: {
+            outcome: "unknown",
+            attributes: { "subscription.plan": "team" },
+          },
+          code: "OBS_EVENT_INVALID_OUTCOME",
+          field: "event.outcome",
+        },
+        {
+          alias: "DomainChanged",
+          payload: {
+            outcome: "success",
+            severity: "notice",
+            attributes: { "subscription.plan": "team" },
+          },
+          code: "OBS_EVENT_INVALID_FIELD",
+          field: "event.severity",
+        },
+        {
+          alias: "DomainChanged",
+          payload: {
+            outcome: "success",
+            correlation: { _id: "Option", _tag: "Some", value: { requestId: "bad" } },
+            attributes: { "subscription.plan": "team" },
+          },
+          code: "OBS_EVENT_INVALID_FIELD",
+          field: "correlation",
+        },
+        {
+          alias: "BrowserError",
+          payload: {
+            error: { type: "", message: "failed", retryable: false },
+            attributes: { "error.origin": "browser" },
+          },
+          code: "OBS_EVENT_INVALID_FIELD",
+          field: "error",
+        },
+        {
+          alias: "AuditTracked",
+          payload: {
+            outcome: "success",
+            audit: {
+              action: "access.reviewed",
+              actor: { kind: "user", id: "" },
+              resourceType: "account",
+              resourceId: "account-1",
+            },
+            attributes: {},
+          },
+          code: "OBS_EVENT_INVALID_FIELD",
+          field: "audit",
+        },
+      ];
+      for (const testCase of cases) {
+        const error = yield* producer
+          .emit(testCase.alias, JSON.parse(JSON.stringify(testCase.payload)))
+          .pipe(Effect.provide(sink.layer), Effect.flip);
+        assert.strictEqual(error.code, testCase.code);
+        assert.strictEqual(error.attributeName, testCase.field);
+        assert.isNotEmpty(error.message);
+        assert.isNotEmpty(error.eventName);
+      }
+      assert.lengthOf(yield* sink.events, 0);
+    }),
+  );
+
+  it.effect("rejects unsafe attributes before recording", () =>
+    Effect.gen(function* () {
+      const contract = yield* defineTelemetryContract({
+        version: 1,
+        events: {
+          Unsafe: {
+            name: "profile.updated",
+            kind: "domain",
+            defaultSeverity: "info",
+            mandatory: true,
+            sampling: { kind: "always" },
+            attributes: {
+              "profile.secret": {
+                classification: "sensitive",
+                required: false,
+                metricLabel: false,
+              },
+              "profile.password": {
+                classification: "forbidden",
+                required: false,
+                metricLabel: false,
+              },
+            },
+          },
+        },
+        metrics: {},
+        auditActions: {},
+      });
+      const sink = yield* makeCollectingTelemetryEventSink();
+      const restrictedNames = ["profile.secret", "profile.password"] satisfies ReadonlyArray<
+        "profile.secret" | "profile.password"
+      >;
+      for (const attributeName of restrictedNames) {
+        const error = yield* makeEventProducer(contract)
+          .emit("Unsafe", {
+            outcome: "success",
+            attributes: { [attributeName]: "secret" },
+          })
+          .pipe(Effect.provide(sink.layer), Effect.flip);
+        assert.include(telemetryEventErrorFixtures, "OBS_EVENT_RESTRICTED_ATTRIBUTE");
+        assert.strictEqual(error.code, "OBS_EVENT_RESTRICTED_ATTRIBUTE");
+        assert.strictEqual(error.eventName, "profile.updated");
+        assert.strictEqual(error.attributeName, attributeName);
+        assert.include(error.message, "cannot emit");
+      }
+      assert.lengthOf(yield* sink.events, 0);
+    }),
+  );
+
+  it.effect("enforces audit actions, resource types and outcomes", () =>
+    Effect.gen(function* () {
+      const contract: TelemetryContract<TelemetryContractInput> = yield* compileApplicationContract;
+      const sink = yield* makeCollectingTelemetryEventSink();
+      const producer = makeEventProducer(contract);
+      const unknownAction = yield* producer
+        .emit("AuditTracked", {
+          outcome: "success",
+          audit: {
+            action: "access.unknown",
+            actor: { kind: "system" },
+            resourceType: "account",
+            resourceId: "account-1",
+          },
+          attributes: {},
+        })
+        .pipe(Effect.provide(sink.layer), Effect.flip);
+      assert.strictEqual(unknownAction.code, "OBS_EVENT_UNKNOWN_AUDIT_ACTION");
+      assert.strictEqual(unknownAction.eventName, "access.reviewed");
+      assert.strictEqual(unknownAction.attributeName, "audit.action");
+      assert.include(unknownAction.message, "undeclared action");
+      const wrongResource = yield* producer
+        .emit("AuditTracked", {
+          outcome: "success",
+          audit: {
+            action: "access.reviewed",
+            actor: { kind: "system" },
+            resourceType: "workspace",
+            resourceId: "workspace-1",
+          },
+          attributes: {},
+        })
+        .pipe(Effect.provide(sink.layer), Effect.flip);
+      assert.strictEqual(wrongResource.code, "OBS_EVENT_INVALID_AUDIT_RESOURCE");
+      assert.strictEqual(wrongResource.eventName, "access.reviewed");
+      assert.strictEqual(wrongResource.attributeName, "audit.resource.type");
+      assert.include(wrongResource.message, "requires resource type");
+      const wrongOutcome = yield* producer
+        .emit("AuditTracked", {
+          outcome: "cancelled",
+          audit: {
+            action: "access.reviewed",
+            actor: { kind: "system" },
+            resourceType: "account",
+            resourceId: "account-1",
+          },
+          attributes: {},
+        })
+        .pipe(Effect.provide(sink.layer), Effect.flip);
+      assert.strictEqual(wrongOutcome.code, "OBS_EVENT_INVALID_AUDIT_OUTCOME");
+      assert.strictEqual(wrongOutcome.eventName, "access.reviewed");
+      assert.strictEqual(wrongOutcome.attributeName, "event.outcome");
+      assert.include(wrongOutcome.message, "does not allow outcome");
       assert.lengthOf(yield* sink.events, 0);
     }),
   );

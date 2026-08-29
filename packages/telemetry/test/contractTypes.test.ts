@@ -1,13 +1,14 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   defineTelemetryContract,
+  telemetryContractDefinition,
   type AttributeValue,
   type EventPayloadOf,
   type EventProducer,
   type TelemetryContractInput,
 } from "../src/contract/index.ts";
 
-const typedInput = {
+const typedInput = telemetryContractDefinition({
   version: 1,
   events: {
     Renewal: {
@@ -29,6 +30,14 @@ const typedInput = {
         },
       },
     },
+    Audit: {
+      name: "access.reviewed",
+      kind: "audit",
+      defaultSeverity: "info",
+      mandatory: true,
+      sampling: { kind: "always" },
+      attributes: {},
+    },
     Defect: {
       name: "browser.error",
       kind: "defect",
@@ -45,8 +54,14 @@ const typedInput = {
     },
   },
   metrics: {},
-  auditActions: {},
-} satisfies TelemetryContractInput;
+  auditActions: {
+    AccessReviewed: {
+      action: "access.reviewed",
+      resourceType: "account",
+      allowedOutcomes: ["success"],
+    },
+  },
+});
 
 const dynamicName: string = "runtime.event";
 const dynamicInput = {
@@ -74,6 +89,7 @@ type ProducerAlias = Parameters<EventProducer<typeof typedInput>["emit"]>[0];
 type RenewalPayload = EventPayloadOf<typeof typedInput, "Renewal">;
 type RenewalAttributes = RenewalPayload["attributes"];
 type DefectPayload = EventPayloadOf<typeof typedInput, "Defect">;
+type AuditPayload = EventPayloadOf<typeof typedInput, "Audit">;
 type DynamicContractArgument = Parameters<typeof defineTelemetryContract<typeof dynamicInput>>[0];
 
 type ProducerTypeAssertions = [
@@ -83,12 +99,35 @@ type ProducerTypeAssertions = [
   Assert<Equal<Extract<DefectPayload, { readonly outcome: "success" }>, never>>,
   Assert<Equal<typeof dynamicInput extends DynamicContractArgument ? true : false, false>>,
   Assert<Equal<Extract<{ readonly nested: true }, AttributeValue>, never>>,
+  Assert<Equal<AuditPayload["outcome"], "success">>,
+  Assert<Equal<AuditPayload["audit"]["action"], "access.reviewed">>,
+  Assert<Equal<AuditPayload["audit"]["resourceType"], "account">>,
 ];
 
-const producerTypeAssertions: ProducerTypeAssertions = [true, true, true, true, true, true];
+const producerTypeAssertions: ProducerTypeAssertions = [
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+];
 
 describe("contract producer types", () => {
   it("rejects aliases, attributes, missing fields, defect outcomes and dynamic names", () => {
-    assert.deepStrictEqual(producerTypeAssertions, [true, true, true, true, true, true]);
+    assert.deepStrictEqual(producerTypeAssertions, [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+    ]);
   });
 });
