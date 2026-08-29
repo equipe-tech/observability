@@ -78,7 +78,7 @@ Canários usam `mandatory: true` na definição. Um resultado `cancelled` contin
 
 ## Eventos da organização
 
-`Contract.organizationEvents` exporta oito contratos sem nomes de produto ou serviço.
+`Contract.organizationEvents` exporta oito contratos sem nomes de produto ou serviço. `Contract.organizationContractVersion` identifica esse conjunto reutilizável com a versão `1`. Essa identidade evolui de forma independente da versão do contrato de cada aplicação que incorpora as definições.
 
 | Alias              | Nome                | Tipo        | Atributos obrigatórios                       |
 | ------------------ | ------------------- | ----------- | -------------------------------------------- |

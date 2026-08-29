@@ -176,12 +176,14 @@ const issue = (
     readonly eventName?: string;
     readonly attributeName?: string;
     readonly auditActionAlias?: string;
+    readonly auditActionName?: string;
   } = {},
 ): ContractIssue => ({ code, message, ...context });
 
 const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<ContractIssue> => {
   const issues: Array<ContractIssue> = [];
   const eventAliasesByName = new Map<string, string>();
+  const auditActionAliasesByName = new Map<string, string>();
   if (definition.version !== 1) {
     issues.push(
       issue(
@@ -288,6 +290,18 @@ const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<Contra
     }
   }
   for (const [alias, action] of Object.entries(definition.auditActions)) {
+    const existingAlias = auditActionAliasesByName.get(action.action);
+    if (existingAlias !== undefined) {
+      issues.push(
+        issue(
+          "OBS_CONTRACT_DUPLICATE_AUDIT_ACTION",
+          `Audit action "${action.action}" is declared by aliases "${existingAlias}" and "${alias}". Give each audit action one canonical name.`,
+          { auditActionAlias: alias, auditActionName: action.action },
+        ),
+      );
+    } else {
+      auditActionAliasesByName.set(action.action, alias);
+    }
     if (
       action.action.length > 128 ||
       !auditActionPattern.test(action.action) ||

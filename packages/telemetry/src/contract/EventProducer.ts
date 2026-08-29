@@ -120,6 +120,20 @@ type EmittedAttributes = {
   readonly [attributeName: string]: AttributeValue | undefined;
 };
 
+const parseEventPayload = <Payload>(
+  definition: CompiledEventDefinition,
+  payload: Payload,
+): InvalidTelemetryEvent | Payload => {
+  if (!Predicate.isObject(payload)) {
+    return eventError(
+      "OBS_EVENT_INVALID_FIELD",
+      `Event "${definition.name}" has an invalid payload. Use an event payload object with declared fields.`,
+      { eventName: definition.name, attributeName: "payload" },
+    );
+  }
+  return payload;
+};
+
 const parseAttributes = (
   definition: CompiledEventDefinition,
   attributes: EmittedAttributes,
@@ -438,11 +452,15 @@ export const makeEventProducer = <const Definition extends TelemetryContractInpu
         { eventAlias: alias },
       );
     }
-    const attributes = parseAttributes(definition, payload.attributes);
+    const parsedPayload = parseEventPayload(definition, payload);
+    if (parsedPayload instanceof InvalidTelemetryEvent) {
+      return yield* parsedPayload;
+    }
+    const attributes = parseAttributes(definition, parsedPayload.attributes);
     if (attributes instanceof InvalidTelemetryEvent) {
       return yield* attributes;
     }
-    const event = yield* buildEvent(definition, contract, attributes, payload);
+    const event = yield* buildEvent(definition, contract, attributes, parsedPayload);
     if (!(yield* shouldRecord(definition, event.outcome))) {
       return { decision: "sampled_out", name: definition.name };
     }

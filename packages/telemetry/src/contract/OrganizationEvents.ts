@@ -7,6 +7,8 @@ const publicRequired = {
   metricLabel: true,
 } satisfies AttributeDefinition;
 
+export const organizationContractVersion = 1;
+
 export const organizationEvents = defineEventDefinitions({
   RequestCompleted: {
     name: "request.completed",

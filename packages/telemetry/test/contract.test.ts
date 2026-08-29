@@ -1,10 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Option } from "effect";
+import { Cause, Effect, Exit, Option } from "effect";
 import {
   defineEventDefinitions,
   defineTelemetryContract,
   isValidEventName,
   makeEventProducer,
+  organizationContractVersion,
   organizationEvents,
   telemetryContractDefinition,
   type TelemetryContract,
@@ -83,6 +84,7 @@ describe("defineTelemetryContract", () => {
       "OBS_CONTRACT_INVALID_ATTRIBUTE_DEFINITION",
       "OBS_CONTRACT_INVALID_SAMPLING_RATE",
       "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+      "OBS_CONTRACT_DUPLICATE_AUDIT_ACTION",
     ]);
   });
 
@@ -148,6 +150,40 @@ describe("defineTelemetryContract", () => {
       assert.strictEqual(duplicate?.eventAlias, "Second");
       assert.strictEqual(duplicate?.eventName, "payment.failed.production");
       assert.include(duplicate?.message ?? "", "declared by aliases");
+    }),
+  );
+
+  it.effect("rejects duplicate canonical audit actions with an exact issue", () =>
+    Effect.gen(function* () {
+      const error = yield* defineTelemetryContract(
+        JSON.parse(`{
+          "version": 1,
+          "events": {},
+          "metrics": {},
+          "auditActions": {
+            "AccountReviewed": {
+              "action": "access.reviewed",
+              "resourceType": "account",
+              "allowedOutcomes": ["success"]
+            },
+            "InvoiceReviewed": {
+              "action": "access.reviewed",
+              "resourceType": "invoice",
+              "allowedOutcomes": ["failure"]
+            }
+          }
+        }`),
+      ).pipe(Effect.flip);
+      assert.strictEqual(error.code, "OBS_CONTRACT_INVALID");
+      assert.deepStrictEqual(error.issues, [
+        {
+          code: "OBS_CONTRACT_DUPLICATE_AUDIT_ACTION",
+          message:
+            'Audit action "access.reviewed" is declared by aliases "AccountReviewed" and "InvoiceReviewed". Give each audit action one canonical name.',
+          auditActionAlias: "InvoiceReviewed",
+          auditActionName: "access.reviewed",
+        },
+      ]);
     }),
   );
 
@@ -554,7 +590,8 @@ describe("defineTelemetryContract", () => {
 });
 
 describe("organization contracts", () => {
-  it("exports the eight versioned product-neutral boundary contracts", () => {
+  it("exports the independent version identity and eight product-neutral boundary contracts", () => {
+    assert.strictEqual(organizationContractVersion, 1);
     assert.lengthOf(organizationEventFixtures, 8);
     const serialized = JSON.stringify(organizationEventFixtures).toLowerCase();
     for (const deniedName of [
@@ -727,6 +764,67 @@ describe("contract event producer", () => {
       assert.strictEqual(missing.eventName, "subscription.changed");
       assert.strictEqual(missing.attributeName, "subscription.plan");
       assert.include(missing.message, "missing required attribute");
+      assert.lengthOf(yield* sink.events, 0);
+    }),
+  );
+
+  it.effect("rejects malformed whole payloads as typed failures", () =>
+    Effect.gen(function* () {
+      const contract: TelemetryContract<TelemetryContractInput> = yield* compileApplicationContract;
+      const sink = yield* makeCollectingTelemetryEventSink();
+      const producer = makeEventProducer(contract);
+      const invalidPayloadMessage =
+        'Event "subscription.changed" has an invalid payload. Use an event payload object with declared fields.';
+      const malformedPayloads = [
+        { payload: JSON.parse("null"), attributeName: "payload", message: invalidPayloadMessage },
+        {
+          payload: JSON.parse("{}").missing,
+          attributeName: "payload",
+          message: invalidPayloadMessage,
+        },
+        { payload: JSON.parse("[]"), attributeName: "payload", message: invalidPayloadMessage },
+        {
+          payload: JSON.parse('"invalid"'),
+          attributeName: "payload",
+          message: invalidPayloadMessage,
+        },
+        {
+          payload: JSON.parse("{}"),
+          attributeName: "attributes",
+          message:
+            'Event "subscription.changed" has invalid attributes. Use a declared scalar attribute object.',
+        },
+      ];
+      for (const testCase of malformedPayloads) {
+        const exit = yield* producer
+          .emit("DomainChanged", testCase.payload)
+          .pipe(Effect.provide(sink.layer), Effect.exit);
+        assert.isTrue(Exit.isFailure(exit));
+        if (Exit.isSuccess(exit)) {
+          assert.fail("Malformed payload unexpectedly succeeded");
+        }
+        const failure = Cause.findErrorOption(exit.cause);
+        assert.isTrue(Option.isSome(failure));
+        if (Option.isNone(failure)) {
+          assert.fail("Malformed payload produced a defect instead of a typed failure");
+        }
+        assert.deepStrictEqual(
+          {
+            code: failure.value.code,
+            message: failure.value.message,
+            eventName: failure.value.eventName,
+            eventAlias: failure.value.eventAlias,
+            attributeName: failure.value.attributeName,
+          },
+          {
+            code: "OBS_EVENT_INVALID_FIELD",
+            message: testCase.message,
+            eventName: "subscription.changed",
+            eventAlias: undefined,
+            attributeName: testCase.attributeName,
+          },
+        );
+      }
       assert.lengthOf(yield* sink.events, 0);
     }),
   );
