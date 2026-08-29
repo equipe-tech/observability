@@ -318,6 +318,30 @@ describe("environment and provider names", () => {
     expect(errors.environment.code).toBe("OBS_CLI_REMOTE_INVALID_ENVIRONMENT");
   });
 
+  test("rejects consecutive hyphens before filtering the environment list", async () => {
+    const remote = makeRemoteLayer({ axiom: false });
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* RemoteEnvironment;
+        return yield* Effect.flip(service.list(Option.some("livro--caixa")));
+      }).pipe(Effect.provide(remote.layer)),
+    );
+
+    expect(error.code).toBe("OBS_CLI_REMOTE_INVALID_PROJECT");
+  });
+
+  test("returns no matches for a valid environment list filter", async () => {
+    const remote = makeRemoteLayer({ axiom: false });
+    const environments = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* RemoteEnvironment;
+        return yield* service.list(Option.some("outro-projeto"));
+      }).pipe(Effect.provide(remote.layer)),
+    );
+
+    expect(environments).toEqual([]);
+  });
+
   test("deduplicates providers in canonical order", async () => {
     const providers = await Effect.runPromise(
       parseProviderSelection(["sentry", "axiom", "sentry"]),

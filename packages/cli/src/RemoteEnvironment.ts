@@ -590,7 +590,7 @@ export class RemoteEnvironment extends Context.Service<
     >;
     list(
       project: Option.Option<string>,
-    ): Effect.Effect<ReadonlyArray<ManagedEnvironment>, CredentialsError>;
+    ): Effect.Effect<ReadonlyArray<ManagedEnvironment>, CredentialsError | RemoteEnvironmentError>;
     export(
       project: string,
       environment: string,
@@ -605,11 +605,15 @@ export class RemoteEnvironment extends Context.Service<
       const sentryApi = yield* SentryApi;
 
       const list = Effect.fn("RemoteEnvironment.list")(function* (project: Option.Option<string>) {
+        const name = yield* Option.match(project, {
+          onNone: () => Effect.succeed(Option.none<string>()),
+          onSome: (rawName) => parseServiceName(rawName).pipe(Effect.map(Option.some)),
+        });
         const credentials = Option.getOrElse(yield* store.load(), emptyCredentials);
-        return Option.match(project, {
+        return Option.match(name, {
           onNone: () => credentials.environments,
-          onSome: (name) =>
-            credentials.environments.filter((environment) => environment.project === name),
+          onSome: (validatedName) =>
+            credentials.environments.filter((environment) => environment.project === validatedName),
         });
       });
 
