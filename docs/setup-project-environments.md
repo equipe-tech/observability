@@ -55,9 +55,12 @@ Configure o serviço local:
 
 ```sh
 export OTEL_SERVICE_NAME=livro-caixa
+export OTEL_SERVICE_INSTANCE_ID=livro-caixa-local-1
 export OTEL_DEPLOYMENT_ENVIRONMENT=development
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
+
+`OTEL_SERVICE_INSTANCE_ID` é opcional. Um valor ausente, `undefined` ou vazio omite `service.instance.id`. Um valor não vazio aceita no máximo 128 caracteres.
 
 Abra `http://localhost:8000` para ver os sinais recebidos.
 

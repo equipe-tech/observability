@@ -286,11 +286,36 @@ describe("environment and provider names", () => {
     });
   });
 
+  test("accepts a canonical environment name", async () => {
+    expect(await Effect.runPromise(parseEnvironmentName("production-west"))).toBe(
+      "production-west",
+    );
+  });
+
   test("rejects malformed environment and provider names", async () => {
     const environment = await Effect.runPromise(Effect.flip(parseEnvironmentName("Production US")));
+    const consecutiveHyphens = await Effect.runPromise(
+      Effect.flip(parseEnvironmentName("production--west")),
+    );
     const provider = await Effect.runPromise(Effect.flip(parseProviderSelection(["honeycomb"])));
     expect(environment.code).toBe("OBS_CLI_REMOTE_INVALID_ENVIRONMENT");
+    expect(consecutiveHyphens.code).toBe("OBS_CLI_REMOTE_INVALID_ENVIRONMENT");
     expect(provider.code).toBe("OBS_CLI_REMOTE_INVALID_PROVIDER");
+  });
+
+  test("rejects consecutive hyphens before environment export", async () => {
+    const remote = makeRemoteLayer({ axiom: false });
+    const errors = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* RemoteEnvironment;
+        const project = yield* Effect.flip(service.export("livro--caixa", "staging"));
+        const environment = yield* Effect.flip(service.export("livro-caixa", "staging--west"));
+        return { project, environment };
+      }).pipe(Effect.provide(remote.layer)),
+    );
+
+    expect(errors.project.code).toBe("OBS_CLI_REMOTE_INVALID_ENVIRONMENT");
+    expect(errors.environment.code).toBe("OBS_CLI_REMOTE_INVALID_ENVIRONMENT");
   });
 
   test("deduplicates providers in canonical order", async () => {

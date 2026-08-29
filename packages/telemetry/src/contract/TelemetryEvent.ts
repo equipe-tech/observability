@@ -2,8 +2,6 @@ import { DateTime, Option, Schema } from "effect";
 import type { CorrelationContext } from "../Correlation.ts";
 import type { EventName } from "./EventName.ts";
 
-export { CorrelationContext } from "../Correlation.ts";
-
 export const EventSeverity = Schema.Literals(["debug", "info", "warn", "error", "fatal"]);
 export type EventSeverity = typeof EventSeverity.Type;
 

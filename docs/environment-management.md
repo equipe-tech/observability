@@ -8,7 +8,9 @@ A aplicação envia os três sinais para um Collector. Ela não contém credenci
 
 O atributo canônico de resource para logs, traces e métricas é `deployment.environment.name`. A identidade inclui `service.namespace=equipe-tech`, `service.name`, `service.version` e, para logs e traces, o `service.instance.id` opcional. Métricas não recebem o identificador de instância.
 
-Nomes de serviço usam letras minúsculas, números e hífens, com até 63 caracteres. Nomes de ambiente seguem a mesma gramática, com até 32 caracteres. A versão aceita SemVer 2.0.0 ou um identificador imutável hexadecimal minúsculo de 7 a 64 caracteres.
+Nomes de serviço usam segmentos de letras minúsculas e números, separados por um único hífen, com até 63 caracteres. Nomes de ambiente seguem a mesma gramática, com até 32 caracteres. A versão aceita SemVer 2.0.0 ou um identificador imutável hexadecimal minúsculo de 7 a 64 caracteres.
+
+`OTEL_SERVICE_INSTANCE_ID` define `service.instance.id` para logs e traces. Um valor ausente, `undefined` ou vazio omite o atributo. Um valor não vazio aceita no máximo 128 caracteres. Métricas sempre omitem o identificador de instância.
 
 O Collector também exporta `deployment.environment` como alias de transição.
 

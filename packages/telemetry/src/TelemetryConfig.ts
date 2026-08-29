@@ -4,6 +4,7 @@ import {
   InvalidResourceIdentity,
   parseResourceIdentity,
   ResourceIdentity,
+  type ResourceIdentityInput,
   ServiceInstanceId,
 } from "./ResourceIdentity.ts";
 
@@ -17,6 +18,14 @@ export const OtlpEndpoint = Schema.URLFromString.check(
   ),
 );
 
+const decodeResourceIdentity = Schema.decodeSync(ResourceIdentity);
+
+export interface TelemetryConfigInput {
+  readonly identity: ResourceIdentityInput;
+  readonly environmentAlias?: EnvironmentAliasPolicy | undefined;
+  readonly otlpEndpoint: URL;
+}
+
 export class TelemetryConfig extends Schema.Class<TelemetryConfig>(
   "@equipe-tech/observability/TelemetryConfig",
 )({
@@ -25,7 +34,20 @@ export class TelemetryConfig extends Schema.Class<TelemetryConfig>(
     Schema.withConstructorDefault(Effect.succeed("omitted")),
   ),
   otlpEndpoint: OtlpEndpoint,
-}) {}
+}) {
+  constructor(input: TelemetryConfigInput) {
+    super({
+      identity: decodeResourceIdentity({
+        serviceName: input.identity.serviceName,
+        serviceVersion: input.identity.serviceVersion,
+        environment: input.identity.environment,
+        instance: input.identity.instance ?? Option.none(),
+      }),
+      environmentAlias: input.environmentAlias ?? "omitted",
+      otlpEndpoint: input.otlpEndpoint,
+    });
+  }
+}
 
 export class InvalidTelemetryEnvironment extends Schema.TaggedError<InvalidTelemetryEnvironment>()(
   "InvalidTelemetryEnvironment",

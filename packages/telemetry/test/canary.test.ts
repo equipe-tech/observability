@@ -3,7 +3,6 @@ import { Effect, Option, Schema } from "effect";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { resourceIdentity } from "../src/ResourceIdentity.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 import { canaryRunId, canarySensitiveValues, emitCanary } from "./support/canary.ts";
 
@@ -281,11 +280,11 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
       Effect.gen(function* () {
         const runId = yield* canaryRunId();
         const config = new TelemetryConfig({
-          identity: resourceIdentity({
+          identity: {
             serviceName: "observability-canary",
             serviceVersion: "0.1.0",
             environment: "test",
-          }),
+          },
           otlpEndpoint: new URL("http://localhost:4318"),
         });
 

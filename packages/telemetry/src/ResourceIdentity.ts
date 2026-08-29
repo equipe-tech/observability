@@ -34,16 +34,18 @@ export type ServiceInstanceId = typeof ServiceInstanceId.Type;
 export const EnvironmentAliasPolicy = Schema.Literals(["emitted", "omitted"]);
 export type EnvironmentAliasPolicy = typeof EnvironmentAliasPolicy.Type;
 
-export class ResourceIdentity extends Schema.Class<ResourceIdentity>(
-  "@equipe-tech/observability/ResourceIdentity",
-)({
+const identityFields = {
   serviceName: ServiceName,
   serviceVersion: ServiceVersion,
   environment: EnvironmentName,
   instance: Schema.Option(ServiceInstanceId).pipe(
     Schema.withConstructorDefault(Effect.succeed(Option.none())),
   ),
-}) {}
+};
+
+export class ResourceIdentity extends Schema.Class<ResourceIdentity>(
+  "@equipe-tech/observability/ResourceIdentity",
+)(identityFields) {}
 
 export const ResourceIdentityField = Schema.Literals([
   "service.name",
@@ -91,7 +93,6 @@ const invalidIdentity = (
     message: `${label} ${JSON.stringify(value)} is invalid. Use ${rule}.`,
   });
 
-const decodeResourceIdentity = Schema.decodeUnknownSync(ResourceIdentity);
 const decodeServiceName = Schema.decodeUnknownEffect(ServiceName);
 const decodeServiceVersion = Schema.decodeUnknownEffect(ServiceVersion);
 const decodeEnvironmentName = Schema.decodeUnknownEffect(EnvironmentName);
@@ -138,14 +139,6 @@ export const parseResourceIdentity = Effect.fn("parseResourceIdentity")(function
   });
   return new ResourceIdentity({ serviceName, serviceVersion, environment, instance });
 });
-
-export const resourceIdentity = (input: ResourceIdentityInput): ResourceIdentity =>
-  decodeResourceIdentity({
-    serviceName: input.serviceName,
-    serviceVersion: input.serviceVersion,
-    environment: input.environment,
-    instance: input.instance ?? Option.none(),
-  });
 
 export type ResourceAttributes = {
   readonly [attributeName: string]: string;

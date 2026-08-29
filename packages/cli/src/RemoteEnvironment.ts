@@ -1,3 +1,4 @@
+import { EnvironmentName, ServiceName } from "@equipe-tech/observability";
 import { Context, DateTime, Effect, Layer, Option, Schema } from "effect";
 import {
   AxiomCredentials,
@@ -22,14 +23,9 @@ import {
   SentryApi,
 } from "./ProviderApis.ts";
 
-const EnvironmentName = Schema.NonEmptyString.check(
-  Schema.isMaxLength(32),
-  Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/, {
-    expected: "a lowercase environment name with letters, digits and single dashes",
-  }),
-);
 const DatasetName = Schema.NonEmptyString.check(Schema.isMaxLength(128));
 const ProviderName = Schema.Literals(["axiom", "sentry"]);
+const decodeServiceName = Schema.decodeUnknownEffect(ServiceName);
 const decodeEnvironmentName = Schema.decodeUnknownEffect(EnvironmentName);
 const decodeDatasetName = Schema.decodeUnknownEffect(DatasetName);
 const decodeProviderName = Schema.decodeUnknownEffect(ProviderName);
@@ -72,6 +68,22 @@ export type EnvironmentDatasets = {
   readonly metrics: string;
 };
 
+const parseServiceName = Effect.fn("parseServiceName")(function* (
+  service: string,
+): Effect.fn.Return<string, RemoteEnvironmentError> {
+  return yield* decodeServiceName(service).pipe(
+    Effect.mapError(
+      (cause) =>
+        new RemoteEnvironmentError({
+          code: "OBS_CLI_REMOTE_INVALID_ENVIRONMENT",
+          message:
+            "The project name is invalid. Use lowercase letters, digits and single hyphens between segments, with at most 63 characters.",
+          cause,
+        }),
+    ),
+  );
+});
+
 export const parseEnvironmentName = Effect.fn("parseEnvironmentName")(function* (
   environment: string,
 ): Effect.fn.Return<string, RemoteEnvironmentError> {
@@ -81,7 +93,7 @@ export const parseEnvironmentName = Effect.fn("parseEnvironmentName")(function* 
         new RemoteEnvironmentError({
           code: "OBS_CLI_REMOTE_INVALID_ENVIRONMENT",
           message:
-            "The environment name is invalid. Use lowercase letters, digits and single dashes, with at most 32 characters.",
+            "The environment name is invalid. Use lowercase letters, digits and single hyphens between segments, with at most 32 characters.",
           cause,
         }),
     ),
@@ -1128,7 +1140,8 @@ export class RemoteEnvironment extends Context.Service<
           );
         }),
         list,
-        export: Effect.fn("RemoteEnvironment.export")(function* (project, rawEnvironment) {
+        export: Effect.fn("RemoteEnvironment.export")(function* (rawProject, rawEnvironment) {
+          const project = yield* parseServiceName(rawProject);
           const environment = yield* parseEnvironmentName(rawEnvironment);
           const credentials = Option.getOrElse(yield* store.load(), emptyCredentials);
           const managed = credentials.environments.find(

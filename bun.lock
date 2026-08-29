@@ -27,6 +27,7 @@
       "dependencies": {
         "@effect/platform-bun": "4.0.0-rc.111",
         "@effect/platform-node-shared": "4.0.0-rc.111",
+        "@equipe-tech/observability": "0.2.1",
         "effect": "4.0.0-rc.111",
       },
     },

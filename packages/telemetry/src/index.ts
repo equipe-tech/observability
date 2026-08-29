@@ -34,7 +34,6 @@ export {
   releaseIdentifier,
   ResourceIdentity,
   ResourceIdentityField,
-  resourceIdentity,
   ServiceInstanceId,
   ServiceName,
   serviceNamespace,

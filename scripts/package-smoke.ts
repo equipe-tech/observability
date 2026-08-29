@@ -380,6 +380,9 @@ try {
         "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
         "@equipe-tech/observability-cli": `file:${join(temporaryDirectory, "cli.tgz")}`,
       },
+      overrides: {
+        "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
+      },
     }),
   );
   requireSuccess(await run(["bun", "install"], consumer), "Installing packed packages");
@@ -394,6 +397,9 @@ try {
       dependencies: {
         "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
         "@equipe-tech/observability-cli": `file:${join(temporaryDirectory, "cli.tgz")}`,
+      },
+      overrides: {
+        "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
       },
     }),
   );
@@ -441,7 +447,7 @@ try {
   );
   await writeFile(
     join(consumer, "index.ts"),
-    "import { resourceIdentity, TelemetryConfig } from '@equipe-tech/observability';\nimport { layer } from '@equipe-tech/observability/node';\nimport { BrowserTelemetry } from '@equipe-tech/observability/browser';\nimport { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client';\nimport { run } from '@equipe-tech/observability/testing';\nconst config = new TelemetryConfig({ identity: resourceIdentity({ serviceName: 'test', serviceVersion: '1.0.0', environment: 'test' }), otlpEndpoint: new URL('http://localhost:4318') });\nvoid config;\nvoid layer;\nvoid BrowserTelemetry;\nvoid createBrowserTelemetryClient;\nvoid run;\n",
+    "import { TelemetryConfig } from '@equipe-tech/observability';\nimport { layer } from '@equipe-tech/observability/node';\nimport { BrowserTelemetry } from '@equipe-tech/observability/browser';\nimport { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client';\nimport { run } from '@equipe-tech/observability/testing';\nconst config = new TelemetryConfig({ identity: { serviceName: 'test', serviceVersion: '1.0.0', environment: 'test' }, otlpEndpoint: new URL('http://localhost:4318') });\nvoid config;\nvoid layer;\nvoid BrowserTelemetry;\nvoid createBrowserTelemetryClient;\nvoid run;\n",
   );
   await writeFile(
     join(consumer, "metrics-consumer.ts"),

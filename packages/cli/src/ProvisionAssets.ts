@@ -1,3 +1,4 @@
+import { ServiceName } from "@equipe-tech/observability";
 import { Context, Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
 import { fileURLToPath } from "node:url";
 
@@ -5,14 +6,7 @@ const packagedAssetsDirectory = fileURLToPath(new URL("./assets", import.meta.ur
 
 export const provisionDirectoryName = "observability";
 
-const ProjectName = Schema.NonEmptyString.check(
-  Schema.isMaxLength(63),
-  Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/, {
-    expected: "a lowercase name with letters, digits and single dashes",
-  }),
-);
-
-const decodeProjectName = Schema.decodeUnknownEffect(ProjectName);
+const decodeProjectName = Schema.decodeUnknownEffect(ServiceName);
 
 export class ProvisionError extends Schema.TaggedError<ProvisionError>()("ProvisionError", {
   code: Schema.Literals([
@@ -53,7 +47,7 @@ export const projectNameFromDirectory = Effect.fn("projectNameFromDirectory")(fu
         new ProvisionError({
           code: "OBS_CLI_PROVISION_INVALID_NAME",
           message:
-            "The project name could not be derived from the target directory. Pass --name with a lowercase name of letters, digits and single dashes.",
+            "The project name could not be derived from the target directory. Pass --name with lowercase letters, digits and single hyphens between segments.",
           cause,
         }),
     ),
@@ -69,7 +63,7 @@ export const parseProjectName = Effect.fn("parseProjectName")(function* (
         new ProvisionError({
           code: "OBS_CLI_PROVISION_INVALID_NAME",
           message:
-            "The project name is invalid. Use a lowercase name of letters, digits and single dashes, with at most 63 characters.",
+            "The project name is invalid. Use lowercase letters, digits and single hyphens between segments, with at most 63 characters.",
           cause,
         }),
     ),

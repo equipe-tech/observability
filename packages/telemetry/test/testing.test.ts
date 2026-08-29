@@ -1,6 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Metric, Option } from "effect";
-import { resourceIdentity } from "../src/ResourceIdentity.ts";
 import * as Testing from "../src/testing/index.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 import * as WideEvent from "../src/WideEvent.ts";
@@ -38,12 +37,12 @@ describe("Testing.run", () => {
         }).pipe(Effect.withSpan("testing.operation")),
         {
           config: new TelemetryConfig({
-            identity: resourceIdentity({
+            identity: {
               serviceName: "testing-service",
               serviceVersion: "9.9.9",
               environment: "test",
               instance: Option.some("testing-instance"),
-            }),
+            },
             otlpEndpoint: new URL("http://telemetry.invalid"),
           }),
         },
