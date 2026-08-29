@@ -1,13 +1,26 @@
 import { Effect, Schema } from "effect";
 import { EventName, isValidAttributeName, isValidEventName } from "./EventName.ts";
-import type { EventKind, EventOutcome, EventSeverity } from "./TelemetryEvent.ts";
+import {
+  EventKind,
+  EventOutcome,
+  EventSeverity,
+  type EventKind as EventKindType,
+  type EventOutcome as EventOutcomeType,
+  type EventSeverity as EventSeverityType,
+} from "./TelemetryEvent.ts";
 import {
   InvalidTelemetryContract,
   type ContractIssue,
   type ContractIssueCode,
 } from "./TelemetryContractError.ts";
 
-export type AttributeClassification = "public" | "internal" | "sensitive" | "forbidden";
+export const AttributeClassification = Schema.Literals([
+  "public",
+  "internal",
+  "sensitive",
+  "forbidden",
+]);
+export type AttributeClassification = typeof AttributeClassification.Type;
 
 export type AttributeDefinition = {
   readonly classification: AttributeClassification;
@@ -25,8 +38,8 @@ export type SamplingPolicyInput =
 
 export type EventDefinitionInput = {
   readonly name: string;
-  readonly kind: EventKind;
-  readonly defaultSeverity: EventSeverity;
+  readonly kind: EventKindType;
+  readonly defaultSeverity: EventSeverityType;
   readonly mandatory: boolean;
   readonly sampling: SamplingPolicyInput;
   readonly attributes: AttributeDefinitionsInput;
@@ -47,7 +60,7 @@ export type MetricDefinitionsInput = {
 export type AuditActionDefinitionInput = {
   readonly action: string;
   readonly resourceType: string;
-  readonly allowedOutcomes: ReadonlyArray<EventOutcome>;
+  readonly allowedOutcomes: ReadonlyArray<EventOutcomeType>;
 };
 
 export type AuditActionDefinitionsInput = {
@@ -76,8 +89,8 @@ type StaticEventNames<Definition extends TelemetryContractInput> = {
 export type CompiledEventDefinition = {
   readonly alias: string;
   readonly name: EventName;
-  readonly kind: EventKind;
-  readonly defaultSeverity: EventSeverity;
+  readonly kind: EventKindType;
+  readonly defaultSeverity: EventSeverityType;
   readonly mandatory: boolean;
   readonly sampling: SamplingPolicyInput;
   readonly attributes: ReadonlyMap<string, AttributeDefinition>;
@@ -99,10 +112,10 @@ export type TelemetryContract<Definition extends TelemetryContractInput> = {
   readonly metrics: Definition["metrics"];
 };
 
-const attributeClassifications = new Set<string>(["public", "internal", "sensitive", "forbidden"]);
-const eventKinds = new Set<string>(["request", "operation", "domain", "defect", "audit"]);
-const eventSeverities = new Set<string>(["debug", "info", "warn", "error", "fatal"]);
-const eventOutcomes = new Set<string>(["success", "failure", "cancelled"]);
+const isAttributeClassification = Schema.is(AttributeClassification);
+const isEventKind = Schema.is(EventKind);
+const isEventSeverity = Schema.is(EventSeverity);
+const isEventOutcome = Schema.is(EventOutcome);
 const auditActionPattern = /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/;
 const canonicalSinkFields = new Set([
   "event.name",
@@ -199,7 +212,7 @@ const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<Contra
     } else {
       eventAliasesByName.set(event.name, alias);
     }
-    if (!eventKinds.has(event.kind)) {
+    if (!isEventKind(event.kind)) {
       issues.push(
         issue(
           "OBS_CONTRACT_INVALID_EVENT_KIND",
@@ -208,7 +221,7 @@ const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<Contra
         ),
       );
     }
-    if (!eventSeverities.has(event.defaultSeverity)) {
+    if (!isEventSeverity(event.defaultSeverity)) {
       issues.push(
         issue(
           "OBS_CONTRACT_INVALID_DEFAULT_SEVERITY",
@@ -260,14 +273,14 @@ const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<Contra
         );
       }
       if (
-        !attributeClassifications.has(attribute.classification) ||
-        (attribute.classification === "sensitive" && attribute.metricLabel) ||
-        (attribute.classification === "forbidden" && attribute.required)
+        !isAttributeClassification(attribute.classification) ||
+        ((attribute.classification === "sensitive" || attribute.classification === "forbidden") &&
+          (attribute.required || attribute.metricLabel))
       ) {
         issues.push(
           issue(
             "OBS_CONTRACT_INVALID_ATTRIBUTE_DEFINITION",
-            `Attribute "${attributeName}" has an invalid classification or incompatible flags. Use public or internal, remove metricLabel from sensitive attributes, and remove required from forbidden attributes.`,
+            `Attribute "${attributeName}" has an invalid classification or incompatible flags. Use public, internal, sensitive, or forbidden, and set required and metricLabel to false for restricted attributes.`,
             { eventAlias: alias, eventName: event.name, attributeName },
           ),
         );
@@ -280,7 +293,7 @@ const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<Contra
       !auditActionPattern.test(action.action) ||
       action.resourceType.length === 0 ||
       action.allowedOutcomes.length === 0 ||
-      action.allowedOutcomes.some((outcome) => !eventOutcomes.has(outcome))
+      action.allowedOutcomes.some((outcome) => !isEventOutcome(outcome))
     ) {
       issues.push(
         issue(

@@ -36,8 +36,6 @@ const fieldsForEvent = (event: TelemetryEvent): WideEvent.WideEventFields => {
     case "operation":
       fields["event.duration_ms"] = event.durationMs;
       break;
-    case "domain":
-      break;
     case "defect":
       fields["error.type"] = event.error.type;
       fields["error.message"] = event.error.message;

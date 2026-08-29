@@ -1,4 +1,4 @@
-import { DateTime, Option, Predicate, Schema } from "effect";
+import { DateTime, Option, Schema } from "effect";
 import type { EventName } from "./EventName.ts";
 
 export const EventSeverity = Schema.Literals(["debug", "info", "warn", "error", "fatal"]);
@@ -54,7 +54,7 @@ export const AuditContext = Schema.Struct({
 });
 export type AuditContext = typeof AuditContext.Type;
 
-export const rfc3339UtcPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?Z$/;
+const rfc3339UtcPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?Z$/;
 
 const isLeapYear = (year: number): boolean =>
   year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
@@ -66,7 +66,7 @@ const daysInMonth = (year: number, month: number): number => {
   return [4, 6, 9, 11].includes(month) ? 30 : 31;
 };
 
-export const isValidTimestamp = (timestamp: string): boolean => {
+const isValidTimestamp = (timestamp: string): boolean => {
   const parts = rfc3339UtcPattern.exec(timestamp);
   if (parts === null) {
     return false;
@@ -132,8 +132,3 @@ export type TelemetryEvent =
       readonly outcome: EventOutcome;
       readonly audit: AuditContext;
     });
-
-export const isValidAttributeValue = (value: AttributeValue | undefined): boolean =>
-  Predicate.isString(value) ||
-  Predicate.isBoolean(value) ||
-  (Predicate.isNumber(value) && Number.isFinite(value));

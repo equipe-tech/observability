@@ -92,42 +92,24 @@ type DefectPayload = EventPayloadOf<typeof typedInput, "Defect">;
 type AuditPayload = EventPayloadOf<typeof typedInput, "Audit">;
 type DynamicContractArgument = Parameters<typeof defineTelemetryContract<typeof dynamicInput>>[0];
 
-type ProducerTypeAssertions = [
-  Assert<Equal<Extract<"Missing", ProducerAlias>, never>>,
-  Assert<Equal<keyof RenewalAttributes, "subscription.plan" | "subscription.cycle">>,
-  Assert<Equal<Pick<RenewalAttributes, never> extends RenewalAttributes ? true : false, false>>,
-  Assert<Equal<Extract<DefectPayload, { readonly outcome: "success" }>, never>>,
-  Assert<Equal<typeof dynamicInput extends DynamicContractArgument ? true : false, false>>,
-  Assert<Equal<Extract<{ readonly nested: true }, AttributeValue>, never>>,
-  Assert<Equal<AuditPayload["outcome"], "success">>,
-  Assert<Equal<AuditPayload["audit"]["action"], "access.reviewed">>,
-  Assert<Equal<AuditPayload["audit"]["resourceType"], "account">>,
-];
-
-const producerTypeAssertions: ProducerTypeAssertions = [
-  true,
-  true,
-  true,
-  true,
-  true,
-  true,
-  true,
-  true,
-  true,
+const producerTypeAssertions = [
+  true satisfies Assert<Equal<Extract<"Missing", ProducerAlias>, never>>,
+  true satisfies Assert<Equal<keyof RenewalAttributes, "subscription.plan" | "subscription.cycle">>,
+  true satisfies Assert<
+    Equal<Pick<RenewalAttributes, never> extends RenewalAttributes ? true : false, false>
+  >,
+  true satisfies Assert<Equal<Extract<DefectPayload, { readonly outcome: "success" }>, never>>,
+  true satisfies Assert<
+    Equal<typeof dynamicInput extends DynamicContractArgument ? true : false, false>
+  >,
+  true satisfies Assert<Equal<Extract<{ readonly nested: true }, AttributeValue>, never>>,
+  true satisfies Assert<Equal<AuditPayload["outcome"], "success">>,
+  true satisfies Assert<Equal<AuditPayload["audit"]["action"], "access.reviewed">>,
+  true satisfies Assert<Equal<AuditPayload["audit"]["resourceType"], "account">>,
 ];
 
 describe("contract producer types", () => {
   it("rejects aliases, attributes, missing fields, defect outcomes and dynamic names", () => {
-    assert.deepStrictEqual(producerTypeAssertions, [
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-    ]);
+    assert.isTrue(producerTypeAssertions.every(Boolean));
   });
 });

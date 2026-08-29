@@ -19,7 +19,6 @@ import {
   EventTimestamp,
   HttpContext,
   type TelemetryEvent,
-  isValidAttributeValue,
 } from "./TelemetryEvent.ts";
 import { InvalidTelemetryEvent } from "./TelemetryContractError.ts";
 
@@ -151,7 +150,12 @@ const parseAttributes = (
         { eventName: definition.name, attributeName },
       );
     }
-    if (value === undefined || !isValidAttributeValue(value)) {
+    if (
+      value === undefined ||
+      (!Predicate.isString(value) &&
+        !Predicate.isBoolean(value) &&
+        (!Predicate.isNumber(value) || !Number.isFinite(value)))
+    ) {
       return eventError(
         "OBS_EVENT_INVALID_FIELD",
         `Event "${definition.name}" has a non-scalar or non-finite value for "${attributeName}". Use a string, finite number, or boolean.`,

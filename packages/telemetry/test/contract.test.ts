@@ -151,6 +151,65 @@ describe("defineTelemetryContract", () => {
     }),
   );
 
+  it.effect("rejects required and metric flags for every restricted classification", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        defineTelemetryContract({
+          version: 1,
+          events: {
+            Restricted: {
+              name: "profile.updated",
+              kind: "domain",
+              defaultSeverity: "info",
+              mandatory: false,
+              sampling: { kind: "always" },
+              attributes: {
+                "profile.sensitive_required": {
+                  classification: "sensitive",
+                  required: true,
+                  metricLabel: false,
+                },
+                "profile.sensitive_metric": {
+                  classification: "sensitive",
+                  required: false,
+                  metricLabel: true,
+                },
+                "profile.forbidden_required": {
+                  classification: "forbidden",
+                  required: true,
+                  metricLabel: false,
+                },
+                "profile.forbidden_metric": {
+                  classification: "forbidden",
+                  required: false,
+                  metricLabel: true,
+                },
+              },
+            },
+          },
+          metrics: {},
+          auditActions: {},
+        }),
+      );
+      const restrictedIssues = error.issues.filter(
+        (entry) => entry.code === "OBS_CONTRACT_INVALID_ATTRIBUTE_DEFINITION",
+      );
+      assert.sameMembers(
+        restrictedIssues.map((entry) => entry.attributeName),
+        [
+          "profile.sensitive_required",
+          "profile.sensitive_metric",
+          "profile.forbidden_required",
+          "profile.forbidden_metric",
+        ],
+      );
+      assert.strictEqual(restrictedIssues.length, 4);
+      for (const contractIssue of restrictedIssues) {
+        assert.include(contractIssue.message, "set required and metricLabel to false");
+      }
+    }),
+  );
+
   for (const rate of [0, -0.1, 1.1, Number.NaN, Number.POSITIVE_INFINITY]) {
     it.effect(`rejects invalid sampling rate ${String(rate)}`, () =>
       Effect.gen(function* () {

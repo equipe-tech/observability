@@ -115,7 +115,19 @@ Canários usam `mandatory: true` na definição. Um resultado `cancelled` contin
 
 Falhas de compilação retornam `InvalidTelemetryContract` com código `OBS_CONTRACT_INVALID` e uma lista `ReadonlyArray<ContractIssue>`. A lista agrega todos os problemas encontrados. Cada item usa um código fechado `OBS_CONTRACT_*` e inclui contexto público seguro.
 
-Falhas de emissão retornam `InvalidTelemetryEvent`. Os códigos públicos cobrem alias desconhecido, atributo não declarado, atributo obrigatório ausente, campo inválido e resultado inválido. O produtor executa essas verificações antes de chamar o sink e `WideEvent.emit`.
+Falhas de emissão retornam `InvalidTelemetryEvent`. O produtor executa todas as verificações antes de chamar o sink e `WideEvent.emit`.
+
+| Código                             | Significado                                     |
+| ---------------------------------- | ----------------------------------------------- |
+| `OBS_EVENT_UNKNOWN_NAME`           | O alias do evento não existe no contrato.       |
+| `OBS_EVENT_UNDECLARED_ATTRIBUTE`   | O contrato não declara o atributo fornecido.    |
+| `OBS_EVENT_MISSING_ATTRIBUTE`      | Um atributo obrigatório não foi fornecido.      |
+| `OBS_EVENT_INVALID_FIELD`          | Um campo tem valor ou estrutura inválida.       |
+| `OBS_EVENT_INVALID_OUTCOME`        | O resultado não é válido para o tipo de evento. |
+| `OBS_EVENT_RESTRICTED_ATTRIBUTE`   | Um atributo restrito recebeu um valor bruto.    |
+| `OBS_EVENT_UNKNOWN_AUDIT_ACTION`   | A ação de auditoria não existe no contrato.     |
+| `OBS_EVENT_INVALID_AUDIT_RESOURCE` | O tipo de recurso difere da ação declarada.     |
+| `OBS_EVENT_INVALID_AUDIT_OUTCOME`  | A ação de auditoria não permite o resultado.    |
 
 ## Testes de consumidores
 
