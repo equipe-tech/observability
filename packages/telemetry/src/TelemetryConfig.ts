@@ -5,10 +5,11 @@ import {
   parseResourceIdentity,
   ResourceIdentity,
 } from "./ResourceIdentity.ts";
+import type { DuplicateReleaseVariable } from "./profile/ObservabilityConfigError.ts";
 import {
-  DuplicateReleaseVariable,
-  secondReleaseVariables,
-} from "./profile/ObservabilityConfigError.ts";
+  deploymentScopeFromEndpoint,
+  rejectSecondReleaseVariables,
+} from "./profile/EnvironmentPolicy.ts";
 
 export const OtlpEndpoint = Schema.URLFromString.check(
   Schema.makeFilter(
@@ -77,16 +78,7 @@ export const telemetryConfigFromEnv = Effect.fn("telemetryConfigFromEnv")(functi
   TelemetryConfig,
   InvalidTelemetryEnvironment | InvalidResourceIdentity | DuplicateReleaseVariable
 > {
-  for (const variable of secondReleaseVariables) {
-    const value = env[variable];
-    if (value !== undefined && value !== "") {
-      return yield* new DuplicateReleaseVariable({
-        code: "OBS_TELEMETRY_DUPLICATE_RELEASE_VARIABLE",
-        variable,
-        message: `${variable} defines a second release identity. Remove it and set OTEL_SERVICE_VERSION.`,
-      });
-    }
-  }
+  yield* rejectSecondReleaseVariables(env);
   const variables = yield* decodeTelemetryEnvironment(env).pipe(
     Effect.mapError(
       (cause) =>
@@ -98,11 +90,7 @@ export const telemetryConfigFromEnv = Effect.fn("telemetryConfigFromEnv")(functi
         }),
     ),
   );
-  const local =
-    variables.OTEL_EXPORTER_OTLP_ENDPOINT.hostname === "localhost" ||
-    variables.OTEL_EXPORTER_OTLP_ENDPOINT.hostname === "::1" ||
-    variables.OTEL_EXPORTER_OTLP_ENDPOINT.hostname === "[::1]" ||
-    variables.OTEL_EXPORTER_OTLP_ENDPOINT.hostname.startsWith("127.");
+  const local = deploymentScopeFromEndpoint(variables.OTEL_EXPORTER_OTLP_ENDPOINT) === "local";
   const serviceVersion = variables.OTEL_SERVICE_VERSION ?? (local ? "0.0.0" : undefined);
   const environment = variables.OTEL_DEPLOYMENT_ENVIRONMENT ?? (local ? "development" : undefined);
   if (serviceVersion === undefined || environment === undefined) {

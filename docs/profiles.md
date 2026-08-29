@@ -12,7 +12,9 @@ Cada processo seleciona um dos cinco perfis fechados. Combinações livres de fl
 
 Bibliotecas podem exportar definições de instrumentos. O perfil `library` proíbe somente um runtime global.
 
-OTLP, traces e métricas pertencem ao núcleo. Aplicações registram somente adapters oficiais de eventos, defeitos e browser ingest. Adapters de gravação usam uma marca própria exportada pelo entrypoint `testing`.
+OTLP, traces e métricas pertencem ao núcleo. Aplicações registram adapters oficiais de eventos, defeitos e browser ingest com `registerOfficialAdapter`. Registros de teste e suas factories existem somente no entrypoint `@equipe-tech/observability/testing` e são rejeitados pelas factories oficiais.
+
+`react-web` é somente um descritor de contrato nesta entrega. O OBS-54 fornecerá a factory de browser. A factory de Node rejeita `react-web` porque esse perfil não possui runtime global de Node.
 
 ## Configuração de Node
 
@@ -26,9 +28,9 @@ O valor literal `production` torna o adapter de defeitos obrigatório para `nest
 
 ## Ciclo de vida
 
-O runtime inicia adapters em ordem declarada. Uma falha fecha os adapters já iniciados na ordem inversa.
+O runtime inicia adapters na ordem de capacidades declarada pelo perfil. Uma falha fecha os adapters já iniciados na ordem inversa.
 
-O encerramento de Node tem um prazo absoluto de 5 segundos. A ordem é fechamento de intake, eventos, traces, defeitos, métricas e descarte do runtime. Métricas recebem no máximo 3 segundos e nunca ultrapassam o tempo restante do prazo absoluto. Adapters dentro de uma etapa executam em sequência.
+O encerramento de Node tem um prazo absoluto de 5 segundos. Cada perfil define a ordem das capacidades. O descarte do runtime é o último resultado explícito do relatório. Quando não resta orçamento, o resultado é `deadline-exceeded` e o relatório fica degradado. Métricas recebem no máximo 3 segundos e nunca ultrapassam o tempo restante do prazo absoluto. Adapters dentro de uma etapa executam em sequência.
 
 `flush`, `close` e `dispose` compartilham operações concorrentes. `close` e `dispose` devolvem o mesmo relatório final depois da primeira chamada.
 

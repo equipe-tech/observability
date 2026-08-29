@@ -10,6 +10,7 @@ import type {
 import {
   AdapterFailure,
   AdapterName,
+  registerOfficialAdapter,
   registerTestingAdapter,
   type ContractRegistry,
   type ObservabilityAdapter,
@@ -23,6 +24,7 @@ import {
 import { workerProfile } from "../src/profile/ObservabilityProfile.ts";
 import {
   createNodeObservabilityFromConfig,
+  createTestingNodeObservabilityFromConfig,
   type NodeObservabilityEnabled,
 } from "../src/node/Observability.ts";
 
@@ -93,7 +95,9 @@ describe("observability lifecycle", () => {
     const parsed = await Effect.runPromise(config());
     if (!parsed.enabled) throw new Error("Expected enabled config.");
     const missing = await Effect.runPromise(
-      Effect.flip(validateAdapterRegistrations(parsed.profile, "test", [])),
+      Effect.flip(
+        validateAdapterRegistrations(parsed.profile, "test", [], { allowTesting: false }),
+      ),
     );
     expect(missing.code).toBe("OBS_OBSERVABILITY_ADAPTER_MISSING");
 
@@ -102,34 +106,97 @@ describe("observability lifecycle", () => {
       recordingAdapter("browser", "browser-ingest", calls),
     );
     const unsupportedError = await Effect.runPromise(
-      Effect.flip(validateAdapterRegistrations(parsed.profile, "test", [unsupported])),
+      Effect.flip(
+        validateAdapterRegistrations(parsed.profile, "test", [unsupported], { allowTesting: true }),
+      ),
     );
     expect(unsupportedError.code).toBe("OBS_OBSERVABILITY_ADAPTER_UNSUPPORTED");
 
     const events = registerTestingAdapter(recordingAdapter("events", "events", calls));
     const duplicate = await Effect.runPromise(
-      Effect.flip(validateAdapterRegistrations(parsed.profile, "test", [events, events])),
+      Effect.flip(
+        validateAdapterRegistrations(parsed.profile, "test", [events, events], {
+          allowTesting: true,
+        }),
+      ),
     );
     expect(duplicate.code).toBe("OBS_OBSERVABILITY_ADAPTER_DUPLICATE");
   });
 
-  it("starts adapters in order and closes events, traces, defects, then metrics", async () => {
+  it("validates official registrations and runs their lifecycle through the root factory", async () => {
+    const calls: Array<string> = [];
+    const parsed = await Effect.runPromise(config());
+    const events = registerOfficialAdapter(recordingAdapter("official-events", "events", calls));
+    const handle = enabled(await createNodeObservabilityFromConfig(parsed, [events]));
+    expect(events.kind).toBe("official");
+    expect(calls).toEqual(["start:official-events"]);
+    const report = await handle.close();
+    expect(report.degraded).toBe(false);
+    expect(calls).toContain("close:official-events");
+    expect(report.outcomes.at(-1)).toMatchObject({
+      participant: "runtime-disposal",
+      result: { kind: "completed" },
+    });
+  });
+
+  it("rejects testing registrations through the root factory with a typed error", async () => {
+    const parsed = await Effect.runPromise(config());
+    const registration = registerTestingAdapter(recordingAdapter("events", "events", []));
+    if (!parsed.enabled) throw new Error("Expected enabled config.");
+    await expect(createNodeObservabilityFromConfig(parsed, [registration])).rejects.toMatchObject({
+      _tag: "InvalidObservabilityConfig",
+      code: "OBS_OBSERVABILITY_ADAPTER_TESTING",
+    });
+  });
+
+  it("rejects testing registrations even when the root factory is disabled", async () => {
+    const registration = registerTestingAdapter(recordingAdapter("events", "events", []));
+    await expect(
+      createNodeObservabilityFromConfig({ enabled: false }, [registration]),
+    ).rejects.toMatchObject({ code: "OBS_OBSERVABILITY_ADAPTER_TESTING" });
+  });
+
+  it("uses a changed profile capability order for startup and shutdown", async () => {
+    const calls: Array<string> = [];
+    const parsed = await Effect.runPromise(config());
+    if (!parsed.enabled) throw new Error("Expected enabled config.");
+    const capabilityOrder = new Map(parsed.profile.capabilityOrder);
+    capabilityOrder.set("server", ["defects", "traces", "events"]);
+    const reordered = {
+      ...parsed,
+      profile: { ...parsed.profile, capabilityOrder },
+    };
+    const handle = enabled(
+      await createNodeObservabilityFromConfig(reordered, [
+        registerOfficialAdapter(recordingAdapter("events", "events", calls)),
+        registerOfficialAdapter(recordingAdapter("defects", "defects", calls)),
+      ]),
+    );
+    expect(calls.slice(0, 2)).toEqual(["start:defects", "start:events"]);
+    const report = await handle.close();
+    expect(
+      report.outcomes.flatMap((outcome) =>
+        outcome.participant === "adapter" ? [outcome.adapter] : [],
+      ),
+    ).toEqual(["defects", "core-traces", "events", "core-metrics"]);
+  });
+
+  it("starts adapters in profile order and closes in the same profile order", async () => {
     const calls: Array<string> = [];
     const parsed = await Effect.runPromise(config());
     const handle = enabled(
-      await createNodeObservabilityFromConfig(parsed, [
+      await createTestingNodeObservabilityFromConfig(parsed, [
         registerTestingAdapter(recordingAdapter("defects", "defects", calls)),
         registerTestingAdapter(recordingAdapter("events", "events", calls)),
       ]),
     );
     expect(calls.slice(0, 2)).toEqual(["start:events", "start:defects"]);
     const report = await handle.close();
-    expect(report.outcomes.map((outcome) => outcome.adapter)).toEqual([
-      "events",
-      "core-traces",
-      "defects",
-      "core-metrics",
-    ]);
+    expect(
+      report.outcomes.map((outcome) =>
+        outcome.participant === "adapter" ? String(outcome.adapter) : outcome.participant,
+      ),
+    ).toEqual(["events", "core-traces", "defects", "core-metrics", "runtime-disposal"]);
     expect(calls.filter((call) => call.startsWith("close:"))).toEqual([
       "close:events",
       "close:defects",
@@ -141,7 +208,7 @@ describe("observability lifecycle", () => {
     const calls: Array<string> = [];
     const parsed = await Effect.runPromise(config());
     const handle = enabled(
-      await createNodeObservabilityFromConfig(parsed, [
+      await createTestingNodeObservabilityFromConfig(parsed, [
         registerTestingAdapter(recordingAdapter("events", "events", calls)),
       ]),
     );
@@ -160,7 +227,7 @@ describe("observability lifecycle", () => {
     const calls: Array<string> = [];
     const parsed = await Effect.runPromise(config());
     const handle = enabled(
-      await createNodeObservabilityFromConfig(parsed, [
+      await createTestingNodeObservabilityFromConfig(parsed, [
         registerTestingAdapter(recordingAdapter("events", "events", calls)),
       ]),
     );
@@ -200,9 +267,35 @@ describe("observability lifecycle", () => {
       }).pipe(Effect.provide(TestClock.layer())),
     );
     expect(report.durationMillis).toBe(3_000);
-    expect(report.outcomes.at(-1)?.result).toEqual({
-      kind: "deadline-exceeded",
-      budgetMillis: 3_000,
+    expect(
+      report.outcomes.find(
+        (outcome) => outcome.participant === "adapter" && outcome.adapter === "core-metrics",
+      )?.result,
+    ).toEqual({ kind: "deadline-exceeded", budgetMillis: 3_000 });
+  });
+
+  it("reports deadline-exceeded disposal when the absolute budget is exhausted", async () => {
+    const registration = registerTestingAdapter(recordingAdapter("events", "events", []));
+    const started: StartedAdapter = {
+      registration,
+      handle: { flush: Effect.void, close: Effect.never },
+    };
+    const flusher = OtlpExporter.Flusher.of({
+      flush: Effect.void,
+      register: () => Effect.void,
+    });
+    const registry = createLifecycleRegistry(workerProfile, [started], flusher, Effect.void);
+    const report = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(registry.run("close"));
+        yield* TestClock.adjust("5 seconds");
+        return yield* Fiber.join(fiber);
+      }).pipe(Effect.provide(TestClock.layer())),
+    );
+    expect(report.degraded).toBe(true);
+    expect(report.outcomes.at(-1)).toEqual({
+      participant: "runtime-disposal",
+      result: { kind: "deadline-exceeded", budgetMillis: 0 },
     });
   });
 
@@ -210,7 +303,7 @@ describe("observability lifecycle", () => {
     const calls: Array<string> = [];
     const parsed = await Effect.runPromise(config("production"));
     await expect(
-      createNodeObservabilityFromConfig(parsed, [
+      createTestingNodeObservabilityFromConfig(parsed, [
         registerTestingAdapter(recordingAdapter("events", "events", calls)),
         registerTestingAdapter(recordingAdapter("defects", "defects", calls, true)),
       ]),

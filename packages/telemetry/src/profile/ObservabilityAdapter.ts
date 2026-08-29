@@ -1,4 +1,5 @@
 import { Effect, ManagedRuntime, Schema } from "effect";
+import type { OtlpExporter } from "effect/unstable/observability";
 import type {
   CompiledAuditActionDefinition,
   CompiledEventDefinition,
@@ -7,13 +8,12 @@ import type { EventName } from "../contract/EventName.ts";
 import type { ResourceIdentity } from "../ResourceIdentity.ts";
 import type { TelemetryConfig } from "../TelemetryConfig.ts";
 import type { DataPolicy } from "./DataPolicy.ts";
-import type { NodeObservabilityConfigEnabled, SentryConfig } from "./ObservabilityConfig.ts";
-import {
+import type { SentryConfig } from "./ObservabilityConfig.ts";
+import type {
   AdapterCapability,
   LifecycleStage,
-  type ObservabilityProfile,
+  ObservabilityProfile,
 } from "./ObservabilityProfile.ts";
-import type { OtlpExporter } from "effect/unstable/observability";
 
 export const AdapterName = Schema.String.check(
   Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
@@ -60,49 +60,83 @@ export type ObservabilityAdapter = {
   ) => Effect.Effect<ObservabilityAdapterHandle, AdapterFailure>;
 };
 
-export class OfficialAdapterRegistration {
-  readonly #officialRegistration = true;
-  readonly kind = "official";
-  constructor(readonly adapter: ObservabilityAdapter) {}
-  registrationBrand(): boolean {
-    return this.#officialRegistration;
-  }
-}
+const officialRegistrationBrand: unique symbol = Symbol("OfficialAdapterRegistration");
+const testingRegistrationBrand: unique symbol = Symbol("TestingAdapterRegistration");
+const officialRegistrations = new WeakSet<OfficialAdapterRegistration>();
+const testingRegistrations = new WeakSet<TestingAdapterRegistration>();
 
-export class TestingAdapterRegistration {
-  readonly #testingRegistration = true;
-  readonly kind = "testing";
-  constructor(readonly adapter: ObservabilityAdapter) {}
-  registrationBrand(): boolean {
-    return this.#testingRegistration;
-  }
-}
+export type OfficialAdapterRegistration = {
+  readonly kind: "official";
+  readonly adapter: ObservabilityAdapter;
+  readonly [officialRegistrationBrand]: true;
+};
+
+export type TestingAdapterRegistration = {
+  readonly kind: "testing";
+  readonly adapter: ObservabilityAdapter;
+  readonly [testingRegistrationBrand]: true;
+};
 
 export type AdapterRegistration = OfficialAdapterRegistration | TestingAdapterRegistration;
 
 export const registerOfficialAdapter = (
   adapter: ObservabilityAdapter,
-): OfficialAdapterRegistration => new OfficialAdapterRegistration(adapter);
+): OfficialAdapterRegistration => {
+  const registration: OfficialAdapterRegistration = {
+    kind: "official",
+    adapter,
+    [officialRegistrationBrand]: true,
+  };
+  officialRegistrations.add(registration);
+  return Object.freeze(registration);
+};
 
-export const registerTestingAdapter = (adapter: ObservabilityAdapter): TestingAdapterRegistration =>
-  new TestingAdapterRegistration(adapter);
+export const registerTestingAdapter = (
+  adapter: ObservabilityAdapter,
+): TestingAdapterRegistration => {
+  const registration: TestingAdapterRegistration = {
+    kind: "testing",
+    adapter,
+    [testingRegistrationBrand]: true,
+  };
+  testingRegistrations.add(registration);
+  return Object.freeze(registration);
+};
 
-export type AdapterOutcomeResult =
+export const isOfficialAdapterRegistration = (
+  registration: AdapterRegistration,
+): registration is OfficialAdapterRegistration =>
+  registration.kind === "official" && officialRegistrations.has(registration);
+
+export const isTestingAdapterRegistration = (
+  registration: AdapterRegistration,
+): registration is TestingAdapterRegistration =>
+  registration.kind === "testing" && testingRegistrations.has(registration);
+
+export type LifecycleOutcomeResult =
   | { readonly kind: "completed"; readonly durationMillis: number }
   | { readonly kind: "failed"; readonly error: AdapterFailure }
   | { readonly kind: "deadline-exceeded"; readonly budgetMillis: number }
   | { readonly kind: "skipped"; readonly reason: "deadline-exhausted" };
 
 export type AdapterOutcome = {
+  readonly participant: "adapter";
   readonly adapter: AdapterName;
   readonly capability: AdapterCapability;
   readonly stage: LifecycleStage;
-  readonly result: AdapterOutcomeResult;
+  readonly result: LifecycleOutcomeResult;
 };
+
+export type RuntimeDisposalOutcome = {
+  readonly participant: "runtime-disposal";
+  readonly result: LifecycleOutcomeResult;
+};
+
+export type LifecycleOutcome = AdapterOutcome | RuntimeDisposalOutcome;
 
 export type LifecycleReport = {
   readonly operation: "flush" | "close";
-  readonly outcomes: ReadonlyArray<AdapterOutcome>;
+  readonly outcomes: ReadonlyArray<LifecycleOutcome>;
   readonly durationMillis: number;
   readonly degraded: boolean;
 };
@@ -110,9 +144,4 @@ export type LifecycleReport = {
 export type StartedAdapter = {
   readonly registration: AdapterRegistration;
   readonly handle: ObservabilityAdapterHandle;
-};
-
-export type AdapterValidationInput = {
-  readonly config: NodeObservabilityConfigEnabled;
-  readonly registrations: ReadonlyArray<AdapterRegistration>;
 };

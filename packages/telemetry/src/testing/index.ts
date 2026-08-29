@@ -8,8 +8,12 @@ import { TelemetryConfig } from "../TelemetryConfig.ts";
 export * from "./contract.ts";
 export {
   registerTestingAdapter,
-  TestingAdapterRegistration,
+  type TestingAdapterRegistration,
 } from "../profile/ObservabilityAdapter.ts";
+export {
+  createTestingNodeObservabilityFromConfig,
+  makeTestingNodeObservability,
+} from "../node/Observability.ts";
 
 export type CapturedAttributeValue = string | number | boolean;
 

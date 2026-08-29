@@ -52,7 +52,9 @@ export const parseDataPolicy = Effect.fn("parseDataPolicy")(function* (
   const parsed = yield* decodePolicy(input).pipe(
     Effect.mapError((cause) => invalidPolicy("policy", cause)),
   );
-  const patterns: Array<RegExp> = [...baseBlockedValuePatterns];
+  const patterns = baseBlockedValuePatterns.map(
+    (pattern) => new RegExp(pattern.source, pattern.flags),
+  );
   for (const source of parsed.blockedValuePatterns) {
     const pattern = yield* Effect.try({
       try: () => new RegExp(source),

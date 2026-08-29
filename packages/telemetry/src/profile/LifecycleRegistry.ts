@@ -3,18 +3,24 @@ import type { OtlpExporter } from "effect/unstable/observability";
 import {
   AdapterFailure,
   AdapterName,
-  OfficialAdapterRegistration,
+  isOfficialAdapterRegistration,
+  isTestingAdapterRegistration,
+  registerOfficialAdapter,
   type AdapterOutcome,
   type AdapterRegistration,
+  type LifecycleOutcome,
   type LifecycleReport,
+  type RuntimeDisposalOutcome,
   type StartedAdapter,
 } from "./ObservabilityAdapter.ts";
 import { InvalidObservabilityConfig } from "./ObservabilityConfigError.ts";
 import {
+  profileCapabilityRank,
   profileCapabilityRequirement,
   type AdapterCapability,
   type ExternalAdapterCapability,
   type LifecycleStage,
+  type NodeObservabilityProfile,
   type ObservabilityProfile,
 } from "./ObservabilityProfile.ts";
 
@@ -42,28 +48,59 @@ const invalidAdapter = (
   code:
     | "OBS_OBSERVABILITY_ADAPTER_UNSUPPORTED"
     | "OBS_OBSERVABILITY_ADAPTER_MISSING"
-    | "OBS_OBSERVABILITY_ADAPTER_DUPLICATE",
+    | "OBS_OBSERVABILITY_ADAPTER_DUPLICATE"
+    | "OBS_OBSERVABILITY_ADAPTER_TESTING",
   message: string,
 ): InvalidObservabilityConfig =>
   new InvalidObservabilityConfig({
     code,
     field: "adapters",
     message,
-    rule: "one supported branded registration for each required external capability",
+    rule: "one supported registration for each required external capability",
   });
 
-export const validateAdapterRegistrations = (
+export type AdapterValidationOptions = { readonly allowTesting: boolean };
+
+export const validateAdapterRegistrationKinds = (
+  registrations: ReadonlyArray<AdapterRegistration>,
+  options: AdapterValidationOptions,
+): Effect.Effect<void, InvalidObservabilityConfig> => {
+  for (const registration of registrations) {
+    const official = isOfficialAdapterRegistration(registration);
+    const testing = isTestingAdapterRegistration(registration);
+    if (!official && !testing) {
+      return Effect.fail(
+        invalidAdapter(
+          "OBS_OBSERVABILITY_ADAPTER_UNSUPPORTED",
+          "The adapter registration is not authentic. Use the package registration factories.",
+        ),
+      );
+    }
+    if (testing && !options.allowTesting) {
+      return Effect.fail(
+        invalidAdapter(
+          "OBS_OBSERVABILITY_ADAPTER_TESTING",
+          `Testing adapter "${registration.adapter.name}" cannot run through an official factory. Use a factory from @equipe-tech/observability/testing.`,
+        ),
+      );
+    }
+  }
+  return Effect.void;
+};
+
+export const validateAdapterRegistrations = Effect.fn("validateAdapterRegistrations")(function* (
   profile: ObservabilityProfile,
   environment: string,
   registrations: ReadonlyArray<AdapterRegistration>,
-): Effect.Effect<void, InvalidObservabilityConfig> => {
+  options: AdapterValidationOptions,
+): Effect.fn.Return<void, InvalidObservabilityConfig> {
+  yield* validateAdapterRegistrationKinds(registrations, options);
   const names = new Set<string>();
   const capabilities = new Set<AdapterCapability>();
   for (const registration of registrations) {
-    registration.registrationBrand();
     const adapter = registration.adapter;
     if (names.has(adapter.name)) {
-      return Effect.fail(
+      return yield* Effect.fail(
         invalidAdapter(
           "OBS_OBSERVABILITY_ADAPTER_DUPLICATE",
           `Adapter "${adapter.name}" is registered more than once. Use one registration per adapter name.`,
@@ -79,10 +116,10 @@ export const validateAdapterRegistrations = (
       adapter.capability === "traces" ||
       adapter.capability === "metrics"
     ) {
-      return Effect.fail(
+      return yield* Effect.fail(
         invalidAdapter(
           "OBS_OBSERVABILITY_ADAPTER_UNSUPPORTED",
-          `Adapter "${adapter.name}" cannot supply ${adapter.capability} for profile "${profile.name}".`,
+          `${registration.kind === "official" ? "Official" : "Testing"} adapter "${adapter.name}" cannot supply ${adapter.capability} for profile "${profile.name}".`,
         ),
       );
     }
@@ -99,16 +136,15 @@ export const validateAdapterRegistrations = (
       requirement === "required" ||
       (requirement === "required-in-production" && environment === "production");
     if (required && !capabilities.has(capability)) {
-      return Effect.fail(
+      return yield* Effect.fail(
         invalidAdapter(
           "OBS_OBSERVABILITY_ADAPTER_MISSING",
-          `Profile "${profile.name}" requires an official ${capability} adapter in ${environment}.`,
+          `Profile "${profile.name}" requires a ${options.allowTesting ? "registered" : "official"} ${capability} adapter in ${environment}.`,
         ),
       );
     }
   }
-  return Effect.void;
-};
+});
 
 const adapterFailure = (operation: "flush" | "close", cause: unknown): AdapterFailure =>
   cause instanceof AdapterFailure
@@ -120,30 +156,17 @@ const adapterFailure = (operation: "flush" | "close", cause: unknown): AdapterFa
       });
 
 const ordered = (
+  profile: ObservabilityProfile,
   started: ReadonlyArray<StartedAdapter>,
   stage: LifecycleStage,
-): ReadonlyArray<StartedAdapter> => {
-  const rank = (capability: AdapterCapability): number => {
-    switch (capability) {
-      case "browser-ingest":
-        return -1;
-      case "events":
-        return 0;
-      case "traces":
-        return 1;
-      case "defects":
-        return 2;
-      case "metrics":
-        return 3;
-    }
-  };
-  return started
+): ReadonlyArray<StartedAdapter> =>
+  started
     .filter((entry) => entry.registration.adapter.stage === stage)
     .toSorted(
       (left, right) =>
-        rank(left.registration.adapter.capability) - rank(right.registration.adapter.capability),
+        profileCapabilityRank(profile, stage, left.registration.adapter.capability) -
+        profileCapabilityRank(profile, stage, right.registration.adapter.capability),
     );
-};
 
 const runParticipant = Effect.fn("runObservabilityParticipant")(function* (
   entry: StartedAdapter,
@@ -153,6 +176,7 @@ const runParticipant = Effect.fn("runObservabilityParticipant")(function* (
   const adapter = entry.registration.adapter;
   if (budgetMillis <= 0) {
     return {
+      participant: "adapter",
       adapter: adapter.name,
       capability: adapter.capability,
       stage: adapter.stage,
@@ -165,6 +189,7 @@ const runParticipant = Effect.fn("runObservabilityParticipant")(function* (
   const durationMillis = (yield* Clock.currentTimeMillis) - startedAt;
   if (Option.isNone(result)) {
     return {
+      participant: "adapter",
       adapter: adapter.name,
       capability: adapter.capability,
       stage: adapter.stage,
@@ -173,21 +198,42 @@ const runParticipant = Effect.fn("runObservabilityParticipant")(function* (
   }
   if (result.value._tag === "Failure") {
     return {
+      participant: "adapter",
       adapter: adapter.name,
       capability: adapter.capability,
       stage: adapter.stage,
-      result: {
-        kind: "failed",
-        error: adapterFailure(operation, result.value.cause),
-      },
+      result: { kind: "failed", error: adapterFailure(operation, result.value.cause) },
     };
   }
   return {
+    participant: "adapter",
     adapter: adapter.name,
     capability: adapter.capability,
     stage: adapter.stage,
     result: { kind: "completed", durationMillis },
   };
+});
+
+const runRuntimeDisposal = Effect.fn("runRuntimeDisposal")(function* (
+  disposeRuntime: Effect.Effect<void>,
+  budgetMillis: number,
+): Effect.fn.Return<RuntimeDisposalOutcome, never> {
+  if (budgetMillis <= 0) {
+    return { participant: "runtime-disposal", result: { kind: "deadline-exceeded", budgetMillis } };
+  }
+  const startedAt = yield* Clock.currentTimeMillis;
+  const result = yield* disposeRuntime.pipe(Effect.exit, Effect.timeoutOption(budgetMillis));
+  const durationMillis = (yield* Clock.currentTimeMillis) - startedAt;
+  if (Option.isNone(result)) {
+    return { participant: "runtime-disposal", result: { kind: "deadline-exceeded", budgetMillis } };
+  }
+  if (result.value._tag === "Failure") {
+    return {
+      participant: "runtime-disposal",
+      result: { kind: "failed", error: adapterFailure("close", result.value.cause) },
+    };
+  }
+  return { participant: "runtime-disposal", result: { kind: "completed", durationMillis } };
 });
 
 const coreRegistration = (
@@ -196,7 +242,7 @@ const coreRegistration = (
   stage: "server" | "metrics",
   effect: Effect.Effect<void>,
 ): StartedAdapter => ({
-  registration: new OfficialAdapterRegistration({
+  registration: registerOfficialAdapter({
     name: AdapterName.make(name),
     capability,
     stage,
@@ -210,7 +256,7 @@ export type LifecycleRegistry = {
 };
 
 export const createLifecycleRegistry = (
-  profile: ObservabilityProfile,
+  profile: NodeObservabilityProfile,
   started: ReadonlyArray<StartedAdapter>,
   flusher: OtlpExporter.Flusher["Service"],
   disposeRuntime: Effect.Effect<void>,
@@ -223,20 +269,20 @@ export const createLifecycleRegistry = (
   ): Effect.fn.Return<LifecycleReport, never> {
     const startedAt = yield* Clock.currentTimeMillis;
     const deadline = startedAt + profile.shutdownDeadlineMillis;
-    const outcomes: Array<AdapterOutcome> = [];
+    const outcomes: Array<LifecycleOutcome> = [];
     for (const stage of profile.stages) {
       const now = yield* Clock.currentTimeMillis;
       const totalRemaining = Math.max(0, deadline - now);
       const stageBudget = profile.stageDeadlineMillis.get(stage) ?? totalRemaining;
       const stageDeadline = now + Math.min(totalRemaining, stageBudget);
-      for (const participant of ordered(participants, stage)) {
+      for (const participant of ordered(profile, participants, stage)) {
         const remaining = Math.max(0, stageDeadline - (yield* Clock.currentTimeMillis));
         outcomes.push(yield* runParticipant(participant, operation, remaining));
       }
     }
     if (operation === "close") {
       const remaining = Math.max(0, deadline - (yield* Clock.currentTimeMillis));
-      yield* disposeRuntime.pipe(Effect.timeoutOption(remaining), Effect.asVoid);
+      outcomes.push(yield* runRuntimeDisposal(disposeRuntime, remaining));
     }
     const durationMillis = (yield* Clock.currentTimeMillis) - startedAt;
     return {

@@ -11,17 +11,20 @@ import type {
   AdapterRegistration,
   LifecycleReport,
   StartedAdapter,
+  TestingAdapterRegistration,
 } from "../profile/ObservabilityAdapter.ts";
 import {
   createLifecycleRegistry,
   ObservabilityLifecycleError,
   rollbackStartedAdapters,
+  validateAdapterRegistrationKinds,
   validateAdapterRegistrations,
 } from "../profile/LifecycleRegistry.ts";
 import type {
   DuplicateReleaseVariable,
   InvalidObservabilityConfig,
 } from "../profile/ObservabilityConfigError.ts";
+import { profileCapabilityRank } from "../profile/ObservabilityProfile.ts";
 
 export type NodeObservabilityDisabled = {
   readonly enabled: false;
@@ -116,23 +119,23 @@ class LiveNodeObservability implements NodeObservabilityEnabled {
   }
 }
 
-const stageRank = (registration: AdapterRegistration): number => {
-  const capability = registration.adapter.capability;
-  if (capability === "events") return 0;
-  if (capability === "traces") return 1;
-  if (capability === "defects") return 2;
-  if (capability === "metrics") return 3;
-  return 4;
-};
+type NodeObservabilityFactoryOptions = { readonly allowTesting: boolean };
 
-export const makeNodeObservability = Effect.fn("makeNodeObservability")(function* (
+const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(function* (
   config: NodeObservabilityConfig,
   registrations: ReadonlyArray<AdapterRegistration>,
+  options: NodeObservabilityFactoryOptions,
 ): Effect.fn.Return<NodeObservability, InvalidObservabilityConfig | ObservabilityLifecycleError> {
   if (!config.enabled) {
+    yield* validateAdapterRegistrationKinds(registrations, options);
     return disabledHandle();
   }
-  yield* validateAdapterRegistrations(config.profile, config.identity.environment, registrations);
+  yield* validateAdapterRegistrations(
+    config.profile,
+    config.identity.environment,
+    registrations,
+    options,
+  );
   const runtime = ManagedRuntime.make(
     Telemetry.layer(config.telemetry, { shutdownTimeout: Duration.millis(5_000) }),
   );
@@ -157,9 +160,15 @@ export const makeNodeObservability = Effect.fn("makeNodeObservability")(function
     runtime,
   };
   const started: Array<StartedAdapter> = [];
-  for (const registration of registrations.toSorted(
-    (left, right) => stageRank(left) - stageRank(right),
-  )) {
+  for (const registration of registrations.toSorted((left, right) => {
+    const leftStage = config.profile.stages.indexOf(left.adapter.stage);
+    const rightStage = config.profile.stages.indexOf(right.adapter.stage);
+    return (
+      leftStage - rightStage ||
+      profileCapabilityRank(config.profile, left.adapter.stage, left.adapter.capability) -
+        profileCapabilityRank(config.profile, right.adapter.stage, right.adapter.capability)
+    );
+  })) {
     const result = yield* registration.adapter.start(context).pipe(Effect.exit);
     if (result._tag === "Failure") {
       yield* rollbackStartedAdapters(started);
@@ -177,10 +186,28 @@ export const makeNodeObservability = Effect.fn("makeNodeObservability")(function
   return new LiveNodeObservability(config, runtime, registry.run);
 });
 
+export const makeNodeObservability = (
+  config: NodeObservabilityConfig,
+  registrations: ReadonlyArray<AdapterRegistration>,
+): Effect.Effect<NodeObservability, InvalidObservabilityConfig | ObservabilityLifecycleError> =>
+  makeNodeObservabilityWithOptions(config, registrations, { allowTesting: false });
+
+export const makeTestingNodeObservability = (
+  config: NodeObservabilityConfig,
+  registrations: ReadonlyArray<TestingAdapterRegistration>,
+): Effect.Effect<NodeObservability, InvalidObservabilityConfig | ObservabilityLifecycleError> =>
+  makeNodeObservabilityWithOptions(config, registrations, { allowTesting: true });
+
 export const createNodeObservabilityFromConfig = (
   config: NodeObservabilityConfig,
   registrations: ReadonlyArray<AdapterRegistration>,
 ): Promise<NodeObservability> => Effect.runPromise(makeNodeObservability(config, registrations));
+
+export const createTestingNodeObservabilityFromConfig = (
+  config: NodeObservabilityConfig,
+  registrations: ReadonlyArray<TestingAdapterRegistration>,
+): Promise<NodeObservability> =>
+  Effect.runPromise(makeTestingNodeObservability(config, registrations));
 
 export type CreateNodeObservabilityInput = EnvBootstrapInput & {
   readonly adapters: ReadonlyArray<AdapterRegistration>;

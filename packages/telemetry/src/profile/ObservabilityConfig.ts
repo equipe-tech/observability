@@ -11,16 +11,20 @@ import { parseDataPolicy, type DataPolicy, type DataPolicyInput } from "./DataPo
 import {
   DuplicateReleaseVariable,
   InvalidObservabilityConfig,
-  secondReleaseVariables,
 } from "./ObservabilityConfigError.ts";
 import {
+  deploymentScopeFromEndpoint,
+  rejectSecondReleaseVariables,
+  type DeploymentScope,
+} from "./EnvironmentPolicy.ts";
+import {
   observabilityProfiles,
-  ProfileName,
+  type NodeObservabilityProfile,
+  type ProfileName,
   type ObservabilityProfile,
 } from "./ObservabilityProfile.ts";
 
-export const DeploymentScope = Schema.Literals(["local", "remote"]);
-export type DeploymentScope = typeof DeploymentScope.Type;
+export type { DeploymentScope } from "./EnvironmentPolicy.ts";
 
 export type SentryConfig =
   | { readonly enabled: false }
@@ -30,7 +34,7 @@ export type NodeObservabilityConfigDisabled = { readonly enabled: false };
 
 export type NodeObservabilityConfigEnabled = {
   readonly enabled: true;
-  readonly profile: ObservabilityProfile;
+  readonly profile: NodeObservabilityProfile;
   readonly deployment: DeploymentScope;
   readonly identity: ResourceIdentity;
   readonly telemetry: TelemetryConfig;
@@ -83,14 +87,6 @@ const ProfileEnvironment = Schema.Struct({
 
 const decodeProfileEnvironment = Schema.decodeUnknownEffect(ProfileEnvironment);
 
-export const deploymentScopeFromEndpoint = (endpoint: URL): DeploymentScope =>
-  endpoint.hostname === "localhost" ||
-  endpoint.hostname === "::1" ||
-  endpoint.hostname === "[::1]" ||
-  endpoint.hostname.startsWith("127.")
-    ? "local"
-    : "remote";
-
 const invalid = (
   field: "profile" | "OTEL_SERVICE_VERSION" | "OTEL_DEPLOYMENT_ENVIRONMENT" | "SENTRY_DSN",
   message: string,
@@ -110,7 +106,7 @@ const invalid = (
 
 const nodeProfile = (
   name: ProfileName,
-): Effect.Effect<ObservabilityProfile, InvalidObservabilityConfig> => {
+): Effect.Effect<NodeObservabilityProfile, InvalidObservabilityConfig> => {
   const selected = observabilityProfiles.get(name);
   if (selected === undefined || selected.runtime !== "node-global") {
     return Effect.fail(
@@ -143,24 +139,6 @@ const sentryFor = (
     );
   }
   return Effect.succeed(dsn === undefined ? { enabled: false } : { enabled: true, dsn });
-};
-
-const duplicateRelease = (
-  env: EnvironmentVariables,
-): Effect.Effect<void, DuplicateReleaseVariable> => {
-  for (const variable of secondReleaseVariables) {
-    const value = env[variable];
-    if (value !== undefined && value !== "") {
-      return Effect.fail(
-        new DuplicateReleaseVariable({
-          code: "OBS_TELEMETRY_DUPLICATE_RELEASE_VARIABLE",
-          variable,
-          message: `${variable} defines a second release identity. Remove it and set OTEL_SERVICE_VERSION.`,
-        }),
-      );
-    }
-  }
-  return Effect.void;
 };
 
 export const parseNodeObservabilityConfig = Effect.fn("parseNodeObservabilityConfig")(function* (
@@ -217,7 +195,7 @@ export const nodeObservabilityConfigFromEnv = Effect.fn("nodeObservabilityConfig
     if (input.enabled === false) {
       return { enabled: false };
     }
-    yield* duplicateRelease(input.env);
+    yield* rejectSecondReleaseVariables(input.env);
     const profile = yield* nodeProfile(input.profile);
     const variables = yield* decodeProfileEnvironment(input.env).pipe(
       Effect.mapError((cause) =>

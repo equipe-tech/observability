@@ -136,9 +136,18 @@ describe("node observability configuration", () => {
     });
   });
 
-  it("validates policy patterns and preserves base declarations", async () => {
+  it("validates policy patterns and clones base regular expressions", async () => {
     const parsed = await Effect.runPromise(parseDataPolicy(policy));
+    const second = await Effect.runPromise(parseDataPolicy(policy));
     expect(parsed.blockedKeys).toContain("authorization");
+    expect(parsed.blockedValuePatterns[0]).not.toBe(second.blockedValuePatterns[0]);
+    const firstPattern = parsed.blockedValuePatterns[0];
+    const secondPattern = second.blockedValuePatterns[0];
+    if (firstPattern === undefined || secondPattern === undefined) {
+      throw new Error("Expected base blocked value patterns.");
+    }
+    firstPattern.test("Bearer secret");
+    expect(secondPattern.lastIndex).toBe(0);
     const error = await Effect.runPromise(
       Effect.flip(parseDataPolicy({ ...policy, blockedValuePatterns: ["["] })),
     );

@@ -12,7 +12,7 @@ import {
   type ContractRegistry,
 } from "../src/profile/ObservabilityAdapter.ts";
 import { parseNodeObservabilityConfig } from "../src/profile/ObservabilityConfig.ts";
-import { createNodeObservabilityFromConfig } from "../src/node/Observability.ts";
+import { createTestingNodeObservabilityFromConfig } from "../src/node/Observability.ts";
 
 const contract: ContractRegistry = {
   version: 1,
@@ -57,7 +57,7 @@ describe("Node observability boundary", () => {
       throw new Error("Expected a TCP server address.");
     }
     const parsed = await config(new URL(`http://127.0.0.1:${address.port}`));
-    const handle = await createNodeObservabilityFromConfig(parsed, [events]);
+    const handle = await createTestingNodeObservabilityFromConfig(parsed, [events]);
     if (!handle.enabled) throw new Error("Expected enabled observability.");
     const counter = Metric.counter("worker.jobs");
     await handle.runtime.runPromise(
@@ -76,7 +76,7 @@ describe("Node observability boundary", () => {
 
   it("does not block application work when the Collector is unavailable", async () => {
     const parsed = await config(new URL("http://127.0.0.1:1"));
-    const handle = await createNodeObservabilityFromConfig(parsed, [events]);
+    const handle = await createTestingNodeObservabilityFromConfig(parsed, [events]);
     if (!handle.enabled) throw new Error("Expected enabled observability.");
     let completed = false;
     await handle.runtime.runPromise(

@@ -24,6 +24,7 @@ export class InvalidObservabilityConfig extends Schema.TaggedError<InvalidObserv
       "OBS_OBSERVABILITY_ADAPTER_UNSUPPORTED",
       "OBS_OBSERVABILITY_ADAPTER_MISSING",
       "OBS_OBSERVABILITY_ADAPTER_DUPLICATE",
+      "OBS_OBSERVABILITY_ADAPTER_TESTING",
     ]),
     message: Schema.String,
     field: ObservabilityConfigField,

@@ -1,37 +1,21 @@
-import { Schema } from "effect";
+export type ProfileName = "nestjs-api" | "worker" | "react-web" | "cli" | "library";
 
-export const ProfileName = Schema.Literals(["nestjs-api", "worker", "react-web", "cli", "library"]);
-export type ProfileName = typeof ProfileName.Type;
+export type ProfileRuntime = "node-global" | "browser-global" | "none";
 
-export const ProfileRuntime = Schema.Literals(["node-global", "browser-global", "none"]);
-export type ProfileRuntime = typeof ProfileRuntime.Type;
+export type AdapterCapability = "events" | "traces" | "metrics" | "defects" | "browser-ingest";
 
-export const AdapterCapability = Schema.Literals([
-  "events",
-  "traces",
-  "metrics",
-  "defects",
-  "browser-ingest",
-]);
-export type AdapterCapability = typeof AdapterCapability.Type;
+export type ExternalAdapterCapability = "events" | "defects" | "browser-ingest";
 
-export const ExternalAdapterCapability = Schema.Literals(["events", "defects", "browser-ingest"]);
-export type ExternalAdapterCapability = typeof ExternalAdapterCapability.Type;
+export type CapabilityRequirement =
+  | "required"
+  | "required-in-production"
+  | "optional"
+  | "forbidden";
 
-export const CapabilityRequirement = Schema.Literals([
-  "required",
-  "required-in-production",
-  "optional",
-  "forbidden",
-]);
-export type CapabilityRequirement = typeof CapabilityRequirement.Type;
+export type LifecycleStage = "server" | "metrics" | "browser";
 
-export const LifecycleStage = Schema.Literals(["server", "metrics", "browser"]);
-export type LifecycleStage = typeof LifecycleStage.Type;
-
-export type ObservabilityProfile = {
+type ProfileCapabilities = {
   readonly name: ProfileName;
-  readonly runtime: ProfileRuntime;
   readonly events: CapabilityRequirement;
   readonly traces: CapabilityRequirement;
   readonly metrics: CapabilityRequirement;
@@ -43,10 +27,28 @@ export type ObservabilityProfile = {
   readonly shutdownDeadlineMillis: number;
 };
 
-const profile = (value: ObservabilityProfile): ObservabilityProfile =>
+export type NodeObservabilityProfile = ProfileCapabilities & { readonly runtime: "node-global" };
+export type BrowserObservabilityProfile = ProfileCapabilities & {
+  readonly runtime: "browser-global";
+};
+export type LibraryObservabilityProfile = ProfileCapabilities & { readonly runtime: "none" };
+export type ObservabilityProfile =
+  | NodeObservabilityProfile
+  | BrowserObservabilityProfile
+  | LibraryObservabilityProfile;
+
+const nodeProfile = (value: NodeObservabilityProfile): NodeObservabilityProfile =>
   Object.freeze({ ...value, stages: Object.freeze([...value.stages]) });
 
-export const nestjsApiProfile = profile({
+const browserProfile = (value: BrowserObservabilityProfile): BrowserObservabilityProfile =>
+  Object.freeze({ ...value, stages: Object.freeze([...value.stages]) });
+
+const libraryProfileDescriptor = (
+  value: LibraryObservabilityProfile,
+): LibraryObservabilityProfile =>
+  Object.freeze({ ...value, stages: Object.freeze([...value.stages]) });
+
+export const nestjsApiProfile = nodeProfile({
   name: "nestjs-api",
   runtime: "node-global",
   events: "required",
@@ -66,7 +68,7 @@ export const nestjsApiProfile = profile({
   shutdownDeadlineMillis: 5_000,
 });
 
-export const workerProfile = profile({
+export const workerProfile = nodeProfile({
   name: "worker",
   runtime: "node-global",
   events: "required",
@@ -86,7 +88,7 @@ export const workerProfile = profile({
   shutdownDeadlineMillis: 5_000,
 });
 
-export const reactWebProfile = profile({
+export const reactWebProfile = browserProfile({
   name: "react-web",
   runtime: "browser-global",
   events: "required",
@@ -102,7 +104,7 @@ export const reactWebProfile = profile({
   shutdownDeadlineMillis: 2_000,
 });
 
-export const cliProfile = profile({
+export const cliProfile = nodeProfile({
   name: "cli",
   runtime: "node-global",
   events: "required",
@@ -122,7 +124,7 @@ export const cliProfile = profile({
   shutdownDeadlineMillis: 5_000,
 });
 
-export const libraryProfile = profile({
+export const libraryProfile = libraryProfileDescriptor({
   name: "library",
   runtime: "none",
   events: "forbidden",
@@ -136,7 +138,10 @@ export const libraryProfile = profile({
   shutdownDeadlineMillis: 0,
 });
 
-export const observabilityProfiles: ReadonlyMap<ProfileName, ObservabilityProfile> = new Map([
+export const observabilityProfiles: ReadonlyMap<ProfileName, ObservabilityProfile> = new Map<
+  ProfileName,
+  ObservabilityProfile
+>([
   [nestjsApiProfile.name, nestjsApiProfile],
   [workerProfile.name, workerProfile],
   [reactWebProfile.name, reactWebProfile],
@@ -161,3 +166,9 @@ export const profileCapabilityRequirement = (
       return value.browserIngest;
   }
 };
+
+export const profileCapabilityRank = (
+  profile: ObservabilityProfile,
+  stage: LifecycleStage,
+  capability: AdapterCapability,
+): number => profile.capabilityOrder.get(stage)?.indexOf(capability) ?? Number.MAX_SAFE_INTEGER;
