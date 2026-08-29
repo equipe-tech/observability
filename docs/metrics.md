@@ -42,6 +42,14 @@ queue.unregister();
 await metrics.close();
 ```
 
+## Configuration
+
+`createMetrics` parses identity before acquiring a runtime. `serviceName` uses lowercase letters, numbers, and single hyphens between segments, with at most 63 characters. `environment` uses the same grammar with at most 32 characters. `serviceVersion` accepts SemVer 2.0.0 or a 7 to 64 character lowercase hexadecimal immutable release identifier. Metrics omit `service.instance.id` from resources.
+
+`deploymentEnvironmentAlias` accepts `omitted` or `emitted` and defaults to `omitted`. `otlpEndpoint` must be an HTTP or HTTPS URL without credentials. `exportIntervalMilliseconds` and `flushTimeoutMilliseconds` must be positive safe integers when supplied. `enabled` accepts a boolean and defaults to `true`.
+
+An identity failure throws `MetricsError` with code `INVALID_CONFIGURATION`. Its `field` and `rule` properties identify the rejected identity field and its exact grammar.
+
 ## Lifecycle
 
 `createMetrics` validates the complete configuration before acquiring a runtime lease. Equal active configurations share one runtime, registry, periodic exporter, and lifecycle queue. They also share exactly one exporter when facade and layer leases overlap. The most recently acquired active layer binding provides the transport; the built-in fetch transport is the fallback when no layer binding is active. Transport identity is deliberately excluded from the pool key because including it would create parallel runtimes and duplicate exporters. `exportIntervalMilliseconds` controls periodic collection and defaults to 10,000 milliseconds.
@@ -85,4 +93,4 @@ Synchronous validation and registration failures throw `MetricsError` with one o
 - `LIMIT_EXCEEDED`
 - `CLOSED`
 
-`flush` and the final export from `close` reject with `EXPORT_FAILED` or `FLUSH_TIMED_OUT`. Transport failures and timeouts are retryable on an open lifecycle. Definition and name-conflict export failures are not retryable until the conflicting instrument is renamed or aligned. `close` releases the runtime lease even when its final export rejects.
+`flush` and the final export from `close` reject with `EXPORT_FAILED` or `FLUSH_TIMED_OUT`. Transport failures and timeouts are retryable on an open lifecycle. Definition and name-conflict export failures are not retryable until the conflicting instrument is renamed or aligned. A direct Effect Metric datapoint carrying `service.instance.id` also fails with non-retryable `EXPORT_FAILED`; remove the reserved key before another export. `close` releases the runtime lease even when its final export rejects.

@@ -139,8 +139,6 @@ export const parseResourceIdentity = Effect.fn("parseResourceIdentity")(function
   return new ResourceIdentity({ serviceName, serviceVersion, environment, instance });
 });
 
-export const makeResourceIdentity = parseResourceIdentity;
-
 export const resourceIdentity = (input: ResourceIdentityInput): ResourceIdentity =>
   decodeResourceIdentity({
     serviceName: input.serviceName,

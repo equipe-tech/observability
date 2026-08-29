@@ -38,7 +38,7 @@ export type TelemetryModuleOptions =
       readonly serviceVersion: string;
       readonly environment: string;
       readonly serviceInstanceId?: string | undefined;
-      readonly deploymentEnvironmentAlias?: "emitted" | "omitted" | undefined;
+      readonly deploymentEnvironmentAlias?: EnvironmentAliasPolicy | undefined;
       readonly otlpEndpoint: string;
       readonly healthRouteTemplates?: ReadonlyArray<string> | undefined;
       readonly proxyPolicy?: ProxyPolicy | undefined;

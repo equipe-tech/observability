@@ -22,6 +22,25 @@ describe("telemetryConfigFromEnv", () => {
     }),
   );
 
+  for (const fixture of [
+    { name: "an absent value", environment: validEnvironment },
+    {
+      name: "an explicit undefined value",
+      environment: { ...validEnvironment, OTEL_SERVICE_INSTANCE_ID: undefined },
+    },
+    {
+      name: "an empty value",
+      environment: { ...validEnvironment, OTEL_SERVICE_INSTANCE_ID: "" },
+    },
+  ]) {
+    it.effect(`treats ${fixture.name} for OTEL_SERVICE_INSTANCE_ID as absent`, () =>
+      Effect.gen(function* () {
+        const config = yield* telemetryConfigFromEnv(fixture.environment);
+        assert.deepStrictEqual(config.identity.instance, Option.none());
+      }),
+    );
+  }
+
   it.effect("applies defaults when only the service name is set", () =>
     Effect.gen(function* () {
       const config = yield* telemetryConfigFromEnv({
@@ -70,6 +89,19 @@ describe("telemetryConfigFromEnv", () => {
       }),
     );
   }
+
+  it.effect("rejects an overlong service instance at the environment boundary", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        telemetryConfigFromEnv({
+          ...validEnvironment,
+          OTEL_SERVICE_INSTANCE_ID: "a".repeat(129),
+        }),
+      );
+      assert.strictEqual(error._tag, "InvalidTelemetryEnvironment");
+      assert.include(error.message, "remaining OTEL variables");
+    }),
+  );
 
   it.effect("accepts an HTTP OTLP endpoint", () =>
     Effect.gen(function* () {

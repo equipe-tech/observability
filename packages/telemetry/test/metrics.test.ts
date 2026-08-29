@@ -237,6 +237,53 @@ describe("framework-neutral metrics", () => {
     }
   });
 
+  for (const fixture of [
+    {
+      field: "service.name",
+      options: { serviceName: "Metrics_Test" },
+      rule: "lowercase letters, numbers, and hyphens with at most 63 characters",
+    },
+    {
+      field: "service.version",
+      options: { serviceVersion: "latest" },
+      rule: "SemVer 2.0.0 or a 7 to 64 character lowercase hexadecimal immutable release identifier",
+    },
+    {
+      field: "deployment.environment.name",
+      options: { environment: "Production" },
+      rule: "lowercase letters, numbers, and hyphens with at most 32 characters",
+    },
+  ] satisfies ReadonlyArray<{
+    readonly field: string;
+    readonly options: {
+      readonly serviceName?: string;
+      readonly serviceVersion?: string;
+      readonly environment?: string;
+    };
+    readonly rule: string;
+  }>) {
+    it(`reports the invalid createMetrics identity field ${fixture.field}`, async () => {
+      let failure: MetricsError | undefined;
+      try {
+        await createMetrics({
+          ...options("http://collector.invalid"),
+          ...fixture.options,
+        });
+      } catch (cause) {
+        if (cause instanceof MetricsError) {
+          failure = cause;
+        }
+      }
+      assert.isDefined(failure);
+      assert.equal(failure.code, "INVALID_CONFIGURATION");
+      assert.equal(failure.operation, "createMetrics");
+      assert.equal(failure.field, fixture.field);
+      assert.equal(failure.rule, fixture.rule);
+      assert.include(failure.message, fixture.rule);
+      assert.isFalse(failure.retryable);
+    });
+  }
+
   it("isolates a non-finite gauge observation and recovers on the next collection", async () => {
     const collector = await startCollector();
     try {
@@ -783,6 +830,55 @@ describe("framework-neutral metrics", () => {
       assert.equal(directMetric.unit, "By");
       assert.isTrue(directMetric.points.every((point) => !point.attributes.has("unit")));
       await facade.close();
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("rejects service.instance.id on a direct Effect metric datapoint", async () => {
+    const config = new TelemetryConfig({
+      identity: resourceIdentity({
+        serviceName: "direct-instance-test",
+        serviceVersion: "1.0.0",
+        environment: "test",
+      }),
+      otlpEndpoint: new URL("http://direct-instance.invalid"),
+    });
+    const facade = await createMetrics({
+      serviceName: config.identity.serviceName,
+      serviceVersion: config.identity.serviceVersion,
+      environment: config.identity.environment,
+      otlpEndpoint: config.otlpEndpoint.toString(),
+    });
+    const capture = await Effect.runPromise(Testing.makeCapture({ config }));
+    const runtime = ManagedRuntime.make(capture.layer);
+    try {
+      const direct = Metric.counter("direct.instance", {
+        description: "Direct instance counter",
+        attributes: { "service.instance.id": "instance-1" },
+      });
+      await runtime.runPromise(Metric.update(direct, 1));
+      let failure: MetricsError | undefined;
+      try {
+        await facade.flush();
+      } catch (cause) {
+        if (cause instanceof MetricsError) {
+          failure = cause;
+        }
+      }
+      assert.isDefined(failure);
+      assert.equal(failure.code, "EXPORT_FAILED");
+      assert.equal(failure.operation, "flush");
+      assert.equal(failure.instrumentName, "direct.instance");
+      assert.isFalse(failure.retryable);
+      const telemetry = await Effect.runPromise(capture.telemetry);
+      assert.equal(telemetry.metrics.length, 0);
+      assert.equal(
+        await asyncErrorCode(async () => {
+          await facade.close();
+        }),
+        "EXPORT_FAILED",
+      );
     } finally {
       await runtime.dispose();
     }

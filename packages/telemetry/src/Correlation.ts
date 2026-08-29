@@ -107,22 +107,6 @@ export const parseRequestId = (
 export const parseRunId = (value: string): Effect.Effect<RunId, InvalidCorrelationContext> =>
   decodeRunId(value).pipe(Effect.mapError(() => invalidCorrelation("runId", opaqueIdentifierRule)));
 
-export const parseTracedCorrelation = Effect.fn("parseTracedCorrelation")(function* (
-  traceId: string,
-  spanId: string,
-): Effect.fn.Return<CorrelationContext, InvalidCorrelationContext> {
-  const parsedTraceId = yield* parseTraceId(traceId);
-  const parsedSpanId = yield* parseSpanId(spanId);
-  return new CorrelationContext({
-    trace: { _tag: "Traced", traceId: parsedTraceId, spanId: parsedSpanId },
-  });
-});
-
-export const makeTraceId = parseTraceId;
-export const makeSpanId = parseSpanId;
-export const makeRequestId = parseRequestId;
-export const makeTracedCorrelation = parseTracedCorrelation;
-
 const dnsSafeLabel = (label: string): string => {
   const normalized = label
     .toLowerCase()
@@ -132,7 +116,7 @@ const dnsSafeLabel = (label: string): string => {
   return normalized === "" ? "run" : normalized;
 };
 
-export const makeRunId = Effect.fn("makeRunId")(function* (
+export const generateRunId = Effect.fn("generateRunId")(function* (
   kind: "job" | "canary",
   label: string,
 ): Effect.fn.Return<RunId> {
@@ -145,8 +129,6 @@ export const makeRunId = Effect.fn("makeRunId")(function* (
   const boundedLabel = dnsSafeLabel(label).slice(0, 128 - prefix.length - suffix.length - 1);
   return yield* decodeRunId(`${prefix}-${boundedLabel}${suffix}`).pipe(Effect.orDie);
 });
-
-export const generateRunId = makeRunId;
 
 const emptyCorrelation = new CorrelationContext({});
 

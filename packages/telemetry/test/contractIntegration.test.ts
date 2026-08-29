@@ -7,7 +7,7 @@ import {
   type TelemetryContract,
   type TelemetryContractInput,
 } from "../src/contract/index.ts";
-import { CorrelationContext, makeRequestId, parseRunId } from "../src/Correlation.ts";
+import { CorrelationContext, parseRequestId, parseRunId } from "../src/Correlation.ts";
 import { layerWideEvent } from "../src/WideEventSink.ts";
 import * as Testing from "../src/testing/index.ts";
 
@@ -95,7 +95,7 @@ describe("contract OTLP integration", () => {
     Effect.gen(function* () {
       const contract = yield* defineTelemetryContract(contractInput);
       const producer = makeEventProducer(contract);
-      const requestId = yield* makeRequestId("request-1");
+      const requestId = yield* parseRequestId("request-1");
       const runId = yield* parseRunId("run-1");
       const run = yield* Testing.run(
         Effect.all([

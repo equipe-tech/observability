@@ -4,6 +4,7 @@ import {
   InvalidResourceIdentity,
   parseResourceIdentity,
   ResourceIdentity,
+  ServiceInstanceId,
 } from "./ResourceIdentity.ts";
 
 export const OtlpEndpoint = Schema.URLFromString.check(
@@ -43,7 +44,11 @@ const TelemetryEnvironment = Schema.Struct({
   OTEL_DEPLOYMENT_ENVIRONMENT: Schema.NonEmptyString.pipe(
     Schema.withDecodingDefault(Effect.succeed("development")),
   ),
-  OTEL_SERVICE_INSTANCE_ID: Schema.String.pipe(Schema.optionalKey),
+  OTEL_SERVICE_INSTANCE_ID: Schema.Union([
+    ServiceInstanceId,
+    Schema.Literal(""),
+    Schema.Undefined,
+  ]).pipe(Schema.optionalKey),
   OTEL_EXPORTER_OTLP_ENDPOINT: OtlpEndpoint.pipe(
     Schema.withDecodingDefault(Effect.succeed("http://localhost:4318")),
   ),
@@ -73,7 +78,10 @@ export const telemetryConfigFromEnv = Effect.fn("telemetryConfigFromEnv")(functi
     serviceName: variables.OTEL_SERVICE_NAME,
     serviceVersion: variables.OTEL_SERVICE_VERSION,
     environment: variables.OTEL_DEPLOYMENT_ENVIRONMENT,
-    instance: Option.fromNullishOr(variables.OTEL_SERVICE_INSTANCE_ID),
+    instance:
+      variables.OTEL_SERVICE_INSTANCE_ID === ""
+        ? Option.none()
+        : Option.fromNullishOr(variables.OTEL_SERVICE_INSTANCE_ID),
   });
   return new TelemetryConfig({
     identity,

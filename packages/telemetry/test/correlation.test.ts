@@ -2,10 +2,10 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Exit, Option } from "effect";
 import {
   CorrelationContext,
-  makeRequestId,
-  makeRunId,
-  makeSpanId,
-  makeTraceId,
+  generateRunId,
+  parseRequestId,
+  parseSpanId,
+  parseTraceId,
   withBackgroundCorrelation,
   withCorrelation,
 } from "../src/Correlation.ts";
@@ -43,7 +43,7 @@ describe("CorrelationContext", () => {
   for (const traceId of ["a".repeat(32), "0123456789abcdef0123456789abcdef"]) {
     it.effect(`accepts trace id ${traceId}`, () =>
       Effect.gen(function* () {
-        assert.strictEqual(yield* makeTraceId(traceId), traceId);
+        assert.strictEqual(yield* parseTraceId(traceId), traceId);
       }),
     );
   }
@@ -51,7 +51,7 @@ describe("CorrelationContext", () => {
   for (const traceId of ["A".repeat(32), "a".repeat(31), "a".repeat(33), "0".repeat(32)]) {
     it.effect(`rejects trace id ${traceId}`, () =>
       Effect.gen(function* () {
-        const error = yield* Effect.flip(makeTraceId(traceId));
+        const error = yield* Effect.flip(parseTraceId(traceId));
         assert.strictEqual(error.code, "OBS_CORRELATION_INVALID");
         assert.strictEqual(error.field, "traceId");
         assert.isFalse("value" in error);
@@ -62,7 +62,7 @@ describe("CorrelationContext", () => {
   for (const spanId of ["A".repeat(16), "a".repeat(15), "a".repeat(17), "0".repeat(16)]) {
     it.effect(`rejects span id ${spanId}`, () =>
       Effect.gen(function* () {
-        const error = yield* Effect.flip(makeSpanId(spanId));
+        const error = yield* Effect.flip(parseSpanId(spanId));
         assert.strictEqual(error.field, "spanId");
       }),
     );
@@ -71,7 +71,7 @@ describe("CorrelationContext", () => {
   for (const requestId of ["", "a".repeat(129), "request\nsecret"]) {
     it.effect(`rejects bounded request id of length ${requestId.length}`, () =>
       Effect.gen(function* () {
-        const error = yield* Effect.flip(makeRequestId(requestId));
+        const error = yield* Effect.flip(parseRequestId(requestId));
         assert.strictEqual(error.field, "requestId");
         assert.isFalse("value" in error);
       }),
@@ -80,8 +80,8 @@ describe("CorrelationContext", () => {
 
   it.effect("creates bounded distinct job and canary run identifiers", () =>
     Effect.gen(function* () {
-      const job = yield* makeRunId("job", "Nightly Billing");
-      const canary = yield* makeRunId("canary", "A".repeat(180));
+      const job = yield* generateRunId("job", "Nightly Billing");
+      const canary = yield* generateRunId("canary", "A".repeat(180));
       assert.match(job, /^job-nightly-billing-[0-9]+-[a-z0-9]+$/);
       assert.match(canary, /^test-a+-[0-9]+-[a-z0-9]+$/);
       assert.isAtMost(job.length, 128);
@@ -92,8 +92,8 @@ describe("CorrelationContext", () => {
 
   it.live("isolates background correlation from an ambient request span", () =>
     Effect.gen(function* () {
-      const requestId = yield* makeRequestId("request-1");
-      const runId = yield* makeRunId("job", "billing");
+      const requestId = yield* parseRequestId("request-1");
+      const runId = yield* generateRunId("job", "billing");
       const contract = yield* defineTelemetryContract(correlationContract);
       const producer = makeEventProducer(contract);
       const requestContext = CorrelationContext.make({ requestId: Option.some(requestId) });

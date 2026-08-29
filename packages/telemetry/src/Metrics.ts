@@ -1,3 +1,4 @@
+import type { EnvironmentAliasPolicy, ResourceIdentityField } from "./ResourceIdentity.ts";
 import { createStandaloneMetrics } from "./MetricsRuntime.ts";
 
 export type MetricAttributeValue = string | number | boolean;
@@ -71,7 +72,7 @@ export interface MetricsOptions {
   readonly serviceName: string;
   readonly serviceVersion: string;
   readonly environment: string;
-  readonly deploymentEnvironmentAlias?: "emitted" | "omitted" | undefined;
+  readonly deploymentEnvironmentAlias?: EnvironmentAliasPolicy | undefined;
   readonly otlpEndpoint: string;
   readonly exportIntervalMilliseconds?: number;
   readonly flushTimeoutMilliseconds?: number;
@@ -92,6 +93,8 @@ interface MetricsErrorOptions {
   readonly operation: string;
   readonly message: string;
   readonly instrumentName?: string;
+  readonly field?: ResourceIdentityField;
+  readonly rule?: string;
   readonly retryable: boolean;
   readonly cause?: unknown;
 }
@@ -100,6 +103,8 @@ export class MetricsError extends Error {
   readonly code: MetricsErrorCode;
   readonly operation: string;
   readonly instrumentName?: string;
+  readonly field?: ResourceIdentityField;
+  readonly rule?: string;
   readonly retryable: boolean;
   override readonly cause?: unknown;
 
@@ -110,6 +115,12 @@ export class MetricsError extends Error {
     this.operation = options.operation;
     if (options.instrumentName !== undefined) {
       this.instrumentName = options.instrumentName;
+    }
+    if (options.field !== undefined) {
+      this.field = options.field;
+    }
+    if (options.rule !== undefined) {
+      this.rule = options.rule;
     }
     this.retryable = options.retryable;
     this.cause = options.cause;

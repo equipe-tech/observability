@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Metric, Option, Predicate, Schema } from "effect";
+import { Context, Effect, Layer, Metric, Option, Predicate, Result, Schema } from "effect";
 import { HttpBody, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { OtlpExporter } from "effect/unstable/observability";
 import type {
@@ -18,10 +18,10 @@ import type {
   ObservableGaugeRegistration,
 } from "./Metrics.ts";
 import { MetricsError } from "./Metrics.ts";
-import type { EnvironmentAliasPolicy } from "./ResourceIdentity.ts";
+import type { EnvironmentAliasPolicy, ResourceIdentity } from "./ResourceIdentity.ts";
 import {
   EnvironmentAliasPolicy as EnvironmentAliasPolicySchema,
-  ResourceIdentity,
+  parseResourceIdentity,
   serviceResourceAttributes,
 } from "./ResourceIdentity.ts";
 import type { TelemetryConfig } from "./TelemetryConfig.ts";
@@ -82,7 +82,6 @@ const decodeInstrumentDefinition = Schema.decodeUnknownSync(InstrumentDefinition
 const decodeHistogramDefinition = Schema.decodeUnknownSync(HistogramDefinitionInput);
 const decodeGaugeObservations = Schema.decodeUnknownSync(GaugeObservationsInput);
 const decodeMetricsOptions = Schema.decodeUnknownSync(MetricsOptionsInput);
-const decodeResourceIdentity = Schema.decodeUnknownSync(ResourceIdentity);
 
 interface NormalizedOptions {
   readonly enabled: boolean;
@@ -280,24 +279,29 @@ const parseOptions = (input: MetricsOptions): NormalizedOptions => {
       cause,
     );
   }
-  let identity: ResourceIdentity;
-  try {
-    identity = decodeResourceIdentity({
-      serviceName: options.serviceName,
-      serviceVersion: options.serviceVersion,
-      environment: options.environment,
-      instance: Option.none(),
+  const parsedIdentity = Effect.runSync(
+    Effect.result(
+      parseResourceIdentity({
+        serviceName: options.serviceName,
+        serviceVersion: options.serviceVersion,
+        environment: options.environment,
+        instance: Option.none(),
+      }),
+    ),
+  );
+  if (Result.isFailure(parsedIdentity)) {
+    const failure = parsedIdentity.failure;
+    throw new MetricsError({
+      code: "INVALID_CONFIGURATION",
+      operation: "createMetrics",
+      message: failure.message,
+      field: failure.field,
+      rule: failure.rule,
+      retryable: false,
+      cause: failure,
     });
-  } catch (cause) {
-    throw metricError(
-      "INVALID_CONFIGURATION",
-      "createMetrics",
-      "Metrics configuration is invalid. Use canonical service identity values.",
-      undefined,
-      false,
-      cause,
-    );
   }
+  const identity: ResourceIdentity = parsedIdentity.success;
   let endpoint: URL;
   try {
     endpoint = new URL(options.otlpEndpoint);
