@@ -314,7 +314,7 @@ describe("environment and provider names", () => {
       }).pipe(Effect.provide(remote.layer)),
     );
 
-    expect(errors.project.code).toBe("OBS_CLI_REMOTE_INVALID_ENVIRONMENT");
+    expect(errors.project.code).toBe("OBS_CLI_REMOTE_INVALID_PROJECT");
     expect(errors.environment.code).toBe("OBS_CLI_REMOTE_INVALID_ENVIRONMENT");
   });
 

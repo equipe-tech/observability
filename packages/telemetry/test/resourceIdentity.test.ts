@@ -5,7 +5,6 @@ import {
   EnvironmentAliasPolicy,
   instanceResourceAttributes,
   parseResourceIdentity,
-  releaseIdentifier,
   serviceResourceAttributes,
 } from "../src/ResourceIdentity.ts";
 
@@ -40,7 +39,7 @@ describe("ResourceIdentity", () => {
         "service.version": "1.4.0",
         "deployment.environment.name": "production",
       });
-      assert.strictEqual(releaseIdentifier(identity), "1.4.0");
+      assert.strictEqual(identity.serviceVersion, "1.4.0");
     }),
   );
 

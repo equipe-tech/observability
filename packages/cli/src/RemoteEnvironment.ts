@@ -39,6 +39,7 @@ export class RemoteEnvironmentError extends Schema.TaggedError<RemoteEnvironment
       "OBS_CLI_REMOTE_CREDENTIALS_MISSING",
       "OBS_CLI_REMOTE_PROVIDER_CREDENTIALS_MISSING",
       "OBS_CLI_REMOTE_INVALID_PROVIDER",
+      "OBS_CLI_REMOTE_INVALID_PROJECT",
       "OBS_CLI_REMOTE_INVALID_ENVIRONMENT",
       "OBS_CLI_REMOTE_ROTATION_NOT_SELECTED",
       "OBS_CLI_REMOTE_TOKEN_UNAVAILABLE",
@@ -75,7 +76,7 @@ const parseServiceName = Effect.fn("parseServiceName")(function* (
     Effect.mapError(
       (cause) =>
         new RemoteEnvironmentError({
-          code: "OBS_CLI_REMOTE_INVALID_ENVIRONMENT",
+          code: "OBS_CLI_REMOTE_INVALID_PROJECT",
           message:
             "The project name is invalid. Use lowercase letters, digits and single hyphens between segments, with at most 63 characters.",
           cause,

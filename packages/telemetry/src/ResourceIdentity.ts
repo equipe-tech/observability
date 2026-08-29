@@ -179,6 +179,3 @@ export const serviceResourceAttributes = (
   identity: ResourceIdentity,
   alias: EnvironmentAliasPolicy,
 ): ResourceAttributes => projectedAttributes(identity, alias);
-
-export const releaseIdentifier = (identity: ResourceIdentity): ServiceVersion =>
-  identity.serviceVersion;

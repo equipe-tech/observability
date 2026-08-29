@@ -1,6 +1,5 @@
 export * as BrowserEvents from "./BrowserEvents.ts";
 export * as Contract from "./contract/index.ts";
-export * as Correlation from "./Correlation.ts";
 export {
   CorrelationContext,
   CorrelationField,
@@ -31,7 +30,6 @@ export {
   InvalidResourceIdentity,
   instanceResourceAttributes,
   parseResourceIdentity,
-  releaseIdentifier,
   ResourceIdentity,
   ResourceIdentityField,
   ServiceInstanceId,
