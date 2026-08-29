@@ -35,6 +35,7 @@ const reservedEventParts = new Set([
   "ok",
   "outcome",
   "errored",
+  "error",
 ]);
 
 export const EventName = Schema.String.check(
@@ -42,16 +43,12 @@ export const EventName = Schema.String.check(
 ).pipe(Schema.brand("EventName"));
 export type EventName = typeof EventName.Type;
 
-export const AttributeName = Schema.String.check(
-  Schema.makeFilter((name) => isValidAttributeName(name), {
-    expected: "a valid telemetry attribute name",
-  }),
-).pipe(Schema.brand("AttributeName"));
-export type AttributeName = typeof AttributeName.Type;
-
 export const isValidEventName = (name: string): boolean => {
   if (name.length > 128 || !eventNamePattern.test(name)) {
     return false;
+  }
+  if (name === "browser.error") {
+    return true;
   }
   return name
     .split(".")

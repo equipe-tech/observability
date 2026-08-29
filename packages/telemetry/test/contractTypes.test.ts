@@ -1,8 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   defineTelemetryContract,
-  makeEventProducer,
-  type TelemetryContract,
+  type AttributeValue,
+  type EventPayloadOf,
+  type EventProducer,
   type TelemetryContractInput,
 } from "../src/contract/index.ts";
 
@@ -47,44 +48,47 @@ const typedInput = {
   auditActions: {},
 } satisfies TelemetryContractInput;
 
-const assertProducerTypes = (typedContract: TelemetryContract<typeof typedInput>): void => {
-  const producer = makeEventProducer(typedContract);
-  // @ts-expect-error unknown aliases are rejected
-  producer.emit("Missing", { outcome: "success", attributes: {} });
-  producer.emit("Renewal", {
-    outcome: "success",
-    // @ts-expect-error undeclared attributes are rejected
-    attributes: { "subscription.plan": "team", "subscription.tier": "pro" },
-  });
-  // @ts-expect-error required attributes cannot be omitted
-  producer.emit("Renewal", { outcome: "success", attributes: {} });
-  producer.emit("Defect", {
-    // @ts-expect-error defect outcomes are fixed to failure by the producer
-    outcome: "success",
-    error: { type: "TypeError", message: "failed", retryable: false },
-    attributes: { "error.origin": "browser" },
-  });
-  const dynamicName: string = "runtime.event";
-  defineTelemetryContract({
-    version: 1,
-    events: {
-      // @ts-expect-error runtime-assembled names cannot define a typed contract
-      Dynamic: {
-        name: dynamicName,
-        kind: "domain",
-        defaultSeverity: "info",
-        mandatory: false,
-        sampling: { kind: "always" },
-        attributes: {},
-      },
+const dynamicName: string = "runtime.event";
+const dynamicInput = {
+  version: 1,
+  events: {
+    Dynamic: {
+      name: dynamicName,
+      kind: "domain",
+      defaultSeverity: "info",
+      mandatory: false,
+      sampling: { kind: "always" },
+      attributes: {},
     },
-    metrics: {},
-    auditActions: {},
-  });
-};
+  },
+  metrics: {},
+  auditActions: {},
+} satisfies TelemetryContractInput;
+
+type Equal<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
+    ? true
+    : false;
+type Assert<Condition extends true> = Condition;
+type ProducerAlias = Parameters<EventProducer<typeof typedInput>["emit"]>[0];
+type RenewalPayload = EventPayloadOf<typeof typedInput, "Renewal">;
+type RenewalAttributes = RenewalPayload["attributes"];
+type DefectPayload = EventPayloadOf<typeof typedInput, "Defect">;
+type DynamicContractArgument = Parameters<typeof defineTelemetryContract<typeof dynamicInput>>[0];
+
+type ProducerTypeAssertions = [
+  Assert<Equal<Extract<"Missing", ProducerAlias>, never>>,
+  Assert<Equal<keyof RenewalAttributes, "subscription.plan" | "subscription.cycle">>,
+  Assert<Equal<Pick<RenewalAttributes, never> extends RenewalAttributes ? true : false, false>>,
+  Assert<Equal<Extract<DefectPayload, { readonly outcome: "success" }>, never>>,
+  Assert<Equal<typeof dynamicInput extends DynamicContractArgument ? true : false, false>>,
+  Assert<Equal<Extract<{ readonly nested: true }, AttributeValue>, never>>,
+];
+
+const producerTypeAssertions: ProducerTypeAssertions = [true, true, true, true, true, true];
 
 describe("contract producer types", () => {
   it("rejects aliases, attributes, missing fields, defect outcomes and dynamic names", () => {
-    assert.isFunction(assertProducerTypes);
+    assert.deepStrictEqual(producerTypeAssertions, [true, true, true, true, true, true]);
   });
 });

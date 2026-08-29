@@ -1,5 +1,5 @@
 import type { AttributeDefinition } from "./TelemetryContract.ts";
-import { defineEventDefinitions, telemetryContractDefinition } from "./TelemetryContract.ts";
+import { defineEventDefinitions } from "./TelemetryContract.ts";
 
 const publicRequired = {
   classification: "public",
@@ -90,11 +90,4 @@ export const organizationEvents = defineEventDefinitions({
     sampling: { kind: "always" },
     attributes: { "error.origin": publicRequired },
   },
-});
-
-export const organizationTelemetryContractInput = telemetryContractDefinition({
-  version: organizationContractVersion,
-  events: organizationEvents,
-  metrics: {},
-  auditActions: {},
 });

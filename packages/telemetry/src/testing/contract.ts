@@ -6,10 +6,7 @@ import {
   type TelemetryContract,
   type TelemetryContractInput,
 } from "../contract/index.ts";
-import type {
-  ContractIssueCode,
-  TelemetryEventErrorCode,
-} from "../contract/TelemetryContractError.ts";
+import { ContractIssueCode, TelemetryEventErrorCode } from "../contract/TelemetryContractError.ts";
 import type { TelemetryEvent } from "../contract/TelemetryEvent.ts";
 import { organizationEvents } from "../contract/OrganizationEvents.ts";
 
@@ -23,24 +20,9 @@ export const organizationEventFixtures: ReadonlyArray<OrganizationEventFixture> 
   organizationEvents,
 ).map(([alias, definition]) => ({ alias, name: definition.name, kind: definition.kind }));
 
-export const contractIssueFixtures: ReadonlyArray<ContractIssueCode> = [
-  "OBS_CONTRACT_INVALID_VERSION",
-  "OBS_CONTRACT_INVALID_EVENT_NAME",
-  "OBS_CONTRACT_DUPLICATE_EVENT_NAME",
-  "OBS_CONTRACT_INVALID_EVENT_KIND",
-  "OBS_CONTRACT_INVALID_ATTRIBUTE_NAME",
-  "OBS_CONTRACT_INVALID_ATTRIBUTE_DEFINITION",
-  "OBS_CONTRACT_INVALID_SAMPLING_RATE",
-  "OBS_CONTRACT_INVALID_AUDIT_ACTION",
-];
+export const contractIssueFixtures = ContractIssueCode.literals;
 
-export const telemetryEventErrorFixtures: ReadonlyArray<TelemetryEventErrorCode> = [
-  "OBS_EVENT_UNKNOWN_NAME",
-  "OBS_EVENT_UNDECLARED_ATTRIBUTE",
-  "OBS_EVENT_MISSING_ATTRIBUTE",
-  "OBS_EVENT_INVALID_FIELD",
-  "OBS_EVENT_INVALID_OUTCOME",
-];
+export const telemetryEventErrorFixtures = TelemetryEventErrorCode.literals;
 
 export type CollectingTelemetryEventSink = {
   readonly layer: Layer.Layer<TelemetryEventSink>;

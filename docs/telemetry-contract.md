@@ -3,11 +3,11 @@
 `defineTelemetryContract` compila a fonte tipada de eventos, métricas e ações de auditoria de uma aplicação. O contrato usa aliases estáveis para chamadas do produtor e mantém o nome canônico dentro de cada definição.
 
 ```ts
+import { Effect } from "effect";
 import { Contract, defineTelemetryContract, makeEventProducer } from "@equipe-tech/observability";
 
-const contract =
-  yield *
-  defineTelemetryContract({
+const program = Effect.gen(function* () {
+  const contract = yield* defineTelemetryContract({
     version: 1,
     events: {
       ...Contract.organizationEvents,
@@ -30,7 +30,8 @@ const contract =
     auditActions: {},
   });
 
-const producer = makeEventProducer(contract);
+  return makeEventProducer(contract);
+});
 ```
 
 O produtor aceita somente aliases do contrato. O alias selecionado determina os campos por tipo de evento e os atributos permitidos. A aplicação fornece campos semânticos. O produtor preenche o timestamp e a severidade padrão.
@@ -41,7 +42,7 @@ Um nome de evento tem de duas a quatro partes separadas por pontos e no máximo 
 
 `browser.error` é a exceção obrigatória para a palavra `error`. O contrato rejeita outras partes de resultado ou severidade, como `payment.failure` e `worker.errored`.
 
-Nomes de atributos usam partes minúsculas separadas por pontos e têm no máximo 128 caracteres. Valores de atributos são strings, números finitos ou booleanos.
+Nomes de atributos usam partes minúsculas separadas por pontos e têm no máximo 128 caracteres. O namespace `event.*` é reservado para campos canônicos e não pode aparecer em `attributes`. Valores de atributos são strings, números finitos ou booleanos.
 
 ## Eventos canônicos
 
@@ -57,7 +58,7 @@ Timestamps usam RFC 3339 em UTC e terminam em `Z`. Durações são números fini
 
 ## Amostragem
 
-`always` grava todo evento elegível. `rate` aceita um número finito maior que zero e menor ou igual a um. A política `rate` se aplica somente a eventos bem-sucedidos que são elegíveis para amostragem.
+`always` grava todo evento elegível. `rate` aceita um número finito maior que zero e menor ou igual a um. A política `rate` pode descartar eventos elegíveis com resultado `success` ou `cancelled`. O produtor sempre grava eventos com resultado `failure`.
 
 O produtor sempre grava:
 
@@ -75,7 +76,7 @@ Canários usam `mandatory: true` na definição. Um resultado `cancelled` contin
 
 | Alias              | Nome                | Tipo        | Atributos obrigatórios                       |
 | ------------------ | ------------------- | ----------- | -------------------------------------------- |
-| `RequestCompleted` | `request.completed` | `request`   | campos canônicos HTTP e duração              |
+| `RequestCompleted` | `request.completed` | `request`   | nenhum                                       |
 | `DependencyCall`   | `dependency.call`   | `operation` | `dependency.name`, `dependency.operation`    |
 | `LlmCall`          | `llm.call`          | `operation` | `llm.provider`, `llm.model`, `llm.operation` |
 | `SchedulerRun`     | `scheduler.run`     | `operation` | `scheduler.job`                              |
@@ -90,17 +91,19 @@ Canários usam `mandatory: true` na definição. Um resultado `cancelled` contin
 
 `layerWideEvent` conecta o produtor ao `WideEvent.emit` existente. O marcador `event.kind` continua com o valor `wide`. O tipo canônico usa `event.type`.
 
-| Campo canônico        | Atributo emitido                                                 |
-| --------------------- | ---------------------------------------------------------------- |
-| nome                  | `event.name`                                                     |
-| tipo                  | `event.type`                                                     |
-| severidade            | `event.severity`                                                 |
-| resultado             | `event.outcome`                                                  |
-| timestamp             | `event.timestamp`                                                |
-| duração               | `event.duration_ms`                                              |
-| contexto HTTP         | `http.request.method`, `http.route`, `http.response.status_code` |
-| contexto de erro      | `error.type`, `error.message`, `error.retryable`                 |
-| contexto de auditoria | atributos `audit.*`                                              |
+| Campo canônico           | Atributo emitido                                                 |
+| ------------------------ | ---------------------------------------------------------------- |
+| nome                     | `event.name`                                                     |
+| tipo                     | `event.type`                                                     |
+| severidade               | `event.severity`                                                 |
+| resultado                | `event.outcome`                                                  |
+| timestamp                | `event.timestamp`                                                |
+| duração                  | `event.duration_ms`                                              |
+| contexto HTTP            | `http.request.method`, `http.route`, `http.response.status_code` |
+| contexto de erro         | `error.type`, `error.message`, `error.retryable`                 |
+| contexto de auditoria    | atributos `audit.*`                                              |
+| correlação de requisição | `request.id`                                                     |
+| correlação de execução   | `run.id`                                                         |
 
 ## Erros
 
@@ -110,4 +113,4 @@ Falhas de emissão retornam `InvalidTelemetryEvent`. Os códigos públicos cobre
 
 ## Testes de consumidores
 
-`@equipe-tech/observability/testing` exporta os contratos derivados, a lista de eventos da organização, os códigos de fixture, um sink coletor e uma camada de amostragem determinística. `Testing.run` continua sendo o caminho em memória para provar a exportação OTLP real sem mock de módulo.
+`@equipe-tech/observability/testing` exporta os tipos derivados do contrato, a lista de eventos da organização, os códigos de fixture e um sink coletor. `withFixedSampling` fornece o serviço `Random.Random` com um valor determinístico para um programa Effect. `Testing.run` continua sendo o caminho em memória para provar a exportação OTLP real sem mock de módulo.

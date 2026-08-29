@@ -6,8 +6,11 @@ import {
   makeEventProducer,
   organizationEvents,
   telemetryContractDefinition,
+  type TelemetryContract,
+  type TelemetryContractInput,
 } from "../src/contract/index.ts";
 import {
+  contractIssueFixtures,
   makeCollectingTelemetryEventSink,
   organizationEventFixtures,
   withFixedSampling,
@@ -149,8 +152,14 @@ describe("defineTelemetryContract", () => {
     );
   }
 
-  const invalidNames = ["single", "event.production", "event.failure"] satisfies ReadonlyArray<
-    "single" | "event.production" | "event.failure"
+  const invalidNames = [
+    "single",
+    "event.production",
+    "event.failure",
+    "payment.error",
+    "api.error.handler",
+  ] satisfies ReadonlyArray<
+    "single" | "event.production" | "event.failure" | "payment.error" | "api.error.handler"
   >;
   for (const name of invalidNames) {
     it.effect(`rejects invalid event name ${name}`, () =>
@@ -211,7 +220,38 @@ describe("defineTelemetryContract", () => {
     }),
   );
 
-  it.effect("accepts lowercase numbers, underscores and the browser.error exception", () =>
+  it.effect("reserves the event attribute namespace with a typed issue", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        defineTelemetryContract({
+          version: 1,
+          events: {
+            Invalid: {
+              name: "probe.completed",
+              kind: "domain",
+              defaultSeverity: "info",
+              mandatory: true,
+              sampling: { kind: "always" },
+              attributes: {
+                "event.outcome": {
+                  classification: "public",
+                  required: true,
+                  metricLabel: true,
+                },
+              },
+            },
+          },
+          metrics: {},
+          auditActions: {},
+        }),
+      );
+      assert.include(issueCodes(error), "OBS_CONTRACT_RESERVED_ATTRIBUTE_NAME");
+      assert.include(contractIssueFixtures, "OBS_CONTRACT_RESERVED_ATTRIBUTE_NAME");
+      assert.strictEqual(error.issues[0]?.attributeName, "event.outcome");
+    }),
+  );
+
+  it.effect("accepts lowercase numbers, underscores and only the browser.error exception", () =>
     Effect.gen(function* () {
       const contract = yield* defineTelemetryContract({
         version: 1,
@@ -316,6 +356,16 @@ describe("contract event producer", () => {
         0.9,
       );
       assert.strictEqual(sampled.decision, "sampled_out");
+      const cancelled = yield* withFixedSampling(
+        producer
+          .emit("DomainChanged", {
+            outcome: "cancelled",
+            attributes: { "subscription.plan": "team" },
+          })
+          .pipe(Effect.provide(sink.layer)),
+        0.9,
+      );
+      assert.strictEqual(cancelled.decision, "sampled_out");
       const failure = yield* withFixedSampling(
         producer
           .emit("DomainChanged", {
@@ -357,18 +407,17 @@ describe("contract event producer", () => {
     "rejects unknown aliases, undeclared attributes and invalid fields before the sink",
     () =>
       Effect.gen(function* () {
-        const contract = yield* compileApplicationContract;
+        const contract: TelemetryContract<TelemetryContractInput> =
+          yield* compileApplicationContract;
         const sink = yield* makeCollectingTelemetryEventSink();
         const producer = makeEventProducer(contract);
         const unknownAlias = yield* producer
-          // @ts-expect-error runtime rejection is part of the public producer contract
           .emit("MissingAlias", { outcome: "success", attributes: {} })
           .pipe(Effect.provide(sink.layer), Effect.exit);
         assert.isTrue(Exit.isFailure(unknownAlias));
         const undeclared = yield* producer
           .emit("DomainChanged", {
             outcome: "success",
-            // @ts-expect-error runtime rejection protects JavaScript consumers
             attributes: { "subscription.plan": "team", "subscription.secret": "no" },
           })
           .pipe(Effect.provide(sink.layer), Effect.exit);
@@ -382,25 +431,16 @@ describe("contract event producer", () => {
           })
           .pipe(Effect.provide(sink.layer), Effect.exit);
         assert.isTrue(Exit.isFailure(invalidDuration));
-        const nonScalar = yield* producer
-          .emit("DomainChanged", {
-            outcome: "success",
-            // @ts-expect-error runtime rejection protects JavaScript consumers
-            attributes: { "subscription.plan": { nested: true } },
-          })
-          .pipe(Effect.provide(sink.layer), Effect.exit);
-        assert.isTrue(Exit.isFailure(nonScalar));
         assert.lengthOf(yield* sink.events, 0);
       }),
   );
 
   it.effect("rejects missing required attributes and non-UTC timestamps before the sink", () =>
     Effect.gen(function* () {
-      const contract = yield* compileApplicationContract;
+      const contract: TelemetryContract<TelemetryContractInput> = yield* compileApplicationContract;
       const sink = yield* makeCollectingTelemetryEventSink();
       const producer = makeEventProducer(contract);
       const missing = yield* producer
-        // @ts-expect-error runtime rejection protects JavaScript consumers
         .emit("DomainChanged", { outcome: "success", attributes: {} })
         .pipe(Effect.provide(sink.layer), Effect.exit);
       assert.isTrue(Exit.isFailure(missing));

@@ -207,6 +207,15 @@ const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<Contra
           ),
         );
       }
+      if (attributeName.startsWith("event.")) {
+        issues.push(
+          issue(
+            "OBS_CONTRACT_RESERVED_ATTRIBUTE_NAME",
+            `Attribute "${attributeName}" uses the reserved event namespace. Rename the application attribute outside event.*.`,
+            { eventAlias: alias, eventName: event.name, attributeName },
+          ),
+        );
+      }
       if (
         (attribute.classification === "sensitive" && attribute.metricLabel) ||
         (attribute.classification === "forbidden" && attribute.required)

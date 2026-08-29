@@ -1,4 +1,4 @@
-import { Clock, Context, DateTime, Effect, Layer, Option, Random } from "effect";
+import { Clock, Context, DateTime, Effect, Option, Random } from "effect";
 import {
   type AttributeDefinitionsInput,
   type CompiledEventDefinition,
@@ -342,8 +342,3 @@ export const makeEventProducer = <const Definition extends TelemetryContractInpu
     return { decision: "recorded", event };
   }),
 });
-
-export const telemetryEventSinkLayer = (
-  record: (event: TelemetryEvent) => Effect.Effect<void>,
-): Layer.Layer<TelemetryEventSink> =>
-  Layer.succeed(TelemetryEventSink, TelemetryEventSink.of({ record }));

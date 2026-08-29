@@ -1,4 +1,4 @@
-import { Effect, Layer, Option } from "effect";
+import { Layer, Option } from "effect";
 import { TelemetryEventSink } from "./contract/EventProducer.ts";
 import type { AttributeValue, TelemetryEvent } from "./contract/TelemetryEvent.ts";
 import * as WideEvent from "./WideEvent.ts";
@@ -62,6 +62,3 @@ export const layerWideEvent: Layer.Layer<TelemetryEventSink> = Layer.succeed(
     record: (event) => WideEvent.emit(event.name, fieldsForEvent(event)),
   }),
 );
-
-export const emitWideEvent = (event: TelemetryEvent): Effect.Effect<void> =>
-  WideEvent.emit(event.name, fieldsForEvent(event));

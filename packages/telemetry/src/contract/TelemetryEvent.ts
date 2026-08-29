@@ -17,8 +17,6 @@ export type EventAttributes = {
 };
 
 export type CorrelationContext = {
-  readonly traceId: Option.Option<string>;
-  readonly spanId: Option.Option<string>;
   readonly requestId: Option.Option<string>;
   readonly runId: Option.Option<string>;
 };

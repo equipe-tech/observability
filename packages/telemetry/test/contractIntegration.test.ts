@@ -4,6 +4,8 @@ import {
   defineTelemetryContract,
   makeEventProducer,
   telemetryContractDefinition,
+  type TelemetryContract,
+  type TelemetryContractInput,
 } from "../src/contract/index.ts";
 import { layerWideEvent } from "../src/WideEventSink.ts";
 import * as Testing from "../src/testing/index.ts";
@@ -60,11 +62,11 @@ describe("contract OTLP integration", () => {
 
   it.live("keeps invalid names, attributes and sampling outside the emitter", () =>
     Effect.gen(function* () {
-      const contract = yield* defineTelemetryContract(contractInput);
+      const contract: TelemetryContract<TelemetryContractInput> =
+        yield* defineTelemetryContract(contractInput);
       const producer = makeEventProducer(contract);
       const invalidName = yield* Testing.run(
         producer
-          // @ts-expect-error runtime rejection protects JavaScript consumers
           .emit("Unknown", { outcome: "success", attributes: {} })
           .pipe(Effect.provide(layerWideEvent)),
       );
@@ -75,7 +77,6 @@ describe("contract OTLP integration", () => {
         producer
           .emit("Exported", {
             outcome: "success",
-            // @ts-expect-error runtime rejection protects JavaScript consumers
             attributes: { "contract.fixture": "valid", "contract.extra": true },
           })
           .pipe(Effect.provide(layerWideEvent)),
