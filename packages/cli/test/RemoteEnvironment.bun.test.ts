@@ -308,8 +308,10 @@ describe("environment and provider names", () => {
     const errors = await Effect.runPromise(
       Effect.gen(function* () {
         const service = yield* RemoteEnvironment;
-        const project = yield* Effect.flip(service.export("livro--caixa", "staging"));
-        const environment = yield* Effect.flip(service.export("livro-caixa", "staging--west"));
+        const project = yield* Effect.flip(service.export("livro--caixa", "staging", "1.4.0"));
+        const environment = yield* Effect.flip(
+          service.export("livro-caixa", "staging--west", "1.4.0"),
+        );
         return { project, environment };
       }).pipe(Effect.provide(remote.layer)),
     );
@@ -351,6 +353,18 @@ describe("environment and provider names", () => {
 });
 
 describe("RemoteEnvironment", () => {
+  test("rejects a non-canonical release before exporting secrets", async () => {
+    const remote = makeRemoteLayer({ axiom: false });
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* RemoteEnvironment;
+        yield* service.provision("livro-caixa", ["staging"], ["sentry"], "node", false);
+        return yield* Effect.flip(service.export("livro-caixa", "staging", "latest"));
+      }).pipe(Effect.provide(remote.layer)),
+    );
+    expect(error.code).toBe("OBS_CLI_REMOTE_INVALID_RELEASE");
+  });
+
   test("preserves combined omission behavior and repeats without duplicate resources", async () => {
     const remote = makeRemoteLayer();
     const result = await Effect.runPromise(
@@ -374,7 +388,7 @@ describe("RemoteEnvironment", () => {
           undefined,
           true,
         );
-        const exported = yield* service.export("livro-caixa", "staging");
+        const exported = yield* service.export("livro-caixa", "staging", "1.4.0");
         return { first, second, exported };
       }).pipe(Effect.provide(remote.layer)),
     );
@@ -386,7 +400,8 @@ describe("RemoteEnvironment", () => {
     expect(state.tokenCreations).toBe(1);
     expect(state.sentryProjectCalls).toBe(2);
     expect(state.credentials.environments).toHaveLength(1);
-    expect(result.exported.split("\n")).toHaveLength(8);
+    expect(result.exported.split("\n")).toHaveLength(9);
+    expect(result.exported).toContain('OTEL_SERVICE_VERSION="1.4.0"');
     expect(result.exported).toContain('OTEL_DEPLOYMENT_ENVIRONMENT="staging"');
     expect(result.exported).toContain(
       'OTEL_EXPORTER_OTLP_ENDPOINT="http://livro-caixa-otel-collector:4318"',
@@ -416,7 +431,7 @@ describe("RemoteEnvironment", () => {
         );
         return {
           repeated,
-          exported: yield* service.export("livro-caixa", "staging"),
+          exported: yield* service.export("livro-caixa", "staging", "1.4.0"),
         };
       }).pipe(Effect.provide(remote.layer)),
     );
@@ -426,7 +441,7 @@ describe("RemoteEnvironment", () => {
     expect(state.sentryProjectCalls).toBe(0);
     expect(state.sentryDsnCalls).toBe(0);
     expect(state.tokenCreations).toBe(1);
-    expect(result.exported.split("\n")).toHaveLength(7);
+    expect(result.exported.split("\n")).toHaveLength(8);
     expect(result.exported).not.toContain("SENTRY_DSN");
   });
 
@@ -439,7 +454,7 @@ describe("RemoteEnvironment", () => {
         const repeated = yield* service.provision("livro-caixa", ["staging"], [], "node", false);
         return {
           repeated,
-          exported: yield* service.export("livro-caixa", "staging"),
+          exported: yield* service.export("livro-caixa", "staging", "1.4.0"),
         };
       }).pipe(Effect.provide(remote.layer)),
     );
@@ -449,7 +464,7 @@ describe("RemoteEnvironment", () => {
     expect(state.axiomDatasetLists).toBe(0);
     expect(state.axiomTokenLists).toBe(0);
     expect(result.exported).toBe(
-      'OTEL_SERVICE_NAME="livro-caixa"\nOTEL_DEPLOYMENT_ENVIRONMENT="staging"\nSENTRY_DSN="https://public@sentry.example/1"',
+      'OTEL_SERVICE_NAME="livro-caixa"\nOTEL_SERVICE_VERSION="1.4.0"\nOTEL_DEPLOYMENT_ENVIRONMENT="staging"\nSENTRY_DSN="https://public@sentry.example/1"',
     );
   });
 
@@ -573,7 +588,7 @@ describe("RemoteEnvironment", () => {
     const exportError = await Effect.runPromise(
       Effect.gen(function* () {
         const service = yield* RemoteEnvironment;
-        return yield* Effect.flip(service.export("livro-caixa", "production"));
+        return yield* Effect.flip(service.export("livro-caixa", "production", "1.4.0"));
       }).pipe(Effect.provide(remote.layer)),
     );
     expect(exportError._tag).toBe("RemoteEnvironmentError");
@@ -667,7 +682,7 @@ describe("RemoteEnvironment", () => {
           "edge-1",
           30,
         );
-        const exportError = yield* Effect.flip(service.export("livro-caixa", "staging"));
+        const exportError = yield* Effect.flip(service.export("livro-caixa", "staging", "1.4.0"));
         const mutationCounts = {
           datasets: remote.state().datasets.length,
           tokens: remote.state().tokenCreations,
@@ -691,7 +706,7 @@ describe("RemoteEnvironment", () => {
           30,
           true,
         );
-        const exported = yield* service.export("livro-caixa", "staging");
+        const exported = yield* service.export("livro-caixa", "staging", "1.4.0");
         return { confirmed, exportError, exported, initial, mutationCounts, repeated };
       }).pipe(Effect.provide(remote.layer)),
     );

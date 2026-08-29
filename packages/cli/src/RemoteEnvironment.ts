@@ -13,7 +13,7 @@ import {
   VerifiedAxiomDataset,
   SentryEnvironment,
 } from "./CredentialsStore.ts";
-import { EnvironmentName, ServiceName } from "./ResourceNamePolicy.ts";
+import { EnvironmentName, ServiceName, ServiceVersion } from "./ResourceNamePolicy.ts";
 import {
   AxiomApi,
   AxiomDataset,
@@ -27,6 +27,7 @@ const DatasetName = Schema.NonEmptyString.check(Schema.isMaxLength(128));
 const ProviderName = Schema.Literals(["axiom", "sentry"]);
 const decodeServiceName = Schema.decodeUnknownEffect(ServiceName);
 const decodeEnvironmentName = Schema.decodeUnknownEffect(EnvironmentName);
+const decodeServiceVersion = Schema.decodeUnknownEffect(ServiceVersion);
 const decodeDatasetName = Schema.decodeUnknownEffect(DatasetName);
 const decodeProviderName = Schema.decodeUnknownEffect(ProviderName);
 
@@ -41,6 +42,7 @@ export class RemoteEnvironmentError extends Schema.TaggedError<RemoteEnvironment
       "OBS_CLI_REMOTE_INVALID_PROVIDER",
       "OBS_CLI_REMOTE_INVALID_PROJECT",
       "OBS_CLI_REMOTE_INVALID_ENVIRONMENT",
+      "OBS_CLI_REMOTE_INVALID_RELEASE",
       "OBS_CLI_REMOTE_ROTATION_NOT_SELECTED",
       "OBS_CLI_REMOTE_TOKEN_UNAVAILABLE",
       "OBS_CLI_REMOTE_PARTIAL_FAILURE",
@@ -79,6 +81,22 @@ const parseServiceName = Effect.fn("parseServiceName")(function* (
           code: "OBS_CLI_REMOTE_INVALID_PROJECT",
           message:
             "The project name is invalid. Use lowercase letters, digits and single hyphens between segments, with at most 63 characters.",
+          cause,
+        }),
+    ),
+  );
+});
+
+export const parseServiceVersion = Effect.fn("parseServiceVersion")(function* (
+  release: string,
+): Effect.fn.Return<string, RemoteEnvironmentError> {
+  return yield* decodeServiceVersion(release).pipe(
+    Effect.mapError(
+      (cause) =>
+        new RemoteEnvironmentError({
+          code: "OBS_CLI_REMOTE_INVALID_RELEASE",
+          message:
+            "The release is invalid. Use SemVer 2.0.0 or a 7 to 64 character lowercase hexadecimal identifier.",
           cause,
         }),
     ),
@@ -594,6 +612,7 @@ export class RemoteEnvironment extends Context.Service<
     export(
       project: string,
       environment: string,
+      release: string,
     ): Effect.Effect<string, CredentialsError | RemoteEnvironmentError>;
   }
 >()("@equipe-tech/observability-cli/RemoteEnvironment") {
@@ -1145,61 +1164,65 @@ export class RemoteEnvironment extends Context.Service<
           );
         }),
         list,
-        export: Effect.fn("RemoteEnvironment.export")(function* (rawProject, rawEnvironment) {
-          const project = yield* parseServiceName(rawProject);
-          const environment = yield* parseEnvironmentName(rawEnvironment);
-          const credentials = Option.getOrElse(yield* store.load(), emptyCredentials);
-          const managed = credentials.environments.find(
-            (candidate) => candidate.project === project && candidate.environment === environment,
-          );
-          if (managed === undefined) {
-            return yield* new RemoteEnvironmentError({
-              code: "OBS_CLI_REMOTE_ENVIRONMENT_NOT_FOUND",
-              message: `Environment ${project}/${environment} is not configured. Run observability provision with --environment ${environment}.`,
-              cause: `${project}/${environment}`,
-            });
-          }
-          if (
-            hasPendingAxiomMutation(credentials, project, environment) &&
-            Option.isSome(environmentAxiom(managed))
-          ) {
-            return yield* new RemoteEnvironmentError({
-              code: "OBS_CLI_REMOTE_TOKEN_UNAVAILABLE",
-              message: `The stored token for ${project}/${environment} may be stale after an unresolved mutation. Rerun provisioning with --provider axiom --rotate-token before exporting it.`,
-              cause: `${project}/${environment}`,
-            });
-          }
-          const managedAxiom = environmentAxiom(managed);
-          if (
-            Option.isSome(managedAxiom) &&
-            managedAxiom.value.correlation.type !== "operator-confirmed"
-          ) {
-            return yield* new RemoteEnvironmentError({
-              code: "OBS_CLI_CORRELATION_CONFIRMATION_REQUIRED",
-              message: `Correlation for ${project}/${environment} requires a manual Axiom Console action. Create the saved group and rerun provisioning with --correlation-confirmed before exporting deploy variables.`,
-              cause: `${project}/${environment}`,
-            });
-          }
-          const variables: Array<readonly [string, string]> = [
-            ["OTEL_SERVICE_NAME", managed.project],
-            ["OTEL_DEPLOYMENT_ENVIRONMENT", managed.environment],
-          ];
-          const axiom = environmentAxiom(managed);
-          if (Option.isSome(axiom)) {
-            variables.push(
-              ["OTEL_EXPORTER_OTLP_ENDPOINT", `http://${managed.project}-otel-collector:4318`],
-              ["AXIOM_TOKEN", axiom.value.token],
-              ["AXIOM_DATASET_TRACES", axiom.value.tracesDataset],
-              ["AXIOM_DATASET_LOGS", axiom.value.logsDataset],
-              ["AXIOM_DATASET_METRICS", axiom.value.metricsDataset],
+        export: Effect.fn("RemoteEnvironment.export")(
+          function* (rawProject, rawEnvironment, rawRelease) {
+            const project = yield* parseServiceName(rawProject);
+            const environment = yield* parseEnvironmentName(rawEnvironment);
+            const release = yield* parseServiceVersion(rawRelease);
+            const credentials = Option.getOrElse(yield* store.load(), emptyCredentials);
+            const managed = credentials.environments.find(
+              (candidate) => candidate.project === project && candidate.environment === environment,
             );
-          }
-          const sentry = environmentSentry(managed);
-          if (Option.isSome(sentry)) {
-            variables.push(["SENTRY_DSN", sentry.value.dsn]);
-          }
-          return variables.map(([name, value]) => `${name}=${JSON.stringify(value)}`).join("\n");
-        }),
+            if (managed === undefined) {
+              return yield* new RemoteEnvironmentError({
+                code: "OBS_CLI_REMOTE_ENVIRONMENT_NOT_FOUND",
+                message: `Environment ${project}/${environment} is not configured. Run observability provision with --environment ${environment}.`,
+                cause: `${project}/${environment}`,
+              });
+            }
+            if (
+              hasPendingAxiomMutation(credentials, project, environment) &&
+              Option.isSome(environmentAxiom(managed))
+            ) {
+              return yield* new RemoteEnvironmentError({
+                code: "OBS_CLI_REMOTE_TOKEN_UNAVAILABLE",
+                message: `The stored token for ${project}/${environment} may be stale after an unresolved mutation. Rerun provisioning with --provider axiom --rotate-token before exporting it.`,
+                cause: `${project}/${environment}`,
+              });
+            }
+            const managedAxiom = environmentAxiom(managed);
+            if (
+              Option.isSome(managedAxiom) &&
+              managedAxiom.value.correlation.type !== "operator-confirmed"
+            ) {
+              return yield* new RemoteEnvironmentError({
+                code: "OBS_CLI_CORRELATION_CONFIRMATION_REQUIRED",
+                message: `Correlation for ${project}/${environment} requires a manual Axiom Console action. Create the saved group and rerun provisioning with --correlation-confirmed before exporting deploy variables.`,
+                cause: `${project}/${environment}`,
+              });
+            }
+            const variables: Array<readonly [string, string]> = [
+              ["OTEL_SERVICE_NAME", managed.project],
+              ["OTEL_SERVICE_VERSION", release],
+              ["OTEL_DEPLOYMENT_ENVIRONMENT", managed.environment],
+            ];
+            const axiom = environmentAxiom(managed);
+            if (Option.isSome(axiom)) {
+              variables.push(
+                ["OTEL_EXPORTER_OTLP_ENDPOINT", `http://${managed.project}-otel-collector:4318`],
+                ["AXIOM_TOKEN", axiom.value.token],
+                ["AXIOM_DATASET_TRACES", axiom.value.tracesDataset],
+                ["AXIOM_DATASET_LOGS", axiom.value.logsDataset],
+                ["AXIOM_DATASET_METRICS", axiom.value.metricsDataset],
+              );
+            }
+            const sentry = environmentSentry(managed);
+            if (Option.isSome(sentry)) {
+              variables.push(["SENTRY_DSN", sentry.value.dsn]);
+            }
+            return variables.map(([name, value]) => `${name}=${JSON.stringify(value)}`).join("\n");
+          },
+        ),
       });
     }),
   );

@@ -5,6 +5,10 @@ import {
   parseResourceIdentity,
   ResourceIdentity,
 } from "./ResourceIdentity.ts";
+import {
+  DuplicateReleaseVariable,
+  secondReleaseVariables,
+} from "./profile/ObservabilityConfigError.ts";
 
 export const OtlpEndpoint = Schema.URLFromString.check(
   Schema.makeFilter(
@@ -51,12 +55,8 @@ export class InvalidTelemetryEnvironment extends Schema.TaggedError<InvalidTelem
 
 const TelemetryEnvironment = Schema.Struct({
   OTEL_SERVICE_NAME: Schema.NonEmptyString,
-  OTEL_SERVICE_VERSION: Schema.NonEmptyString.pipe(
-    Schema.withDecodingDefault(Effect.succeed("0.0.0")),
-  ),
-  OTEL_DEPLOYMENT_ENVIRONMENT: Schema.NonEmptyString.pipe(
-    Schema.withDecodingDefault(Effect.succeed("development")),
-  ),
+  OTEL_SERVICE_VERSION: Schema.NonEmptyString.pipe(Schema.optionalKey),
+  OTEL_DEPLOYMENT_ENVIRONMENT: Schema.NonEmptyString.pipe(Schema.optionalKey),
   OTEL_SERVICE_INSTANCE_ID: Schema.Union([Schema.String, Schema.Undefined]).pipe(
     Schema.optionalKey,
   ),
@@ -73,7 +73,20 @@ const decodeTelemetryEnvironment = Schema.decodeUnknownEffect(TelemetryEnvironme
 
 export const telemetryConfigFromEnv = Effect.fn("telemetryConfigFromEnv")(function* (
   env: EnvironmentVariables,
-): Effect.fn.Return<TelemetryConfig, InvalidTelemetryEnvironment | InvalidResourceIdentity> {
+): Effect.fn.Return<
+  TelemetryConfig,
+  InvalidTelemetryEnvironment | InvalidResourceIdentity | DuplicateReleaseVariable
+> {
+  for (const variable of secondReleaseVariables) {
+    const value = env[variable];
+    if (value !== undefined && value !== "") {
+      return yield* new DuplicateReleaseVariable({
+        code: "OBS_TELEMETRY_DUPLICATE_RELEASE_VARIABLE",
+        variable,
+        message: `${variable} defines a second release identity. Remove it and set OTEL_SERVICE_VERSION.`,
+      });
+    }
+  }
   const variables = yield* decodeTelemetryEnvironment(env).pipe(
     Effect.mapError(
       (cause) =>
@@ -85,10 +98,25 @@ export const telemetryConfigFromEnv = Effect.fn("telemetryConfigFromEnv")(functi
         }),
     ),
   );
+  const local =
+    variables.OTEL_EXPORTER_OTLP_ENDPOINT.hostname === "localhost" ||
+    variables.OTEL_EXPORTER_OTLP_ENDPOINT.hostname === "::1" ||
+    variables.OTEL_EXPORTER_OTLP_ENDPOINT.hostname === "[::1]" ||
+    variables.OTEL_EXPORTER_OTLP_ENDPOINT.hostname.startsWith("127.");
+  const serviceVersion = variables.OTEL_SERVICE_VERSION ?? (local ? "0.0.0" : undefined);
+  const environment = variables.OTEL_DEPLOYMENT_ENVIRONMENT ?? (local ? "development" : undefined);
+  if (serviceVersion === undefined || environment === undefined) {
+    return yield* new InvalidTelemetryEnvironment({
+      code: "OBS_TELEMETRY_INVALID_ENVIRONMENT",
+      message:
+        "A remote OTLP endpoint requires OTEL_SERVICE_VERSION and OTEL_DEPLOYMENT_ENVIRONMENT. Set both canonical identity variables.",
+      cause: "remote identity is incomplete",
+    });
+  }
   const identity = yield* parseResourceIdentity({
     serviceName: variables.OTEL_SERVICE_NAME,
-    serviceVersion: variables.OTEL_SERVICE_VERSION,
-    environment: variables.OTEL_DEPLOYMENT_ENVIRONMENT,
+    serviceVersion,
+    environment,
     instance:
       variables.OTEL_SERVICE_INSTANCE_ID === ""
         ? Option.none()

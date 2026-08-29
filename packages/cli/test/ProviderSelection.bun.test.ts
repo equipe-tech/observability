@@ -348,7 +348,16 @@ describe("built CLI provider selection", () => {
           server,
         );
         const axiomExport = await runCli(
-          ["env", "export", "--name", "livro-caixa", "--environment", "staging"],
+          [
+            "env",
+            "export",
+            "--name",
+            "livro-caixa",
+            "--environment",
+            "staging",
+            "--release",
+            "1.4.0",
+          ],
           axiomRoot,
           axiomTarget,
           server,
@@ -358,6 +367,7 @@ describe("built CLI provider selection", () => {
         expect(axiomConfirmation.exitCode).toBe(0);
         expect(axiomExport.stdout.trim().split("\n")).toEqual([
           'OTEL_SERVICE_NAME="livro-caixa"',
+          'OTEL_SERVICE_VERSION="1.4.0"',
           'OTEL_DEPLOYMENT_ENVIRONMENT="staging"',
           'OTEL_EXPORTER_OTLP_ENDPOINT="http://livro-caixa-otel-collector:4318"',
           'AXIOM_TOKEN="ingest-secret-1"',
@@ -447,7 +457,16 @@ describe("built CLI provider selection", () => {
           server,
         );
         const sentryExport = await runCli(
-          ["env", "export", "--name", "livro-caixa", "--environment", "production"],
+          [
+            "env",
+            "export",
+            "--name",
+            "livro-caixa",
+            "--environment",
+            "production",
+            "--release",
+            "1.4.0",
+          ],
           sentryRoot,
           sentryTarget,
           server,
@@ -456,7 +475,7 @@ describe("built CLI provider selection", () => {
         expect(sentryRepeat.exitCode).toBe(0);
         expect(sentryFirst.stdout).toContain("Sentry-only command");
         expect(sentryExport.stdout.trim()).toBe(
-          'OTEL_SERVICE_NAME="livro-caixa"\nOTEL_DEPLOYMENT_ENVIRONMENT="production"\nSENTRY_DSN="https://public@sentry.example/1"',
+          'OTEL_SERVICE_NAME="livro-caixa"\nOTEL_SERVICE_VERSION="1.4.0"\nOTEL_DEPLOYMENT_ENVIRONMENT="production"\nSENTRY_DSN="https://public@sentry.example/1"',
         );
         const sentryRequests = server.requests.slice(sentryRequestStart);
         expect(sentryRequests.filter((request) => request.path.startsWith("/v2/"))).toHaveLength(0);
@@ -503,7 +522,16 @@ describe("built CLI provider selection", () => {
           server,
         );
         const combinedExport = await runCli(
-          ["env", "export", "--name", "livro-caixa", "--environment", "canary"],
+          [
+            "env",
+            "export",
+            "--name",
+            "livro-caixa",
+            "--environment",
+            "canary",
+            "--release",
+            "1.4.0",
+          ],
           combinedRoot,
           combinedTarget,
           server,
@@ -512,6 +540,7 @@ describe("built CLI provider selection", () => {
         expect(combinedExport.exitCode).toBe(0);
         expect(combinedExport.stdout.trim().split("\n")).toEqual([
           'OTEL_SERVICE_NAME="livro-caixa"',
+          'OTEL_SERVICE_VERSION="1.4.0"',
           'OTEL_DEPLOYMENT_ENVIRONMENT="canary"',
           'OTEL_EXPORTER_OTLP_ENDPOINT="http://livro-caixa-otel-collector:4318"',
           'AXIOM_TOKEN="ingest-secret-2"',
@@ -704,7 +733,16 @@ describe("built CLI provider selection", () => {
         await Bun.write(migrationPath, `${JSON.stringify(legacy)}\n`);
         await chmod(migrationPath, 0o600);
         const migratedExport = await runCli(
-          ["env", "export", "--name", "livro-caixa", "--environment", "legacy"],
+          [
+            "env",
+            "export",
+            "--name",
+            "livro-caixa",
+            "--environment",
+            "legacy",
+            "--release",
+            "1.4.0",
+          ],
           migrationRoot,
           migrationTarget,
           server,
@@ -736,7 +774,16 @@ describe("built CLI provider selection", () => {
         await chmod(migrationPath, 0o600);
         const requestsBeforeUnresolvedRetry = server.requests.length;
         const unresolvedExport = await runCli(
-          ["env", "export", "--name", "livro-caixa", "--environment", "legacy"],
+          [
+            "env",
+            "export",
+            "--name",
+            "livro-caixa",
+            "--environment",
+            "legacy",
+            "--release",
+            "1.4.0",
+          ],
           migrationRoot,
           migrationTarget,
           server,
