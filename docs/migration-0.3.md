@@ -25,6 +25,14 @@ O construtor aceita esse objeto simples em código tipado. Use `parseResourceIde
 
 `serviceName` aceita no máximo 63 caracteres. `environment` aceita no máximo 32 caracteres.
 
+## Usar um identificador de release válido
+
+A versão 0.2.1 aceitava qualquer string não vazia em `serviceVersion`. A versão 0.3 aceita somente SemVer 2.0.0 ou um identificador imutável de release com 7 a 64 caracteres hexadecimais minúsculos.
+
+O valor `latest` era válido em 0.2.1 e agora é rejeitado. Troque-o pela versão publicada, como `1.4.0`, ou pelo hash do commit implantado, como `9f2c1ab`. Um valor inválido produz `OBS_RESOURCE_IDENTITY_INVALID` no campo `service.version`.
+
+A mesma regra vale para `OTEL_SERVICE_VERSION` quando a configuração vem de `telemetryConfigFromEnv`.
+
 ## Renomear projetos incompatíveis com a CLI
 
 A CLI 0.2 aceitava hífens consecutivos em `provision --name` e nos nomes de projeto dos comandos `env`. A CLI 0.3 aplica a mesma gramática de `serviceName` nesses argumentos. Renomeie `checkout--api` para `checkout-api` antes de atualizar. Um nome incompatível retorna `OBS_CLI_PROVISION_INVALID_NAME` em `provision` ou `OBS_CLI_REMOTE_INVALID_PROJECT` em comandos `env`.
