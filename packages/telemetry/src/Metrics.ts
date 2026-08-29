@@ -71,6 +71,7 @@ export interface MetricsOptions {
   readonly serviceName: string;
   readonly serviceVersion: string;
   readonly environment: string;
+  readonly deploymentEnvironmentAlias?: "emitted" | "omitted" | undefined;
   readonly otlpEndpoint: string;
   readonly exportIntervalMilliseconds?: number;
   readonly flushTimeoutMilliseconds?: number;

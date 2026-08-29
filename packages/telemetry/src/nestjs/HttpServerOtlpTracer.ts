@@ -2,6 +2,7 @@ import { Cause, Duration, Effect, Layer, Option, Schema, Tracer } from "effect";
 import type { Exit } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 import { OtlpExporter, OtlpResource, OtlpSerialization } from "effect/unstable/observability";
+import type { ResourceAttributes } from "../ResourceIdentity.ts";
 
 const HttpStatusCode = Schema.Number.check(
   Schema.isInt(),
@@ -192,9 +193,7 @@ export type HttpServerOtlpTracerOptions = {
   readonly resource: {
     readonly serviceName: string;
     readonly serviceVersion: string;
-    readonly attributes: {
-      readonly "deployment.environment.name": string;
-    };
+    readonly attributes: ResourceAttributes;
   };
   readonly shutdownTimeout?: Duration.Input | undefined;
 };

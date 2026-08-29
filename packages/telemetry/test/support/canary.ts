@@ -1,21 +1,11 @@
 import { Effect, Metric } from "effect";
-import { Telemetry } from "../../src/index.ts";
+import { generateRunId, type RunId, Telemetry } from "../../src/index.ts";
 import { ingestBrowserEvents } from "../../src/node/index.ts";
 import type { TelemetryConfig } from "../../src/TelemetryConfig.ts";
 import * as WideEvent from "../../src/WideEvent.ts";
 
-const dnsSafe = (raw: string): string =>
-  raw
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9-]+/g, "-")
-    .replaceAll(/-+/g, "-")
-    .replaceAll(/^-+|-+$/g, "");
-
-export const canaryRunId = (): string => {
-  const user = dnsSafe(process.env["USER"] ?? "ci");
-  const entropy = Math.random().toString(36).slice(2, 10);
-  return `test-${user === "" ? "ci" : user}-${Date.now()}-${entropy}`;
-};
+export const canaryRunId = (): Effect.Effect<RunId> =>
+  generateRunId("canary", process.env["USER"] ?? "ci");
 
 export const canarySensitiveValues = (runId: string) => {
   const compactRunId = runId.replaceAll("-", "");

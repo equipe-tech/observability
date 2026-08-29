@@ -3,6 +3,7 @@ import { Effect, Option, Schema } from "effect";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { resourceIdentity } from "../src/ResourceIdentity.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 import { canaryRunId, canarySensitiveValues, emitCanary } from "./support/canary.ts";
 
@@ -278,11 +279,13 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
     "exports correlated traces, logs and metrics through the collector",
     () =>
       Effect.gen(function* () {
-        const runId = canaryRunId();
+        const runId = yield* canaryRunId();
         const config = new TelemetryConfig({
-          serviceName: "observability-canary",
-          serviceVersion: "0.1.0",
-          environment: "test",
+          identity: resourceIdentity({
+            serviceName: "observability-canary",
+            serviceVersion: "0.1.0",
+            environment: "test",
+          }),
           otlpEndpoint: new URL("http://localhost:4318"),
         });
 
@@ -296,6 +299,10 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
         assert.strictEqual(run.child.span.parentSpanId, run.root.span.spanId);
 
         const resource = run.root.resource.attributes;
+        assert.strictEqual(
+          Option.getOrUndefined(attributeValue(resource, "service.namespace")),
+          "equipe-tech",
+        );
         assert.strictEqual(
           Option.getOrUndefined(attributeValue(resource, "service.name")),
           "observability-canary",
@@ -325,6 +332,10 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
         );
         assert.strictEqual(run.metric.metric.name, "canary.operations");
         assert.strictEqual(run.metric.dataPoint.asDouble, 1);
+        assert.isAtMost(runId.length, 128);
+        assert.isTrue(
+          Option.isNone(attributeValue(run.metric.dataPoint.attributes, "service.instance.id")),
+        );
 
         const sensitive = canarySensitiveValues(runId);
         for (const marker of sensitive.leakMarkers) {
@@ -374,6 +385,10 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
         assert.include(run.redactionSpanEvent.name, "[REDACTED]");
 
         for (const signalResource of [run.log.resource, run.metric.resource]) {
+          assert.strictEqual(
+            Option.getOrUndefined(attributeValue(signalResource.attributes, "service.namespace")),
+            "equipe-tech",
+          );
           assert.strictEqual(
             Option.getOrUndefined(attributeValue(signalResource.attributes, "service.name")),
             "observability-canary",

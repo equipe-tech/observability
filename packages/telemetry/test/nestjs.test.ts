@@ -18,8 +18,10 @@ import { Observable } from "rxjs";
 import { assert, describe, it } from "vite-plus/test";
 import { inspectHttpServerRequest } from "../src/nestjs/HttpRoutePolicy.ts";
 import {
+  requestCorrelation,
   TelemetryInterceptor,
   TelemetryRequestTracker,
+  withRequestCorrelation,
   withRequestSpan,
 } from "../src/nestjs/index.ts";
 import * as Testing from "../src/testing/index.ts";
@@ -84,12 +86,13 @@ describe("nestjs TelemetryInterceptor", () => {
       unavailable(): never {
         throw new ServiceUnavailableException("private outage text");
       }
-      effectful(request: WeakKey): Promise<{ readonly ok: boolean }> {
+      effectful(request: WeakKey): Promise<{ readonly ok: boolean; readonly requestId: string }> {
+        const correlation = Option.getOrThrow(requestCorrelation(request));
         return runtime.runPromise(
-          Effect.succeed({ ok: true }).pipe(
-            Effect.withSpan("nest.child"),
-            withRequestSpan(request),
-          ),
+          Effect.succeed({
+            ok: true,
+            requestId: Option.getOrThrow(correlation.requestId),
+          }).pipe(Effect.withSpan("nest.child"), withRequestCorrelation(request)),
         );
       }
       slow(): Observable<never> {
@@ -226,6 +229,12 @@ describe("nestjs TelemetryInterceptor", () => {
 
       const effectful = await fetch(`${baseUrl}/demo/effectful`);
       assert.strictEqual(effectful.status, 200);
+      const effectfulBody = await effectful.json();
+      const EffectfulResponse = Schema.Struct({ ok: Schema.Boolean, requestId: Schema.String });
+      const decodedEffectful = Schema.decodeUnknownSync(EffectfulResponse)(effectfulBody);
+      assert.isTrue(decodedEffectful.ok);
+      assert.isAbove(decodedEffectful.requestId.length, 0);
+      assert.isAtMost(decodedEffectful.requestId.length, 128);
 
       for (const excludedPath of ["/health", "/_telemetry/events", "/ready"]) {
         const excluded = await fetch(`${baseUrl}${excludedPath}`);

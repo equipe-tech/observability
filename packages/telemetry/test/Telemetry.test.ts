@@ -1,12 +1,15 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
+import { resourceIdentity } from "../src/ResourceIdentity.ts";
 import { layer } from "../src/Telemetry.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 
 const unavailableCollector = new TelemetryConfig({
-  serviceName: "telemetry-test",
-  serviceVersion: "0.1.0",
-  environment: "test",
+  identity: resourceIdentity({
+    serviceName: "telemetry-test",
+    serviceVersion: "0.1.0",
+    environment: "test",
+  }),
   otlpEndpoint: new URL("http://127.0.0.1:1"),
 });
 

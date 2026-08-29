@@ -2,6 +2,7 @@ import { assert, describe, it } from "vite-plus/test";
 import { Effect, ManagedRuntime, Metric, Option, Predicate, Schema } from "effect";
 import { createServer, type Server } from "node:http";
 import { createMetrics, MetricsError, type MetricAttribute } from "../src/Metrics.ts";
+import { resourceIdentity } from "../src/ResourceIdentity.ts";
 import * as Testing from "../src/testing/index.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 
@@ -167,6 +168,44 @@ const waitFor = async (condition: () => boolean, timeoutMilliseconds = 2_000): P
 };
 
 describe("framework-neutral metrics", () => {
+  it("uses canonical service resource identity and rejects the reserved instance datapoint key", async () => {
+    const collector = await startCollector();
+    try {
+      const metrics = await createMetrics({
+        ...options(collector.endpoint),
+        deploymentEnvironmentAlias: "emitted",
+      });
+      const counter = metrics.counter({
+        name: "identity.total",
+        description: "Identity total",
+        unit: "1",
+      });
+      assert.equal(
+        errorCode(() => counter.add(1, [{ key: "service.instance.id", value: "instance-1" }])),
+        "INVALID_MEASUREMENT",
+      );
+      counter.add(1, [{ key: "run.id", value: "job-1" }]);
+      await metrics.flush();
+      const payload = collector.requests[0];
+      assert.isDefined(payload);
+      const resourceKeys =
+        payload.resourceMetrics[0]?.resource.attributes.map((attribute) => attribute.key) ?? [];
+      assert.include(resourceKeys, "service.namespace");
+      assert.include(resourceKeys, "service.name");
+      assert.include(resourceKeys, "service.version");
+      assert.include(resourceKeys, "deployment.environment.name");
+      assert.include(resourceKeys, "deployment.environment");
+      assert.notInclude(resourceKeys, "service.instance.id");
+      const pointKeys = metricNamed(payload, "identity.total")?.sum?.dataPoints[0]?.attributes.map(
+        (attribute) => attribute.key,
+      );
+      assert.deepEqual(pointKeys, ["run.id"]);
+      await metrics.close();
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
   it("rejects a non-HTTP OTLP endpoint with stable public configuration fields", async () => {
     const collector = await startCollector();
     try {
@@ -706,15 +745,17 @@ describe("framework-neutral metrics", () => {
 
   it("exports facade and direct Effect metrics through the later layer capture transport", async () => {
     const config = new TelemetryConfig({
-      serviceName: "mixed-metrics-test",
-      serviceVersion: "1.0.0",
-      environment: "test",
+      identity: resourceIdentity({
+        serviceName: "mixed-metrics-test",
+        serviceVersion: "1.0.0",
+        environment: "test",
+      }),
       otlpEndpoint: new URL("http://mixed-metrics.invalid"),
     });
     const facade = await createMetrics({
-      serviceName: config.serviceName,
-      serviceVersion: config.serviceVersion,
-      environment: config.environment,
+      serviceName: config.identity.serviceName,
+      serviceVersion: config.identity.serviceVersion,
+      environment: config.identity.environment,
       otlpEndpoint: config.otlpEndpoint.toString(),
     });
     const capture = await Effect.runPromise(Testing.makeCapture({ config }));
@@ -749,15 +790,17 @@ describe("framework-neutral metrics", () => {
 
   it("rejects facade and direct Effect name conflicts before sending OTLP", async () => {
     const config = new TelemetryConfig({
-      serviceName: "mixed-conflict-test",
-      serviceVersion: "1.0.0",
-      environment: "test",
+      identity: resourceIdentity({
+        serviceName: "mixed-conflict-test",
+        serviceVersion: "1.0.0",
+        environment: "test",
+      }),
       otlpEndpoint: new URL("http://mixed-conflict.invalid"),
     });
     const facade = await createMetrics({
-      serviceName: config.serviceName,
-      serviceVersion: config.serviceVersion,
-      environment: config.environment,
+      serviceName: config.identity.serviceName,
+      serviceVersion: config.identity.serviceVersion,
+      environment: config.identity.environment,
       otlpEndpoint: config.otlpEndpoint.toString(),
     });
     const capture = await Effect.runPromise(Testing.makeCapture({ config }));

@@ -17,14 +17,11 @@ const fieldsForEvent = (event: TelemetryEvent): WideEvent.WideEventFields => {
   for (const [name, value] of Object.entries(event.attributes)) {
     fields[name] = value;
   }
-  if (Option.isSome(event.correlation)) {
-    const correlation = event.correlation.value;
-    if (Option.isSome(correlation.requestId)) {
-      fields["request.id"] = correlation.requestId.value;
-    }
-    if (Option.isSome(correlation.runId)) {
-      fields["run.id"] = correlation.runId.value;
-    }
+  if (Option.isSome(event.correlation.requestId)) {
+    fields["request.id"] = event.correlation.requestId.value;
+  }
+  if (Option.isSome(event.correlation.runId)) {
+    fields["run.id"] = event.correlation.runId.value;
   }
   switch (event.kind) {
     case "request":

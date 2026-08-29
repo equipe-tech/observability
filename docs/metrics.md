@@ -9,6 +9,7 @@ const metrics = await createMetrics({
   serviceName: "checkout-api",
   serviceVersion: "1.4.0",
   environment: "production",
+  deploymentEnvironmentAlias: "omitted",
   otlpEndpoint: "http://localhost:4318",
 });
 
@@ -61,7 +62,7 @@ Counters accept finite additions greater than or equal to zero. Histograms accep
 
 ## Attributes and cardinality
 
-Pass attributes as an array of `{ key, value }` items. Values are strings, finite numbers, or booleans. Duplicate keys, `unit`, and `time_unit` are rejected. A measurement accepts at most 16 attributes. Attribute keys contain at most 128 characters. String values contain at most 256 characters and no control characters.
+Pass attributes as an array of `{ key, value }` items. Values are strings, finite numbers, or booleans. Duplicate keys, `unit`, `time_unit`, and `service.instance.id` are rejected. Instance identity belongs only to log and trace resources, never metric resources or datapoints. A measurement accepts at most 16 attributes. Attribute keys contain at most 128 characters. String values contain at most 256 characters and no control characters.
 
 The runtime enforces these lifetime limits:
 

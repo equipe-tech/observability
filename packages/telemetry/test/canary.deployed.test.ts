@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Option } from "effect";
+import { resourceIdentity } from "../src/ResourceIdentity.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 import {
   decodeAxiomEnvironment,
@@ -36,7 +37,13 @@ const findDeployedRun = Effect.fn("findDeployedRun")(function* (
     if (Option.isSome(root)) {
       const child = yield* findChildSpan(env, root.value.traceId);
       const logs = yield* findLogs(env, runId);
-      const metric = yield* findMetric(env, runId, canaryEnvironment);
+      const metric = yield* findMetric(
+        env,
+        runId,
+        canaryEnvironment,
+        "observability-canary",
+        "0.1.0",
+      );
       const completed = logs.find((log) => log.eventName === "canary.completed");
       const browser = logs.find((log) => log.eventName === "canary.browser");
       const redaction = logs.find((log) => log.eventName === "canary.redaction");
@@ -105,11 +112,13 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
       Effect.gen(function* () {
         const axiom = yield* decodeAxiomEnvironment(process.env).pipe(Effect.orDie);
         const endpoint = process.env["OTEL_EXPORTER_OTLP_ENDPOINT"] ?? "http://localhost:4318";
-        const runId = canaryRunId();
+        const runId = yield* canaryRunId();
         const config = new TelemetryConfig({
-          serviceName: "observability-canary",
-          serviceVersion: "0.1.0",
-          environment: canaryEnvironment,
+          identity: resourceIdentity({
+            serviceName: "observability-canary",
+            serviceVersion: "0.1.0",
+            environment: canaryEnvironment,
+          }),
           otlpEndpoint: new URL(endpoint),
         });
 
@@ -122,8 +131,10 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
         assert.strictEqual(run.child.traceId, run.root.traceId);
         assert.deepStrictEqual(run.child.parentSpanId, Option.some(run.root.spanId));
 
+        assert.deepStrictEqual(run.root.serviceNamespace, Option.some("equipe-tech"));
         assert.deepStrictEqual(run.root.serviceName, Option.some("observability-canary"));
         assert.deepStrictEqual(run.root.serviceVersion, Option.some("0.1.0"));
+        assert.isTrue(Option.isNone(run.root.serviceInstanceId));
         assertEnvironmentAliases(
           run.root.environmentName,
           run.root.environmentAlias,
@@ -132,7 +143,9 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
 
         assert.deepStrictEqual(run.completed.traceId, Option.some(run.root.traceId));
         assert.deepStrictEqual(run.completed.eventKind, Option.some("wide"));
+        assert.deepStrictEqual(run.completed.serviceNamespace, Option.some("equipe-tech"));
         assert.deepStrictEqual(run.completed.serviceName, Option.some("observability-canary"));
+        assert.isTrue(Option.isNone(run.completed.serviceInstanceId));
         assertEnvironmentAliases(
           run.completed.environmentName,
           run.completed.environmentAlias,
@@ -141,6 +154,9 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
 
         assert.deepStrictEqual(run.browser.eventSource, Option.some("browser"));
         assert.deepStrictEqual(run.browser.eventKind, Option.some("wide"));
+
+        assert.isAtMost(runId.length, 128);
+        assert.notInclude(run.metric.content, "service.instance.id");
 
         const sensitive = canarySensitiveValues(runId);
         assertRedactionAttributes(run.root.redaction, sensitive);

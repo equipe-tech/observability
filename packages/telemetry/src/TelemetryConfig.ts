@@ -1,4 +1,10 @@
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
+import {
+  EnvironmentAliasPolicy,
+  InvalidResourceIdentity,
+  parseResourceIdentity,
+  ResourceIdentity,
+} from "./ResourceIdentity.ts";
 
 export const OtlpEndpoint = Schema.URLFromString.check(
   Schema.makeFilter(
@@ -13,9 +19,10 @@ export const OtlpEndpoint = Schema.URLFromString.check(
 export class TelemetryConfig extends Schema.Class<TelemetryConfig>(
   "@equipe-tech/observability/TelemetryConfig",
 )({
-  serviceName: Schema.NonEmptyString,
-  serviceVersion: Schema.NonEmptyString,
-  environment: Schema.NonEmptyString,
+  identity: ResourceIdentity,
+  environmentAlias: EnvironmentAliasPolicy.pipe(
+    Schema.withConstructorDefault(Effect.succeed("omitted")),
+  ),
   otlpEndpoint: OtlpEndpoint,
 }) {}
 
@@ -36,6 +43,7 @@ const TelemetryEnvironment = Schema.Struct({
   OTEL_DEPLOYMENT_ENVIRONMENT: Schema.NonEmptyString.pipe(
     Schema.withDecodingDefault(Effect.succeed("development")),
   ),
+  OTEL_SERVICE_INSTANCE_ID: Schema.String.pipe(Schema.optionalKey),
   OTEL_EXPORTER_OTLP_ENDPOINT: OtlpEndpoint.pipe(
     Schema.withDecodingDefault(Effect.succeed("http://localhost:4318")),
   ),
@@ -49,7 +57,7 @@ const decodeTelemetryEnvironment = Schema.decodeUnknownEffect(TelemetryEnvironme
 
 export const telemetryConfigFromEnv = Effect.fn("telemetryConfigFromEnv")(function* (
   env: EnvironmentVariables,
-): Effect.fn.Return<TelemetryConfig, InvalidTelemetryEnvironment> {
+): Effect.fn.Return<TelemetryConfig, InvalidTelemetryEnvironment | InvalidResourceIdentity> {
   const variables = yield* decodeTelemetryEnvironment(env).pipe(
     Effect.mapError(
       (cause) =>
@@ -61,10 +69,14 @@ export const telemetryConfigFromEnv = Effect.fn("telemetryConfigFromEnv")(functi
         }),
     ),
   );
-  return new TelemetryConfig({
+  const identity = yield* parseResourceIdentity({
     serviceName: variables.OTEL_SERVICE_NAME,
     serviceVersion: variables.OTEL_SERVICE_VERSION,
     environment: variables.OTEL_DEPLOYMENT_ENVIRONMENT,
+    instance: Option.fromNullishOr(variables.OTEL_SERVICE_INSTANCE_ID),
+  });
+  return new TelemetryConfig({
+    identity,
     otlpEndpoint: variables.OTEL_EXPORTER_OTLP_ENDPOINT,
   });
 });

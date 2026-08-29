@@ -6,7 +6,9 @@ A aplicação envia os três sinais para um Collector. Ela não contém credenci
 
 ## O atributo canônico preserva consultas durante a transição
 
-O atributo canônico de resource para logs, traces e métricas é `deployment.environment.name`.
+O atributo canônico de resource para logs, traces e métricas é `deployment.environment.name`. A identidade inclui `service.namespace=equipe-tech`, `service.name`, `service.version` e, para logs e traces, o `service.instance.id` opcional. Métricas não recebem o identificador de instância.
+
+Nomes de serviço usam letras minúsculas, números e hífens, com até 63 caracteres. Nomes de ambiente seguem a mesma gramática, com até 32 caracteres. A versão aceita SemVer 2.0.0 ou um identificador imutável hexadecimal minúsculo de 7 a 64 caracteres.
 
 O Collector também exporta `deployment.environment` como alias de transição.
 
@@ -33,6 +35,12 @@ A remoção do alias requer duas condições:
 
 - Todos os produtores suportados enviam o atributo canônico.
 - Nenhuma consulta, painel ou alerta usa o alias durante um período completo de retenção dos datasets.
+
+## A compatibilidade no SDK tem prazo
+
+`EnvironmentAliasPolicy` controla a emissão do alias pelo SDK. O padrão `omitted` emite somente `deployment.environment.name`. Use `emitted` apenas enquanto um destino antigo ainda depende de `deployment.environment`.
+
+O SDK remove essa opção na primeira versão minor depois que as duas condições acima permanecerem verdadeiras por um período completo de retenção, e no máximo na linha `0.4.0`. A revisão da remoção ocorre antes da publicação de cada versão minor até esse limite.
 
 ## O ambiente local não usa contas externas
 
