@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Metric, Option } from "effect";
+import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
 import * as Testing from "../src/testing/index.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 import * as WideEvent from "../src/WideEvent.ts";
@@ -26,6 +27,12 @@ describe("Testing.run", () => {
         description: "Testing load",
         attributes: { "testing.run_id": runId, unit: "%" },
       });
+      const identity = yield* parseResourceIdentity({
+        serviceName: "testing-service",
+        serviceVersion: "9.9.9",
+        environment: "test",
+        instance: Option.some("testing-instance"),
+      });
       const { exit, telemetry } = yield* Testing.run(
         Effect.gen(function* () {
           yield* Effect.sleep("5 millis").pipe(Effect.withSpan("testing.child"));
@@ -37,12 +44,7 @@ describe("Testing.run", () => {
         }).pipe(Effect.withSpan("testing.operation")),
         {
           config: new TelemetryConfig({
-            identity: {
-              serviceName: "testing-service",
-              serviceVersion: "9.9.9",
-              environment: "test",
-              instance: Option.some("testing-instance"),
-            },
+            identity,
             otlpEndpoint: new URL("http://telemetry.invalid"),
           }),
         },

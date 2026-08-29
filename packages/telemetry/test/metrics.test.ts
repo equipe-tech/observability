@@ -2,6 +2,7 @@ import { assert, describe, it } from "vite-plus/test";
 import { Effect, ManagedRuntime, Metric, Option, Predicate, Schema } from "effect";
 import { createServer, type Server } from "node:http";
 import { createMetrics, MetricsError, type MetricAttribute } from "../src/Metrics.ts";
+import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
 import * as Testing from "../src/testing/index.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 
@@ -791,11 +792,13 @@ describe("framework-neutral metrics", () => {
 
   it("exports facade and direct Effect metrics through the later layer capture transport", async () => {
     const config = new TelemetryConfig({
-      identity: {
-        serviceName: "mixed-metrics-test",
-        serviceVersion: "1.0.0",
-        environment: "test",
-      },
+      identity: Effect.runSync(
+        parseResourceIdentity({
+          serviceName: "mixed-metrics-test",
+          serviceVersion: "1.0.0",
+          environment: "test",
+        }),
+      ),
       otlpEndpoint: new URL("http://mixed-metrics.invalid"),
     });
     const facade = await createMetrics({
@@ -836,11 +839,13 @@ describe("framework-neutral metrics", () => {
 
   it("rejects service.instance.id on a direct Effect metric datapoint", async () => {
     const config = new TelemetryConfig({
-      identity: {
-        serviceName: "direct-instance-test",
-        serviceVersion: "1.0.0",
-        environment: "test",
-      },
+      identity: Effect.runSync(
+        parseResourceIdentity({
+          serviceName: "direct-instance-test",
+          serviceVersion: "1.0.0",
+          environment: "test",
+        }),
+      ),
       otlpEndpoint: new URL("http://direct-instance.invalid"),
     });
     const facade = await createMetrics({
@@ -885,11 +890,13 @@ describe("framework-neutral metrics", () => {
 
   it("rejects facade and direct Effect name conflicts before sending OTLP", async () => {
     const config = new TelemetryConfig({
-      identity: {
-        serviceName: "mixed-conflict-test",
-        serviceVersion: "1.0.0",
-        environment: "test",
-      },
+      identity: Effect.runSync(
+        parseResourceIdentity({
+          serviceName: "mixed-conflict-test",
+          serviceVersion: "1.0.0",
+          environment: "test",
+        }),
+      ),
       otlpEndpoint: new URL("http://mixed-conflict.invalid"),
     });
     const facade = await createMetrics({

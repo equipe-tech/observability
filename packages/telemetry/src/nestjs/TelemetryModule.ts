@@ -13,13 +13,14 @@ import type {
 } from "@nestjs/common";
 import { Module } from "@nestjs/common";
 import { APP_INTERCEPTOR, HttpAdapterHost } from "@nestjs/core";
-import { Duration, Effect, Layer, ManagedRuntime, Option, Schema } from "effect";
+import { Duration, Effect, Layer, ManagedRuntime, Option, Result, Schema } from "effect";
 import type { OtlpExporter } from "effect/unstable/observability";
 import { OtlpExporter as Otlp } from "effect/unstable/observability";
 import type { Observable } from "rxjs";
 import {
   EnvironmentAliasPolicy,
   EnvironmentName,
+  parseResourceIdentity,
   ServiceInstanceId,
   ServiceName,
   ServiceVersion,
@@ -158,15 +159,23 @@ const parseModuleOptions = (input: TelemetryModuleOptions): NormalizedOptions =>
       healthRouteTemplates: options.healthRouteTemplates,
       proxyPolicy: options.proxyPolicy,
     });
-    return {
-      enabled: true,
-      config: new TelemetryConfig({
-        identity: {
+    const parsedIdentity = Effect.runSync(
+      Effect.result(
+        parseResourceIdentity({
           serviceName: options.serviceName,
           serviceVersion: options.serviceVersion,
           environment: options.environment,
           instance: Option.fromNullishOr(options.serviceInstanceId),
-        },
+        }),
+      ),
+    );
+    if (Result.isFailure(parsedIdentity)) {
+      throw parsedIdentity.failure;
+    }
+    return {
+      enabled: true,
+      config: new TelemetryConfig({
+        identity: parsedIdentity.success,
         environmentAlias: options.deploymentEnvironmentAlias ?? "omitted",
         otlpEndpoint: options.otlpEndpoint,
       }),

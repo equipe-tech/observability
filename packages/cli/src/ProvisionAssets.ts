@@ -1,6 +1,6 @@
-import { ServiceName } from "@equipe-tech/observability";
 import { Context, Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
 import { fileURLToPath } from "node:url";
+import { ServiceName } from "./ResourceNamePolicy.ts";
 
 const packagedAssetsDirectory = fileURLToPath(new URL("./assets", import.meta.url));
 

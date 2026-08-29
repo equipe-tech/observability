@@ -126,7 +126,10 @@ export const generateRunId = Effect.fn("generateRunId")(function* (
     .toString(36)
     .padStart(8, "0");
   const suffix = `-${timestamp}-${entropy}`;
-  const boundedLabel = dnsSafeLabel(label).slice(0, 128 - prefix.length - suffix.length - 1);
+  const truncatedLabel = dnsSafeLabel(label)
+    .slice(0, 128 - prefix.length - suffix.length - 1)
+    .replaceAll(/-+$/g, "");
+  const boundedLabel = truncatedLabel === "" ? "run" : truncatedLabel;
   return yield* decodeRunId(`${prefix}-${boundedLabel}${suffix}`).pipe(Effect.orDie);
 });
 

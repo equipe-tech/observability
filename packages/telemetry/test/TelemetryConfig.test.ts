@@ -98,8 +98,11 @@ describe("telemetryConfigFromEnv", () => {
           OTEL_SERVICE_INSTANCE_ID: "a".repeat(129),
         }),
       );
-      assert.strictEqual(error._tag, "InvalidTelemetryEnvironment");
-      assert.include(error.message, "remaining OTEL variables");
+      assert.strictEqual(error._tag, "InvalidResourceIdentity");
+      if (error._tag === "InvalidResourceIdentity") {
+        assert.strictEqual(error.code, "OBS_RESOURCE_IDENTITY_INVALID");
+        assert.strictEqual(error.field, "service.instance.id");
+      }
     }),
   );
 

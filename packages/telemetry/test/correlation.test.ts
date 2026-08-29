@@ -81,13 +81,53 @@ describe("CorrelationContext", () => {
   it.effect("creates bounded distinct job and canary run identifiers", () =>
     Effect.gen(function* () {
       const job = yield* generateRunId("job", "Nightly Billing");
-      const canary = yield* generateRunId("canary", "A".repeat(180));
+      const canary = yield* generateRunId("canary", "a-".repeat(100));
       assert.match(job, /^job-nightly-billing-[0-9]+-[a-z0-9]+$/);
-      assert.match(canary, /^test-a+-[0-9]+-[a-z0-9]+$/);
+      assert.match(canary, /^test-[a-z0-9-]+-[0-9]+-[a-z0-9]+$/);
+      assert.notInclude(canary, "--");
       assert.isAtMost(job.length, 128);
       assert.isAtMost(canary.length, 128);
       assert.notStrictEqual(job, canary);
     }),
+  );
+
+  it.live(
+    "parents traced background work to external correlation without duplicating native fields",
+    () =>
+      Effect.gen(function* () {
+        const traceId = yield* parseTraceId("11111111111111111111111111111111");
+        const spanId = yield* parseSpanId("2222222222222222");
+        const runId = yield* generateRunId("job", "billing");
+        const contract = yield* defineTelemetryContract(correlationContract);
+        const producer = makeEventProducer(contract);
+        const backgroundContext = CorrelationContext.make({
+          trace: { _tag: "Traced", traceId, spanId },
+          runId: Option.some(runId),
+        });
+        const { exit, telemetry } = yield* Testing.run(
+          producer
+            .emit("Completed", { outcome: "success", attributes: {} })
+            .pipe(
+              Effect.provide(layerWideEvent),
+              withBackgroundCorrelation(backgroundContext, "job.billing.traced"),
+            ),
+        );
+        assert.isTrue(Exit.isSuccess(exit));
+        const backgroundSpan = telemetry.spans.find((span) => span.name === "job.billing.traced");
+        assert.isDefined(backgroundSpan);
+        assert.strictEqual(backgroundSpan.traceId, traceId);
+        assert.deepStrictEqual(backgroundSpan.parentSpanId, Option.some(spanId));
+        const backgroundLog = telemetry.logs.find(
+          (log) => attributeOrUndefined(log.attributes, "event.name") === "job.completed",
+        );
+        assert.isDefined(backgroundLog);
+        assert.deepStrictEqual(backgroundLog.traceId, Option.some(traceId));
+        assert.isTrue(Option.isSome(backgroundLog.spanId));
+        assert.isFalse(Option.contains(backgroundLog.spanId, spanId));
+        assert.strictEqual(attributeOrUndefined(backgroundLog.attributes, "run.id"), runId);
+        assert.isUndefined(attributeOrUndefined(backgroundLog.attributes, "traceId"));
+        assert.isUndefined(attributeOrUndefined(backgroundLog.attributes, "spanId"));
+      }),
   );
 
   it.live("isolates background correlation from an ambient request span", () =>

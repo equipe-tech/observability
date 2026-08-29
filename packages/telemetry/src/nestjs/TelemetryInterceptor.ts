@@ -246,6 +246,20 @@ export class TelemetryInterceptor<RuntimeError> implements NestInterceptor {
     });
     const response = httpContext.getResponse<RequestReference>();
     const responseEmitter = decodeResponseEmitter(response);
+    const setSpanAttribute = (key: string, value: string | number): void => {
+      try {
+        span.attribute(key, value);
+      } catch {
+        return;
+      }
+    };
+    const endSpan = (exit: Exit.Exit<unknown, unknown>): void => {
+      try {
+        span.end(clock.currentTimeNanosUnsafe(), exit);
+      } catch {
+        return;
+      }
+    };
 
     return new Observable((subscriber) => {
       let ended = false;
@@ -287,7 +301,7 @@ export class TelemetryInterceptor<RuntimeError> implements NestInterceptor {
         ended = true;
         removeResponseListeners();
         if (Option.isSome(status)) {
-          span.attribute("http.response.status_code", status.value);
+          setSpanAttribute("http.response.status_code", status.value);
         }
         const finalErrorType = Option.contains(errorType, "connection_closed")
           ? errorType
@@ -304,12 +318,12 @@ export class TelemetryInterceptor<RuntimeError> implements NestInterceptor {
               },
             });
         if (Option.isSome(finalErrorType)) {
-          span.attribute("error.type", finalErrorType.value);
+          setSpanAttribute("error.type", finalErrorType.value);
         }
         requestSpans.delete(request);
         requestCorrelations.delete(request);
         release();
-        span.end(clock.currentTimeNanosUnsafe(), exit);
+        endSpan(exit);
       };
 
       const onResponseFinish = (): void => {
@@ -329,7 +343,7 @@ export class TelemetryInterceptor<RuntimeError> implements NestInterceptor {
       if (Option.isNone(registered)) {
         requestSpans.delete(request);
         requestCorrelations.delete(request);
-        span.end(clock.currentTimeNanosUnsafe(), Exit.interrupt());
+        endSpan(Exit.interrupt());
         return next.handle().subscribe(subscriber);
       }
       release = registered.value;

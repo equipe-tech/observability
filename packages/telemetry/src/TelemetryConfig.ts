@@ -4,8 +4,6 @@ import {
   InvalidResourceIdentity,
   parseResourceIdentity,
   ResourceIdentity,
-  type ResourceIdentityInput,
-  ServiceInstanceId,
 } from "./ResourceIdentity.ts";
 
 export const OtlpEndpoint = Schema.URLFromString.check(
@@ -18,10 +16,8 @@ export const OtlpEndpoint = Schema.URLFromString.check(
   ),
 );
 
-const decodeResourceIdentity = Schema.decodeSync(ResourceIdentity);
-
 export interface TelemetryConfigInput {
-  readonly identity: ResourceIdentityInput;
+  readonly identity: ResourceIdentity;
   readonly environmentAlias?: EnvironmentAliasPolicy | undefined;
   readonly otlpEndpoint: URL;
 }
@@ -37,12 +33,7 @@ export class TelemetryConfig extends Schema.Class<TelemetryConfig>(
 }) {
   constructor(input: TelemetryConfigInput) {
     super({
-      identity: decodeResourceIdentity({
-        serviceName: input.identity.serviceName,
-        serviceVersion: input.identity.serviceVersion,
-        environment: input.identity.environment,
-        instance: input.identity.instance ?? Option.none(),
-      }),
+      identity: input.identity,
       environmentAlias: input.environmentAlias ?? "omitted",
       otlpEndpoint: input.otlpEndpoint,
     });
@@ -66,11 +57,9 @@ const TelemetryEnvironment = Schema.Struct({
   OTEL_DEPLOYMENT_ENVIRONMENT: Schema.NonEmptyString.pipe(
     Schema.withDecodingDefault(Effect.succeed("development")),
   ),
-  OTEL_SERVICE_INSTANCE_ID: Schema.Union([
-    ServiceInstanceId,
-    Schema.Literal(""),
-    Schema.Undefined,
-  ]).pipe(Schema.optionalKey),
+  OTEL_SERVICE_INSTANCE_ID: Schema.Union([Schema.String, Schema.Undefined]).pipe(
+    Schema.optionalKey,
+  ),
   OTEL_EXPORTER_OTLP_ENDPOINT: OtlpEndpoint.pipe(
     Schema.withDecodingDefault(Effect.succeed("http://localhost:4318")),
   ),

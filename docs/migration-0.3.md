@@ -7,17 +7,20 @@ A próxima versão minor altera contratos públicos de identidade e nomes da CLI
 Substitua os campos de identidade no nível superior pelo campo `identity`.
 
 ```ts
-const config = new TelemetryConfig({
-  identity: {
+const identity = await Effect.runPromise(
+  parseResourceIdentity({
     serviceName: "checkout-api",
     serviceVersion: "1.4.0",
     environment: "production",
-  },
+  }),
+);
+const config = new TelemetryConfig({
+  identity,
   otlpEndpoint: new URL("http://localhost:4318"),
 });
 ```
 
-O construtor aceita esse objeto simples em código tipado. Use `parseResourceIdentity` quando a identidade vier de HTTP, configuração, arquivos ou outra fronteira externa.
+O construtor exige um `ResourceIdentity` analisado. Use o parser Effect `parseResourceIdentity` em toda fronteira externa. Uma identidade inválida falha com `OBS_RESOURCE_IDENTITY_INVALID` antes da construção de `TelemetryConfig`.
 
 ## Corrigir nomes de serviço e ambiente
 

@@ -1,4 +1,4 @@
-import { Duration, Effect, Layer } from "effect";
+import { ConfigProvider, Duration, Effect, Layer } from "effect";
 import { FetchHttpClient, type HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { OtlpExporter, OtlpLogger, OtlpSerialization } from "effect/unstable/observability";
 import type { InvalidResourceIdentity } from "./ResourceIdentity.ts";
@@ -7,6 +7,8 @@ import type { EnvironmentVariables, InvalidTelemetryEnvironment } from "./Teleme
 import { telemetryConfigFromEnv, type TelemetryConfig } from "./TelemetryConfig.ts";
 import { layerMetricsRuntime } from "./MetricsRuntime.ts";
 import { layerHttpServerOtlpTracer } from "./nestjs/HttpServerOtlpTracer.ts";
+
+const packageResourceConfig = ConfigProvider.layer(ConfigProvider.fromUnknown({}));
 
 export type OtlpLayerOptions = {
   readonly shutdownTimeout?: Duration.Input | undefined;
@@ -38,7 +40,7 @@ export const layerOtlp = (
       resource,
       shutdownTimeout: options.shutdownTimeout,
     }),
-  ).pipe(Layer.provide(OtlpSerialization.layerJson));
+  ).pipe(Layer.provide(OtlpSerialization.layerJson), Layer.provide(packageResourceConfig));
 };
 
 export const layer = (

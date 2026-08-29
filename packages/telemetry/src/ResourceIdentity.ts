@@ -2,20 +2,22 @@ import { Effect, Option, Schema } from "effect";
 
 export const serviceNamespace = "equipe-tech";
 
-const resourceNamePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const resourceNamePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const serviceNameMaxLength = 63;
+export const environmentNameMaxLength = 32;
 const semverPattern =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
 const immutableReleasePattern = /^[0-9a-f]{7,64}$/;
 
 export const ServiceName = Schema.String.check(
   Schema.isPattern(resourceNamePattern),
-  Schema.isMaxLength(63),
+  Schema.isMaxLength(serviceNameMaxLength),
 ).pipe(Schema.brand("ServiceName"));
 export type ServiceName = typeof ServiceName.Type;
 
 export const EnvironmentName = Schema.String.check(
   Schema.isPattern(resourceNamePattern),
-  Schema.isMaxLength(32),
+  Schema.isMaxLength(environmentNameMaxLength),
 ).pipe(Schema.brand("EnvironmentName"));
 export type EnvironmentName = typeof EnvironmentName.Type;
 

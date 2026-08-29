@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Option } from "effect";
+import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 import {
   decodeAxiomEnvironment,
@@ -112,12 +113,13 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
         const axiom = yield* decodeAxiomEnvironment(process.env).pipe(Effect.orDie);
         const endpoint = process.env["OTEL_EXPORTER_OTLP_ENDPOINT"] ?? "http://localhost:4318";
         const runId = yield* canaryRunId();
+        const identity = yield* parseResourceIdentity({
+          serviceName: "observability-canary",
+          serviceVersion: "0.1.0",
+          environment: canaryEnvironment,
+        });
         const config = new TelemetryConfig({
-          identity: {
-            serviceName: "observability-canary",
-            serviceVersion: "0.1.0",
-            environment: canaryEnvironment,
-          },
+          identity,
           otlpEndpoint: new URL(endpoint),
         });
 

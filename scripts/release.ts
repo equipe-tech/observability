@@ -4,21 +4,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const telemetryManifestPath = "packages/telemetry/package.json";
-const cliManifestPath = "packages/cli/package.json";
-const manifestPaths = [telemetryManifestPath, cliManifestPath];
+const manifestPaths = ["packages/telemetry/package.json", "packages/cli/package.json"];
 
 const versionPattern = /^(\d+)\.(\d+)\.(\d+)(?:-(?:alpha|beta|rc)\.\d+)?$/;
 
-const PackageManifest = Schema.Struct({ version: Schema.NonEmptyString });
-const CliManifest = Schema.Struct({
-  version: Schema.NonEmptyString,
-  dependencies: Schema.Struct({
-    "@equipe-tech/observability": Schema.NonEmptyString,
-  }),
-});
-const decodePackageManifest = Schema.decodeUnknownSync(PackageManifest);
-const decodeCliManifest = Schema.decodeUnknownSync(CliManifest);
+const Manifest = Schema.Struct({ version: Schema.NonEmptyString });
+const decodeManifest = Schema.decodeUnknownSync(Manifest);
 
 const usage = (): never => {
   console.error(
@@ -78,23 +69,20 @@ if (status !== "" && !dryRun) {
   );
 }
 
-const telemetryManifestContent: unknown = JSON.parse(
-  await readFile(join(root, telemetryManifestPath), "utf8"),
-);
-const cliManifestContent: unknown = JSON.parse(await readFile(join(root, cliManifestPath), "utf8"));
-const telemetryManifest = decodePackageManifest(telemetryManifestContent);
-const cliManifest = decodeCliManifest(cliManifestContent);
-if (telemetryManifest.version !== cliManifest.version) {
+const versions = new Set<string>();
+for (const manifestPath of manifestPaths) {
+  const content: unknown = JSON.parse(await readFile(join(root, manifestPath), "utf8"));
+  versions.add(decodeManifest(content).version);
+}
+if (versions.size !== 1) {
   throw new Error(
-    `The package versions diverge: ${telemetryManifest.version}, ${cliManifest.version}. Align them before a release.`,
+    `The package versions diverge: ${[...versions].join(", ")}. Align them before a release.`,
   );
 }
-if (cliManifest.dependencies["@equipe-tech/observability"] !== "workspace:*") {
-  throw new Error(
-    "The CLI dependency on @equipe-tech/observability must be workspace:* so packed releases use the matching version.",
-  );
+const [current] = [...versions];
+if (current === undefined) {
+  throw new Error("No package version found.");
 }
-const current = telemetryManifest.version;
 
 const next = bumpVersion(current, request);
 const tag = `v${next}`;
@@ -105,7 +93,6 @@ if (existingTag !== "") {
 }
 
 console.log(`release: ${current} -> ${next} (${tag})${dryRun ? " [dry-run]" : ""}`);
-console.log(`packed dependency: @equipe-tech/observability@${next}`);
 if (dryRun) {
   process.exit(0);
 }

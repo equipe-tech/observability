@@ -1,4 +1,3 @@
-import { EnvironmentName, ServiceName } from "@equipe-tech/observability";
 import { Context, DateTime, Effect, Layer, Option, Schema } from "effect";
 import {
   AxiomCredentials,
@@ -14,6 +13,7 @@ import {
   VerifiedAxiomDataset,
   SentryEnvironment,
 } from "./CredentialsStore.ts";
+import { EnvironmentName, ServiceName } from "./ResourceNamePolicy.ts";
 import {
   AxiomApi,
   AxiomDataset,

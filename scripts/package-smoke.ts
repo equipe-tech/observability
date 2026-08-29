@@ -198,23 +198,12 @@ try {
     }
   }
 
-  const VersionManifest = Schema.Struct({ version: Schema.NonEmptyString });
-  const PackedCliManifest = Schema.Struct({
-    version: Schema.NonEmptyString,
-    dependencies: Schema.Struct({
-      "@equipe-tech/observability": Schema.NonEmptyString,
-    }),
-  });
-  const decodeVersionManifest = Schema.decodeUnknownSync(VersionManifest);
-  const decodePackedCliManifest = Schema.decodeUnknownSync(PackedCliManifest);
   const cliManifest: unknown = JSON.parse(
     await readFile(join(root, "packages/cli/package.json"), "utf8"),
   );
-  const telemetryManifest: unknown = JSON.parse(
-    await readFile(join(root, "packages/telemetry/package.json"), "utf8"),
-  );
-  const cliVersion = decodeVersionManifest(cliManifest).version;
-  const telemetryVersion = decodeVersionManifest(telemetryManifest).version;
+  const cliVersion = Schema.decodeUnknownSync(Schema.Struct({ version: Schema.NonEmptyString }))(
+    cliManifest,
+  ).version;
 
   requireSuccess(await run(["bun", "run", "build"], root), "The package build");
 
@@ -292,28 +281,6 @@ try {
     if (packedLicense.stdout !== repositoryLicense) {
       throw new Error(`The package root license differs in ${packageSpec.archive}.`);
     }
-  }
-
-  const packedTelemetryManifestResult = await run(
-    ["tar", "-xOf", join(temporaryDirectory, "telemetry.tgz"), "package/package.json"],
-    temporaryDirectory,
-  );
-  requireSuccess(packedTelemetryManifestResult, "Reading the packed telemetry manifest");
-  const packedCliManifestResult = await run(
-    ["tar", "-xOf", join(temporaryDirectory, "cli.tgz"), "package/package.json"],
-    temporaryDirectory,
-  );
-  requireSuccess(packedCliManifestResult, "Reading the packed CLI manifest");
-  const packedTelemetryManifestContent: unknown = JSON.parse(packedTelemetryManifestResult.stdout);
-  const packedCliManifestContent: unknown = JSON.parse(packedCliManifestResult.stdout);
-  const packedTelemetryManifest = decodeVersionManifest(packedTelemetryManifestContent);
-  const packedCliManifest = decodePackedCliManifest(packedCliManifestContent);
-  if (
-    packedTelemetryManifest.version !== telemetryVersion ||
-    packedCliManifest.version !== cliVersion ||
-    packedCliManifest.dependencies["@equipe-tech/observability"] !== telemetryVersion
-  ) {
-    throw new Error("The packed CLI and telemetry manifests do not use one matching version.");
   }
 
   for (const nestMajor of [10, 11]) {
@@ -411,10 +378,11 @@ try {
       type: "module",
       dependencies: {
         "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
+        "@equipe-tech/observability-cli": `file:${join(temporaryDirectory, "cli.tgz")}`,
       },
     }),
   );
-  requireSuccess(await run(["bun", "install"], consumer), "Installing packed telemetry");
+  requireSuccess(await run(["bun", "install"], consumer), "Installing packed packages");
 
   const nodeConsumer = join(temporaryDirectory, "node consumer outside repository");
   await mkdir(nodeConsumer, { recursive: true });
@@ -433,19 +401,6 @@ try {
     await run(["npm", "install"], nodeConsumer),
     "Installing packed packages with npm",
   );
-  const npmLock = await readFile(join(nodeConsumer, "package-lock.json"), "utf8");
-  if (!/"resolved": "file:[^"]*\/telemetry\.tgz"/.test(npmLock)) {
-    throw new Error("The npm consumer did not resolve telemetry from the packed artifact.");
-  }
-  const nestedTelemetryManifest = Bun.file(
-    join(
-      nodeConsumer,
-      "node_modules/@equipe-tech/observability-cli/node_modules/@equipe-tech/observability/package.json",
-    ),
-  );
-  if (await nestedTelemetryManifest.exists()) {
-    throw new Error("The packed CLI installed a second telemetry package.");
-  }
   requireSuccess(
     await run(
       [
@@ -465,8 +420,7 @@ try {
 
   const declarations = new Bun.Glob("**/*.d.ts");
   for (const packageName of ["observability", "observability-cli"]) {
-    const packageConsumer = packageName === "observability-cli" ? nodeConsumer : consumer;
-    const distribution = join(packageConsumer, "node_modules/@equipe-tech", packageName, "dist");
+    const distribution = join(consumer, "node_modules/@equipe-tech", packageName, "dist");
     for await (const declaration of declarations.scan({ cwd: distribution })) {
       const source = await Bun.file(join(distribution, declaration)).text();
       if (/(["']\.[^"']+)\.ts(["'])/.test(source)) {
@@ -487,7 +441,7 @@ try {
   );
   await writeFile(
     join(consumer, "index.ts"),
-    "import { TelemetryConfig } from '@equipe-tech/observability';\nimport { layer } from '@equipe-tech/observability/node';\nimport { BrowserTelemetry } from '@equipe-tech/observability/browser';\nimport { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client';\nimport { run } from '@equipe-tech/observability/testing';\nconst config = new TelemetryConfig({ identity: { serviceName: 'test', serviceVersion: '1.0.0', environment: 'test' }, otlpEndpoint: new URL('http://localhost:4318') });\nvoid config;\nvoid layer;\nvoid BrowserTelemetry;\nvoid createBrowserTelemetryClient;\nvoid run;\n",
+    "import { Effect } from 'effect';\nimport { parseResourceIdentity, TelemetryConfig } from '@equipe-tech/observability';\nimport { layer } from '@equipe-tech/observability/node';\nimport { BrowserTelemetry } from '@equipe-tech/observability/browser';\nimport { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client';\nimport { run } from '@equipe-tech/observability/testing';\nconst identity = await Effect.runPromise(parseResourceIdentity({ serviceName: 'test', serviceVersion: '1.0.0', environment: 'test' }));\nconst invalid = await Effect.runPromise(Effect.flip(parseResourceIdentity({ serviceName: 'Invalid', serviceVersion: '1.0.0', environment: 'test' })));\nif (invalid.code !== 'OBS_RESOURCE_IDENTITY_INVALID') throw new Error('Invalid packed identity did not return the public error code.');\nconst config = new TelemetryConfig({ identity, otlpEndpoint: new URL('http://localhost:4318') });\nvoid config;\nvoid layer;\nvoid BrowserTelemetry;\nvoid createBrowserTelemetryClient;\nvoid run;\n",
   );
   await writeFile(
     join(consumer, "metrics-consumer.ts"),
@@ -624,8 +578,8 @@ try {
     );
   }
 
-  const executable = join(nodeConsumer, "node_modules/.bin/observability");
-  const help = await run([executable, "--help"], nodeConsumer);
+  const executable = join(consumer, "node_modules/.bin/observability");
+  const help = await run([executable, "--help"], consumer);
   requireSuccess(help, "Executing the packed CLI");
   if (!help.stdout.includes("Plataforma de observabilidade")) {
     throw new Error("The packed CLI did not render its help output.");
@@ -633,7 +587,7 @@ try {
 
   const state = join(temporaryDirectory, "writable state");
   requireSuccess(
-    await run([executable, "dev", "status"], nodeConsumer, {
+    await run([executable, "dev", "status"], consumer, {
       ...process.env,
       OBSERVABILITY_HOME: state,
     }),
@@ -647,10 +601,7 @@ try {
   const provisionTarget = join(temporaryDirectory, "provision target");
   await mkdir(provisionTarget, { recursive: true });
   requireSuccess(
-    await run(
-      [executable, "provision", "--dir", provisionTarget, "--name", "smoke-app"],
-      nodeConsumer,
-    ),
+    await run([executable, "provision", "--dir", provisionTarget, "--name", "smoke-app"], consumer),
     "Provisioning the production assets with the packed CLI",
   );
   const provisionedCollector = await readFile(

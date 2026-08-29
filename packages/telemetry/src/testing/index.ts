@@ -1,6 +1,7 @@
 import { Effect, Layer, Option, Ref, Schema, type Exit } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { OtlpExporter } from "effect/unstable/observability";
+import { parseResourceIdentity } from "../ResourceIdentity.ts";
 import { layerOtlp } from "../Telemetry.ts";
 import { TelemetryConfig } from "../TelemetryConfig.ts";
 
@@ -373,12 +374,16 @@ const decodeCapturedTelemetry = Effect.fn("decodeCapturedTelemetry")(function* (
   return { spans, logs, metrics };
 });
 
-const defaultConfig = new TelemetryConfig({
-  identity: {
+const defaultIdentity = Effect.runSync(
+  parseResourceIdentity({
     serviceName: "telemetry-testing",
     serviceVersion: "0.0.0",
     environment: "test",
-  },
+  }),
+);
+
+const defaultConfig = new TelemetryConfig({
+  identity: defaultIdentity,
   otlpEndpoint: new URL("http://telemetry.invalid"),
 });
 
