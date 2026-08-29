@@ -215,7 +215,7 @@ export const createLifecycleRegistry = (
   flusher: OtlpExporter.Flusher["Service"],
   disposeRuntime: Effect.Effect<void>,
 ): LifecycleRegistry => {
-  const traces = coreRegistration("core-traces", "traces", "server", Effect.void);
+  const traces = coreRegistration("core-traces", "traces", "server", flusher.flush);
   const metrics = coreRegistration("core-metrics", "metrics", "metrics", flusher.flush);
   const participants = [...started, traces, metrics];
   const run = Effect.fn("LifecycleRegistry.run")(function* (

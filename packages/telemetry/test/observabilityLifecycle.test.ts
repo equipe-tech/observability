@@ -183,8 +183,12 @@ describe("observability lifecycle", () => {
         close: Effect.void,
       },
     };
+    let flushCalls = 0;
     const flusher = OtlpExporter.Flusher.of({
-      flush: Effect.never,
+      flush: Effect.suspend(() => {
+        flushCalls += 1;
+        return flushCalls === 1 ? Effect.void : Effect.never;
+      }),
       register: () => Effect.void,
     });
     const registry = createLifecycleRegistry(workerProfile, [started], flusher, Effect.void);
