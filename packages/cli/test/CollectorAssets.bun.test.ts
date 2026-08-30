@@ -196,6 +196,12 @@ const expectCollectorContract = (config: string, production: boolean): void => {
   expect(pipelines.traces.processors).toEqual(tracesAndLogs);
   expect(pipelines.logs.processors).toEqual(tracesAndLogs);
   expect(pipelines.metrics.processors).toEqual(metrics);
+
+  const redaction = redactionTransformBlock(config);
+  const bearer = redaction.indexOf("(?i)Bearer[[:space:]]+");
+  const assignment = redaction.indexOf("[=:][[:space:]]*");
+  expect(bearer).toBeGreaterThanOrEqual(0);
+  expect(assignment).toBeGreaterThan(bearer);
 };
 
 const expectProductionOperations = (config: string): void => {

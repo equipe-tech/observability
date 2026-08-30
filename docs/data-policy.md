@@ -1,10 +1,10 @@
-# Data policy reference
+# Referência da política de dados
 
-The telemetry package compiles one additive `DataPolicy` during bootstrap. The compiled policy sanitizes server signals before an OTLP exporter receives them.
+O pacote de telemetria compila uma única `DataPolicy` aditiva durante o bootstrap. A política compilada sanitiza os sinais do servidor antes que um exportador OTLP os receba.
 
-## Policy declaration
+## Declaração da política
 
-Use `definePolicy` to preserve literal attribute definitions. Use dotted lowercase attribute names with at most 128 characters.
+Use `definePolicy` para preservar as definições literais dos atributos. Use nomes em minúsculas, separados por pontos e com no máximo 128 caracteres.
 
 ```ts
 import { definePolicy } from "@equipe-tech/observability";
@@ -27,54 +27,54 @@ export const policy = definePolicy({
 });
 ```
 
-`parseDataPolicy` compiles the declaration. Compilation adds the application rules to the immutable base rules. An application cannot remove a base key or value rule. Application blocked-value expressions always compile with global and case-insensitive flags, so every match is replaced.
+`parseDataPolicy` compila a declaração. A compilação soma as regras da aplicação às regras básicas imutáveis. Uma aplicação não pode remover uma regra básica de chave ou valor. Expressões de valores bloqueados da aplicação usam as flags global e case-insensitive, portanto todas as ocorrências são substituídas.
 
-## Classifications
+## Classificações
 
-The policy supports these classifications:
+A política aceita estas classificações:
 
-- `public` permits a stable scalar value.
-- `internal` permits a stable scalar value.
-- `sensitive` masks a log, event, span, defect, or resource value as `****`.
-- `forbidden` rejects a declared producer value or drops an untrusted value.
+- `public` permite um valor escalar estável.
+- `internal` permite um valor escalar estável.
+- `sensitive` mascara valores de logs, eventos, spans, defeitos e recursos como `****`.
+- `forbidden` rejeita um valor declarado pelo produtor ou descarta um valor não confiável.
 
-Metric labels never use masked values. A metric facade rejects a blocked label with `MetricsError` code `POLICY_BLOCKED`. Its `policyReason` identifies the safe rejection category without carrying the key or value. A direct Effect metric drops the label during collection and reports the same reason in the flush result. `service.instance.id` remains a hard direct-metric export failure.
+Labels de métricas nunca recebem valores mascarados. A facade de métricas rejeita labels bloqueadas com o código `POLICY_BLOCKED` de `MetricsError`. O campo `policyReason` identifica a categoria segura da rejeição sem carregar a chave ou o valor. Uma métrica Effect direta descarta a label durante a coleta e informa a mesma razão no resultado do flush. `service.instance.id` continua sendo uma falha obrigatória na exportação direta de métricas.
 
-The package-owned logger is the policy boundary for Effect log records and delegated output. Applications must register delegated loggers through the observability composition path so the package can sanitize each record first. Do not add a raw logger downstream of the observability layer because it would receive the unsanitized Effect record.
+O logger do pacote é a fronteira da política para registros Effect e saídas delegadas. As aplicações devem registrar loggers delegados pelo caminho de composição da observabilidade para que o pacote sanitize cada registro primeiro. Não adicione um logger bruto depois da layer de observabilidade, pois ele receberia o registro Effect sem sanitização.
 
-## Safe failures
+## Falhas seguras
 
-`InvalidDataPolicy` aggregates policy issues under `OBS_POLICY_INVALID`. Issues include a closed rule code and safe bounded context. They never contain a rejected value.
+`InvalidDataPolicy` agrega problemas da política sob `OBS_POLICY_INVALID`. Cada problema usa um código fechado e contexto seguro e limitado. Ele nunca contém um valor rejeitado.
 
-Bootstrap wraps `InvalidDataPolicy` in `InvalidObservabilityConfig`. The wrapper uses `field: "policy"` and keeps the aggregated error as its cause.
+O bootstrap envolve `InvalidDataPolicy` em `InvalidObservabilityConfig`. O wrapper usa `field: "policy"` e mantém o erro agregado como causa.
 
-Browser ingestion does not reject a valid batch because one field violates the policy. The response reports bounded `accepted`, `redacted`, and `dropped` counts.
+A ingestão do browser não rejeita um batch válido por causa de um campo que viola a política. A resposta informa contagens limitadas de `accepted`, `redacted` e `dropped`.
 
-## Attribute names
+## Nomes de atributos
 
-Logs, spans, contract events, span events, defects, resources, and metrics accept only dotted lowercase attribute names. Each name needs at least two segments. Segments start with a lowercase letter and contain lowercase letters, numbers, or underscores. The policy drops application attributes such as `requestId`, `userId`, and `component` instead of normalizing them. Package-generated Effect fields use canonical names such as `effect.fiber.id`, `effect.log.level`, and `effect.log_span.database` before validation.
+Logs, spans, eventos de contrato, eventos de span, defeitos, recursos e métricas aceitam apenas nomes em minúsculas separados por pontos. Cada nome precisa de pelo menos dois segmentos. Os segmentos começam com uma letra minúscula e contêm letras minúsculas, números ou sublinhados. A política descarta atributos da aplicação como `requestId`, `userId` e `component` em vez de normalizá-los. Campos Effect gerados pelo pacote usam nomes canônicos como `effect.fiber.id`, `effect.log.level` e `effect.log_span.database` antes da validação.
 
-## Signal bounds
+## Limites dos sinais
 
-Browser events keep at most 32 fields and 1,024 characters per value. Server events keep 128 fields and 16,384 characters per value. Logs and spans keep 128 fields and 32,768 characters per value. A span keeps the earliest 128 events and earliest 128 links. OTLP reports exact dropped attribute, event, and link counts after policy and bounds. Defect context and the complete defect tag map each keep 128 fields, while defect text and stack traces keep 65,536 characters. Resources keep 128 attributes and 8,192 characters per value. Metrics keep 16 labels and 64 characters per string label. Metric keys require dotted names. The reserved identifiers `unit`, `time_unit`, `service.instance.id`, `trace.id`, `span.id`, `user.id`, and `session.id` are forbidden. Each label accepts at most 100 distinct values per instrument lifetime.
+Eventos do browser mantêm no máximo 32 campos e 1.024 caracteres por valor. Eventos do servidor mantêm 128 campos e 16.384 caracteres por valor. Logs e spans mantêm 128 campos e 32.768 caracteres por valor. Um span mantém os primeiros 128 eventos e os primeiros 128 links. O OTLP informa as contagens exatas de atributos, eventos e links descartados após a aplicação da política e dos limites. Contexto de defeito e o mapa completo de tags mantêm 128 campos cada. Textos de defeito e stack traces mantêm 65.536 caracteres. Recursos mantêm 128 atributos e 8.192 caracteres por valor. Métricas mantêm 16 labels e 64 caracteres por label textual. Chaves de métricas exigem nomes separados por pontos. Os identificadores reservados `unit`, `time_unit`, `service.instance.id`, `trace.id`, `span.id`, `user.id` e `session.id` são proibidos. Cada label aceita no máximo 100 valores distintos durante a vida do instrumento.
 
-Metric policy rejection uses `POLICY_BLOCKED`. Cardinality and field-count bounds use `LIMIT_EXCEEDED`.
+A rejeição de política das métricas usa `POLICY_BLOCKED`. Limites de cardinalidade e quantidade de campos usam `LIMIT_EXCEEDED`.
 
-Server truncation preserves the bounded prefix. Policy decisions emit `rule: "bounds"` with `action: "truncated"` or `action: "dropped"`. `dropped` counts every field removed by policy or bounds.
+O truncamento no servidor preserva o prefixo limitado. Decisões da política emitem `rule: "bounds"` com `action: "truncated"` ou `action: "dropped"`. O campo `dropped` conta cada campo removido pela política ou pelos limites.
 
-`layer`, `layerOtlp`, and `layerFromEnv` accept `resourceAttributes`. Resource additions merge at layer construction after policy classification. Duplicate canonical or application keys stop construction with `OBS_POLICY_DUPLICATE_RESOURCE_ATTRIBUTE`.
+`layer`, `layerOtlp` e `layerFromEnv` aceitam `resourceAttributes`. A construção da layer combina atributos adicionais de recurso depois da classificação da política. Chaves canônicas ou da aplicação duplicadas interrompem a construção com `OBS_POLICY_DUPLICATE_RESOURCE_ATTRIBUTE`.
 
-## Defect adapter handoff
+## Entrega para o adapter de defeitos
 
-OBS-61 owns the Sentry adapters. The adapter must meet these requirements:
+A OBS-61 é dona dos adapters Sentry. O adapter deve cumprir estes requisitos:
 
-- Capture only `UnexpectedDefect` values.
-- Set `sendDefaultPii` to `false`.
-- Run `sanitizeDefectEnvelope` in `beforeSend`.
-- Return `null` when `sanitizeDefectEnvelope` returns `Option.none`.
+- Capturar apenas valores `UnexpectedDefect`.
+- Definir `sendDefaultPii` como `false`.
+- Executar `sanitizeDefectEnvelope` em `beforeSend`.
+- Retornar `null` quando `sanitizeDefectEnvelope` retornar `Option.none`.
 
-`Option.none` is required when a forbidden defect context or tag would otherwise produce a partial envelope.
+`Option.none` é obrigatório quando um contexto ou uma tag proibida produziria um envelope parcial.
 
-- Preserve the policy-approved correlation tags.
+- Preservar as tags de correlação aprovadas pela política.
 
-`sanitizeDefectEnvelope` is destination-neutral. The telemetry package does not import a Sentry SDK.
+`sanitizeDefectEnvelope` não depende do destino. O pacote de telemetria não importa um SDK Sentry.

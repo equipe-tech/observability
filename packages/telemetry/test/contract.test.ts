@@ -949,7 +949,7 @@ describe("contract event producer", () => {
             mandatory: true,
             sampling: { kind: "always" },
             attributes: {
-              "profile.secret": {
+              "patient.diagnosis": {
                 classification: "sensitive",
                 required: false,
                 metricLabel: false,
@@ -970,12 +970,12 @@ describe("contract event producer", () => {
       const sensitive = yield* producer
         .emit("Unsafe", {
           outcome: "success",
-          attributes: { "profile.secret": "secret" },
+          attributes: { "patient.diagnosis": "private" },
         })
         .pipe(Effect.provide(sink.layer));
       assert.strictEqual(sensitive.decision, "recorded");
       if (sensitive.decision === "recorded") {
-        assert.strictEqual(sensitive.event.attributes["profile.secret"], "****");
+        assert.strictEqual(sensitive.event.attributes["patient.diagnosis"], "****");
         assert.deepStrictEqual(sensitive.redactions, [
           { rule: "classification", action: "masked", surface: "event" },
         ]);

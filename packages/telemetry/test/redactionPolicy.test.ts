@@ -170,6 +170,21 @@ describe("browser telemetry redaction policy", () => {
     assert.include(String(fields.escaped), sensitiveTextReplacement);
   });
 
+  it("removes repeated raw Bearer assignments from browser fields and JSON strings", () => {
+    const secret = marker();
+    const source = `authorization: Bearer ${secret} authorization: Bearer ${secret}`;
+    const fields = sanitizeBrowserFields({
+      "request.detail": source,
+      json: JSON.stringify({ note: source }),
+    });
+    assert.notInclude(JSON.stringify(fields), secret);
+    assert.strictEqual(
+      fields["request.detail"],
+      "authorization: [REDACTED] authorization: [REDACTED]",
+    );
+    assert.include(String(fields.json), "authorization: [REDACTED] authorization: [REDACTED]");
+  });
+
   it("fails closed for excessive JSON depth, value count, and original string size", () => {
     let deep = '"safe"';
     for (let index = 0; index < 34; index += 1) {

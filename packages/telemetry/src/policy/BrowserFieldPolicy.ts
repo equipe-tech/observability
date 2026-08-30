@@ -141,7 +141,7 @@ const sanitizeJson = (source: JsonValue): Option.Option<string> => {
       continue;
     }
     if (Predicate.isString(current.source)) {
-      current.assign(replaceCoreValues(replaceStructuredAssignments(current.source)));
+      current.assign(replaceStructuredAssignments(replaceCoreValues(current.source)));
       continue;
     }
     if (Array.isArray(current.source)) {
@@ -222,7 +222,7 @@ const sanitizeString = (value: string, outputLimit: number): string => {
       return sensitiveTextReplacement;
     }
   }
-  return replaceCoreValues(replaceStructuredAssignments(value));
+  return replaceStructuredAssignments(replaceCoreValues(value));
 };
 
 const shouldDropKey = (key: string): boolean =>

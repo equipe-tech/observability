@@ -506,9 +506,6 @@ const parseAttributes = (
   for (const attribute of attributes) {
     const numberIsInvalid =
       Predicate.isNumber(attribute.value) && !Number.isFinite(attribute.value);
-    const stringIsInvalid =
-      Predicate.isString(attribute.value) &&
-      (attribute.value.length > 256 || containsControlCharacter(attribute.value));
     if (
       attribute.key.length > 128 ||
       !instrumentNamePattern.test(attribute.key) ||
@@ -516,8 +513,7 @@ const parseAttributes = (
       attribute.key === "time_unit" ||
       attribute.key === "service.instance.id" ||
       keys.has(attribute.key) ||
-      numberIsInvalid ||
-      stringIsInvalid
+      numberIsInvalid
     ) {
       throw metricError(
         "INVALID_MEASUREMENT",

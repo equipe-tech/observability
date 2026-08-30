@@ -15,4 +15,12 @@ export type {
 } from "./PolicyTransform.ts";
 export { parseResourceAttributes } from "./ResourceAttributePolicy.ts";
 export type { ResourceAttribute } from "./ResourceAttributePolicy.ts";
-export * from "./PolicyVocabulary.ts";
+export {
+  baseBlockedKeys,
+  baseBlockedValuePatterns,
+  collectorBlockedKeyPattern,
+  collectorBlockedValuePatterns,
+  isSensitiveFieldKey,
+  sensitiveFieldReplacement,
+  sensitiveTextReplacement,
+} from "./PolicyVocabulary.ts";

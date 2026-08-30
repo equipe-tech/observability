@@ -258,6 +258,39 @@ describe("executable data policy discrimination", () => {
     }
   });
 
+  it("removes repeated raw Bearer assignments from every text and field surface", async () => {
+    const policy = await compile();
+    const secret = marker();
+    const source = `authorization: Bearer ${secret} authorization: Bearer ${secret}`;
+    const surfaces: ReadonlyArray<Exclude<PolicySurface, "metric">> = [
+      "event",
+      "log",
+      "span",
+      "browser-ingest",
+      "defect",
+      "resource",
+    ];
+    for (const surface of surfaces) {
+      const decision = transformSignalFields(policy, surface, { "request.detail": source });
+      assert.notInclude(JSON.stringify(decision.value), secret);
+      assert.strictEqual(
+        decision.value["request.detail"],
+        "authorization: [REDACTED] authorization: [REDACTED]",
+      );
+    }
+    const textSurfaces: ReadonlyArray<"event" | "log" | "span" | "defect"> = [
+      "event",
+      "log",
+      "span",
+      "defect",
+    ];
+    for (const surface of textSurfaces) {
+      const body = sanitizeText(policy, source, surface);
+      assert.notInclude(body, secret);
+      assert.strictEqual(body, "authorization: [REDACTED] authorization: [REDACTED]");
+    }
+  });
+
   it("reports exact browser masking and truncation records", async () => {
     const policy = await compile();
     const secret = marker();

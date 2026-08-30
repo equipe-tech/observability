@@ -84,6 +84,8 @@ O adapter `./nestjs` publica o endpoint pronto: registre `createBrowserEventsCon
 
 Consulte [Métricas sem dependência de framework](docs/metrics.md) para lifecycle, limites de cardinalidade, atributos e erros.
 
+Consulte a [política de dados](docs/data-policy.md) para classificações, mascaramento, descartes e limites por sinal.
+
 Consulte [Semântica HTTP do adapter NestJS](docs/nestjs-http-semantics.md) para rotas, status, proxy, privacidade e exclusões.
 
 ## Desenvolvimento

@@ -202,6 +202,33 @@ describe("framework-neutral metrics", () => {
     await metrics.close();
   });
 
+  it("reports every over-bound string label as a policy rejection", async () => {
+    const metrics = await createMetrics({
+      enabled: false,
+      serviceName: "bounded-metrics",
+      serviceVersion: "1.0.0",
+      environment: "test",
+      otlpEndpoint: "http://localhost:4318",
+    });
+    const counter = metrics.counter({
+      name: "bounded.counter",
+      description: "Bounded counter",
+      unit: "1",
+    });
+    for (const length of [65, 256, 257]) {
+      let failure: MetricsError | undefined;
+      try {
+        counter.add(1, [{ key: "worker.name", value: "x".repeat(length) }]);
+      } catch (cause) {
+        if (cause instanceof MetricsError) failure = cause;
+      }
+      assert.strictEqual(failure?.code, "POLICY_BLOCKED");
+      assert.strictEqual(failure?.policyReason, "string-bound");
+      assert.isUndefined(failure?.attributeKey);
+    }
+    await metrics.close();
+  });
+
   it("uses canonical service resource identity and rejects the reserved instance datapoint key", async () => {
     const collector = await startCollector();
     try {

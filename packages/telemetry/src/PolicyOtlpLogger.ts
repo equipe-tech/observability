@@ -109,6 +109,10 @@ export const makePolicyOtlpLogger = Effect.fn("makePolicyOtlpLogger")(function* 
       entry.fiber.getRef(References.CurrentLogAnnotations),
     )) {
       const decoded = decodeScalar(value);
+      if (key === effectDroppedAttributesKey && Option.isSome(decoded)) {
+        if (Predicate.isNumber(decoded.value)) unsupportedDropped += decoded.value;
+        continue;
+      }
       if (Option.isSome(decoded)) {
         raw[key] = decoded.value;
       } else {

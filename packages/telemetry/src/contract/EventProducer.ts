@@ -169,6 +169,7 @@ const parseAttributes = (
     }
   }
   const parsed: { [attributeName: string]: AttributeValue } = {};
+  const contractRedactions: Array<PolicyRedaction> = [];
   for (const [attributeName, value] of Object.entries(attributes)) {
     const attribute = definition.attributes.get(attributeName);
     if (attribute === undefined) {
@@ -206,9 +207,18 @@ const parseAttributes = (
     }
     parsed[attributeName] =
       attribute.classification === "sensitive" ? sensitiveFieldReplacement : value;
+    if (
+      attribute.classification === "sensitive" &&
+      policy.classify(attributeName) !== "sensitive"
+    ) {
+      contractRedactions.push({ rule: "classification", action: "masked", surface: "event" });
+    }
   }
   const decision = transformSignalFields(policy, "event", parsed);
-  return { attributes: decision.value, redactions: decision.redactions };
+  return {
+    attributes: decision.value,
+    redactions: [...contractRedactions, ...decision.redactions],
+  };
 };
 
 const decodeSeverity = Schema.decodeUnknownEffect(EventSeverity);

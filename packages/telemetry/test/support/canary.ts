@@ -17,7 +17,9 @@ export const canarySensitiveValues = (runId: string) => {
   const accessTokenMarker = `accesstokenmarker${compactRunId}`;
   const userPasswordMarker = `userpasswordmarker${compactRunId}`;
   const phoneNumberMarker = `phonenumbermarker${compactRunId}`;
+  const rawAuthorizationMarker = `rawauthorizationmarker${compactRunId}`;
   const authorization = `Bearer ${authorizationMarker}`;
+  const rawAuthorization = `authorization: Bearer ${rawAuthorizationMarker} authorization: Bearer ${rawAuthorizationMarker}`;
   const password = `opaque-${passwordMarker}-value`;
   const token = `sk-${tokenMarker}`;
   const email = `${emailMarker}@example.test`;
@@ -34,6 +36,7 @@ export const canarySensitiveValues = (runId: string) => {
     accessToken,
     userPassword,
     phoneNumber,
+    rawAuthorization,
     leakMarkers: [
       authorizationMarker,
       passwordMarker,
@@ -42,6 +45,7 @@ export const canarySensitiveValues = (runId: string) => {
       accessTokenMarker,
       userPasswordMarker,
       phoneNumberMarker,
+      rawAuthorizationMarker,
     ],
     tokenizerValue,
     documentationValue,
@@ -75,6 +79,7 @@ export const emitCanary = (
     "tool.tokenizer": sensitive.tokenizerValue,
     "docs.documentation": sensitive.documentationValue,
     "safe.message": `token=${sensitive.token} email=${sensitive.email}`,
+    "safe.raw_header": sensitive.rawAuthorization,
   };
   return Effect.gen(function* () {
     const operationCounter = Metric.counter("canary.operations", {
@@ -82,6 +87,14 @@ export const emitCanary = (
     });
     yield* Effect.sleep("10 millis").pipe(Effect.withSpan("canary.child"));
     yield* WideEvent.emit("canary.completed", { "canary.run_id": runId });
+    yield* Effect.logInfo(sensitive.rawAuthorization).pipe(
+      Effect.annotateLogs({
+        "canary.run_id": runId,
+        "event.name": "canary.raw_header",
+        "event.kind": "wide",
+        "safe.raw_header": sensitive.rawAuthorization,
+      }),
+    );
     yield* Effect.logInfo(sensitive.serializedBody).pipe(
       Effect.annotateLogs({
         ...sensitiveAttributes,
@@ -96,7 +109,10 @@ export const emitCanary = (
           id: `browser-${runId}`,
           name: "canary.browser",
           occurredAt: Date.now(),
-          fields: { "canary.run_id": runId },
+          fields: {
+            "canary.run_id": runId,
+            "safe.raw_header": sensitive.rawAuthorization,
+          },
         },
       ],
     }).pipe(Effect.orDie);

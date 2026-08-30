@@ -47,12 +47,12 @@ const serverBounds: {
 const reservedPrefixes = ["event.", "browser."];
 
 const replaceBlockedValues = (policy: DataPolicy, value: string): string => {
-  let output = replaceStructuredAssignments(value);
+  let output = value;
   for (const pattern of policy.blockedValuePatterns) {
     pattern.lastIndex = 0;
     output = output.replace(pattern, sensitiveTextReplacement);
   }
-  return output;
+  return replaceStructuredAssignments(output);
 };
 
 const sanitizeBoundedText = (

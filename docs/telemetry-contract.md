@@ -1,5 +1,7 @@
 # Contrato de telemetria
 
+Consulte a [política de dados](data-policy.md) para as classificações e os recibos de mascaramento aplicados pelo produtor.
+
 `defineTelemetryContract` compila a fonte tipada de eventos, métricas e ações de auditoria de uma aplicação. O contrato usa aliases estáveis para chamadas do produtor e mantém o nome canônico dentro de cada definição.
 
 ```ts

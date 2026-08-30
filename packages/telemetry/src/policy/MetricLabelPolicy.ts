@@ -24,7 +24,7 @@ export type MetricLabelRejection =
   | "attribute-name"
   | "classification"
   | "identifier-shape"
-  | "unsupported-value";
+  | "string-bound";
 
 export const metricLabelRejection = (
   policy: DataPolicy,
@@ -53,7 +53,7 @@ export const metricLabelRejection = (
       : undefined;
   }
   if (Predicate.isBoolean(value)) return undefined;
-  if (!labelValuePattern.test(value)) return "unsupported-value";
+  if (!labelValuePattern.test(value)) return "string-bound";
   if (
     uuidPattern.test(value) ||
     tracePattern.test(value) ||

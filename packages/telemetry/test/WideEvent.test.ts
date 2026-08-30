@@ -48,6 +48,26 @@ describe("WideEvent.emit", () => {
     }),
   );
 
+  it.live("reports policy drops without exporting internal metadata", () =>
+    Effect.gen(function* () {
+      const result = yield* Testing.run(
+        emit("policy.drop", { badKey: "drop", "operation.id": "kept" }).pipe(
+          Effect.withSpan("policy.parent"),
+        ),
+      );
+      const log = result.telemetry.logs[0];
+      const span = result.telemetry.spans[0];
+      const event = span?.events[0];
+      assert.isDefined(log);
+      assert.isDefined(span);
+      assert.isDefined(event);
+      assert.strictEqual(log.droppedAttributesCount, 1);
+      assert.strictEqual(event.droppedAttributesCount, 1);
+      assert.isUndefined(log.attributes.get("effect.dropped_attributes_count"));
+      assert.isUndefined(event.attributes.get("effect.dropped_attributes_count"));
+    }),
+  );
+
   it.live("records two wide events on their enclosing span without synthetic spans", () =>
     Effect.gen(function* () {
       const result = yield* Testing.run(
