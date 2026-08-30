@@ -68,6 +68,43 @@ describe("WideEvent.emit", () => {
     }),
   );
 
+  const boundCases: ReadonlyArray<{
+    readonly applicationCount: number;
+    readonly expectedLogDropped: number;
+  }> = [
+    { applicationCount: 128, expectedLogDropped: 3 },
+    { applicationCount: 129, expectedLogDropped: 4 },
+    { applicationCount: 200, expectedLogDropped: 75 },
+  ];
+  for (const boundCase of boundCases) {
+    const { applicationCount, expectedLogDropped } = boundCase;
+    it.live(`reserves canonical fields within ${applicationCount} application fields`, () =>
+      Effect.gen(function* () {
+        const fields = Object.fromEntries(
+          Array.from({ length: applicationCount }, (_, index) => [`app.field${index}`, index]),
+        );
+        const result = yield* Testing.run(
+          emit("bounded.event", fields).pipe(Effect.withSpan("bounded.parent")),
+        );
+        const log = result.telemetry.logs[0];
+        const event = result.telemetry.spans[0]?.events[0];
+        assert.isDefined(log);
+        assert.isDefined(event);
+        for (const signal of [log, event]) {
+          assert.strictEqual(signal.attributes.get("event.name"), "bounded.event");
+          assert.strictEqual(signal.attributes.get("event.kind"), "wide");
+          assert.strictEqual(
+            [...signal.attributes.keys()].filter((key) => key.startsWith("app.field")).length,
+            126,
+          );
+          assert.isUndefined(signal.attributes.get("effect.dropped_attributes_count"));
+        }
+        assert.strictEqual(log.droppedAttributesCount, expectedLogDropped);
+        assert.strictEqual(event.droppedAttributesCount, expectedLogDropped + 1);
+      }),
+    );
+  }
+
   it.live("records two wide events on their enclosing span without synthetic spans", () =>
     Effect.gen(function* () {
       const result = yield* Testing.run(

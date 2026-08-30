@@ -185,14 +185,14 @@ const expectCollectorContract = (config: string, production: boolean): void => {
   const tracesAndLogs = [
     "memory_limiter",
     "transform/environment",
-    "transform/redact",
     "redaction/sensitive",
+    "transform/redact",
   ];
   const metrics = [
     "memory_limiter",
     "transform/environment",
-    "transform/redact",
     "redaction/sensitive",
+    "transform/redact",
   ];
   if (!production) {
     tracesAndLogs.push("batch");
@@ -283,7 +283,7 @@ describe("Collector assets", () => {
     expect(() => expectProductionOperations(changedQueueBatchLimit)).toThrow(/8388608/);
 
     const withoutTraceAttributeRedaction = production.replace(
-      "transform/redact, redaction/sensitive",
+      "redaction/sensitive, transform/redact",
       "transform/redact",
     );
     expect(withoutTraceAttributeRedaction).not.toBe(production);

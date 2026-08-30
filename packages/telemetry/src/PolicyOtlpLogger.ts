@@ -140,6 +140,10 @@ export const makePolicyOtlpLogger = Effect.fn("makePolicyOtlpLogger")(function* 
     const delegatedAnnotations = Object.fromEntries(
       Object.entries(decision.value).filter(([key]) => !packageGeneratedKeys.has(key)),
     );
+    const droppedPackageGenerated = [...packageGeneratedKeys].filter(
+      (key) => decision.value[key] === undefined,
+    ).length;
+    const delegatedDropped = decision.dropped - droppedPackageGenerated + unsupportedDropped;
     const now = clock.currentTimeNanosUnsafe().toString();
     const attributes = OtlpResource.entriesToAttributes(Object.entries(decision.value));
     const messages = Arr.ensure(entry.message).map((message) => {
@@ -157,7 +161,7 @@ export const makePolicyOtlpLogger = Effect.fn("makePolicyOtlpLogger")(function* 
         reference === References.CurrentLogAnnotations
           ? {
               ...delegatedAnnotations,
-              [effectDroppedAttributesKey]: decision.dropped + unsupportedDropped,
+              [effectDroppedAttributesKey]: delegatedDropped,
             }
           : entry.fiber.getRef(reference),
     });

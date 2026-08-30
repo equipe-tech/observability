@@ -57,6 +57,11 @@ describe.runIf(collectorEnabled)("Collector redaction", () => {
     const marker = `COLLECTORSECRET${crypto.randomUUID().replaceAll("-", "")}`;
     const fixtures = [
       `https://user${marker}:pass${marker}@api.x/private`,
+      `Bearer ${marker}`,
+      `sk_${marker}`,
+      `eyJ${marker}.eyJ${marker}.${marker}`,
+      `${marker}@example.com`,
+      `-----BEGIN PRIVATE KEY-----${marker}-----END PRIVATE KEY-----`,
       `https://api.x/login?password=${marker}`,
       `url=https://api.x/cb?token=${marker}`,
       `a=1&password=${marker}&b=2`,

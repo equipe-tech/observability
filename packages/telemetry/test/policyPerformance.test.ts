@@ -3,6 +3,7 @@ import { Effect, Exit } from "effect";
 import { maxEventsPerBatch, maxFieldsPerEvent, maxFieldValueLength } from "../src/BrowserEvents.ts";
 import { ingestBrowserEvents } from "../src/node/index.ts";
 import { baseDataPolicy, parseDataPolicy } from "../src/policy/DataPolicy.ts";
+import { metricLabelRejection } from "../src/policy/MetricLabelPolicy.ts";
 import { sanitizeText, transformSignalFields } from "../src/policy/PolicyTransform.ts";
 import * as Testing from "../src/testing/index.ts";
 
@@ -20,6 +21,19 @@ const median = (values: ReadonlyArray<number>): number => {
 const measure = (run: () => void): number => median(Array.from({ length: 5 }, () => elapsed(run)));
 
 describe("policy sanitizer performance", () => {
+  it("scales hot metric label policy checks with call volume", () => {
+    const volumes = [5_000, 50_000];
+    const timings = volumes.map((volume) =>
+      measure(() => {
+        for (let index = 0; index < volume; index += 1) {
+          metricLabelRejection(baseDataPolicy, "http.route", `/orders/${index % 100}`);
+        }
+      }),
+    );
+    for (const timing of timings) assert.isBelow(timing, 5_000);
+    assert.isAtMost(timings[1] ?? 0, (timings[0] ?? 0) * 20 + 100);
+  });
+
   it("scales within bounded linear limits through 128 KB", () => {
     const sizes = [8_192, 32_768, 65_536, 131_072];
     const timings = sizes.map((size) =>

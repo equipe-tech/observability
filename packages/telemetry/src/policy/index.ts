@@ -17,7 +17,6 @@ export { parseResourceAttributes } from "./ResourceAttributePolicy.ts";
 export type { ResourceAttribute } from "./ResourceAttributePolicy.ts";
 export {
   baseBlockedKeys,
-  baseBlockedValuePatterns,
   collectorBlockedKeyPattern,
   collectorBlockedValuePatterns,
   isSensitiveFieldKey,

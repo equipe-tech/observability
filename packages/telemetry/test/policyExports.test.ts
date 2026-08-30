@@ -16,6 +16,7 @@ describe("policy exports", () => {
     assert.notInclude(profileSource, "DataPolicy");
     assert.notInclude(profileSource, "DataPolicyInput");
     assert.notInclude(policyKeys, "baseBlockedKeyPatternSource");
+    assert.notInclude(policyKeys, "baseBlockedValuePatterns");
     assert.notInclude(policyKeys, "effectDroppedAttributesKey");
   });
 });

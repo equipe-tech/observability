@@ -140,15 +140,15 @@ service:
     traces:
       receivers: [otlp]
       processors:
-        [memory_limiter, transform/environment, transform/redact, redaction/sensitive, batch]
+        [memory_limiter, transform/environment, redaction/sensitive, transform/redact, batch]
       exporters: [otlp/viewer, file/telemetry]
     logs:
       receivers: [otlp]
       processors:
-        [memory_limiter, transform/environment, transform/redact, redaction/sensitive, batch]
+        [memory_limiter, transform/environment, redaction/sensitive, transform/redact, batch]
       exporters: [otlp/viewer, file/telemetry]
     metrics:
       receivers: [otlp]
       processors:
-        [memory_limiter, transform/environment, transform/redact, redaction/sensitive, batch]
+        [memory_limiter, transform/environment, redaction/sensitive, transform/redact, batch]
       exporters: [otlp/viewer, file/telemetry]

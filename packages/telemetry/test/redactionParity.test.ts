@@ -114,15 +114,15 @@ describe("browser and Collector redaction parity", () => {
       }
       assert.match(
         asset,
-        /traces:[\s\S]*?processors:[\s\S]*?transform\/redact, redaction\/sensitive[\s\S]*?logs:/,
+        /traces:[\s\S]*?processors:[\s\S]*?redaction\/sensitive, transform\/redact[\s\S]*?logs:/,
       );
       assert.match(
         asset,
-        /logs:[\s\S]*?processors:[\s\S]*?transform\/redact, redaction\/sensitive[\s\S]*?metrics:/,
+        /logs:[\s\S]*?processors:[\s\S]*?redaction\/sensitive, transform\/redact[\s\S]*?metrics:/,
       );
       assert.match(
         asset,
-        /metrics:[\s\S]*?processors:[\s\S]*?transform\/redact,[\s\S]*?redaction\/sensitive/,
+        /metrics:[\s\S]*?processors:[\s\S]*?redaction\/sensitive,[\s\S]*?transform\/redact/,
       );
     });
   }

@@ -10,13 +10,18 @@ export type WideEventFields = {
 
 export const emit = (name: string, fields: WideEventFields): Effect.Effect<void> =>
   Effect.flatMap(CurrentDataPolicy, (policy) => {
-    const decision = transformSignalFields(policy, "log", fields);
+    const applicationFields = { ...fields };
+    delete applicationFields["event.name"];
+    delete applicationFields["event.kind"];
     const eventName = sanitizeEventName(name);
+    const decision = transformSignalFields(policy, "log", {
+      "event.name": eventName,
+      "event.kind": "wide",
+      ...applicationFields,
+    });
     return Effect.logInfo(eventName).pipe(
       Effect.annotateLogs({
         ...decision.value,
-        "event.name": eventName,
-        "event.kind": "wide",
         [effectDroppedAttributesKey]: decision.dropped,
       }),
     );

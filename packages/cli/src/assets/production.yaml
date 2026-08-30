@@ -218,13 +218,13 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, transform/environment, transform/redact, redaction/sensitive]
+      processors: [memory_limiter, transform/environment, redaction/sensitive, transform/redact]
       exporters: [otlphttp/traces]
     logs:
       receivers: [otlp]
-      processors: [memory_limiter, transform/environment, transform/redact, redaction/sensitive]
+      processors: [memory_limiter, transform/environment, redaction/sensitive, transform/redact]
       exporters: [otlphttp/logs]
     metrics:
       receivers: [otlp]
-      processors: [memory_limiter, transform/environment, transform/redact, redaction/sensitive]
+      processors: [memory_limiter, transform/environment, redaction/sensitive, transform/redact]
       exporters: [otlphttp/metrics]
