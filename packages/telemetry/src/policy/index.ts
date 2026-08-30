@@ -5,6 +5,7 @@ export type { PolicyIssue } from "./DataPolicyError.ts";
 export { sanitizeDefectEnvelope } from "./DefectEnvelope.ts";
 export type { DefectEnvelope } from "./DefectEnvelope.ts";
 export { metricLabelRejection } from "./MetricLabelPolicy.ts";
+export type { MetricLabelRejection } from "./MetricLabelPolicy.ts";
 export { sanitizeText, transformSignalFields } from "./PolicyTransform.ts";
 export type {
   PolicyAction,

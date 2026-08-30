@@ -36,6 +36,10 @@ O valor `latest` era válido em 0.2.1 e agora é rejeitado. Troque-o pela versã
 
 A mesma regra vale para `OTEL_SERVICE_VERSION` quando a configuração vem de `telemetryConfigFromEnv`.
 
+## Usar nomes pontuados em atributos de métricas
+
+A versão 0.3 exige nomes estáveis e pontuados para atributos de métricas. Troque chaves de segmento único, como `region`, por nomes de domínio, como `deployment.region`. A API rejeita uma chave sem ponto com `MetricsError` e código `POLICY_BLOCKED`.
+
 ## Renomear projetos incompatíveis com a CLI
 
 A CLI 0.2 aceitava hífens consecutivos em `provision --name` e nos nomes de projeto dos comandos `env`. A CLI 0.3 aplica a mesma gramática de `serviceName` nesses argumentos. Renomeie `checkout--api` para `checkout-api` antes de atualizar. Um nome incompatível retorna `OBS_CLI_PROVISION_INVALID_NAME` em `provision` ou `OBS_CLI_REMOTE_INVALID_PROJECT` em comandos `env`.

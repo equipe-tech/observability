@@ -5,6 +5,7 @@ import { parseResourceIdentity } from "../ResourceIdentity.ts";
 import { layerOtlp } from "../Telemetry.ts";
 import { TelemetryConfig } from "../TelemetryConfig.ts";
 import type { DataPolicy } from "../policy/DataPolicy.ts";
+import type { ResourceAttribute } from "../policy/ResourceAttributePolicy.ts";
 
 export * from "./contract.ts";
 export {
@@ -399,6 +400,7 @@ const defaultConfig = new TelemetryConfig({
 export type RunOptions = {
   readonly config?: TelemetryConfig;
   readonly policy?: DataPolicy;
+  readonly resourceAttributes?: ReadonlyArray<ResourceAttribute>;
 };
 
 export type TelemetryCapture = {
@@ -410,9 +412,10 @@ export const makeCapture = Effect.fn("makeCapture")(function* (
   options?: RunOptions,
 ): Effect.fn.Return<TelemetryCapture, never> {
   const store = yield* Ref.make<ReadonlyArray<CapturedRequest>>([]);
-  const layer = layerOtlp(options?.config ?? defaultConfig, { policy: options?.policy }).pipe(
-    Layer.provide(Layer.succeed(HttpClient.HttpClient, captureClient(store))),
-  );
+  const layer = layerOtlp(options?.config ?? defaultConfig, {
+    policy: options?.policy,
+    resourceAttributes: options?.resourceAttributes,
+  }).pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, captureClient(store))));
   const telemetry = Ref.get(store).pipe(Effect.flatMap(decodeCapturedTelemetry));
   return { layer, telemetry };
 });

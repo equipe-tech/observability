@@ -168,7 +168,6 @@ const parseAttributes = (
     }
   }
   const parsed: { [attributeName: string]: AttributeValue } = {};
-  const redactions: Array<PolicyRedaction> = [];
   for (const [attributeName, value] of Object.entries(attributes)) {
     const attribute = definition.attributes.get(attributeName);
     if (attribute === undefined) {
@@ -204,24 +203,10 @@ const parseAttributes = (
         { eventName: definition.name, attributeName },
       );
     }
-    if (attribute.classification === "sensitive") {
-      parsed[attributeName] = "****";
-      redactions.push({ rule: "classification", action: "masked", surface: "event" });
-      continue;
-    }
-    const decision = transformSignalFields(policy, "event", { [attributeName]: value });
-    const sanitized = decision.value[attributeName];
-    if (sanitized === undefined) {
-      return eventError(
-        "OBS_EVENT_RESTRICTED_ATTRIBUTE",
-        `Event "${definition.name}" cannot emit restricted attribute "${attributeName}". Remove the attribute before emitting.`,
-        { eventName: definition.name, attributeName },
-      );
-    }
-    parsed[attributeName] = sanitized;
-    redactions.push(...decision.redactions);
+    parsed[attributeName] = attribute.classification === "sensitive" ? "****" : value;
   }
-  return { attributes: parsed, redactions };
+  const decision = transformSignalFields(policy, "event", parsed);
+  return { attributes: decision.value, redactions: decision.redactions };
 };
 
 const decodeSeverity = Schema.decodeUnknownEffect(EventSeverity);

@@ -1,4 +1,5 @@
 import { Predicate } from "effect";
+import { maxFieldKeyLength } from "../BrowserEvents.ts";
 import { isValidAttributeName } from "../contract/EventName.ts";
 import type { AttributeValue } from "../contract/TelemetryEvent.ts";
 import { sanitizeBrowserFields } from "./BrowserFieldPolicy.ts";
@@ -34,12 +35,11 @@ type SignalBounds = {
 };
 
 const serverBounds: {
-  readonly [surface in Exclude<PolicySurface, "browser-ingest">]: SignalBounds;
+  readonly [surface in Exclude<PolicySurface, "browser-ingest" | "metric">]: SignalBounds;
 } = {
   event: { maximumFields: 128, maximumTextLength: 16_384 },
   log: { maximumFields: 128, maximumTextLength: 32_768 },
   span: { maximumFields: 128, maximumTextLength: 32_768 },
-  metric: { maximumFields: 16, maximumTextLength: 256 },
   defect: { maximumFields: 128, maximumTextLength: 65_536 },
   resource: { maximumFields: 128, maximumTextLength: 8_192 },
 };
@@ -57,7 +57,7 @@ const replaceBlockedValues = (policy: DataPolicy, value: string): string => {
 
 const sanitizeBoundedText = (
   policy: DataPolicy,
-  surface: Exclude<PolicySurface, "browser-ingest">,
+  surface: Exclude<PolicySurface, "browser-ingest" | "metric">,
   value: string,
 ): { readonly value: string; readonly blocked: boolean; readonly truncated: boolean } => {
   const sanitized = replaceBlockedValues(policy, value);
@@ -76,7 +76,10 @@ const transformBrowserFields = (
   const admitted: MutableFields = {};
   const redactions: Array<PolicyRedaction> = [];
   for (const [key, value] of Object.entries(fields)) {
-    if (!isValidAttributeName(key) || reservedPrefixes.some((prefix) => key.startsWith(prefix))) {
+    if (
+      !isValidAttributeName(key.slice(0, maxFieldKeyLength)) ||
+      reservedPrefixes.some((prefix) => key.startsWith(prefix))
+    ) {
       redactions.push({ rule: "attribute-name", action: "dropped", surface: "browser-ingest" });
       continue;
     }
@@ -111,7 +114,11 @@ const transformBrowserFields = (
     redactions.push({ rule: "bounds", action: "dropped", surface: "browser-ingest" });
   }
   for (const [key, original] of Object.entries(admitted)) {
-    const sanitized = value[key];
+    const boundedKey = key.slice(0, maxFieldKeyLength);
+    const sanitized = value[boundedKey];
+    if (boundedKey !== key && sanitized !== undefined) {
+      redactions.push({ rule: "bounds", action: "truncated", surface: "browser-ingest" });
+    }
     if (
       Predicate.isString(original) &&
       Predicate.isString(sanitized) &&
@@ -125,7 +132,7 @@ const transformBrowserFields = (
 
 export const transformSignalFields = (
   policy: DataPolicy,
-  surface: PolicySurface,
+  surface: Exclude<PolicySurface, "metric">,
   fields: WideEventFields,
 ): PolicyDecision<WideEventFields> => {
   if (surface === "browser-ingest") return transformBrowserFields(policy, fields);
@@ -153,7 +160,10 @@ export const transformSignalFields = (
     if (classification === "sensitive") {
       admitted[key] = sensitiveFieldReplacement;
       redactions.push({
-        rule: policy.attributes.has(key) ? "classification" : "blocked-key",
+        rule:
+          policy.attributes.has(key) || value === sensitiveFieldReplacement
+            ? "classification"
+            : "blocked-key",
         action: "masked",
         surface,
       });

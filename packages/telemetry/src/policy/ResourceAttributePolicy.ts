@@ -1,8 +1,9 @@
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
 import { isValidAttributeName } from "../contract/EventName.ts";
 import type { ResourceAttributes } from "../ResourceIdentity.ts";
 import type { DataPolicy } from "./DataPolicy.ts";
 import { InvalidDataPolicy } from "./DataPolicyError.ts";
+import { transformSignalFields } from "./PolicyTransform.ts";
 
 export type ResourceAttribute = {
   readonly key: string;
@@ -14,11 +15,12 @@ export const parseResourceAttributes = Effect.fn("parseResourceAttributes")(func
   canonical: ResourceAttributes,
   additions: ReadonlyArray<ResourceAttribute>,
 ): Effect.fn.Return<ReadonlyMap<string, string>, InvalidDataPolicy> {
-  const parsed = new Map<string, string>(Object.entries(canonical));
+  const input: { [key: string]: string } = { ...canonical };
   for (const attribute of additions) {
     if (
       !isValidAttributeName(attribute.key) ||
-      parsed.has(attribute.key) ||
+      !Predicate.isString(attribute.value) ||
+      Object.hasOwn(input, attribute.key) ||
       policy.classify(attribute.key) === "forbidden"
     ) {
       return yield* new InvalidDataPolicy({
@@ -28,16 +30,19 @@ export const parseResourceAttributes = Effect.fn("parseResourceAttributes")(func
         issues: [
           {
             code: "OBS_POLICY_DUPLICATE_RESOURCE_ATTRIBUTE",
-            message: "A resource attribute is invalid, duplicated, reserved, or forbidden.",
+            message:
+              "A resource attribute is invalid, duplicated, reserved, forbidden, or non-scalar.",
             rule: "unique-resource-attribute",
           },
         ],
       });
     }
-    parsed.set(
-      attribute.key,
-      policy.classify(attribute.key) === "sensitive" ? "****" : attribute.value,
-    );
+    input[attribute.key] = attribute.value;
+  }
+  const decision = transformSignalFields(policy, "resource", input);
+  const parsed = new Map<string, string>();
+  for (const [key, value] of Object.entries(decision.value)) {
+    if (Predicate.isString(value)) parsed.set(key, value);
   }
   return parsed;
 });

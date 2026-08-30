@@ -43,6 +43,7 @@ export const layerOtlp = (
         const metrics = layerMetricsRuntime(config, {
           shutdownTimeoutMilliseconds: Duration.toMillis(options.shutdownTimeout ?? "3 seconds"),
           policy,
+          resourceAttributes: parsed,
         });
         return Layer.mergeAll(
           Layer.succeed(CurrentDataPolicy, policy),

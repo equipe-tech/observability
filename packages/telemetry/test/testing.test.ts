@@ -148,6 +148,39 @@ describe("Testing.run", () => {
     }),
   );
 
+  it.live("rejects duplicate resource attributes through the capture options", () =>
+    Effect.gen(function* () {
+      const result = yield* Testing.run(Effect.void, {
+        resourceAttributes: [{ key: "service.name", value: "duplicate" }],
+      });
+      assert.isTrue(Exit.isFailure(result.exit));
+      if (Exit.isFailure(result.exit)) {
+        assert.isTrue(Cause.hasDies(result.exit.cause));
+        assert.include(
+          JSON.stringify(result.exit.cause),
+          "OBS_POLICY_DUPLICATE_RESOURCE_ATTRIBUTE",
+        );
+      }
+    }),
+  );
+
+  it.live("rejects non-scalar resource values through the capture options", () =>
+    Effect.gen(function* () {
+      const resourceAttributes = JSON.parse(
+        '[{"key":"deployment.region","value":{"nested":true}}]',
+      );
+      const result = yield* Testing.run(Effect.void, { resourceAttributes });
+      assert.isTrue(Exit.isFailure(result.exit));
+      if (Exit.isFailure(result.exit)) {
+        assert.isTrue(Cause.hasDies(result.exit.cause));
+        assert.include(
+          JSON.stringify(result.exit.cause),
+          "OBS_POLICY_DUPLICATE_RESOURCE_ATTRIBUTE",
+        );
+      }
+    }),
+  );
+
   it.live("returns the failure exit without losing captured telemetry", () =>
     Effect.gen(function* () {
       const { exit, telemetry } = yield* Testing.run(

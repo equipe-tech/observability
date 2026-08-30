@@ -32,11 +32,11 @@ const queue = metrics.observableGauge(
     description: "Pending order count",
     unit: "1",
   },
-  () => [{ value: 4, attributes: [{ key: "region", value: "south" }] }],
+  () => [{ value: 4, attributes: [{ key: "deployment.region", value: "south" }] }],
 );
 
-orders.add(1, [{ key: "region", value: "south" }]);
-duration.record(42, [{ key: "region", value: "south" }]);
+orders.add(1, [{ key: "deployment.region", value: "south" }]);
+duration.record(42, [{ key: "deployment.region", value: "south" }]);
 await metrics.flush();
 queue.unregister();
 await metrics.close();

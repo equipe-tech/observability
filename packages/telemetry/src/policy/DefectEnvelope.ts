@@ -33,7 +33,13 @@ export const sanitizeDefectEnvelope = (
     const kept = transformed.value[key];
     if (Predicate.isString(kept)) tags.set(key, kept);
   }
-  if (dropped > 0) return { value: Option.none(), redactions, dropped };
+  if (
+    redactions.some(
+      (redaction) => redaction.rule === "classification" && redaction.action === "dropped",
+    )
+  ) {
+    return { value: Option.none(), redactions, dropped };
+  }
   const value = {
     ...envelope,
     errorType: envelope.errorType,

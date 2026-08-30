@@ -18,7 +18,7 @@ import type {
   ObservableGaugeRegistration,
 } from "./Metrics.ts";
 import { MetricsError } from "./Metrics.ts";
-import type { EnvironmentAliasPolicy, ResourceIdentity } from "./ResourceIdentity.ts";
+import type { ResourceIdentity } from "./ResourceIdentity.ts";
 import {
   EnvironmentAliasPolicy as EnvironmentAliasPolicySchema,
   parseResourceIdentity,
@@ -89,12 +89,12 @@ const decodeMetricsOptions = Schema.decodeUnknownSync(MetricsOptionsInput);
 interface NormalizedOptions {
   readonly enabled: boolean;
   readonly identity: ResourceIdentity;
-  readonly environmentAlias: EnvironmentAliasPolicy;
   readonly metricsEndpoint: string;
   readonly exportIntervalMilliseconds: number;
   readonly flushTimeoutMilliseconds: number;
   readonly poolKey: string;
   readonly policy: DataPolicy;
+  readonly resourceAttributes: ReadonlyMap<string, string>;
 }
 
 interface NormalizedDefinition {
@@ -365,6 +365,7 @@ const parseOptions = (input: MetricsOptions): NormalizedOptions => {
     policy.blockedKeys.map((pattern) => [pattern.source, pattern.flags]),
     policy.blockedValuePatterns.map((pattern) => [pattern.source, pattern.flags]),
   ]);
+  const environmentAlias = options.deploymentEnvironmentAlias ?? "omitted";
   const poolKey = JSON.stringify([
     endpoint.toString(),
     options.serviceName,
@@ -378,12 +379,14 @@ const parseOptions = (input: MetricsOptions): NormalizedOptions => {
   return {
     enabled,
     identity,
-    environmentAlias: options.deploymentEnvironmentAlias ?? "omitted",
     metricsEndpoint: endpoint.toString(),
     exportIntervalMilliseconds,
     flushTimeoutMilliseconds,
     poolKey,
     policy,
+    resourceAttributes: new Map(
+      Object.entries(serviceResourceAttributes(identity, environmentAlias)),
+    ),
   };
 };
 
@@ -1165,9 +1168,10 @@ class MetricsRuntimeState {
         resourceMetrics: [
           {
             resource: {
-              attributes: Object.entries(
-                serviceResourceAttributes(this.options.identity, this.options.environmentAlias),
-              ).map(([key, value]) => ({ key, value: { stringValue: value } })),
+              attributes: Array.from(this.options.resourceAttributes, ([key, value]) => ({
+                key,
+                value: { stringValue: value },
+              })),
               droppedAttributesCount: 0,
             },
             scopeMetrics: [
@@ -1953,6 +1957,7 @@ export const createStandaloneMetrics = async (optionsInput: MetricsOptions): Pro
 interface LayerMetricsOptions {
   readonly shutdownTimeoutMilliseconds: number;
   readonly policy: DataPolicy;
+  readonly resourceAttributes: ReadonlyMap<string, string>;
 }
 
 const makeEffectTransport = (endpoint: string, client: HttpClient.HttpClient): MetricsTransport => {
@@ -1997,9 +2002,21 @@ const makeMetricsRuntime = Effect.fn("makeMetricsRuntime")(function* (
     flushTimeoutMilliseconds: options.shutdownTimeoutMilliseconds,
     policy: options.policy,
   });
-  const lease = acquireRuntime(parsed, {
+  const resourceAttributes = new Map(options.resourceAttributes);
+  resourceAttributes.delete("service.instance.id");
+  const parsedResourceKey = JSON.stringify(Array.from(parsed.resourceAttributes));
+  const resourceKey = JSON.stringify(Array.from(resourceAttributes));
+  const normalized = {
+    ...parsed,
+    poolKey:
+      resourceKey === parsedResourceKey
+        ? parsed.poolKey
+        : JSON.stringify([parsed.poolKey, resourceKey]),
+    resourceAttributes,
+  } satisfies NormalizedOptions;
+  const lease = acquireRuntime(normalized, {
     kind: "layer",
-    send: makeEffectTransport(parsed.metricsEndpoint, client),
+    send: makeEffectTransport(normalized.metricsEndpoint, client),
   });
   yield* flusher.register(
     Effect.tryPromise(() => lease.state.flush(parsed.flushTimeoutMilliseconds)).pipe(

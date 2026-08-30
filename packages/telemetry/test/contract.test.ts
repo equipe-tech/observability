@@ -9,6 +9,7 @@ import {
   organizationContractVersion,
   organizationEvents,
   telemetryContractDefinition,
+  type AttributeDefinitionsInput,
   type TelemetryContract,
   type TelemetryContractInput,
 } from "../src/contract/index.ts";
@@ -991,6 +992,53 @@ describe("contract event producer", () => {
       assert.strictEqual(error.attributeName, "profile.password");
       assert.include(error.message, "cannot emit");
       assert.lengthOf(yield* sink.events, 1);
+    }),
+  );
+
+  it.effect("bounds the whole server event to 128 attributes", () =>
+    Effect.gen(function* () {
+      const attributes: AttributeDefinitionsInput = Object.fromEntries(
+        Array.from({ length: 200 }, (_, index) => [
+          `field.value${index}`,
+          { classification: "public", required: false, metricLabel: false },
+        ]),
+      );
+      const events = defineEventDefinitions({
+        Bounded: {
+          name: "contract.bounded",
+          kind: "domain",
+          defaultSeverity: "info",
+          mandatory: true,
+          sampling: { kind: "always" },
+          attributes,
+        },
+      });
+      const contract = yield* defineTelemetryContract({
+        version: 1,
+        events,
+        metrics: {},
+        auditActions: {},
+      });
+      const sink = yield* makeCollectingTelemetryEventSink();
+      const producer = makeEventProducer(contract);
+      const receipt = yield* producer
+        .emit("Bounded", {
+          outcome: "success",
+          attributes: Object.fromEntries(
+            Array.from({ length: 200 }, (_, index) => [`field.value${index}`, index]),
+          ),
+        })
+        .pipe(Effect.provide(sink.layer));
+      assert.strictEqual(receipt.decision, "recorded");
+      if (receipt.decision === "recorded") {
+        assert.strictEqual(Object.keys(receipt.event.attributes).length, 128);
+        assert.strictEqual(
+          receipt.redactions.filter(
+            (redaction) => redaction.rule === "bounds" && redaction.action === "dropped",
+          ).length,
+          72,
+        );
+      }
     }),
   );
 

@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Cause, Console, Effect, Exit, Layer, Logger, Option, References } from "effect";
+import { Cause, Console, Effect, Exit, Layer, Logger, Metric, Option, References } from "effect";
 import type * as LogLevel from "effect/LogLevel";
 import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
 import { logLevelSeverityNumber } from "../src/PolicyOtlpLogger.ts";
@@ -143,7 +143,11 @@ describe("Telemetry.layer", () => {
       const records: Array<string> = [];
       const existing = Logger.make((entry) => {
         records.push(
-          JSON.stringify([entry.message, entry.fiber.getRef(References.CurrentLogAnnotations)]),
+          JSON.stringify([
+            entry.message,
+            entry.fiber.getRef(References.CurrentLogAnnotations),
+            Cause.pretty(entry.cause),
+          ]),
         );
       });
       const policy = yield* parseDataPolicy({
@@ -157,10 +161,10 @@ describe("Telemetry.layer", () => {
           const context = yield* Layer.build(capture.layer).pipe(
             Effect.provide(Logger.layer([existing], { mergeWithExisting: true })),
           );
-          yield* Effect.logInfo(`provider_${secret} provider_${secret}`).pipe(
-            Effect.annotateLogs({ "http.authorization": secret }),
-            Effect.provide(context),
-          );
+          yield* Effect.logInfo(
+            `provider_${secret} provider_${secret}`,
+            Cause.fail(`provider_${secret} provider_${secret}`),
+          ).pipe(Effect.annotateLogs({ "http.authorization": secret }), Effect.provide(context));
         }),
       );
       assert.notInclude(JSON.stringify(records), secret);
@@ -186,6 +190,55 @@ describe("Telemetry.layer", () => {
       );
       assert.strictEqual(renderedCause.length, 32_768);
       assert.include(renderedCause, "Error:");
+    }),
+  );
+
+  it.live("sanitizes and bounds resources for logs, traces, and metrics", () =>
+    Effect.gen(function* () {
+      const secret = crypto.randomUUID().replaceAll("-", "");
+      const policy = yield* parseDataPolicy({
+        attributes: {},
+        blockedKeys: [],
+        blockedValuePatterns: ["provider_[A-Za-z0-9]+"],
+      });
+      const resourceAttributes = [
+        {
+          key: "deployment.note",
+          value: `provider_${secret} provider_${secret}`,
+        },
+        { key: "deployment.long", value: "x".repeat(9_000) },
+        ...Array.from({ length: 130 }, (_, index) => ({
+          key: `resource.field${index}`,
+          value: String(index),
+        })),
+      ];
+      const result = yield* Testing.run(
+        Effect.gen(function* () {
+          yield* Effect.logInfo("resource-policy");
+          yield* Metric.update(Metric.counter("resource.policy.count"), 1);
+        }).pipe(Effect.withSpan("resource.policy")),
+        { policy, resourceAttributes },
+      );
+      assert.notInclude(JSON.stringify(result.telemetry), secret);
+      const span = result.telemetry.spans.find((candidate) => candidate.name === "resource.policy");
+      const log = result.telemetry.logs.find((candidate) =>
+        Option.contains(candidate.body, "resource-policy"),
+      );
+      const metric = result.telemetry.metrics.find(
+        (candidate) => candidate.name === "resource.policy.count",
+      );
+      assert.isDefined(span);
+      assert.isDefined(log);
+      assert.isDefined(metric);
+      for (const resource of [
+        span.resourceAttributes,
+        log.resourceAttributes,
+        metric.resourceAttributes,
+      ]) {
+        assert.strictEqual(resource.size, 128);
+        assert.strictEqual(resource.get("deployment.note"), "[REDACTED] [REDACTED]");
+        assert.strictEqual(String(resource.get("deployment.long")).length, 8_192);
+      }
     }),
   );
 

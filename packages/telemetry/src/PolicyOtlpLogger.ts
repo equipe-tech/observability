@@ -133,10 +133,14 @@ export const makePolicyOtlpLogger = Effect.fn("makePolicyOtlpLogger")(function* 
         });
       }
     }
-    if (entry.cause.reasons.length > 0) {
+    const sanitizedCause =
+      entry.cause.reasons.length > 0
+        ? sanitizeText(policy, Cause.pretty(entry.cause), "log")
+        : undefined;
+    if (sanitizedCause !== undefined) {
       attributes.push({
         key: "log.error",
-        value: { stringValue: sanitizeText(policy, Cause.pretty(entry.cause), "log") },
+        value: { stringValue: sanitizedCause },
       });
     }
     const messages = Arr.ensure(entry.message).map((message) => {
@@ -156,7 +160,12 @@ export const makePolicyOtlpLogger = Effect.fn("makePolicyOtlpLogger")(function* 
           : entry.fiber.getRef(reference),
     });
     if (options.mergeWithExisting !== false) {
-      const sanitizedEntry = { ...entry, message: messages, fiber: sanitizedFiber };
+      const sanitizedEntry = {
+        ...entry,
+        message: messages,
+        fiber: sanitizedFiber,
+        cause: sanitizedCause === undefined ? Cause.empty : Cause.fail(sanitizedCause),
+      };
       for (const logger of existingLoggers) logger.log(sanitizedEntry);
     } else {
       const console = entry.fiber.getRef(Console.Console);

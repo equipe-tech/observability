@@ -40,6 +40,8 @@ The policy supports these classifications:
 
 Metric labels never use masked values. A metric facade rejects a blocked label with `MetricsError` code `POLICY_BLOCKED`. Its `policyReason` identifies the safe rejection category without carrying the key or value. A direct Effect metric drops the label during collection and reports the same reason in the flush result. `service.instance.id` remains a hard direct-metric export failure.
 
+The package-owned logger is the policy boundary for Effect log records and delegated output. Applications must register delegated loggers through the observability composition path so the package can sanitize each record first. Do not add a raw logger downstream of the observability layer because it would receive the unsanitized Effect record.
+
 ## Safe failures
 
 `InvalidDataPolicy` aggregates policy issues under `OBS_POLICY_INVALID`. Issues include a closed rule code and safe bounded context. They never contain a rejected value.

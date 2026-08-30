@@ -120,7 +120,7 @@ const makeEvents = (policy: DataPolicy, span: ExportingSpan): Array<OtlpEvent> =
       if (Option.isSome(decoded)) fields[key] = decoded.value;
     }
     return {
-      name: sanitizeText(policy, name),
+      name: sanitizeText(policy, name, "span"),
       timeUnixNano: String(startTime),
       attributes: sanitizeEntries(policy, fields),
       droppedAttributesCount: 0,
@@ -159,15 +159,21 @@ const makeNonHttpStatus = (
       timeUnixNano: String(span.status.endTime),
       droppedAttributesCount: 0,
       attributes: OtlpResource.entriesToAttributes([
-        ["exception.type", sanitizeText(policy, error.name)],
-        ["exception.message", sanitizeText(policy, error.message)],
-        ["exception.stacktrace", sanitizeText(policy, error.stack ?? "No stack trace available")],
+        ["exception.type", sanitizeText(policy, error.name, "span")],
+        ["exception.message", sanitizeText(policy, error.message, "span")],
+        [
+          "exception.stacktrace",
+          sanitizeText(policy, error.stack ?? "No stack trace available", "span"),
+        ],
       ]),
     });
   }
   return errors.length === 0
     ? { code: statusCodeError }
-    : { code: statusCodeError, message: sanitizeText(policy, errors[0]?.message ?? "Error") };
+    : {
+        code: statusCodeError,
+        message: sanitizeText(policy, errors[0]?.message ?? "Error", "span"),
+      };
 };
 
 const makeHttpStatus = (span: ExportingSpan): OtlpStatus => {
@@ -198,7 +204,7 @@ const makeOtlpSpan = (policy: DataPolicy, span: ExportingSpan): Option.Option<Ot
     traceId: span.traceId,
     spanId: span.spanId,
     parentSpanId: Option.getOrUndefined(Option.map(span.parent, (parent) => parent.spanId)),
-    name: sanitizeText(policy, span.name),
+    name: sanitizeText(policy, span.name, "span"),
     kind: spanKindCode(span.kind),
     startTimeUnixNano: String(span.status.startTime),
     endTimeUnixNano: String(span.status.endTime),

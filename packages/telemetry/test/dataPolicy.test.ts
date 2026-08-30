@@ -204,11 +204,10 @@ describe("executable data policy discrimination", () => {
   it("sanitizes repeated application secrets before any signal buffer", async () => {
     const policy = await compile();
     const secret = marker();
-    const surfaces: ReadonlyArray<PolicySurface> = [
+    const surfaces: ReadonlyArray<Exclude<PolicySurface, "metric">> = [
       "event",
       "log",
       "span",
-      "metric",
       "browser-ingest",
       "defect",
       "resource",
@@ -224,6 +223,28 @@ describe("executable data policy discrimination", () => {
       sanitizeText(policy, `provider_${secret} provider_${secret}`),
       "[REDACTED] [REDACTED]",
     );
+  });
+
+  it("reports exact browser masking and truncation records", async () => {
+    const policy = await compile();
+    const secret = marker();
+    const masked = transformSignalFields(policy, "browser-ingest", {
+      "request.detail": `provider_${secret} provider_${secret}`,
+    });
+    assert.deepStrictEqual(masked.redactions, [
+      { rule: "blocked-value", action: "masked", surface: "browser-ingest" },
+    ]);
+    const longKey = `field.${"a".repeat(130)}`;
+    const truncatedKey = transformSignalFields(policy, "browser-ingest", { [longKey]: "kept" });
+    assert.deepStrictEqual(truncatedKey.redactions, [
+      { rule: "bounds", action: "truncated", surface: "browser-ingest" },
+    ]);
+    const truncatedText = transformSignalFields(policy, "browser-ingest", {
+      "field.value": "x".repeat(2_000),
+    });
+    assert.deepStrictEqual(truncatedText.redactions, [
+      { rule: "bounds", action: "truncated", surface: "browser-ingest" },
+    ]);
   });
 
   it("counts browser policy and bounds drops exactly", async () => {
@@ -294,6 +315,35 @@ describe("executable data policy discrimination", () => {
       correlation: new CorrelationContext({}),
     });
     assert.isTrue(Option.isNone(envelope.value));
+  });
+
+  it("preserves partial defects after malformed keys and bounds drops", async () => {
+    const context = new Map<string, string>([["Bad Key", "dropped"]]);
+    for (let index = 0; index < 200; index += 1) {
+      context.set(`context.field${index}`, String(index));
+    }
+    const envelope = sanitizeDefectEnvelope(await compile(), {
+      errorType: "UnexpectedDefect",
+      errorMessage: "failure",
+      stack: Option.none(),
+      fingerprint: [],
+      tags: new Map(),
+      context,
+      correlation: new CorrelationContext({}),
+    });
+    const value = Option.getOrThrow(envelope.value);
+    assert.strictEqual(value.context.size, 128);
+    assert.strictEqual(envelope.dropped, 73);
+    assert.deepInclude(envelope.redactions, {
+      rule: "attribute-name",
+      action: "dropped",
+      surface: "defect",
+    });
+    assert.deepInclude(envelope.redactions, {
+      rule: "bounds",
+      action: "dropped",
+      surface: "defect",
+    });
   });
 
   it("preserves bounded defect stacks", async () => {

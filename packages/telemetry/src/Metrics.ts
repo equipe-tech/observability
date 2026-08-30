@@ -3,6 +3,8 @@ import { createStandaloneMetrics } from "./MetricsRuntime.ts";
 import type { DataPolicy } from "./policy/DataPolicy.ts";
 import type { MetricLabelRejection } from "./policy/MetricLabelPolicy.ts";
 
+export type { MetricLabelRejection } from "./policy/MetricLabelPolicy.ts";
+
 export type MetricAttributeValue = string | number | boolean;
 
 export interface MetricAttribute {
