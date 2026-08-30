@@ -55,12 +55,12 @@ const serverBounds: {
 const reservedPrefixes = ["event.", "browser."];
 
 const replaceBlockedValues = (policy: DataPolicy, value: string): string => {
-  let output = replaceEmailCandidates(value);
+  let output = value;
   for (const pattern of policy.blockedValuePatterns) {
     pattern.lastIndex = 0;
     output = output.replace(pattern, sensitiveTextReplacement);
   }
-  return replaceStructuredText(output);
+  return replaceStructuredText(replaceEmailCandidates(output));
 };
 
 const sanitizeBoundedText = (

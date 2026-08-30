@@ -1,15 +1,28 @@
 import { assert, describe, it } from "vite-plus/test";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { Schema } from "effect";
 import { baseDataPolicy } from "../src/policy/DataPolicy.ts";
 import { sanitizeText } from "../src/policy/PolicyTransform.ts";
 
-const exportPath = process.env["OBSERVABILITY_EXPORT_PATH"];
-const collectorEnabled = process.env["OBSERVABILITY_E2E"] === "1" && exportPath !== undefined;
+const cliManifest: unknown = JSON.parse(
+  await readFile(new URL("../../cli/package.json", import.meta.url).pathname, "utf8"),
+);
+const cliVersion = Schema.decodeUnknownSync(Schema.Struct({ version: Schema.NonEmptyString }))(
+  cliManifest,
+).version;
+const observabilityHome =
+  process.env["OBSERVABILITY_HOME"] ?? join(homedir(), ".local", "state", "observability");
+const exportPath =
+  process.env["OBSERVABILITY_EXPORT_PATH"] ??
+  join(observabilityHome, cliVersion, "data", "otlp.jsonl");
+const collectorEnabled = process.env["OBSERVABILITY_E2E"] === "1";
 
 const waitForExport = async (runId: string): Promise<string> => {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    const content = await readFile(exportPath ?? "", "utf8").catch(() => "");
+    const content = await readFile(exportPath, "utf8").catch(() => "");
     const runContent = content
       .split("\n")
       .filter((line) => line.includes(runId))
@@ -43,6 +56,7 @@ describe.runIf(collectorEnabled)("Collector redaction", () => {
     const runId = `collector-${crypto.randomUUID()}`;
     const marker = `COLLECTORSECRET${crypto.randomUUID().replaceAll("-", "")}`;
     const fixtures = [
+      `https://user${marker}:pass${marker}@api.x/private`,
       `https://api.x/login?password=${marker}`,
       `url=https://api.x/cb?token=${marker}`,
       `a=1&password=${marker}&b=2`,

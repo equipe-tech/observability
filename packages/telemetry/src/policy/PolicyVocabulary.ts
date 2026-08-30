@@ -28,6 +28,7 @@ export const collectorBlockedKeyPattern = `(?i:${baseBlockedKeys.join("|")})(?:\
 const collectorWhitespace = "[[:space:]   -   　\\\\x{2028}\\\\x{2029}\\\\x{feff}]";
 
 export const collectorBlockedValuePatterns = [
+  `(?i)https?://[^/@${collectorWhitespace.slice(1, -1)}]+@`,
   `(?i)Bearer${collectorWhitespace}+[A-Za-z0-9._~+/=-]+`,
   "(?:sk|rk)[_-][A-Za-z0-9_*.-]{3,}",
   "eyJ[A-Za-z0-9_-]+[.]eyJ[A-Za-z0-9_-]+[.][A-Za-z0-9_-]+",
@@ -36,6 +37,7 @@ export const collectorBlockedValuePatterns = [
 ];
 
 export const baseBlockedValuePatterns = [
+  /https?:\/\/[^/@\s]+@/gi,
   /Bearer\s+[A-Za-z0-9._~+/=-]+/gi,
   /(?:sk|rk)[_-][A-Za-z0-9_*.-]{3,}/g,
   /eyJ[A-Za-z0-9_-]+[.]eyJ[A-Za-z0-9_-]+[.][A-Za-z0-9_-]+/g,

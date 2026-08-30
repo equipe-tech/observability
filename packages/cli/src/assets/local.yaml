@@ -33,6 +33,7 @@ processors:
     trace_statements:
       - context: span
         statements:
+          - 'replace_pattern(span.name, "(?i)https?://[^/@[:space:]   -   　\\x{2028}\\x{2029}\\x{feff}]+@", "[REDACTED]")'
           - 'replace_pattern(span.name, "(?i)Bearer[[:space:]   -   　\\x{2028}\\x{2029}\\x{feff}]+[A-Za-z0-9._~+/=-]+", "[REDACTED]")'
           - 'replace_pattern(span.name, "(?:sk|rk)[_-][A-Za-z0-9_*.-]{3,}", "[REDACTED]")'
           - 'replace_pattern(span.name, "eyJ[A-Za-z0-9_-]+[.]eyJ[A-Za-z0-9_-]+[.][A-Za-z0-9_-]+", "[REDACTED]")'
@@ -55,6 +56,7 @@ processors:
           - 'replace_pattern(span.name, "([&#][[:space:]   -   　\\x{2028}\\x{2029}\\x{feff}]*(?:\x27|`)?[A-Za-z0-9_.\\[\\]\\x22\\x27\\x5c`-]*(?i:authorization|proxy[._-]?authorization|cookie|set[._-]?cookie|password|passwd|secret|token|api[._-]?key|apikey|access[._-]?key|client[._-]?secret|private[._-]?key|email|phone|cpf|cnpj|document)(?:(?:\\]|\\[|\\x22|\\x27|\\x60|[._-]|[A-Z0-9])[A-Za-z0-9_.\\[\\]\\x22\\x27\\x5c`-]*)?(?:\x27|`)?[[:space:]   -   　\\x{2028}\\x{2029}\\x{feff}]*(?:=>|[=:])[[:space:]   -   　\\x{2028}\\x{2029}\\x{feff}]*)(?s:.*)", "$$1\"[REDACTED]\"")'
       - context: spanevent
         statements:
+          - 'replace_pattern(spanevent.name, "(?i)https?://[^/@[:space:]   -   　\\x{2028}\\x{2029}\\x{feff}]+@", "[REDACTED]")'
           - 'replace_pattern(spanevent.name, "(?i)Bearer[[:space:]   -   　\\x{2028}\\x{2029}\\x{feff}]+[A-Za-z0-9._~+/=-]+", "[REDACTED]")'
           - 'replace_pattern(spanevent.name, "(?:sk|rk)[_-][A-Za-z0-9_*.-]{3,}", "[REDACTED]")'
           - 'replace_pattern(spanevent.name, "eyJ[A-Za-z0-9_-]+[.]eyJ[A-Za-z0-9_-]+[.][A-Za-z0-9_-]+", "[REDACTED]")'
@@ -86,6 +88,7 @@ processors:
     log_statements:
       - context: log
         statements:
+          - 'replace_pattern(log.body, "(?i)https?://[^/@[:space:]   -   　\\x{2028}\\x{2029}\\x{feff}]+@", "[REDACTED]") where IsString(log.body)'
           - 'replace_pattern(log.body, "(?i)Bearer[[:space:]   -   　\\x{2028}\\x{2029}\\x{feff}]+[A-Za-z0-9._~+/=-]+", "[REDACTED]") where IsString(log.body)'
           - 'replace_pattern(log.body, "(?:sk|rk)[_-][A-Za-z0-9_*.-]{3,}", "[REDACTED]") where IsString(log.body)'
           - 'replace_pattern(log.body, "eyJ[A-Za-z0-9_-]+[.]eyJ[A-Za-z0-9_-]+[.][A-Za-z0-9_-]+", "[REDACTED]") where IsString(log.body)'
@@ -111,6 +114,7 @@ processors:
     blocked_key_patterns:
       - "(?i:authorization|proxy[._-]?authorization|cookie|set[._-]?cookie|password|passwd|secret|token|api[._-]?key|apikey|access[._-]?key|client[._-]?secret|private[._-]?key|email|phone|cpf|cnpj|document)(?:\\]|\\[|\\x22|\\x27|\\x60|[._-]|[A-Z0-9]|$)"
     blocked_values:
+      - "(?i)https?://[^/@[:space:]   -   　\\x{2028}\\x{2029}\\x{feff}]+@"
       - "(?i)Bearer[[:space:]   -   　\\x{2028}\\x{2029}\\x{feff}]+[A-Za-z0-9._~+/=-]+"
       - "(?:sk|rk)[_-][A-Za-z0-9_*.-]{3,}"
       - "eyJ[A-Za-z0-9_-]+[.]eyJ[A-Za-z0-9_-]+[.][A-Za-z0-9_-]+"

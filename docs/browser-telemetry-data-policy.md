@@ -22,6 +22,7 @@ The original complete key is inspected before bounding. A scalar value under a s
 
 The following content becomes `[REDACTED]` within safe string values and event names:
 
+- HTTP and HTTPS URL userinfo, including the complete username and password before `@`
 - Bearer authorization values
 - `sk_`, `sk-`, `rk_`, and `rk-` credentials
 - JSON Web Tokens
@@ -48,8 +49,12 @@ Browser producers enforce the original inspection bound before any scanner runs.
 | Events per batch   |            Not applicable |                      64 |
 | Event identifier   |            Not applicable |    64 UTF-16 code units |
 
+The fetch transport serializes batches as UTF-8 JSON and limits each request to 90,000 bytes. It splits queued events by both event count and serialized byte size before sending. This budget stays below Express's default 100 KB request limit. The 64-event, 32-field, 128-character key, and 1,024-character value limits remain per-request schema safety bounds. String fields keep the 1,024-code-unit schema maximum and use an additional 2,048-byte UTF-8 transport bound. If one event would still exceed 90,000 bytes, the client retains the event and admits its fields in iteration order until the request fits.
+
+The NestJS endpoint returns HTTP 202 for an accepted version 1 batch. Express returns HTTP 413 before schema decoding when the raw JSON body exceeds 100 KB. Malformed JSON and schema-invalid batches return HTTP 400.
+
 Oversized original keys are dropped. Oversized original string values and event names become `[REDACTED]`. If different original keys produce the same bounded key, the first accepted field in JavaScript iteration order wins. Later fields do not replace or merge with it.
 
 ## Collector parity
 
-The telemetry package owns the semantic key vocabulary and the five core credential patterns. Behavioral suites independently execute the SDK sanitizer and a real Collector for the structured-assignment grammar. A repository parity test also checks both Collector assets against the vocabulary, processor coverage, and processor order. Traces, logs, and metrics run the same redaction transform before the sensitive-key processor. Metric resource attributes and datapoint attributes therefore receive the same structured-assignment redaction as log and trace attributes. Browser JSON traversal is intentionally outside exact Collector parity because Collector OTTL does not expose the same recursive contract.
+The telemetry package owns the semantic key vocabulary and the six core credential patterns. Behavioral suites independently execute the SDK sanitizer and a real Collector for the structured-assignment grammar. A repository parity test also checks both Collector assets against the vocabulary, processor coverage, and processor order. Traces, logs, and metrics run the same redaction transform before the sensitive-key processor. Metric resource attributes and datapoint attributes therefore receive the same structured-assignment redaction as log and trace attributes. Browser JSON traversal is intentionally outside exact Collector parity because Collector OTTL does not expose the same recursive contract.

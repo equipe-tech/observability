@@ -55,7 +55,7 @@ describe("policy sanitizer performance", () => {
     }
   });
 
-  it("bounds maximum browser batches through real ingest", async () => {
+  it("bounds maximum browser batches through direct ingest", async () => {
     const marker = crypto.randomUUID().replaceAll("-", "");
     const suffix = `&password=${marker}`;
     const fields = Object.fromEntries(

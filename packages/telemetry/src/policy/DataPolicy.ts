@@ -44,14 +44,14 @@ const PolicyDocument = Schema.Struct({
   blockedKeys: Schema.Array(Schema.String.check(Schema.isMaxLength(128))).check(
     Schema.isMaxLength(256),
   ),
-  blockedValuePatterns: Schema.Array(Schema.String.check(Schema.isMaxLength(512))).check(
-    Schema.isMaxLength(64),
-  ),
+  blockedValuePatterns: Schema.Array(Schema.String).check(Schema.isMaxLength(64)),
 });
 const decodePolicy = Schema.decodeUnknownEffect(PolicyDocument);
 const classifications = new Set(["public", "internal", "sensitive", "forbidden"]);
 const reservedNames = new Set(["event.name", "event.kind", "event.type", "event.severity"]);
 const maximumRegexRepetition = 64;
+const maximumRegexSourceLength = 256;
+const maximumRegexFixedWidth = 128;
 
 const issue = (
   code: PolicyIssueCode,
@@ -76,9 +76,11 @@ const invalid = (issues: ReadonlyArray<PolicyIssue>): InvalidDataPolicy =>
   });
 
 const isAcceptedRegex = (source: string): boolean => {
+  if (source.length === 0 || source.length > maximumRegexSourceLength) return false;
   let index = 0;
   let canQuantify = false;
   let variableQuantifiers = 0;
+  let fixedWidth = 0;
   while (index < source.length) {
     const character = source.charAt(index);
     if (character === "^" && index === 0) {
@@ -150,8 +152,12 @@ const isAcceptedRegex = (source: string): boolean => {
         return false;
       }
       if (maximum !== undefined && minimum > maximum) return false;
-      if (separator !== -1) variableQuantifiers += 1;
-      if (variableQuantifiers > 1) return false;
+      if (separator !== -1) {
+        variableQuantifiers += 1;
+      } else {
+        fixedWidth += minimum;
+      }
+      if (variableQuantifiers > 1 || fixedWidth > maximumRegexFixedWidth) return false;
       canQuantify = false;
       index += repetition.length;
       continue;
@@ -160,7 +166,7 @@ const isAcceptedRegex = (source: string): boolean => {
     canQuantify = true;
     index += 1;
   }
-  return source.length > 0;
+  return true;
 };
 
 const hasMalformedEscapeOrClass = (source: string): boolean => {
@@ -260,7 +266,7 @@ export const parseDataPolicy = Effect.fn("parseDataPolicy")(function* (
         issue(
           "OBS_POLICY_INVALID_ATTRIBUTE_NAME",
           "A policy attribute name is invalid. Use a dotted lowercase name no longer than 128 characters.",
-          name.slice(0, 128),
+          undefined,
           "dotted-name",
         ),
       );

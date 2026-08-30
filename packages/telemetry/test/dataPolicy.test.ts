@@ -10,6 +10,7 @@ import {
 import { sanitizeDefectEnvelope } from "../src/policy/DefectEnvelope.ts";
 import { metricLabelRejection } from "../src/policy/MetricLabelPolicy.ts";
 import { sanitizeText, transformSignalFields } from "../src/policy/PolicyTransform.ts";
+import { sanitizeBrowserFields, sanitizeEventName } from "../src/RedactionPolicy.ts";
 
 const marker = (): string => crypto.randomUUID().replaceAll("-", "");
 
@@ -86,6 +87,77 @@ describe("executable data policy discrimination", () => {
       }),
     );
     assert.strictEqual(policy.classify("http.authorization"), "sensitive");
+  });
+
+  it("returns OBS_POLICY_INVALID_ATTRIBUTE_NAME without rejected input", async () => {
+    const rejected = `Bad.${marker()}`;
+    const failure = await Effect.runPromise(
+      Effect.flip(
+        parseDataPolicy({
+          attributes: {
+            [rejected]: { classification: "internal", required: false, metricLabel: false },
+          },
+          blockedKeys: [],
+          blockedValuePatterns: [],
+        }),
+      ),
+    );
+    assert.strictEqual(failure.issues[0]?.code, "OBS_POLICY_INVALID_ATTRIBUTE_NAME");
+    assert.notInclude(JSON.stringify(failure), rejected);
+  });
+
+  it("returns OBS_POLICY_RESERVED_ATTRIBUTE_NAME", async () => {
+    const failure = await Effect.runPromise(
+      Effect.flip(
+        parseDataPolicy({
+          attributes: {
+            "event.name": { classification: "internal", required: false, metricLabel: false },
+          },
+          blockedKeys: [],
+          blockedValuePatterns: [],
+        }),
+      ),
+    );
+    assert.strictEqual(failure.issues[0]?.code, "OBS_POLICY_RESERVED_ATTRIBUTE_NAME");
+  });
+
+  it("returns OBS_POLICY_INVALID_CLASSIFICATION", async () => {
+    const failure = await Effect.runPromise(
+      Effect.flip(
+        parseDataPolicy({
+          attributes: {
+            "customer.secret": { classification: "sensitive", required: true, metricLabel: false },
+          },
+          blockedKeys: [],
+          blockedValuePatterns: [],
+        }),
+      ),
+    );
+    assert.strictEqual(failure.issues[0]?.code, "OBS_POLICY_INVALID_CLASSIFICATION");
+  });
+
+  it("returns OBS_POLICY_INVALID_BLOCKED_KEY without rejected input", async () => {
+    const rejected = `[${marker()}`;
+    const failure = await Effect.runPromise(
+      Effect.flip(
+        parseDataPolicy({ attributes: {}, blockedKeys: [rejected], blockedValuePatterns: [] }),
+      ),
+    );
+    assert.strictEqual(failure.issues[0]?.code, "OBS_POLICY_INVALID_BLOCKED_KEY");
+    assert.notInclude(JSON.stringify(failure), rejected);
+  });
+
+  it("returns OBS_POLICY_LIMIT_EXCEEDED", async () => {
+    const attributes = Object.fromEntries(
+      Array.from({ length: 513 }, (_, index) => [
+        `field.value${index}`,
+        applicationPolicy.attributes["customer.tier"],
+      ]),
+    );
+    const failure = await Effect.runPromise(
+      Effect.flip(parseDataPolicy({ attributes, blockedKeys: [], blockedValuePatterns: [] })),
+    );
+    assert.strictEqual(failure.issues[0]?.code, "OBS_POLICY_LIMIT_EXCEEDED");
   });
 
   it("rejects policy extensions that loosen contract classifications", async () => {
@@ -183,6 +255,7 @@ describe("executable data policy discrimination", () => {
       "ab{65}",
       "ab{65,}",
       "ab{1,65}",
+      "[ab]{64}".repeat(3),
     ]) {
       const started = performance.now();
       const failure = await Effect.runPromise(
@@ -198,6 +271,18 @@ describe("executable data policy discrimination", () => {
       assert.isBelow(performance.now() - started, 100);
       assert.notInclude(JSON.stringify(failure), blockedKey);
     }
+    const oversizedPattern = `${"[ab]{64}".repeat(50)}[ab]*z`;
+    const oversizedFailure = await Effect.runPromise(
+      Effect.flip(
+        parseDataPolicy({
+          attributes: {},
+          blockedKeys: [],
+          blockedValuePatterns: [oversizedPattern],
+        }),
+      ),
+    );
+    assert.strictEqual(oversizedFailure.issues[0]?.code, "OBS_POLICY_UNSAFE_BLOCKED_VALUE_PATTERN");
+    assert.notInclude(JSON.stringify(oversizedFailure), oversizedPattern);
     for (const blockedKey of [
       "application[._]secret",
       "provider_[A-Za-z0-9]+",
@@ -276,6 +361,42 @@ describe("executable data policy discrimination", () => {
       sanitizeText(policy, `provider_${secret} provider_${secret}`),
       "[REDACTED] [REDACTED]",
     );
+  });
+
+  it("redacts URL userinfo credentials on every SDK signal", async () => {
+    const policy = await compile();
+    const username = `user${marker()}`;
+    const password = `pass${marker()}`;
+    const source = `request to https://${username}:${password}@api.example/private failed`;
+    const surfaces: ReadonlyArray<Exclude<PolicySurface, "metric">> = [
+      "event",
+      "log",
+      "span",
+      "browser-ingest",
+      "defect",
+      "resource",
+    ];
+    for (const surface of surfaces) {
+      const decision = transformSignalFields(policy, surface, { "request.detail": source });
+      assert.notInclude(JSON.stringify(decision.value), username);
+      assert.notInclude(JSON.stringify(decision.value), password);
+    }
+    const textSurfaces: ReadonlyArray<"event" | "log" | "span" | "defect"> = [
+      "event",
+      "log",
+      "span",
+      "defect",
+    ];
+    for (const surface of textSurfaces) {
+      const sanitized = sanitizeText(policy, source, surface);
+      assert.notInclude(sanitized, username);
+      assert.notInclude(sanitized, password);
+    }
+    const browserFields = sanitizeBrowserFields({ "request.detail": source });
+    assert.notInclude(JSON.stringify(browserFields), username);
+    assert.notInclude(JSON.stringify(browserFields), password);
+    assert.notInclude(sanitizeEventName(source), username);
+    assert.notInclude(sanitizeEventName(source), password);
   });
 
   it("redacts every nested assignment fixture on every signal", async () => {

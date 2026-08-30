@@ -127,12 +127,12 @@ const safeValueEnd = (value: string, start: number): number => {
 };
 
 const replaceCoreValues = (value: string): string => {
-  let sanitized = replaceEmailCandidates(value);
+  let sanitized = value;
   for (const pattern of baseBlockedValuePatterns) {
     pattern.lastIndex = 0;
     sanitized = sanitized.replace(pattern, sensitiveTextReplacement);
   }
-  return sanitized;
+  return replaceEmailCandidates(sanitized);
 };
 
 const containsCoreValue = (value: string): boolean => {

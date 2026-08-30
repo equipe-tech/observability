@@ -3,6 +3,15 @@ import { Module } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { Effect, ManagedRuntime, Option, Schema } from "effect";
 import { assert, describe, it } from "vite-plus/test";
+import {
+  browserRequestByteBudget,
+  createBrowserTelemetryClient,
+  maxEventNameLength,
+  maxEventsPerBatch,
+  maxFieldKeyLength,
+  maxFieldsPerEvent,
+  maxFieldValueLength,
+} from "../src/browser/index.ts";
 import { createBrowserEventsController, TelemetryInterceptor } from "../src/nestjs/index.ts";
 import * as Testing from "../src/testing/index.ts";
 
@@ -96,6 +105,52 @@ describe("browser events endpoint", () => {
     assert.notInclude(JSON.stringify(telemetry), secret);
   }, 30_000);
 
+  it("accepts a valid request near the documented browser byte budget", async () => {
+    const harness = await startApp(true);
+    const maximumFields = Object.fromEntries(
+      Array.from({ length: maxFieldsPerEvent }, (_, index) => [
+        `field.${String(index).padStart(2, "0")}${"k".repeat(maxFieldKeyLength - 8)}`,
+        "x".repeat(maxFieldValueLength),
+      ]),
+    );
+    const partialFields = Object.fromEntries(Object.entries(maximumFields).slice(0, 13));
+    const body = JSON.stringify({
+      version: 1,
+      events: [
+        { id: "evt-1", name: "maximum.one", occurredAt: 1, fields: maximumFields },
+        { id: "evt-2", name: "maximum.two", occurredAt: 1, fields: maximumFields },
+        { id: "evt-3", name: "maximum.three", occurredAt: 1, fields: partialFields },
+      ],
+    });
+    const bytes = new TextEncoder().encode(body).byteLength;
+    assert.isAbove(bytes, 85_000);
+    assert.isAtMost(bytes, browserRequestByteBudget);
+    const response = await postEvents(harness.baseUrl, body);
+    assert.strictEqual(response.status, 202);
+    await harness.close();
+  }, 30_000);
+
+  it("delivers maximum multibyte inputs through the default fetch transport", async () => {
+    const harness = await startApp(true);
+    const fields = Object.fromEntries(
+      Array.from({ length: maxFieldsPerEvent }, (_, index) => [
+        `${String(index).padStart(2, "0")}${"界".repeat(maxFieldKeyLength - 2)}`,
+        "界".repeat(maxFieldValueLength),
+      ]),
+    );
+    const client = createBrowserTelemetryClient({
+      endpoint: `${harness.baseUrl}/_telemetry/events`,
+      flushIntervalMs: 60_000,
+    });
+    for (let index = 0; index < maxEventsPerBatch; index += 1) {
+      client.emit("n".repeat(maxEventNameLength), fields);
+    }
+    await client.flush();
+    assert.strictEqual(client.pending(), 0);
+    await client.dispose();
+    await harness.close();
+  }, 30_000);
+
   it("rejects an invalid batch with the public contract and a safe correlation id", async () => {
     const harness = await startApp(true);
     const response = await postEvents(harness.baseUrl, JSON.stringify({ nonsense: true }));
@@ -120,12 +175,11 @@ describe("browser events endpoint", () => {
     await harness.close();
   }, 30_000);
 
-  it("answers 413 when the raw body exceeds the transport limit", async () => {
+  it("answers 413 above Express's 100 KB transport limit", async () => {
     const harness = await startApp(true);
-    const response = await postEvents(
-      harness.baseUrl,
-      JSON.stringify({ version: 1, junk: "x".repeat(200_000), events: [] }),
-    );
+    const body = JSON.stringify({ version: 1, junk: "x".repeat(102_401), events: [] });
+    assert.isAbove(new TextEncoder().encode(body).byteLength, 102_400);
+    const response = await postEvents(harness.baseUrl, body);
     assert.strictEqual(response.status, 413);
     await harness.close();
   }, 30_000);
