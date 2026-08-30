@@ -26,7 +26,7 @@ const applicationPolicy = definePolicy({
 const compile = () => Effect.runPromise(parseDataPolicy(applicationPolicy));
 
 describe("executable data policy discrimination", () => {
-  it("discriminates-collector-only-defence", async () => {
+  it("removes authorization secrets before log fields reach the Collector", async () => {
     const secret = marker();
     const decision = transformSignalFields(await compile(), "log", {
       "http.authorization": `Bearer ${secret}`,
@@ -36,7 +36,7 @@ describe("executable data policy discrimination", () => {
     assert.strictEqual(decision.value["cart.total"], 12);
   });
 
-  it("discriminates-retry-buffer-leak", async () => {
+  it("keeps copied retry-buffer fields free of application secrets", async () => {
     const secret = marker();
     const first = transformSignalFields(await compile(), "log", {
       "request.detail": `provider_${secret}`,
@@ -45,7 +45,7 @@ describe("executable data policy discrimination", () => {
     assert.notInclude(JSON.stringify(retained), secret);
   });
 
-  it("discriminates-metric-direct-path", () => {
+  it("rejects authorization values before recording metric labels", () => {
     const secret = marker();
     assert.strictEqual(
       metricLabelRejection(baseDataPolicy, "http.authorization", `Bearer ${secret}`),
@@ -53,14 +53,14 @@ describe("executable data policy discrimination", () => {
     );
   });
 
-  it("discriminates-metric-identifier-label", () => {
+  it("rejects UUID-shaped metric label values", () => {
     assert.strictEqual(
       metricLabelRejection(baseDataPolicy, "worker.name", "123e4567-e89b-12d3-a456-426614174000"),
       "identifier-shape",
     );
   });
 
-  it("discriminates-base-rule-removal", async () => {
+  it("keeps built-in sensitive classifications when extensions omit them", async () => {
     const policy = await Effect.runPromise(
       parseDataPolicy({
         attributes: {
@@ -77,7 +77,7 @@ describe("executable data policy discrimination", () => {
     assert.strictEqual(policy.classify("http.authorization"), "sensitive");
   });
 
-  it("discriminates-contract-loosening", async () => {
+  it("rejects policy extensions that loosen contract classifications", async () => {
     const failure = await Effect.runPromise(
       Effect.flip(
         parseDataPolicy(
@@ -105,14 +105,14 @@ describe("executable data policy discrimination", () => {
     assert.strictEqual(failure.issues[0]?.code, "OBS_POLICY_CONTRACT_CONFLICT");
   });
 
-  it("discriminates-sensitive-rejection", async () => {
+  it("masks sensitive event fields", async () => {
     const decision = transformSignalFields(await compile(), "event", {
       "customer.email": "person@example.com",
     });
     assert.strictEqual(decision.value["customer.email"], "****");
   });
 
-  it("discriminates-forbidden-transform", async () => {
+  it("drops forbidden event fields and reports the drop", async () => {
     const decision = transformSignalFields(await compile(), "event", {
       "payment.card": "4111111111111111",
     });
@@ -120,7 +120,7 @@ describe("executable data policy discrimination", () => {
     assert.strictEqual(decision.dropped, 1);
   });
 
-  it("discriminates-transform-idempotence", async () => {
+  it("produces the same fields when sanitized twice", async () => {
     const policy = await compile();
     const secret = marker();
     const first = transformSignalFields(policy, "log", {
@@ -130,7 +130,7 @@ describe("executable data policy discrimination", () => {
     assert.deepStrictEqual(second.value, first.value);
   });
 
-  it("discriminates-order-dependence", async () => {
+  it("redacts a JWT assigned to a password field", async () => {
     const secret = marker();
     assert.strictEqual(
       sanitizeText(await compile(), `password=eyJ${secret}.eyJ${secret}.${secret}`),
@@ -138,7 +138,7 @@ describe("executable data policy discrimination", () => {
     );
   });
 
-  it("discriminates-error-value-echo", async () => {
+  it("omits invalid blocked patterns from policy errors", async () => {
     const secret = marker();
     const failure = await Effect.runPromise(
       Effect.flip(
@@ -165,7 +165,7 @@ describe("executable data policy discrimination", () => {
     assert.strictEqual(failure.issues[0]?.code, "OBS_POLICY_UNSAFE_BLOCKED_KEY_PATTERN");
   });
 
-  it("discriminates-cause-leak", async () => {
+  it("removes bearer secrets from error text", async () => {
     const secret = marker();
     assert.notInclude(sanitizeText(await compile(), `Error: Bearer ${secret}`), secret);
   });
@@ -183,7 +183,7 @@ describe("executable data policy discrimination", () => {
     });
   });
 
-  it("discriminates-correlation-survival", async () => {
+  it("preserves request and run correlation identifiers", async () => {
     const decision = transformSignalFields(await compile(), "log", {
       "request.id": "request-123",
       "run.id": "test-canary-123",
@@ -194,7 +194,7 @@ describe("executable data policy discrimination", () => {
     });
   });
 
-  it("discriminates-negative-controls", async () => {
+  it("leaves words containing sensitive substrings unchanged", async () => {
     const policy = await compile();
     for (const value of ["tokenizer", "documentation", "secretive", "decade", "facade"]) {
       assert.strictEqual(sanitizeText(policy, value), value);
@@ -294,12 +294,12 @@ describe("executable data policy discrimination", () => {
     assert.isUndefined(metricLabelRejection(baseDataPolicy, "http.status_code", 200));
   });
 
-  it("discriminates-series-identity-after-policy", () => {
+  it("rejects blocked values before they become metric series identity", () => {
     const secret = marker();
     assert.isDefined(metricLabelRejection(baseDataPolicy, "request.secret", `provider_${secret}`));
   });
 
-  it("discriminates-masked-metric-label", () => {
+  it("rejects masked metric label values", () => {
     assert.isDefined(metricLabelRejection(baseDataPolicy, "safe.label", "****"));
     assert.isDefined(metricLabelRejection(baseDataPolicy, "safe.label", "[REDACTED]"));
   });

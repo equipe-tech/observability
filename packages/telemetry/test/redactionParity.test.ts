@@ -30,7 +30,7 @@ const behaviouralCases = [
 const collectorParityAllowances = ["nested-json-sensitive-key"];
 
 describe("browser and Collector redaction parity", () => {
-  it("discriminates-collector-behavioural-parity", () => {
+  it("recognizes blocked values and records the nested JSON parity allowance", () => {
     for (const value of behaviouralCases) {
       assert.isTrue(
         collectorBlockedValuePatterns.some((source) => collectorPattern(source).test(value)),
@@ -39,7 +39,7 @@ describe("browser and Collector redaction parity", () => {
     assert.deepStrictEqual(collectorParityAllowances, ["nested-json-sensitive-key"]);
   });
   for (const assetPath of assetPaths) {
-    it(`discriminates-collector-behavioural-parity in ${assetPath}`, () => {
+    it(`keeps the canonical key and value vocabulary in ${assetPath}`, () => {
       const asset = readFileSync(assetPath, "utf8");
       assert.strictEqual(occurrences(asset, `- "${collectorBlockedKeyPattern}"`), 1);
       let previousIndex = -1;

@@ -1,4 +1,4 @@
-import { sanitizeBrowserEventName, sanitizeBrowserFields } from "../RedactionPolicy.ts";
+import { sanitizeBrowserFields, sanitizeEventName } from "../RedactionPolicy.ts";
 
 export type BrowserTelemetryClientFields = {
   readonly [field: string]: string | number | boolean;
@@ -139,7 +139,7 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
 
   emit(name: string, fields: BrowserTelemetryClientFields = {}): void {
     if (this.options.disabled || this.disposed) return;
-    const sanitizedName = sanitizeBrowserEventName(name);
+    const sanitizedName = sanitizeEventName(name);
     const event: BrowserTelemetryClientEvent = {
       id: crypto.randomUUID(),
       name: sanitizedName.length === 0 ? fallbackEventName : sanitizedName,

@@ -22,7 +22,6 @@ import {
 } from "../profile/LifecycleRegistry.ts";
 import type { DuplicateReleaseVariable } from "../profile/ObservabilityConfigError.ts";
 import { InvalidObservabilityConfig } from "../profile/ObservabilityConfigError.ts";
-import type { InvalidDataPolicy } from "../policy/DataPolicyError.ts";
 import { profileCapabilityRank } from "../profile/ObservabilityProfile.ts";
 
 export type NodeObservabilityDisabled = {
@@ -160,15 +159,6 @@ export const acquireRuntimeFlusher = Effect.fn("acquireRuntimeFlusher")(function
   return acquisition.value;
 });
 
-const invalidResourcePolicy = (cause: InvalidDataPolicy): InvalidObservabilityConfig =>
-  new InvalidObservabilityConfig({
-    code: "OBS_OBSERVABILITY_CONFIG_INVALID",
-    message: "The resource field policy is invalid. Fix the policy before starting observability.",
-    field: "policy",
-    rule: "resource-field-policy",
-    cause,
-  });
-
 const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(function* (
   config: NodeObservabilityConfig,
   registrations: ReadonlyArray<AdapterRegistration>,
@@ -188,11 +178,7 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
     Telemetry.layer(config.telemetry, {
       shutdownTimeout: Duration.millis(400),
       policy: config.evlog.policy,
-    }).pipe(
-      Layer.catch((error) =>
-        Layer.effect(OtlpExporter.Flusher, Effect.fail(invalidResourcePolicy(error))),
-      ),
-    ),
+    }),
   );
   const flusher = yield* acquireRuntimeFlusher(runtime);
   const context = {

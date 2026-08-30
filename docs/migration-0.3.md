@@ -42,6 +42,10 @@ A versão 0.3 exige nomes estáveis e pontuados para atributos de métricas. Tro
 
 Cada instrumento aceita no máximo 100 valores distintos por rótulo durante a vida do runtime. Reduza a cardinalidade antes da atualização. O valor 101 produz `MetricsError` com código `LIMIT_EXCEEDED`.
 
+## Tratar falhas de política no runtime Node
+
+O canal de erro de `node/Runtime.layer` e `Telemetry.layerFromEnv` agora inclui `InvalidDataPolicy`. Código que fornece essas Layers deve tratar essa falha tipada junto com as falhas de identidade, ambiente e release que já existiam. Uma política de atributos de resource inválida usa o código `OBS_POLICY_DUPLICATE_RESOURCE_ATTRIBUTE` e não inicia o runtime.
+
 ## Renomear projetos incompatíveis com a CLI
 
 A CLI 0.2 aceitava hífens consecutivos em `provision --name` e nos nomes de projeto dos comandos `env`. A CLI 0.3 aplica a mesma gramática de `serviceName` nesses argumentos. Renomeie `checkout--api` para `checkout-api` antes de atualizar. Um nome incompatível retorna `OBS_CLI_PROVISION_INVALID_NAME` em `provision` ou `OBS_CLI_REMOTE_INVALID_PROJECT` em comandos `env`.

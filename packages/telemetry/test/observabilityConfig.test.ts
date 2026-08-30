@@ -287,7 +287,7 @@ describe("node observability configuration", () => {
     });
   });
 
-  it("discriminates-policy-error-envelope", async () => {
+  it("wraps invalid policy patterns in a safe observability config error", async () => {
     const secret = crypto.randomUUID().replaceAll("-", "");
     const failure = await Effect.runPromise(
       Effect.flip(

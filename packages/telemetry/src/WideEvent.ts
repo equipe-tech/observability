@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { sanitizeBrowserEventName } from "./policy/BrowserFieldPolicy.ts";
+import { sanitizeEventName } from "./policy/BrowserFieldPolicy.ts";
 import { CurrentDataPolicy } from "./policy/DataPolicy.ts";
 import { transformSignalFields } from "./policy/PolicyTransform.ts";
 
@@ -13,7 +13,7 @@ export const emit = Effect.fn("WideEvent.emit")(function* (
 ): Effect.fn.Return<void> {
   const policy = yield* CurrentDataPolicy;
   const decision = transformSignalFields(policy, "log", fields);
-  const eventName = sanitizeBrowserEventName(name);
+  const eventName = sanitizeEventName(name);
   yield* Effect.logInfo(eventName).pipe(
     Effect.annotateLogs({
       ...decision.value,

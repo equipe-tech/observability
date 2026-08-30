@@ -256,5 +256,5 @@ export const sanitizeBrowserFields = (fields: WideEventFields): BrowserEventFiel
   return Object.fromEntries(sanitized);
 };
 
-export const sanitizeBrowserEventName = (name: string): string =>
+export const sanitizeEventName = (name: string): string =>
   sanitizeString(name, maxEventNameLength).slice(0, maxEventNameLength);

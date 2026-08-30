@@ -11,7 +11,7 @@ const attributeOrUndefined = (
   Option.getOrUndefined(Testing.attribute(attributes, key));
 
 describe("ingestBrowserEvents", () => {
-  it.live("discriminates-ingest-passthrough", () =>
+  it.live("re-emits parsed browser events as wide events with server-owned attributes", () =>
     Effect.gen(function* () {
       const secret = crypto.randomUUID().replaceAll("-", "");
       const payload: unknown = {

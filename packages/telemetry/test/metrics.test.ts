@@ -643,7 +643,7 @@ describe("framework-neutral metrics", () => {
     }
   });
 
-  it("discriminates-per-key-cardinality", async () => {
+  it("shares compatible instruments and enforces lifetime series limits", async () => {
     const collector = await startCollector();
     try {
       const metrics = await createMetrics(options(collector.endpoint));

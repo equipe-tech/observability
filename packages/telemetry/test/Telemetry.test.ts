@@ -33,27 +33,29 @@ describe("Telemetry.layer", () => {
     ] satisfies ReadonlyArray<LogLevel.LogLevel>;
     assert.deepStrictEqual(levels.map(logLevelSeverityNumber), [0, 1, 5, 9, 13, 17, 21, 0]);
   });
-  it.live("discriminates-effect-log-record-shape", () =>
-    Effect.gen(function* () {
-      const result = yield* Testing.run(
-        Effect.logInfo("record-shape").pipe(
-          Effect.annotateLogs({ "probe.value": "kept" }),
-          Effect.withSpan("record.shape"),
-        ),
-      );
-      const log = result.telemetry.logs.find((candidate) =>
-        Option.contains(candidate.body, "record-shape"),
-      );
-      assert.isDefined(log);
-      assert.strictEqual(Option.getOrUndefined(log.severityText), "Info");
-      assert.isTrue(Option.isSome(log.traceId));
-      assert.isTrue(Option.isSome(log.spanId));
-      assert.strictEqual(
-        Option.getOrUndefined(Testing.attribute(log.attributes, "probe.value")),
-        "kept",
-      );
-      assert.isTrue(Option.isSome(Testing.attribute(log.attributes, "fiberId")));
-    }),
+  it.live(
+    "captures severity, span correlation, annotations, and fiber identity from Effect logs",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* Testing.run(
+          Effect.logInfo("record-shape").pipe(
+            Effect.annotateLogs({ "probe.value": "kept" }),
+            Effect.withSpan("record.shape"),
+          ),
+        );
+        const log = result.telemetry.logs.find((candidate) =>
+          Option.contains(candidate.body, "record-shape"),
+        );
+        assert.isDefined(log);
+        assert.strictEqual(Option.getOrUndefined(log.severityText), "Info");
+        assert.isTrue(Option.isSome(log.traceId));
+        assert.isTrue(Option.isSome(log.spanId));
+        assert.strictEqual(
+          Option.getOrUndefined(Testing.attribute(log.attributes, "probe.value")),
+          "kept",
+        );
+        assert.isTrue(Option.isSome(Testing.attribute(log.attributes, "fiberId")));
+      }),
   );
 
   it.live("sanitizes console fallback before output", () =>

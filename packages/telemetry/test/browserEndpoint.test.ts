@@ -59,7 +59,7 @@ const postEvents = (baseUrl: string, body: string): Promise<Response> =>
   });
 
 describe("browser events endpoint", () => {
-  it("discriminates-real-boundary", async () => {
+  it("accepts a valid batch with 202 while the telemetry route stays excluded", async () => {
     const harness = await startApp(true);
     const secret = crypto.randomUUID().replaceAll("-", "");
     const response = await postEvents(

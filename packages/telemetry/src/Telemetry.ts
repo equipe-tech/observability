@@ -66,11 +66,24 @@ export const layerOtlp = (
   );
 };
 
-export const layer = (
+type OtlpLayerOptionsWithoutResourceAttributes = Omit<OtlpLayerOptions, "resourceAttributes"> & {
+  readonly resourceAttributes?: undefined;
+};
+
+export function layer(
+  config: TelemetryConfig,
+  options?: OtlpLayerOptionsWithoutResourceAttributes,
+): Layer.Layer<OtlpExporter.Flusher, never>;
+export function layer(
+  config: TelemetryConfig,
+  options: OtlpLayerOptions,
+): Layer.Layer<OtlpExporter.Flusher, InvalidDataPolicy>;
+export function layer(
   config: TelemetryConfig,
   options: OtlpLayerOptions = {},
-): Layer.Layer<OtlpExporter.Flusher, InvalidDataPolicy> =>
-  layerOtlp(config, options).pipe(Layer.provide(FetchHttpClient.layer));
+): Layer.Layer<OtlpExporter.Flusher, InvalidDataPolicy> {
+  return layerOtlp(config, options).pipe(Layer.provide(FetchHttpClient.layer));
+}
 
 export const layerFromEnv = (
   env: EnvironmentVariables,
