@@ -198,6 +198,25 @@ describe("browser telemetry redaction policy", () => {
     }
   });
 
+  it("redacts quoted assignment keys and preserves only assignment tails", () => {
+    const secret = marker();
+    const cases = [
+      [`'password': '${secret}'`, `'password': '[REDACTED]'`],
+      [`"password" = '${secret}'`, `"password" = '[REDACTED]'`],
+      ["`password`: `" + secret + "`", "`password`: `[REDACTED]`"],
+      [`error sending 'token': "${secret}"`, `error sending 'token': "[REDACTED]"`],
+      [`{'password': '${secret}'}`, "[REDACTED]"],
+      [`password=${secret}&more`, "password=[REDACTED]"],
+      [`password=${secret}#fragment`, "password=[REDACTED]"],
+      [`password=${secret}&safe=1`, "password=[REDACTED]&safe=1"],
+      [`password=${secret}#safe:1`, "password=[REDACTED]#safe:1"],
+      [`password=${secret}&token=${secret}`, "password=[REDACTED]&token=[REDACTED]"],
+    ] satisfies ReadonlyArray<readonly [string, string]>;
+    for (const [source, expected] of cases) {
+      assert.strictEqual(sanitizeEventName(source), expected);
+    }
+  });
+
   it("redacts assignment suffixes for every sensitive credential form", () => {
     const secret = marker();
     const cases = [

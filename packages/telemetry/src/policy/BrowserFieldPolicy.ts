@@ -51,7 +51,8 @@ const sensitiveTextTermPattern = new RegExp(
 );
 
 const structuredAssignmentPattern =
-  /(?:"([A-Za-z0-9_.\-[\]]+)"|([A-Za-z0-9_.\-[\]]+))(\s*[=:]\s*)/g;
+  /(?:(["'`])([A-Za-z0-9_.\-[\]]+)\1|([A-Za-z0-9_.\-[\]]+))(\s*[=:]\s*)/g;
+const nextAssignmentPattern = /^\s*(?:["'`]?[A-Za-z0-9_.\-[\]]+["'`]?)\s*[=:]/;
 
 const closingQuoteIndex = (value: string, start: number, quote: string): number => {
   let escaped = false;
@@ -69,11 +70,16 @@ const closingQuoteIndex = (value: string, start: number, quote: string): number 
 };
 
 const safeValueEnd = (value: string, start: number): number => {
-  const ampersand = value.indexOf("&", start);
-  const fragment = value.indexOf("#", start);
-  if (ampersand === -1) return fragment === -1 ? value.length : fragment;
-  if (fragment === -1) return ampersand;
-  return Math.min(ampersand, fragment);
+  for (let index = start; index < value.length; index += 1) {
+    const character = value[index];
+    if (
+      (character === "&" || character === "#") &&
+      nextAssignmentPattern.test(value.slice(index + 1))
+    ) {
+      return index;
+    }
+  }
+  return value.length;
 };
 
 const replaceCoreValues = (value: string): string => {
@@ -103,8 +109,8 @@ export const replaceStructuredAssignments = (value: string): string => {
   for (const match of value.matchAll(structuredAssignmentPattern)) {
     const index = match.index;
     const full = match[0];
-    const quotedKey = match[1];
-    const unquotedKey = match[2];
+    const quotedKey = match[2];
+    const unquotedKey = match[3];
     const key = Predicate.isString(quotedKey) ? quotedKey : unquotedKey;
     if (
       !Predicate.isNumber(index) ||
@@ -119,9 +125,9 @@ export const replaceStructuredAssignments = (value: string): string => {
     const explicitQuote = value[valueStart];
     const enclosingQuote = value[index - 1];
     const quote =
-      explicitQuote === '"' || explicitQuote === "'"
+      explicitQuote === '"' || explicitQuote === "'" || explicitQuote === "`"
         ? explicitQuote
-        : enclosingQuote === '"' || enclosingQuote === "'"
+        : enclosingQuote === '"' || enclosingQuote === "'" || enclosingQuote === "`"
           ? enclosingQuote
           : undefined;
     const quotedValueStart = quote === explicitQuote ? valueStart + 1 : valueStart;

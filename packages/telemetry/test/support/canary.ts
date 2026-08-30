@@ -40,6 +40,16 @@ export const canarySensitiveValues = (runId: string) => {
     `cookie: sid=${nestedAssignmentMarker}; csrf=${nestedAssignmentMarker}; theme=dark`,
     `password: my ${nestedAssignmentMarker} pass phrase`,
     `token =${nestedAssignmentMarker}`,
+    `'password': '${nestedAssignmentMarker}'`,
+    `"password" = '${nestedAssignmentMarker}'`,
+    "`password`: `" + nestedAssignmentMarker + "`",
+    `error sending 'token': "${nestedAssignmentMarker}"`,
+    `{'password': '${nestedAssignmentMarker}'}`,
+    `password=${nestedAssignmentMarker}&more`,
+    `password=${nestedAssignmentMarker}#fragment`,
+    `password=${nestedAssignmentMarker}&safe=1`,
+    `password=${nestedAssignmentMarker}#safe:1`,
+    `password=${nestedAssignmentMarker}&token=${nestedAssignmentMarker}`,
   ];
   return {
     authorization,

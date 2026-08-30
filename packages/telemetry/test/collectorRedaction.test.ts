@@ -51,6 +51,16 @@ describe.runIf(collectorEnabled)("Collector redaction", () => {
       `cookie: sid=${marker}; csrf=${marker}; theme=dark`,
       `password: my ${marker} pass phrase`,
       `token =${marker}`,
+      `'password': '${marker}'`,
+      `"password" = '${marker}'`,
+      "`password`: `" + marker + "`",
+      `error sending 'token': "${marker}"`,
+      `{'password': '${marker}'}`,
+      `password=${marker}&more`,
+      `password=${marker}#fragment`,
+      `password=${marker}&safe=1`,
+      `password=${marker}#safe:1`,
+      `password=${marker}&token=${marker}`,
     ];
     const attributes = (prefix: string) => [
       { key: "test.run_id", value: { stringValue: runId } },
