@@ -120,8 +120,8 @@ const invalid = (
 const nodeProfile = (
   name: ProfileName,
 ): Effect.Effect<NodeObservabilityProfile, InvalidObservabilityConfig> => {
-  const selected = observabilityProfiles.get(name);
-  if (selected === undefined || selected.runtime !== "node-global") {
+  const selected = observabilityProfiles[name];
+  if (selected.runtime !== "node-global") {
     return Effect.fail(
       invalid(
         "profile",

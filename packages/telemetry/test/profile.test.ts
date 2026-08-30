@@ -6,23 +6,34 @@ import {
   observabilityProfiles,
   reactWebProfile,
   workerProfile,
+  profileStageDeadlineMillis,
 } from "../src/profile/ObservabilityProfile.ts";
 
 describe("official observability profiles", () => {
   it("exports exactly the five immutable descriptors", () => {
-    expect([...observabilityProfiles.keys()]).toEqual([
+    expect(Object.keys(observabilityProfiles)).toEqual([
       "nestjs-api",
       "worker",
       "react-web",
       "cli",
       "library",
     ]);
+    expect(Object.isFrozen(observabilityProfiles)).toBe(true);
     expect(Object.isFrozen(nestjsApiProfile)).toBe(true);
     expect(Object.isFrozen(nestjsApiProfile.stages)).toBe(true);
+    expect(Object.isFrozen(workerProfile.stageDeadlineMillis)).toBe(true);
+    expect(Object.isFrozen(workerProfile.stageDeadlineMillis[0])).toBe(true);
+    expect(Object.isFrozen(workerProfile.capabilityOrder)).toBe(true);
+    expect(Object.isFrozen(workerProfile.capabilityOrder[0])).toBe(true);
+    const serverOrder = workerProfile.capabilityOrder[0];
+    if (serverOrder === undefined) throw new Error("Expected the worker server capability order.");
+    expect(Object.isFrozen(serverOrder[1])).toBe(true);
+    expect("set" in workerProfile.stageDeadlineMillis).toBe(false);
+    expect(() => Object.defineProperty(serverOrder[1], 0, { value: "metrics" })).toThrow(TypeError);
   });
 
   it("matches the normative capability matrix", () => {
-    const cells = [...observabilityProfiles.values()].map((profile) => [
+    const cells = Object.values(observabilityProfiles).map((profile) => [
       profile.name,
       profile.events,
       profile.traces,
@@ -40,10 +51,10 @@ describe("official observability profiles", () => {
   });
 
   it("publishes nested absolute deadlines", () => {
-    expect(workerProfile.stageDeadlineMillis.get("server")).toBe(5_000);
-    expect(workerProfile.stageDeadlineMillis.get("metrics")).toBe(3_000);
-    expect(reactWebProfile.stageDeadlineMillis.get("browser")).toBe(2_000);
-    expect(workerProfile.capabilityOrder.get("server")).toEqual(["events", "traces", "defects"]);
+    expect(profileStageDeadlineMillis(workerProfile, "server")).toBe(5_000);
+    expect(profileStageDeadlineMillis(workerProfile, "metrics")).toBe(3_000);
+    expect(profileStageDeadlineMillis(reactWebProfile, "browser")).toBe(2_000);
+    expect(workerProfile.capabilityOrder[0]).toEqual(["server", ["events", "traces", "defects"]]);
     expect([
       nestjsApiProfile.shutdownDeadlineMillis,
       workerProfile.shutdownDeadlineMillis,

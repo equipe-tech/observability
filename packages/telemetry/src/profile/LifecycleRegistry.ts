@@ -18,6 +18,7 @@ import { InvalidObservabilityConfig } from "./ObservabilityConfigError.ts";
 import {
   profileCapabilityRank,
   profileCapabilityRequirement,
+  profileStageDeadlineMillis,
   type AdapterCapability,
   type ExternalAdapterCapability,
   type LifecycleStage,
@@ -64,6 +65,7 @@ type AdapterValidationOptions = { readonly allowTesting: boolean };
 
 const reservedAdapterNames = new Set<string>(["core-traces", "core-metrics"]);
 const cleanupReserveMillis = 1_000;
+const forcedCleanupBudgetMillis = 500;
 const runtimeDisposalReserveMillis = 500;
 const deadlineSafetyMillis = 50;
 
@@ -90,6 +92,14 @@ export const validateAdapterRegistrationKinds = (
         ),
       );
     }
+    if (reservedAdapterNames.has(registration.adapter.name)) {
+      return Effect.fail(
+        invalidAdapter(
+          "OBS_OBSERVABILITY_ADAPTER_UNSUPPORTED",
+          `Adapter name "${registration.adapter.name}" is reserved for the built-in lifecycle registry. Choose another adapter name.`,
+        ),
+      );
+    }
   }
   return Effect.void;
 };
@@ -105,14 +115,6 @@ export const validateAdapterRegistrations = Effect.fn("validateAdapterRegistrati
   const capabilities = new Set<AdapterCapability>();
   for (const registration of registrations) {
     const adapter = registration.adapter;
-    if (reservedAdapterNames.has(adapter.name)) {
-      return yield* Effect.fail(
-        invalidAdapter(
-          "OBS_OBSERVABILITY_ADAPTER_UNSUPPORTED",
-          `Adapter name "${adapter.name}" is reserved for the built-in lifecycle registry. Choose another adapter name.`,
-        ),
-      );
-    }
     if (names.has(adapter.name)) {
       return yield* Effect.fail(
         invalidAdapter(
@@ -328,7 +330,7 @@ export const createLifecycleRegistry = (
     for (const stage of profile.stages) {
       const now = yield* Clock.currentTimeMillis;
       const totalRemaining = Math.max(0, gracefulDeadline - now);
-      const stageBudget = profile.stageDeadlineMillis.get(stage) ?? totalRemaining;
+      const stageBudget = profileStageDeadlineMillis(profile, stage) ?? totalRemaining;
       const stageDeadline = now + Math.min(totalRemaining, stageBudget);
       for (const participant of ordered(profile, participants, stage)) {
         const remaining = Math.max(0, stageDeadline - (yield* Clock.currentTimeMillis));
@@ -341,7 +343,10 @@ export const createLifecycleRegistry = (
     }
     if (operation === "close") {
       const forcedDeadline = deadline - runtimeReserve;
-      const forcedBudget = Math.max(0, forcedDeadline - (yield* Clock.currentTimeMillis));
+      const forcedBudget = Math.min(
+        forcedCleanupBudgetMillis,
+        Math.max(0, forcedDeadline - (yield* Clock.currentTimeMillis)),
+      );
       const cleanupResults = yield* Effect.forEach(
         forcedCleanup,
         (candidate) => runForcedClose(candidate.entry, forcedBudget),

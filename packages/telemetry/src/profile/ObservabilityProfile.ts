@@ -12,6 +12,12 @@ export type CapabilityRequirement =
 
 export type LifecycleStage = "server" | "metrics" | "browser";
 
+type StageDeadline = readonly [stage: LifecycleStage, deadlineMillis: number];
+type StageCapabilityOrder = readonly [
+  stage: LifecycleStage,
+  capabilities: ReadonlyArray<AdapterCapability>,
+];
+
 type ProfileCapabilities = {
   readonly name: ProfileName;
   readonly events: CapabilityRequirement;
@@ -20,8 +26,8 @@ type ProfileCapabilities = {
   readonly defects: CapabilityRequirement;
   readonly browserIngest: CapabilityRequirement;
   readonly stages: ReadonlyArray<LifecycleStage>;
-  readonly stageDeadlineMillis: ReadonlyMap<LifecycleStage, number>;
-  readonly capabilityOrder: ReadonlyMap<LifecycleStage, ReadonlyArray<AdapterCapability>>;
+  readonly stageDeadlineMillis: ReadonlyArray<StageDeadline>;
+  readonly capabilityOrder: ReadonlyArray<StageCapabilityOrder>;
   readonly shutdownDeadlineMillis: number;
 };
 
@@ -35,16 +41,39 @@ export type ObservabilityProfile =
   | BrowserObservabilityProfile
   | LibraryObservabilityProfile;
 
+const stageDeadline = (stage: LifecycleStage, deadlineMillis: number): StageDeadline =>
+  Object.freeze([stage, deadlineMillis]);
+
+const stageCapabilities = (
+  stage: LifecycleStage,
+  capabilities: ReadonlyArray<AdapterCapability>,
+): StageCapabilityOrder => Object.freeze([stage, Object.freeze([...capabilities])]);
+
 const nodeProfile = (value: NodeObservabilityProfile): NodeObservabilityProfile =>
-  Object.freeze({ ...value, stages: Object.freeze([...value.stages]) });
+  Object.freeze({
+    ...value,
+    stages: Object.freeze([...value.stages]),
+    stageDeadlineMillis: Object.freeze([...value.stageDeadlineMillis]),
+    capabilityOrder: Object.freeze([...value.capabilityOrder]),
+  });
 
 const browserProfile = (value: BrowserObservabilityProfile): BrowserObservabilityProfile =>
-  Object.freeze({ ...value, stages: Object.freeze([...value.stages]) });
+  Object.freeze({
+    ...value,
+    stages: Object.freeze([...value.stages]),
+    stageDeadlineMillis: Object.freeze([...value.stageDeadlineMillis]),
+    capabilityOrder: Object.freeze([...value.capabilityOrder]),
+  });
 
 const libraryProfileDescriptor = (
   value: LibraryObservabilityProfile,
 ): LibraryObservabilityProfile =>
-  Object.freeze({ ...value, stages: Object.freeze([...value.stages]) });
+  Object.freeze({
+    ...value,
+    stages: Object.freeze([...value.stages]),
+    stageDeadlineMillis: Object.freeze([...value.stageDeadlineMillis]),
+    capabilityOrder: Object.freeze([...value.capabilityOrder]),
+  });
 
 export const nestjsApiProfile = nodeProfile({
   name: "nestjs-api",
@@ -55,14 +84,11 @@ export const nestjsApiProfile = nodeProfile({
   defects: "required-in-production",
   browserIngest: "optional",
   stages: ["server", "metrics"],
-  stageDeadlineMillis: new Map([
-    ["server", 5_000],
-    ["metrics", 3_000],
-  ]),
-  capabilityOrder: new Map([
-    ["server", ["browser-ingest", "events", "traces", "defects"]],
-    ["metrics", ["metrics"]],
-  ]),
+  stageDeadlineMillis: [stageDeadline("server", 5_000), stageDeadline("metrics", 3_000)],
+  capabilityOrder: [
+    stageCapabilities("server", ["browser-ingest", "events", "traces", "defects"]),
+    stageCapabilities("metrics", ["metrics"]),
+  ],
   shutdownDeadlineMillis: 5_000,
 });
 
@@ -75,14 +101,11 @@ export const workerProfile = nodeProfile({
   defects: "required-in-production",
   browserIngest: "forbidden",
   stages: ["server", "metrics"],
-  stageDeadlineMillis: new Map([
-    ["server", 5_000],
-    ["metrics", 3_000],
-  ]),
-  capabilityOrder: new Map([
-    ["server", ["events", "traces", "defects"]],
-    ["metrics", ["metrics"]],
-  ]),
+  stageDeadlineMillis: [stageDeadline("server", 5_000), stageDeadline("metrics", 3_000)],
+  capabilityOrder: [
+    stageCapabilities("server", ["events", "traces", "defects"]),
+    stageCapabilities("metrics", ["metrics"]),
+  ],
   shutdownDeadlineMillis: 5_000,
 });
 
@@ -95,10 +118,10 @@ export const reactWebProfile = browserProfile({
   defects: "required-in-production",
   browserIngest: "required",
   stages: ["browser"],
-  stageDeadlineMillis: new Map([["browser", 2_000]]),
-  capabilityOrder: new Map([
-    ["browser", ["browser-ingest", "events", "traces", "defects", "metrics"]],
-  ]),
+  stageDeadlineMillis: [stageDeadline("browser", 2_000)],
+  capabilityOrder: [
+    stageCapabilities("browser", ["browser-ingest", "events", "traces", "defects", "metrics"]),
+  ],
   shutdownDeadlineMillis: 2_000,
 });
 
@@ -111,14 +134,11 @@ export const cliProfile = nodeProfile({
   defects: "optional",
   browserIngest: "forbidden",
   stages: ["server", "metrics"],
-  stageDeadlineMillis: new Map([
-    ["server", 5_000],
-    ["metrics", 3_000],
-  ]),
-  capabilityOrder: new Map([
-    ["server", ["events", "traces", "defects"]],
-    ["metrics", ["metrics"]],
-  ]),
+  stageDeadlineMillis: [stageDeadline("server", 5_000), stageDeadline("metrics", 3_000)],
+  capabilityOrder: [
+    stageCapabilities("server", ["events", "traces", "defects"]),
+    stageCapabilities("metrics", ["metrics"]),
+  ],
   shutdownDeadlineMillis: 5_000,
 });
 
@@ -131,21 +151,26 @@ export const libraryProfile = libraryProfileDescriptor({
   defects: "forbidden",
   browserIngest: "forbidden",
   stages: [],
-  stageDeadlineMillis: new Map(),
-  capabilityOrder: new Map(),
+  stageDeadlineMillis: [],
+  capabilityOrder: [],
   shutdownDeadlineMillis: 0,
 });
 
-export const observabilityProfiles: ReadonlyMap<ProfileName, ObservabilityProfile> = new Map<
-  ProfileName,
-  ObservabilityProfile
->([
-  [nestjsApiProfile.name, nestjsApiProfile],
-  [workerProfile.name, workerProfile],
-  [reactWebProfile.name, reactWebProfile],
-  [cliProfile.name, cliProfile],
-  [libraryProfile.name, libraryProfile],
-]);
+type ObservabilityProfiles = {
+  readonly "nestjs-api": NodeObservabilityProfile;
+  readonly worker: NodeObservabilityProfile;
+  readonly "react-web": BrowserObservabilityProfile;
+  readonly cli: NodeObservabilityProfile;
+  readonly library: LibraryObservabilityProfile;
+};
+
+export const observabilityProfiles: ObservabilityProfiles = Object.freeze({
+  "nestjs-api": nestjsApiProfile,
+  worker: workerProfile,
+  "react-web": reactWebProfile,
+  cli: cliProfile,
+  library: libraryProfile,
+});
 
 export const profileCapabilityRequirement = (
   value: ObservabilityProfile,
@@ -165,8 +190,16 @@ export const profileCapabilityRequirement = (
   }
 };
 
+export const profileStageDeadlineMillis = (
+  profile: ObservabilityProfile,
+  stage: LifecycleStage,
+): number | undefined =>
+  profile.stageDeadlineMillis.find(([candidate]) => candidate === stage)?.[1];
+
 export const profileCapabilityRank = (
   profile: ObservabilityProfile,
   stage: LifecycleStage,
   capability: AdapterCapability,
-): number => profile.capabilityOrder.get(stage)?.indexOf(capability) ?? Number.MAX_SAFE_INTEGER;
+): number =>
+  profile.capabilityOrder.find(([candidate]) => candidate === stage)?.[1].indexOf(capability) ??
+  Number.MAX_SAFE_INTEGER;

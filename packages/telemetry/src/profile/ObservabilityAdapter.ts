@@ -145,7 +145,7 @@ export type LifecycleOutcomeResult =
   | {
       readonly kind: "deadline-exceeded";
       readonly budgetMillis: number;
-      readonly forcedCleanup?: LifecycleCleanupResult | undefined;
+      readonly forcedCleanup?: LifecycleCleanupResult;
     };
 
 export type AdapterOutcome = {

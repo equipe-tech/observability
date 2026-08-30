@@ -14,8 +14,6 @@ type EnvironmentPolicyResolution =
     }
   | {
       readonly kind: "missing-remote-identity";
-      readonly endpoint: URL;
-      readonly deployment: "remote";
       readonly missing: "service-version" | "environment" | "service-version-and-environment";
     };
 
@@ -50,7 +48,7 @@ export const resolveEnvironmentPolicy = (input: {
       : serviceVersion === undefined
         ? "service-version"
         : "environment";
-  return { kind: "missing-remote-identity", endpoint, deployment: "remote", missing };
+  return { kind: "missing-remote-identity", missing };
 };
 
 export const rejectSecondReleaseVariables = (

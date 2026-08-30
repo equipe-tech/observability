@@ -32,7 +32,11 @@ O valor literal `production` torna o adapter de defeitos obrigatório para `nest
 
 O runtime inicia adapters na ordem de capacidades declarada pelo perfil. Uma falha fecha os adapters já iniciados na ordem inversa.
 
-O encerramento de Node tem um prazo absoluto de 5 segundos. Cada perfil define a ordem das capacidades. O descarte do runtime é o último resultado explícito do relatório. Quando não resta orçamento, o resultado é `deadline-exceeded` e o relatório fica degradado. Métricas recebem no máximo 3 segundos e nunca ultrapassam o tempo restante do prazo absoluto. Adapters dentro de uma etapa executam em sequência.
+O encerramento de Node tem um prazo absoluto de 5000 ms. Esse prazo contém 3950 ms para o trabalho normal de `close`, até 500 ms para a limpeza forçada de adapters que excederam seu prazo, até 500 ms para o descarte do runtime e 50 ms de margem para o scheduler. Cada perfil define a ordem das capacidades. Métricas recebem no máximo 3000 ms dentro dos 3950 ms de trabalho normal. Adapters dentro de uma etapa executam em sequência.
+
+Quando o primeiro `close` de um adapter excede o prazo, o runtime interrompe a execução e faz uma única nova tentativa com o orçamento limitado de limpeza forçada. Por isso, implementações de `ObservabilityAdapterHandle.close` devem tolerar interrupção e ser idempotentes. A segunda chamada deve concluir a mesma limpeza sem depender do ponto em que a primeira foi interrompida.
+
+O descarte do runtime é o último resultado explícito do relatório. Quando não resta orçamento, o resultado é `deadline-exceeded` e o relatório fica degradado. O campo JSON opcional `forcedCleanup` aparece somente no resultado `deadline-exceeded` de um adapter que recebeu a tentativa forçada. A serialização omite o campo nos demais resultados.
 
 Chamadas concorrentes da mesma operação compartilham o relatório. `close` espera um `flush` já iniciado terminar antes de começar. `close` e `dispose` devolvem o mesmo relatório final depois da primeira chamada.
 

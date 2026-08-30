@@ -291,6 +291,18 @@ describe("observability lifecycle", () => {
     ).rejects.toMatchObject({ code: "OBS_OBSERVABILITY_ADAPTER_TESTING" });
   });
 
+  it("rejects reserved adapter names when observability is disabled", async () => {
+    for (const reservedName of ["core-traces", "core-metrics"]) {
+      const registration = registerOfficialAdapter(recordingAdapter(reservedName, "events", []));
+      await expect(
+        createNodeObservabilityFromConfig({ enabled: false }, [registration]),
+      ).rejects.toMatchObject({
+        code: "OBS_OBSERVABILITY_ADAPTER_UNSUPPORTED",
+        message: expect.stringContaining("reserved"),
+      });
+    }
+  });
+
   it("matches enabled post-close flush behavior for disabled handles", async () => {
     const handle = await createNodeObservabilityFromConfig({ enabled: false }, []);
     expect((await handle.flush()).operation).toBe("flush");
@@ -309,8 +321,10 @@ describe("observability lifecycle", () => {
     const calls: Array<string> = [];
     const parsed = await Effect.runPromise(config());
     if (!parsed.enabled) throw new Error("Expected enabled config.");
-    const capabilityOrder = new Map(parsed.profile.capabilityOrder);
-    capabilityOrder.set("server", ["defects", "traces", "events"]);
+    const capabilityOrder: typeof parsed.profile.capabilityOrder = [
+      ["server", ["defects", "traces", "events"]],
+      ["metrics", ["metrics"]],
+    ];
     const reordered = {
       ...parsed,
       profile: { ...parsed.profile, capabilityOrder },
@@ -494,7 +508,7 @@ describe("observability lifecycle", () => {
         return yield* Fiber.join(fiber);
       }).pipe(Effect.provide(TestClock.layer())),
     );
-    expect(report.durationMillis).toBe(4_450);
+    expect(report.durationMillis).toBe(3_500);
     expect(
       report.outcomes.find(
         (outcome) => outcome.participant === "adapter" && outcome.adapter === "core-metrics",
@@ -502,11 +516,11 @@ describe("observability lifecycle", () => {
     ).toEqual({
       kind: "deadline-exceeded",
       budgetMillis: 3_000,
-      forcedCleanup: { kind: "deadline-exceeded", budgetMillis: 1_450 },
+      forcedCleanup: { kind: "deadline-exceeded", budgetMillis: 500 },
     });
   });
 
-  it("forces every pending close and reserves runtime disposal inside the deadline", async () => {
+  it("gives a timed-out close one bounded forced retry before runtime disposal", async () => {
     const calls: Array<string> = [];
     const events = registerTestingAdapter(recordingAdapter("events", "events", calls));
     const defects = registerTestingAdapter(recordingAdapter("defects", "defects", calls));

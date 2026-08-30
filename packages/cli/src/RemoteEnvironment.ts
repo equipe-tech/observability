@@ -87,7 +87,7 @@ const parseServiceName = Effect.fn("parseServiceName")(function* (
   );
 });
 
-export const parseServiceVersion = Effect.fn("parseServiceVersion")(function* (
+const parseServiceVersion = Effect.fn("parseServiceVersion")(function* (
   release: string,
 ): Effect.fn.Return<string, RemoteEnvironmentError> {
   return yield* decodeServiceVersion(release).pipe(

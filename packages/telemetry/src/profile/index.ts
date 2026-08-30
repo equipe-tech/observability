@@ -6,6 +6,7 @@ export {
   type AdapterOutcome,
   type AdapterRegistration,
   type ContractRegistry,
+  type LifecycleCleanupResult,
   type LifecycleOutcome,
   type LifecycleOutcomeResult,
   type LifecycleReport,
