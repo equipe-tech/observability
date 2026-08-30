@@ -2,6 +2,7 @@
   "name": "@equipe-tech/observability-nestjs",
   "dependencies": {
     "@equipe-tech/observability": "1.0.0",
+    "@nestjs/common": "1.0.0",
     "@sentry/node": "1.0.0",
     "effect": "1.0.0"
   }

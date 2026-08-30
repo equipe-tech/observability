@@ -1,2 +1,1 @@
-import "effect/unstable/observability";
-import "@sentry/node";
+import type {} from "@sentry/node";

@@ -2,11 +2,12 @@ import { Schema } from "effect";
 import { readFile } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse } from "yuku-parser";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
 const DependencyMap = Schema.Record(Schema.String, Schema.String);
-export const PackageManifest = Schema.Struct({
+const PackageManifest = Schema.Struct({
   name: Schema.NonEmptyString,
   dependencies: Schema.optional(DependencyMap),
   peerDependencies: Schema.optional(DependencyMap),
@@ -25,32 +26,39 @@ type PathOwnership = {
   readonly matches: (file: string) => boolean;
 };
 
-const exactPaths = new Set([
-  "packages/cli/src/main.ts",
-  "packages/nestjs/src/TelemetryModule.ts",
-  "packages/telemetry/src/node/Observability.ts",
-]);
-
-const adapterPaths = new Set([
-  "packages/cli/src/ProviderApis.ts",
-  "packages/telemetry/src/MetricsRuntime.ts",
-  "packages/telemetry/src/PolicyOtlpLogger.ts",
-  "packages/telemetry/src/Telemetry.ts",
-  "packages/telemetry/src/profile/LifecycleRegistry.ts",
-  "packages/telemetry/src/profile/ObservabilityAdapter.ts",
-]);
+type DependencyKind = "framework" | "metric-api" | "otlp" | "provider";
 
 const ownership: ReadonlyArray<PathOwnership> = [
-  { role: "bootstrap", matches: (file) => exactPaths.has(file) },
+  { role: "bootstrap", matches: (file) => file === "packages/cli/src/main.ts" },
+  { role: "adapter", matches: (file) => file.startsWith("packages/nestjs/src/") },
   {
     role: "adapter",
-    matches: (file) =>
-      adapterPaths.has(file) ||
-      file.startsWith("packages/nestjs/src/") ||
-      file.startsWith("packages/telemetry/src/browser/") ||
-      file.startsWith("packages/telemetry/src/node/") ||
-      file.startsWith("packages/telemetry/src/testing/") ||
-      file.startsWith("packages/telemetry/src/trace/"),
+    matches: (file) => file === "packages/telemetry/src/MetricsRuntime.ts",
+  },
+  {
+    role: "adapter",
+    matches: (file) => file === "packages/telemetry/src/PolicyOtlpLogger.ts",
+  },
+  { role: "adapter", matches: (file) => file === "packages/telemetry/src/Telemetry.ts" },
+  {
+    role: "adapter",
+    matches: (file) => file === "packages/telemetry/src/node/Observability.ts",
+  },
+  {
+    role: "adapter",
+    matches: (file) => file === "packages/telemetry/src/profile/LifecycleRegistry.ts",
+  },
+  {
+    role: "adapter",
+    matches: (file) => file === "packages/telemetry/src/profile/ObservabilityAdapter.ts",
+  },
+  {
+    role: "adapter",
+    matches: (file) => file === "packages/telemetry/src/testing/index.ts",
+  },
+  {
+    role: "adapter",
+    matches: (file) => file === "packages/telemetry/src/trace/HttpServerOtlpTracer.ts",
   },
   {
     role: "domain",
@@ -69,13 +77,13 @@ export const sourceRole = (file: string): BoundaryRole => {
   return "core";
 };
 
-export const packageNameForSpecifier = (specifier: string): string => {
+const packageNameForSpecifier = (specifier: string): string => {
   const parts = specifier.split("/");
   if (specifier.startsWith("@")) return parts.slice(0, 2).join("/");
   return parts[0] ?? specifier;
 };
 
-const forbiddenCorePackages = new Set([
+const frameworkPackages = new Set([
   "@nestjs/common",
   "@nestjs/core",
   "evlog",
@@ -84,44 +92,71 @@ const forbiddenCorePackages = new Set([
   "rxjs",
 ]);
 
-export const evaluateSpecifier = (
+const forbiddenByRole = new Map<BoundaryRole, ReadonlySet<DependencyKind>>([
+  ["core", new Set(["framework", "metric-api", "otlp", "provider"])],
+  ["domain", new Set(["metric-api", "otlp", "provider"])],
+  ["bootstrap", new Set(["framework", "provider"])],
+  ["adapter", new Set()],
+]);
+
+const dependencyKind = (specifier: string): DependencyKind | undefined => {
+  const dependency = packageNameForSpecifier(specifier);
+  if (
+    specifier === "effect/Metric" ||
+    specifier.startsWith("@equipe-tech/observability/metrics") ||
+    dependency === "@opentelemetry/api"
+  ) {
+    return "metric-api";
+  }
+  if (
+    specifier.startsWith("effect/unstable/observability") ||
+    specifier.startsWith("effect/unstable/http") ||
+    dependency.startsWith("@opentelemetry/")
+  ) {
+    return "otlp";
+  }
+  if (
+    dependency.startsWith("@sentry/") ||
+    dependency.startsWith("@axiomhq/") ||
+    dependency === "axiom"
+  ) {
+    return "provider";
+  }
+  if (frameworkPackages.has(dependency)) return "framework";
+  return undefined;
+};
+
+const evaluateSpecifier = (
   role: BoundaryRole,
   file: string,
   specifier: string,
 ): ReadonlyArray<BoundaryViolation> => {
-  const violations: Array<BoundaryViolation> = [];
-  const dependency = packageNameForSpecifier(specifier);
-  if (
-    role === "core" &&
-    (forbiddenCorePackages.has(dependency) || dependency.startsWith("@sentry/"))
-  ) {
-    violations.push({ rule: "boundary/core-forbidden-framework", file, specifier });
+  const kind = dependencyKind(specifier);
+  if (kind === undefined || !forbiddenByRole.get(role)?.has(kind)) return [];
+  return [{ rule: `boundary/${role}-forbidden-${kind}`, file, specifier }];
+};
+
+const staticImports = (source: string): ReadonlyArray<string> => {
+  const program = parse(source.replace(/^#!.*\n/, ""), { lang: "ts" }).program;
+  const specifiers: Array<string> = [];
+  for (const statement of program.body) {
+    if (statement.type === "ImportDeclaration") {
+      specifiers.push(statement.source.value);
+    }
+    if (statement.type === "ExportNamedDeclaration" && statement.source !== null) {
+      specifiers.push(statement.source.value);
+    }
+    if (statement.type === "ExportAllDeclaration") {
+      specifiers.push(statement.source.value);
+    }
+    if (
+      statement.type === "TSImportEqualsDeclaration" &&
+      statement.moduleReference.type === "TSExternalModuleReference"
+    ) {
+      specifiers.push(statement.moduleReference.expression.value);
+    }
   }
-  if (
-    role === "domain" &&
-    (specifier.startsWith("effect/unstable/observability") ||
-      specifier.startsWith("effect/unstable/http") ||
-      dependency.startsWith("@opentelemetry/"))
-  ) {
-    violations.push({ rule: "boundary/domain-forbidden-otlp", file, specifier });
-  }
-  if (
-    role === "domain" &&
-    (dependency.startsWith("@sentry/") ||
-      dependency.startsWith("@axiomhq/") ||
-      dependency === "axiom")
-  ) {
-    violations.push({ rule: "boundary/domain-forbidden-provider", file, specifier });
-  }
-  if (
-    role === "domain" &&
-    (specifier === "effect/Metric" ||
-      specifier.startsWith("@equipe-tech/observability/metrics") ||
-      dependency === "@opentelemetry/api")
-  ) {
-    violations.push({ rule: "boundary/domain-forbidden-metric-api", file, specifier });
-  }
-  return violations;
+  return specifiers;
 };
 
 const packageDirectories = async (projectRoot: string): Promise<ReadonlyArray<string>> => {
@@ -154,11 +189,7 @@ export const checkPackageBoundaries = async (
       const absolute = join(directory, sourcePath);
       const file = relative(projectRoot, absolute).split(sep).join("/");
       const source = await readFile(absolute, "utf8");
-      const imported = new Bun.Transpiler({ loader: "ts" }).scanImports(
-        source.replace(/^#!.*\n/, ""),
-      );
-      for (const importedFile of imported) {
-        const specifier = importedFile.path;
+      for (const specifier of staticImports(source)) {
         violations.push(...evaluateSpecifier(sourceRole(file), file, specifier));
         const dependency = packageNameForSpecifier(specifier);
         if (

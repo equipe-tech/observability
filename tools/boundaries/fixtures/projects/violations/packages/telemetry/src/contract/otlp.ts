@@ -1,1 +1,1 @@
-import "@opentelemetry/sdk-trace-base";
+import type {} from "@opentelemetry/sdk-trace-base";

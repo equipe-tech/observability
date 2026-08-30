@@ -6,7 +6,7 @@ Cada pacote tem versão, tag, notas, checksum, archive e publicação próprios.
 - `observability-nestjs@0.3.0`
 - `observability-cli@0.2.1`
 
-Tags `v*` pertencem ao histórico da linha coordenada 0.2 e não acionam o workflow atual.
+Tags `v*` pertencem ao histórico da linha coordenada 0.2 e não acionam o workflow atual. Os registros `docs/releases/v0.2.0.sha256` e `docs/releases/v0.2.1.sha256` preservam os checksums históricos dessa linha e não são entradas do fluxo independente.
 
 ## Preflight
 

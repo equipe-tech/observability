@@ -1,7 +1,7 @@
-import { cp, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
+import { cp, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { describe, it } from "bun:test";
 import {
   checkPackageBoundaries,
@@ -15,46 +15,132 @@ const ruleNames = (
   violations: Awaited<ReturnType<typeof checkPackageBoundaries>>,
 ): ReadonlyArray<string> => violations.map((violation) => violation.rule).toSorted();
 
+const adapterPaths = [
+  "packages/nestjs/src/TelemetryModule.ts",
+  "packages/telemetry/src/MetricsRuntime.ts",
+  "packages/telemetry/src/PolicyOtlpLogger.ts",
+  "packages/telemetry/src/Telemetry.ts",
+  "packages/telemetry/src/node/Observability.ts",
+  "packages/telemetry/src/profile/LifecycleRegistry.ts",
+  "packages/telemetry/src/profile/ObservabilityAdapter.ts",
+  "packages/telemetry/src/testing/index.ts",
+  "packages/telemetry/src/trace/HttpServerOtlpTracer.ts",
+];
+
+const mutateOwnedPath = async (ownedPath: string): Promise<ReadonlyArray<string>> => {
+  const temporary = await mkdtemp(join(tmpdir(), "boundaries-ownership-"));
+  try {
+    await cp(join(projects, "allowed"), temporary, { recursive: true });
+    const source = join(temporary, ownedPath);
+    await mkdir(dirname(source), { recursive: true });
+    await writeFile(source, 'import type {} from "@sentry/node";\n');
+    assert.deepEqual(await checkPackageBoundaries(temporary), []);
+    const mutation = join(temporary, "packages", "telemetry", "src", "mutation.ts");
+    await rename(source, mutation);
+    return ruleNames(await checkPackageBoundaries(temporary));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+};
+
 describe("package boundaries", () => {
-  it("runs every production rule through project discovery, manifest parsing, and import scanning", async () => {
+  it("runs every role policy through type-only imports in fixture projects", async () => {
     const violations = await checkPackageBoundaries(join(projects, "violations"));
-    assert.deepEqual(ruleNames(violations), [
+    const policyRules = ruleNames(violations).filter(
+      (rule) => rule !== "boundary/undeclared-dependency",
+    );
+    assert.deepEqual(policyRules, [
+      "boundary/bootstrap-forbidden-framework",
+      "boundary/bootstrap-forbidden-provider",
       "boundary/core-forbidden-framework",
+      "boundary/core-forbidden-metric-api",
+      "boundary/core-forbidden-otlp",
+      "boundary/core-forbidden-provider",
       "boundary/domain-forbidden-metric-api",
       "boundary/domain-forbidden-otlp",
       "boundary/domain-forbidden-provider",
-      "boundary/undeclared-dependency",
     ]);
   });
 
-  it("allows declared provider and exporter imports only in owned adapter and bootstrap paths", async () => {
+  it("rejects undeclared runtime and declaration imports in every role", async () => {
+    const violations = await checkPackageBoundaries(join(projects, "violations"));
+    const undeclared = violations.filter(
+      (violation) => violation.rule === "boundary/undeclared-dependency",
+    );
+    for (const role of ["adapter", "bootstrap", "core", "domain"] as const) {
+      const roleViolations = undeclared.filter((violation) => sourceRole(violation.file) === role);
+      assert.equal(
+        roleViolations.some((violation) => violation.specifier.endsWith("-runtime")),
+        true,
+      );
+      assert.equal(
+        roleViolations.some((violation) => violation.specifier.endsWith("-declaration")),
+        true,
+      );
+    }
+  });
+
+  it("allows declared imports according to all four role policies", async () => {
     assert.deepEqual(await checkPackageBoundaries(join(projects, "allowed")), []);
   });
 
-  it("classifies every production role by repository-relative path ownership", () => {
-    assert.equal(sourceRole("packages/telemetry/src/index.ts"), "core");
-    assert.equal(sourceRole("packages/telemetry/src/contract/EventName.ts"), "domain");
-    assert.equal(sourceRole("packages/telemetry/src/trace/HttpServerOtlpTracer.ts"), "adapter");
-    assert.equal(sourceRole("packages/cli/src/main.ts"), "bootstrap");
+  it("makes the core fallback load-bearing", async () => {
+    const violations = await checkPackageBoundaries(join(projects, "violations"));
+    assert.equal(
+      violations.some(
+        (violation) =>
+          violation.file === "packages/telemetry/src/index.ts" &&
+          violation.rule === "boundary/core-forbidden-framework",
+      ),
+      true,
+    );
   });
 
-  it("distinguishes an adapter-path mutation from the allowed project", async () => {
-    const temporary = await mkdtemp(join(tmpdir(), "boundaries-mutation-"));
+  it("makes domain ownership load-bearing", async () => {
+    const temporary = await mkdtemp(join(tmpdir(), "boundaries-domain-"));
     try {
       await cp(join(projects, "allowed"), temporary, { recursive: true });
-      const domainDirectory = join(temporary, "packages", "telemetry", "src", "contract");
-      await mkdir(domainDirectory, { recursive: true });
       await rename(
-        join(temporary, "packages", "telemetry", "src", "trace", "exporter.ts"),
-        join(domainDirectory, "exporter.ts"),
+        join(temporary, "packages", "telemetry", "src", "contract", "framework.ts"),
+        join(temporary, "packages", "telemetry", "src", "framework.ts"),
       );
       assert.deepEqual(ruleNames(await checkPackageBoundaries(temporary)), [
-        "boundary/domain-forbidden-otlp",
-        "boundary/domain-forbidden-provider",
+        "boundary/core-forbidden-framework",
       ]);
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
+  });
+
+  it("makes bootstrap ownership load-bearing", async () => {
+    const temporary = await mkdtemp(join(tmpdir(), "boundaries-bootstrap-"));
+    try {
+      await cp(join(projects, "allowed"), temporary, { recursive: true });
+      await rename(
+        join(temporary, "packages", "cli", "src", "main.ts"),
+        join(temporary, "packages", "cli", "src", "Cli.ts"),
+      );
+      assert.deepEqual(ruleNames(await checkPackageBoundaries(temporary)), [
+        "boundary/domain-forbidden-metric-api",
+        "boundary/domain-forbidden-metric-api",
+        "boundary/domain-forbidden-otlp",
+      ]);
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
+  for (const adapterPath of adapterPaths) {
+    it(`makes the adapter ownership for ${adapterPath} load-bearing`, async () => {
+      assert.deepEqual(await mutateOwnedPath(adapterPath), ["boundary/core-forbidden-provider"]);
+    });
+  }
+
+  it("classifies every production role by repository-relative ownership", () => {
+    assert.equal(sourceRole("packages/telemetry/src/index.ts"), "core");
+    assert.equal(sourceRole("packages/telemetry/src/contract/EventName.ts"), "domain");
+    assert.equal(sourceRole("packages/telemetry/src/trace/HttpServerOtlpTracer.ts"), "adapter");
+    assert.equal(sourceRole("packages/cli/src/main.ts"), "bootstrap");
   });
 
   it("rejects malformed package manifests through the production decoder", async () => {

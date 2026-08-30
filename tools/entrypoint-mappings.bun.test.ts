@@ -1,17 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
+import nestjsManifest from "../packages/nestjs/package.json" with { type: "json" };
 import telemetryManifest from "../packages/telemetry/package.json" with { type: "json" };
 import tsconfig from "../tsconfig.json" with { type: "json" };
 import viteConfig from "../vite.config.ts";
 
 const expected = new Map([
-  [".", "packages/telemetry/src/index.ts"],
-  ["./browser", "packages/telemetry/src/browser/index.ts"],
-  ["./browser/client", "packages/telemetry/src/browser/client.ts"],
-  ["./effect", "packages/telemetry/src/effect/index.ts"],
-  ["./metrics", "packages/telemetry/src/Metrics.ts"],
-  ["./node", "packages/telemetry/src/node/index.ts"],
-  ["./testing", "packages/telemetry/src/testing/index.ts"],
+  ["@equipe-tech/observability/browser/client", "packages/telemetry/src/browser/client.ts"],
+  ["@equipe-tech/observability/browser", "packages/telemetry/src/browser/index.ts"],
+  ["@equipe-tech/observability/effect", "packages/telemetry/src/effect/index.ts"],
+  ["@equipe-tech/observability/metrics", "packages/telemetry/src/Metrics.ts"],
+  ["@equipe-tech/observability/testing", "packages/telemetry/src/testing/index.ts"],
+  ["@equipe-tech/observability/node", "packages/telemetry/src/node/index.ts"],
+  ["@equipe-tech/observability-nestjs", "packages/nestjs/src/index.ts"],
+  ["@equipe-tech/observability", "packages/telemetry/src/index.ts"],
 ]);
 const TypeScriptConfig = Schema.Struct({
   compilerOptions: Schema.Struct({
@@ -28,28 +30,43 @@ const AliasConfig = Schema.Struct({
 const decodeAliasConfig = Schema.decodeUnknownSync(AliasConfig);
 const aliases = decodeAliasConfig(viteConfig).resolve.alias;
 
+const packageEntrypoints = (
+  packageName: string,
+  exports: ReadonlyArray<string>,
+): ReadonlyArray<string> =>
+  exports.map((entrypoint) =>
+    entrypoint === "." ? packageName : `${packageName}/${entrypoint.slice(2)}`,
+  );
+
 describe("development entrypoint mappings", () => {
-  test("maps every telemetry export to its exact TypeScript source", () => {
-    expect(Object.keys(telemetryManifest.exports).toSorted()).toEqual(
-      [...expected.keys()].toSorted(),
-    );
-    for (const [entrypoint, source] of expected) {
-      const specifier =
-        entrypoint === "."
-          ? "@equipe-tech/observability"
-          : `@equipe-tech/observability/${entrypoint.slice(2)}`;
+  test("maps every telemetry and NestJS export to its exact TypeScript source", () => {
+    const entrypoints = [
+      ...packageEntrypoints("@equipe-tech/observability", Object.keys(telemetryManifest.exports)),
+      ...packageEntrypoints(
+        "@equipe-tech/observability-nestjs",
+        Object.keys(nestjsManifest.exports),
+      ),
+    ];
+    expect(entrypoints.toSorted()).toEqual([...expected.keys()].toSorted());
+    for (const [specifier, source] of expected) {
       expect(paths[specifier]).toEqual([`./${source}`]);
     }
   });
 
-  test("maps every telemetry export to the same exact Vite source", () => {
-    for (const [entrypoint, source] of expected) {
-      const specifier =
-        entrypoint === "."
-          ? "@equipe-tech/observability"
-          : `@equipe-tech/observability/${entrypoint.slice(2)}`;
+  test("maps every export to the same exact Vite source", () => {
+    for (const [specifier, source] of expected) {
       const alias = aliases.find((candidate) => candidate.find === specifier);
       expect(alias?.replacement.endsWith(source)).toBe(true);
+    }
+  });
+
+  test("orders every longer Vite alias before the bare telemetry alias", () => {
+    expect(aliases.map((alias) => alias.find)).toEqual([...expected.keys()]);
+    const bareIndex = aliases.findIndex((alias) => alias.find === "@equipe-tech/observability");
+    for (const alias of aliases) {
+      if (alias.find !== "@equipe-tech/observability") {
+        expect(aliases.indexOf(alias)).toBeLessThan(bareIndex);
+      }
     }
   });
 });

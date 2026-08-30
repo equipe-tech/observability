@@ -35,7 +35,10 @@ const packageDirectories = new Map([
   ["observability-nestjs", "nestjs"],
   ["observability-cli", "cli"],
 ]);
-const packageDirectoryName = packageDirectories.get(slug) ?? slug;
+const packageDirectoryName = packageDirectories.get(slug);
+if (packageDirectoryName === undefined) {
+  throw new Error(`Unknown release package ${slug}.`);
+}
 const manifestPath = join(root, "packages", packageDirectoryName, "package.json");
 const manifestValue: unknown = JSON.parse(await readFile(manifestPath, "utf8"));
 const manifest = decodeManifest(manifestValue);
@@ -71,12 +74,3 @@ await Bun.write(join(output, archive), first);
 await writeFile(checksumPath, `${hash}  ${archive}\n`);
 await writeFile(notesPath, await run(["bun", "scripts/release-notes.ts", "--tag", tag]));
 await rm(work, { recursive: true, force: true });
-console.log(
-  JSON.stringify({
-    archive,
-    checksum: checksumPath,
-    notes: notesPath,
-    packageName: manifest.name,
-    tag,
-  }),
-);

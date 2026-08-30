@@ -1,5 +1,5 @@
 {
-  "name": "@equipe-tech/observability-cli",
+  "name": "@equipe-tech/observability-nestjs",
   "dependencies": {
     "@nestjs/common": "1.0.0",
     "@sentry/node": "1.0.0",

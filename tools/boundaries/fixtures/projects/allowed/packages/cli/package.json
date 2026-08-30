@@ -1,6 +1,7 @@
 {
   "name": "@equipe-tech/observability-cli",
   "dependencies": {
-    "@equipe-tech/observability": "1.0.0"
+    "@equipe-tech/observability": "1.0.0",
+    "effect": "1.0.0"
   }
 }

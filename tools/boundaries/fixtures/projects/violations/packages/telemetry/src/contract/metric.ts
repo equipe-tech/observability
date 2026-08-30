@@ -1,1 +1,1 @@
-import "effect/Metric";
+import type {} from "effect/Metric";
