@@ -1,7 +1,7 @@
 import { Controller, HttpCode, HttpException, Post, Req } from "@nestjs/common";
 import { Cause, Effect, Exit, Layer, Option, Schema } from "effect";
 import type { ManagedRuntime } from "effect";
-import { TelemetryEventSink } from "@equipe-tech/observability";
+import { Contract, TelemetryEventSink } from "@equipe-tech/observability";
 import {
   ingestBrowserEvents,
   InvalidBrowserEventBatch,
@@ -15,7 +15,10 @@ export const defaultBrowserEventsPath = "_telemetry/events";
 export class BrowserEventsRejection extends Schema.Class<BrowserEventsRejection>(
   "@equipe-tech/observability/BrowserEventsRejection",
 )({
-  code: Schema.Literal("OBS_BROWSER_EVENTS_INVALID_BATCH"),
+  code: Schema.Union([
+    Schema.Literal("OBS_BROWSER_EVENTS_INVALID_BATCH"),
+    Contract.TelemetryEventErrorCode,
+  ]),
   message: Schema.String,
   correlationId: Schema.String,
 }) {}
@@ -63,7 +66,11 @@ export const createBrowserEventsController = <RuntimeError>(
         return exit.value;
       }
       const error = Cause.findErrorOption(exit.cause);
-      if (Option.isSome(error) && error.value instanceof InvalidBrowserEventBatch) {
+      if (
+        Option.isSome(error) &&
+        (error.value instanceof InvalidBrowserEventBatch ||
+          error.value instanceof Contract.InvalidTelemetryEvent)
+      ) {
         throw new HttpException(
           new BrowserEventsRejection({
             code: error.value.code,

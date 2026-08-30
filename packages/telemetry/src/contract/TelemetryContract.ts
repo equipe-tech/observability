@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { EventName, isValidAttributeName, isValidEventName } from "./EventName.ts";
 import {
   EventKind,
@@ -112,11 +112,14 @@ export const validateContractEvent = (
   eventName: string,
   attributes: EventAttributes,
 ): CompiledEventDefinition | InvalidTelemetryEvent => {
-  const definition = contract.eventByName.get(EventName.make(eventName));
+  const parsedEventName = EventName.makeOption(eventName);
+  const definition = Option.isSome(parsedEventName)
+    ? contract.eventByName.get(parsedEventName.value)
+    : undefined;
   if (definition === undefined) {
     return new InvalidTelemetryEvent({
       code: "OBS_EVENT_UNKNOWN_NAME",
-      message: `Event "${eventName}" is not declared by the telemetry contract. Use a declared canonical event name.`,
+      message: `Event "${eventName}" is not declared by the telemetry contract. Use a valid declared canonical event name.`,
       eventName,
     });
   }
@@ -124,7 +127,7 @@ export const validateContractEvent = (
     if (!Object.hasOwn(attributes, required)) {
       return new InvalidTelemetryEvent({
         code: "OBS_EVENT_MISSING_ATTRIBUTE",
-        message: `Event "${eventName}" is missing required attribute "${required}".`,
+        message: `Event "${eventName}" is missing required attribute "${required}". Add the declared scalar attribute before emitting.`,
         eventName,
         attributeName: required,
       });
@@ -134,7 +137,7 @@ export const validateContractEvent = (
     if (!definition.attributes.has(attributeName)) {
       return new InvalidTelemetryEvent({
         code: "OBS_EVENT_UNDECLARED_ATTRIBUTE",
-        message: `Event "${eventName}" does not declare attribute "${attributeName}".`,
+        message: `Event "${eventName}" does not declare attribute "${attributeName}". Add it to the contract or remove it from the event.`,
         eventName,
         attributeName,
       });

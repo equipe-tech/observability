@@ -4,11 +4,13 @@ import { CorrelationContext } from "../src/Correlation.ts";
 import {
   defineEventDefinitions,
   defineTelemetryContract,
+  InvalidTelemetryEvent,
   isValidEventName,
   makeEventProducer,
   organizationContractVersion,
   organizationEvents,
   telemetryContractDefinition,
+  validateContractEvent,
   type AttributeDefinitionsInput,
   type TelemetryContract,
   type TelemetryContractInput,
@@ -628,6 +630,19 @@ describe("organization contracts", () => {
 });
 
 describe("contract event producer", () => {
+  it.effect("returns typed failures for malformed, reserved, and unknown event names", () =>
+    Effect.gen(function* () {
+      const contract = yield* compileApplicationContract;
+      for (const eventName of ["Invalid Name", "job.error", "job.unknown"]) {
+        const result = validateContractEvent(contract, eventName, {});
+        assert.instanceOf(result, InvalidTelemetryEvent);
+        assert.strictEqual(result.code, "OBS_EVENT_UNKNOWN_NAME");
+        assert.include(result.message, "Use a valid declared canonical event name");
+        assert.notInclude(result.message, "Schema");
+      }
+    }),
+  );
+
   it("exports every reachable event error code", () => {
     assert.sameMembers(Array.from(telemetryEventErrorFixtures), [
       "OBS_EVENT_UNKNOWN_NAME",

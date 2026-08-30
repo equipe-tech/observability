@@ -519,7 +519,11 @@ describe("evlogAdapter", () => {
         .pipe(Effect.provide(observability.eventLayer)),
     );
     const report = await observability.close();
-    expect(adapter.drops().reasons.stdoutUnavailable).toBe(1);
+    const drops = adapter.drops();
+    expect(drops.reasons.stdoutUnavailable).toBe(1);
+    expect(drops.total).toBe(
+      Object.values(drops.reasons).reduce((total, count) => total + count, 0),
+    );
     expect(report.degraded).toBe(true);
     expect(adapter.pending()).toEqual({ count: 0, serializedBytes: 0 });
   });
@@ -573,7 +577,8 @@ describe("evlogAdapter", () => {
       const adapter = evlogAdapter({ batchSize: 1, transportRetries: 0 });
       const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
       log.info({ "event.name": "job.completed", "job.name": name });
-      await observability.close();
+      const report = await observability.close();
+      expect(report.degraded).toBe(false);
     }
     await receiver.close();
     expect(receiver.bodies.some((body) => body.includes("first-generation"))).toBe(true);

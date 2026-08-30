@@ -27,4 +27,4 @@ A entrega compõe as APIs públicas `createDrainPipeline`, `sendBatchToOTLP`, `c
 
 O encoder público sempre gera `deployment.environment` a partir do evento evlog. Por isso, o modo `environmentAlias: "omitted"` ainda contém esse alias em logs, embora traces do núcleo o omitam. O adapter acrescenta `deployment.environment.name`, `service.namespace` e `service.instance.id` por `resourceAttributes`, que é o único mecanismo público suportado pelo encoder para esses campos.
 
-`installGlobalLogger` usa `initLogger` com `silent: true`, `pretty: false` e `redact: false`. Eventos de contrato usam a layer do handle e continuam sendo exportados se outro código substituir o logger global. `drops()` informa somente contagens e timestamps.
+`installGlobalLogger` usa `initLogger` com `silent: true`, `pretty: false` e `redact: false`. Eventos de contrato usam a layer do handle e continuam sendo exportados se outro código substituir o logger global. `drops()` informa somente contagens e timestamps. `total` é a soma de todas as razões e conta incidentes de perda, não eventos únicos. Se a entrega falhar e o fallback em stdout também falhar, as duas razões são contabilizadas.

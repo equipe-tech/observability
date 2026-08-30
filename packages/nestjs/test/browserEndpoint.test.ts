@@ -1,7 +1,7 @@
 import "reflect-metadata";
 import { Module } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
-import { Effect, ManagedRuntime, Option, Schema } from "effect";
+import { Effect, Layer, ManagedRuntime, Option, Schema } from "effect";
 import { assert, describe, it } from "vite-plus/test";
 import {
   browserRequestByteBudget,
@@ -12,6 +12,7 @@ import {
   maxFieldsPerEvent,
   maxFieldValueLength,
 } from "@equipe-tech/observability/browser";
+import { Contract, TelemetryEventSink } from "@equipe-tech/observability";
 import { layerWideEvent } from "@equipe-tech/observability/effect";
 import * as Testing from "@equipe-tech/observability/testing";
 import { createBrowserEventsController, TelemetryInterceptor } from "../src/index.ts";
@@ -20,7 +21,10 @@ const AddressInfo = Schema.Struct({ port: Schema.Number });
 const decodeAddressInfo = Schema.decodeUnknownOption(AddressInfo);
 
 const Rejection = Schema.Struct({
-  code: Schema.Literal("OBS_BROWSER_EVENTS_INVALID_BATCH"),
+  code: Schema.Union([
+    Schema.Literal("OBS_BROWSER_EVENTS_INVALID_BATCH"),
+    Contract.TelemetryEventErrorCode,
+  ]),
   message: Schema.NonEmptyString,
   correlationId: Schema.NonEmptyString,
 });
@@ -37,13 +41,55 @@ type Harness = {
   readonly close: () => Promise<Testing.CapturedTelemetry>;
 };
 
-const startApp = async (withInterceptor: boolean): Promise<Harness> => {
+const browserContract = Effect.runSync(
+  Contract.defineTelemetryContract(
+    Contract.telemetryContractDefinition({
+      version: 1,
+      events: {
+        CheckoutCompleted: {
+          name: "checkout.completed",
+          kind: "domain",
+          defaultSeverity: "info",
+          mandatory: true,
+          sampling: { kind: "always" },
+          attributes: {
+            "cart.total": { classification: "public", required: true, metricLabel: false },
+          },
+        },
+      },
+      metrics: {},
+      auditActions: {},
+    }),
+  ),
+);
+
+const contractAdmissionLayer = Layer.succeed(
+  TelemetryEventSink,
+  TelemetryEventSink.of({
+    record: () => Effect.void,
+    recordBrowser: (event) => {
+      const validation = Contract.validateContractEvent(
+        browserContract,
+        event.name,
+        event.attributes,
+      );
+      return validation instanceof Contract.InvalidTelemetryEvent
+        ? Effect.fail(validation)
+        : Effect.void;
+    },
+  }),
+);
+
+const startApp = async (
+  withInterceptor: boolean,
+  eventLayer: Layer.Layer<TelemetryEventSink> = layerWideEvent,
+): Promise<Harness> => {
   const capture = await Effect.runPromise(Testing.makeCapture());
   const runtime = ManagedRuntime.make(capture.layer);
 
   class AppModule {}
   Module({
-    controllers: [createBrowserEventsController(runtime, { eventLayer: layerWideEvent })],
+    controllers: [createBrowserEventsController(runtime, { eventLayer })],
   })(AppModule);
 
   const app = await NestFactory.create(AppModule, { logger: false });
@@ -169,6 +215,68 @@ describe("browser events endpoint", () => {
     const boundary = telemetry.spans.find((span) => span.name.includes("/_telemetry/events"));
     assert.isUndefined(boundary);
     assert.isTrue(rejection.correlationId.length > 0);
+  }, 30_000);
+
+  it("maps contract admission failures to evidence-safe 400 responses", async () => {
+    const harness = await startApp(true, contractAdmissionLayer);
+    const cases = [
+      {
+        name: "Invalid Name",
+        fields: {},
+        code: "OBS_EVENT_UNKNOWN_NAME",
+        remediation: "Use a valid declared canonical event name",
+      },
+      {
+        name: "job.error",
+        fields: {},
+        code: "OBS_EVENT_UNKNOWN_NAME",
+        remediation: "Use a valid declared canonical event name",
+      },
+      {
+        name: "job.unknown",
+        fields: {},
+        code: "OBS_EVENT_UNKNOWN_NAME",
+        remediation: "Use a valid declared canonical event name",
+      },
+      {
+        name: "checkout.completed",
+        fields: {},
+        code: "OBS_EVENT_MISSING_ATTRIBUTE",
+        remediation: "Add the declared scalar attribute before emitting",
+      },
+      {
+        name: "checkout.completed",
+        fields: { "cart.total": 42, "cart.unknown": "value" },
+        code: "OBS_EVENT_UNDECLARED_ATTRIBUTE",
+        remediation: "Add it to the contract or remove it from the event",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const response = await postEvents(
+        harness.baseUrl,
+        JSON.stringify({
+          version: 1,
+          events: [
+            {
+              id: "evt-rejected",
+              name: testCase.name,
+              occurredAt: 1700000000000,
+              fields: testCase.fields,
+            },
+          ],
+        }),
+      );
+      assert.strictEqual(response.status, 400);
+      const payload: unknown = await response.json();
+      const rejection = await Effect.runPromise(decodeRejection(payload));
+      assert.strictEqual(rejection.code, testCase.code);
+      assert.include(rejection.message, testCase.remediation);
+      assert.notInclude(JSON.stringify(payload), "Schema");
+      assert.notInclude(JSON.stringify(payload), "cause");
+      assert.notInclude(JSON.stringify(payload), "    at ");
+    }
+    await harness.close();
   }, 30_000);
 
   it("answers 400 to a malformed JSON body", async () => {

@@ -240,7 +240,7 @@ type DropReason =
   | "contract-rejected"
   | "closed";
 
-const incrementReason = (state: MutableDropState, reason: DropReason, countEvent = true): void => {
+const incrementReason = (state: MutableDropState, reason: DropReason): void => {
   switch (reason) {
     case "count-overflow":
       state.countOverflow += 1;
@@ -261,12 +261,10 @@ const incrementReason = (state: MutableDropState, reason: DropReason, countEvent
       state.closed += 1;
       break;
   }
-  if (countEvent) {
-    const droppedAt = new Date().toISOString();
-    state.total += 1;
-    if (Option.isNone(state.firstDroppedAt)) state.firstDroppedAt = Option.some(droppedAt);
-    state.lastDroppedAt = Option.some(droppedAt);
-  }
+  const droppedAt = new Date().toISOString();
+  state.total += 1;
+  if (Option.isNone(state.firstDroppedAt)) state.firstDroppedAt = Option.some(droppedAt);
+  state.lastDroppedAt = Option.some(droppedAt);
 };
 
 const fieldsForContractEvent = (event: TelemetryEvent): EventAttributes => {
@@ -408,10 +406,10 @@ const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
         const fallback = (record: AdmittedRecord): void => {
           try {
             if (!resolvedOptions.stdout.write(`${record.serialized}\n`)) {
-              incrementReason(dropState, "stdout-unavailable", false);
+              incrementReason(dropState, "stdout-unavailable");
             }
           } catch {
-            incrementReason(dropState, "stdout-unavailable", false);
+            incrementReason(dropState, "stdout-unavailable");
           }
         };
 
