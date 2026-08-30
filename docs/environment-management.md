@@ -44,7 +44,7 @@ A remoção do alias requer duas condições:
 
 Os exporters do pacote ignoram `OTEL_RESOURCE_ATTRIBUTES`. Assim, valores ambientes não podem inserir ou substituir `service.namespace`, `service.name`, `service.version`, `deployment.environment.name`, `deployment.environment` ou `service.instance.id`. A identidade canônica, o alias e a instância vêm somente das projeções de `ResourceIdentity`. Atributos ambientes não reservados também são suprimidos.
 
-Até o OBS-50 criar um pacote compartilhado neutro, a CLI mantém sua própria cópia da gramática de nomes. O teste `IdentityPolicyDrift.bun.test.ts` compara a fonte da expressão regular, os limites e os fixtures de fronteira com a política de telemetria. Qualquer alteração em uma das cópias exige atualizar e revisar as duas.
+A CLI mantém sua gramática de nomes local para não depender do núcleo Effect. O teste `IdentityPolicyDrift.bun.test.ts` compara a expressão regular, os limites e os fixtures de fronteira com a política do núcleo. Qualquer alteração em uma das cópias exige atualizar e revisar as duas.
 
 O SDK remove essa opção na primeira versão minor depois que as duas condições acima permanecerem verdadeiras por um período completo de retenção, e no máximo na linha `0.4.0`. A revisão da remoção ocorre antes da publicação de cada versão minor até esse limite.
 

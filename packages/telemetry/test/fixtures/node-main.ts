@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { runMain } from "../../src/node/index.ts";
-import * as WideEvent from "../../src/WideEvent.ts";
+import * as WideEvent from "../../src/effect/WideEvent.ts";
 
 const mode = process.argv[2] ?? "success";
 const runId = process.env["NODE_RUN_ID"] ?? "unknown";

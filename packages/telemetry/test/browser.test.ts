@@ -9,7 +9,7 @@ import {
   maxFieldValueLength,
 } from "../src/browser/index.ts";
 import { sensitiveFieldReplacement, sensitiveTextReplacement } from "../src/RedactionPolicy.ts";
-import type { WideEventFields } from "../src/WideEvent.ts";
+import type { WideEventFields } from "../src/effect/WideEvent.ts";
 
 const AddressInfo = Schema.Struct({ port: Schema.Number });
 const decodeAddressInfo = Schema.decodeUnknownOption(AddressInfo);

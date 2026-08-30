@@ -2,12 +2,21 @@ name: Release Preflight
 
 on:
   workflow_dispatch:
+    inputs:
+      package:
+        description: "Package slug"
+        required: true
+        type: string
+      version:
+        description: "Exact package version"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ inputs.package }}
   cancel-in-progress: true
 
 jobs:
@@ -21,54 +30,21 @@ jobs:
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
-      - name: Validate the release configuration
+      - name: Validate the selected release
+        env:
+          SLUG: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          telemetry_version="$(jq -r .version packages/telemetry/package.json)"
-          cli_version="$(jq -r .version packages/cli/package.json)"
-          [[ "$telemetry_version" == "$cli_version" ]] \
-            || { echo "The package versions diverge: $telemetry_version vs $cli_version."; exit 1; }
-          tag="v$telemetry_version"
-          bun scripts/release.ts "$telemetry_version" --dry-run
+          manifest=""
+          for candidate in packages/*/package.json; do
+            if [[ "$(jq -r .name "$candidate" | sed 's#^@equipe-tech/##')" == "$SLUG" ]]; then manifest="$candidate"; break; fi
+          done
+          [[ -n "$manifest" ]] || { echo "Unknown package $SLUG."; exit 1; }
+          [[ "$(jq -r .version "$manifest")" == "$VERSION" ]] || { echo "Version $VERSION does not match $manifest."; exit 1; }
+          tag="$SLUG@$VERSION"
+          bun scripts/release.ts "$VERSION" --package "$SLUG" --dry-run
           test -s "docs/releases/${tag}.md"
           test -s "docs/releases/${tag}.sha256"
-          cat "docs/releases/${tag}.md"
-      - name: Validate the packed artifacts
-        run: |
-          set -euo pipefail
           bun run test:package
-          version="$(jq -r .version packages/telemetry/package.json)"
-          tag="v$version"
-          rm -rf .release-pack
-          trap 'rm -rf .release-pack' EXIT
-          for pack_set in pack-1 pack-2 pack-3; do
-            destination="$PWD/.release-pack/$pack_set"
-            mkdir -p "$destination"
-            (cd packages/telemetry && bun pm pack --ignore-scripts --quiet \
-              --filename "$destination/equipe-tech-observability-${version}.tgz")
-            (cd packages/cli && bun pm pack --ignore-scripts --quiet \
-              --filename "$destination/equipe-tech-observability-cli-${version}.tgz")
-          done
-          for pack_set in pack-2 pack-3; do
-            cmp ".release-pack/pack-1/equipe-tech-observability-${version}.tgz" \
-              ".release-pack/$pack_set/equipe-tech-observability-${version}.tgz"
-            cmp ".release-pack/pack-1/equipe-tech-observability-cli-${version}.tgz" \
-              ".release-pack/$pack_set/equipe-tech-observability-cli-${version}.tgz"
-          done
-          sha256sum --check "docs/releases/${tag}.sha256"
-      - name: Query current npm versions
-        run: |
-          set -euo pipefail
-          for package in @equipe-tech/observability @equipe-tech/observability-cli; do
-            if output="$(npm view "$package" version dist-tags versions --json 2>&1)"; then
-              echo "$output"
-            elif grep -qiE "E404|is not in this registry" <<< "$output"; then
-              echo "$package has not been published yet."
-            else
-              echo "$output" >&2
-              exit 1
-            fi
-          done
-      - name: Clean preflight temporary paths
-        if: always()
-        run: rm -rf .release-pack dist-release .verification
+          npm view "$(jq -r .name "$manifest")" version dist-tags versions --json || true

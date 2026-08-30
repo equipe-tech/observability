@@ -16,15 +16,15 @@ import { OtlpExporter } from "effect/unstable/observability";
 import type { AddressInfo } from "node:net";
 import { Observable } from "rxjs";
 import { assert, describe, it } from "vite-plus/test";
-import { inspectHttpServerRequest } from "../src/nestjs/HttpRoutePolicy.ts";
+import { inspectHttpServerRequest } from "../src/HttpRoutePolicy.ts";
 import {
   requestCorrelation,
   TelemetryInterceptor,
   TelemetryRequestTracker,
   withRequestCorrelation,
   withRequestSpan,
-} from "../src/nestjs/index.ts";
-import * as Testing from "../src/testing/index.ts";
+} from "../src/index.ts";
+import * as Testing from "@equipe-tech/observability/testing";
 
 const AddressBoundary = Schema.Struct({ port: Schema.Number });
 const decodeAddress = Schema.decodeUnknownOption(AddressBoundary);

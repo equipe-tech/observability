@@ -1,211 +1,38 @@
-# Publicação coordenada dos pacotes
+# Publicação independente dos pacotes
 
-Este runbook prepara a candidata `0.2.1`, mas separa todas as mutações por um gate humano explícito. Nenhum tag, release ou pacote é publicado durante a preparação.
+Cada pacote tem versão, tag, notas, checksum, archive e publicação próprios. O tag usa `<slug>@<semver>`:
 
-## Invariantes
+- `observability@0.3.0`
+- `observability-nestjs@0.3.0`
+- `observability-cli@0.2.1`
 
-- `@equipe-tech/observability` e `@equipe-tech/observability-cli` usam exatamente a mesma versão.
-- Um único tag anotado `v0.2.1` aponta para o commit aprovado que contém os dois manifests e as notas.
-- O commit aprovado está no histórico de `origin/master` antes da criação do tag.
-- Os tarballs aprovados contêm READMEs, licença Apache-2.0, declarações, entrypoints e assets esperados.
-- O push do tag executa somente verificação e não pode criar GitHub Release nem publicar no npm.
-- A publicação exige `workflow_dispatch` separado com `tag` e `confirm_tag` exatamente iguais, checkout do tag existente e aprovação do environment protegido `publication`.
-- O workflow usa OpenID Connect com `id-token: write` e `npm publish --provenance` somente nos jobs de publicação disparados manualmente.
-- A publicação exige `NPM_TOKEN`, autenticação confirmada por `npm whoami` e as variáveis de requisição OIDC do GitHub. A ausência de qualquer requisito falha o job.
-- A verificação acionada pela release não recebe AXIOM_TOKEN nem outro secret de provider e não executa o canário deployed.
-- Nenhum comando de mutação desta página roda sem aprovação do responsável pela release.
+Tags `v*` pertencem ao histórico da linha coordenada 0.2 e não acionam o workflow atual.
 
-## Preflight sem mutação externa
+## Preparar um pacote
 
 ```sh
-set -euo pipefail
-git fetch origin --tags --prune
-git status --short --branch
-test -z "$(git status --porcelain)"
-test "$(jq -r .version packages/telemetry/package.json)" = "0.2.1"
-test "$(jq -r .version packages/cli/package.json)" = "0.2.1"
-test -z "$(git tag --list v0.2.1)"
-for package in @equipe-tech/observability @equipe-tech/observability-cli; do
-  if output="$(npm view "$package" version dist-tags versions --json 2>&1)"; then
-    echo "$output"
-  elif grep -qiE "E404|is not in this registry" <<< "$output"; then
-    echo "$package has not been published yet."
-  else
-    echo "$output" >&2
-    exit 1
-  fi
-done
-bun scripts/release.ts 0.2.1 --dry-run
+bun scripts/release.ts patch --package observability-cli --dry-run
+bun scripts/release.ts 0.3.0 --package observability --dry-run
 bun check
-bun run build
 bun run test
+bun run build
 bun run test:package
 ```
 
-Valide os assets no Collector 0.159.0:
+O dry run não altera manifest, lockfile, commit ou tag. Antes de uma release real, confirme que somente o manifest selecionado muda. O script cria um tag no formato `<slug>@<versão>` e nunca atualiza um pacote irmão.
 
-```sh
-docker run --rm \
-  -v "$PWD/packages/cli/src/assets/local.yaml:/etc/otelcol/config.yaml:ro" \
-  otel/opentelemetry-collector-contrib:0.159.0 \
-  validate --config=/etc/otelcol/config.yaml
+Crie as notas em `docs/releases/<slug>@<versão>.md` e o checksum em `docs/releases/<slug>@<versão>.sha256`. O checksum contém somente o archive daquele pacote.
 
-docker run --rm \
-  -e AXIOM_TOKEN=test \
-  -e AXIOM_DATASET_TRACES=traces \
-  -e AXIOM_DATASET_LOGS=logs \
-  -e AXIOM_DATASET_METRICS=metrics \
-  -v "$PWD/packages/cli/src/assets/production.yaml:/etc/otelcol/config.yaml:ro" \
-  otel/opentelemetry-collector-contrib:0.159.0 \
-  validate --config=/etc/otelcol/config.yaml
+## Verificar os archives
 
-recovery_root="$(mktemp -d)"
-cleanup_recovery() {
-  rm -rf "$recovery_root"
-}
-trap cleanup_recovery EXIT
-trap 'exit 128' HUP INT TERM
-OBSERVABILITY_COLLECTOR_RECOVERY=1 \
-OBSERVABILITY_COLLECTOR_RECOVERY_ARTIFACT_ROOT="$recovery_root" \
-  bun test packages/cli/test/CollectorRecovery.bun.test.ts --timeout 120000
-cleanup_recovery
-trap - EXIT HUP INT TERM
-```
+`bun run test:package` compila e empacota os três pacotes. O smoke instala os archives em consumidores Node e Bun, testa NestJS 10 e 11, percorre as declarações, rejeita imports não declarados e confirma os entrypoints públicos.
 
-Rode o canário local sem credenciais com um único diretório de estado:
+Para a candidata selecionada, gere três archives em diretórios vazios. Compare `pack-1` com `pack-2` e `pack-3`. Valide a lista de arquivos, o manifest empacotado, a licença, o README, as declarações e o checksum específico do tag.
 
-```sh
-state="$(mktemp -d)"
-stack_started=false
-cleanup_stack() {
-  if [[ "$stack_started" == "true" ]]; then
-    OBSERVABILITY_HOME="$state" bun packages/cli/src/main.ts dev down || true
-  fi
-  rm -rf "$state"
-}
-trap cleanup_stack EXIT
-trap 'exit 128' HUP INT TERM
-stack_started=true
-OBSERVABILITY_HOME="$state" bun packages/cli/src/main.ts dev up
-curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-delay 1 \
-  http://localhost:8000/ >/dev/null
-OBSERVABILITY_HOME="$state" OBSERVABILITY_E2E=1 bun test:canary
-OBSERVABILITY_HOME="$state" bun packages/cli/src/main.ts dev down
-stack_started=false
-rm -rf "$state"
-trap - EXIT HUP INT TERM
-```
+## Gate humano
 
-## Tarballs aprováveis
+O push de um tag apenas executa verificação. A publicação exige `workflow_dispatch` no ref exato do tag, `tag` e `confirm_tag` idênticos e aprovação do environment `publication`.
 
-```sh
-set -euo pipefail
-pack_root="$PWD/.release-pack"
-evidence_root="$PWD/.verification/observability/obs-9-release"
-rm -rf "$pack_root" "$evidence_root" dist-release
-mkdir -p "$evidence_root"
-cleanup() {
-  rm -rf "$pack_root" dist-release
-}
-trap cleanup EXIT
-trap 'exit 128' HUP INT TERM
-bun run build
-for pack_set in pack-1 pack-2 pack-3; do
-  destination="$pack_root/$pack_set"
-  mkdir -p "$destination"
-  (
-    cd packages/telemetry
-    bun pm pack --ignore-scripts --quiet \
-      --filename "$destination/equipe-tech-observability-0.2.1.tgz"
-  )
-  (
-    cd packages/cli
-    bun pm pack --ignore-scripts --quiet \
-      --filename "$destination/equipe-tech-observability-cli-0.2.1.tgz"
-  )
-done
-{
-  for pack_set in pack-2 pack-3; do
-    cmp "$pack_root/pack-1/equipe-tech-observability-0.2.1.tgz" \
-      "$pack_root/$pack_set/equipe-tech-observability-0.2.1.tgz"
-    echo "observability pack-1 and $pack_set are byte-identical"
-    cmp "$pack_root/pack-1/equipe-tech-observability-cli-0.2.1.tgz" \
-      "$pack_root/$pack_set/equipe-tech-observability-cli-0.2.1.tgz"
-    echo "observability-cli pack-1 and $pack_set are byte-identical"
-  done
-  sha256sum .release-pack/pack-*/*.tgz
-  sha256sum --check docs/releases/v0.2.1.sha256
-} | tee "$evidence_root/triple-pack.txt"
-tar -tzf "$pack_root/pack-1/equipe-tech-observability-0.2.1.tgz" | sort \
-  > "$evidence_root/observability-files.txt"
-tar -tzf "$pack_root/pack-1/equipe-tech-observability-cli-0.2.1.tgz" | sort \
-  > "$evidence_root/observability-cli-files.txt"
-mkdir dist-release
-cp "$pack_root/pack-1"/*.tgz dist-release/
-npm publish "./dist-release/equipe-tech-observability-0.2.1.tgz" \
-  --access public --tag latest --provenance --dry-run
-npm publish "./dist-release/equipe-tech-observability-cli-0.2.1.tgz" \
-  --access public --tag latest --provenance --dry-run
-cleanup
-trap - EXIT HUP INT TERM
-```
+O workflow resolve o slug para um único manifest. Ele empacota, cria release e publica somente esse package. O job de npm exige `NPM_TOKEN`, identidade OIDC e `npm publish --provenance`.
 
-Os seis SHA-256 devem coincidir exatamente com `docs/releases/v0.2.1.sha256`. Os três conjuntos usam diretórios vazios e nomes determinísticos; compare `pack-1` com `pack-2` e `pack-3` antes da aprovação. Confira nomes, versões, repository, homepage, bugs e engines dos manifests empacotados, export maps, todos os `.d.ts`, modo executável da CLI, assets do Collector e Kamal, READMEs, licenças na raiz e em `dist`, dependency ranges e ausência de `workspace:`, fontes, testes, credenciais e arquivos alheios.
-
-Instale esses mesmos tarballs em diretórios temporários Node e Bun. Importe raiz, metrics, node, nestjs, browser, browser/client e testing. Compile consumidores NestJS 10 e 11, execute o cliente de browser empacotado e confirme o gate gzip. Execute `observability --help`, `dev status` e provisionamento local. `bun run test:package` automatiza essa matriz; uma instalação Node separada confirma a resolução fora do Bun.
-
-## Evidência para aprovação
-
-Entregue ao responsável:
-
-- SHA completo do commit candidato e confirmação de que ele pertence a `origin/master`;
-- diff desde `v0.2.0` e notas `docs/releases/v0.2.1.md`;
-- saídas de check, build, testes, smoke, Collector, recovery e canário local;
-- listagens e SHA-256 dos dois tarballs;
-- saídas dos dois `npm publish --dry-run`;
-- resultado das instalações externas Node, Bun, NestJS 10 e NestJS 11;
-- resultado das consultas read-only de versões e dist-tags;
-- revisão das permissões OIDC, do comando `--provenance` e do checkout exato do tag na CI reutilizável;
-- confirmação de que `effect@4.0.0-rc.111` continua dependência obrigatória nesta versão e que qualquer mudança desse contrato ficou adiada para análise futura.
-
-## Gate humano de publicação
-
-Pare aqui. Os comandos abaixo criam ou propagam estado externo. Execute somente depois que o responsável aprovar por escrito o SHA, a versão, as notas, os hashes, a conta npm, o dist-tag `latest` e a configuração de proveniência.
-
-```sh
-set -euo pipefail
-git fetch origin --tags --prune
-approved_sha="<SHA_APROVADO>"
-test "$(git rev-parse "$approved_sha")" = "$approved_sha"
-git merge-base --is-ancestor "$approved_sha" origin/master
-test "$(git show "$approved_sha:packages/telemetry/package.json" | jq -r .version)" = "0.2.1"
-test "$(git show "$approved_sha:packages/cli/package.json" | jq -r .version)" = "0.2.1"
-test -z "$(git ls-remote --tags origin refs/tags/v0.2.1 refs/tags/v0.2.1^{})"
-git tag -a v0.2.1 "$approved_sha" -m "Release 0.2.1"
-git push origin v0.2.1
-```
-
-O push do tag aciona somente a verificação reutilizável. Ele não cria release e não publica pacotes. Depois da verificação, selecione o próprio ref `v0.2.1` na interface e abra manualmente o workflow `Release` com `tag=v0.2.1` e `confirm_tag=v0.2.1`. O workflow exige que o dispatch rode do ref exato do tag, que o tag exista, que o checkout corresponda ao commit exato e que o environment protegido `publication` seja aprovado. Não rode `npm publish`, `gh release create`, upload de asset ou alteração de dist-tag manual em paralelo.
-
-## Verificação após publicação
-
-```sh
-git ls-remote --tags origin refs/tags/v0.2.1 refs/tags/v0.2.1^{}
-gh release view v0.2.1 --json tagName,isDraft,isPrerelease,assets,url
-npm view @equipe-tech/observability@0.2.1 version dist.integrity dist.shasum --json
-npm view @equipe-tech/observability-cli@0.2.1 version dist.integrity dist.shasum --json
-npm view @equipe-tech/observability dist-tags --json
-npm view @equipe-tech/observability-cli dist-tags --json
-```
-
-Confirme dois assets no GitHub Release, proveniência nos dois pacotes npm, `latest: 0.2.1` em ambos e instalação limpa por versão em Node e Bun.
-
-## Falha e rollback
-
-- Antes do tag, corrija no branch, repita toda a validação, gere novos hashes e peça nova aprovação do SHA.
-- Se o tag remoto existir mas o GitHub Release e os dois pacotes ainda não tiverem sido publicados, cancele o workflow. Remova eventual draft e o tag somente com aprovação explícita. Nunca mova um tag de release publicado.
-- Se somente um pacote for publicado, preserve a versão publicada. Corrija a causa e reexecute o workflow por `workflow_dispatch` com `tag` e `confirm_tag` iguais ao tag existente. A release e os assets existentes não são sobrescritos, os checksums são revalidados e a versão já publicada é ignorada de forma idempotente.
-- Se um pacote publicado tiver defeito, faça uma correção coordenada com nova versão patch nos dois pacotes. Não reutilize `0.2.1`.
-- A CLI 0.2.0 não lê credenciais no formato 3. Um rollback da CLI exige restaurar um backup seguro anterior à migração e validar os segredos de runtime; não converta o arquivo manualmente.
-- Não use `npm unpublish` como rollback normal. `npm deprecate` ou mudança manual de dist-tag exigem aprovação explícita, mensagem de substituição e verificação dos dois pacotes.
-- Preserve logs do workflow, SHA aprovado, hashes locais, integrities npm e URL do release como evidência do incidente.
+Não mova um tag publicado. Não publique um pacote irmão para alinhar versões. Uma correção usa um novo patch somente no pacote afetado.

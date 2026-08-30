@@ -1,12 +1,11 @@
 import { Effect } from "effect";
-import { sanitizeEventName } from "./policy/BrowserFieldPolicy.ts";
-import { CurrentDataPolicy } from "./policy/DataPolicy.ts";
-import { transformSignalFields } from "./policy/PolicyTransform.ts";
-import { effectDroppedAttributesKey } from "./policy/PolicyVocabulary.ts";
+import type { EventAttributes } from "../contract/TelemetryEvent.ts";
+import { sanitizeEventName } from "../policy/BrowserFieldPolicy.ts";
+import { CurrentDataPolicy } from "../policy/DataPolicy.ts";
+import { transformSignalFields } from "../policy/PolicyTransform.ts";
+import { effectDroppedAttributesKey } from "../policy/PolicyVocabulary.ts";
 
-export type WideEventFields = {
-  readonly [attribute: string]: string | number | boolean;
-};
+export type WideEventFields = EventAttributes;
 
 export const emit = (name: string, fields: WideEventFields): Effect.Effect<void> =>
   Effect.flatMap(CurrentDataPolicy, (policy) => {

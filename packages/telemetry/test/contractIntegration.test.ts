@@ -8,7 +8,7 @@ import {
   type TelemetryContractInput,
 } from "../src/contract/index.ts";
 import { CorrelationContext, parseRequestId, parseRunId } from "../src/Correlation.ts";
-import { layerWideEvent } from "../src/WideEventSink.ts";
+import { layerWideEvent } from "../src/effect/WideEventSink.ts";
 import * as Testing from "../src/testing/index.ts";
 
 const contractInput = telemetryContractDefinition({

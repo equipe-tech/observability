@@ -1,6 +1,6 @@
 import { Layer, Option } from "effect";
-import { TelemetryEventSink } from "./contract/EventProducer.ts";
-import type { AttributeValue, TelemetryEvent } from "./contract/TelemetryEvent.ts";
+import { TelemetryEventSink } from "../contract/EventProducer.ts";
+import type { AttributeValue, TelemetryEvent } from "../contract/TelemetryEvent.ts";
 import * as WideEvent from "./WideEvent.ts";
 
 type MutableWideEventFields = {

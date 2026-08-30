@@ -3,15 +3,15 @@ name: Release
 on:
   push:
     tags:
-      - "v*.*.*"
+      - "*@*.*.*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag existente exata a publicar (exemplo: v0.2.1)"
+        description: "Tag de pacote existente, por exemplo observability@0.3.0"
         required: true
         type: string
       confirm_tag:
-        description: "Repita exatamente o tag aprovado para confirmar a publicação"
+        description: "Repita exatamente o tag aprovado"
         required: true
         type: string
 
@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -27,7 +27,11 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
+      slug: ${{ steps.meta.outputs.slug }}
       version: ${{ steps.meta.outputs.version }}
+      directory: ${{ steps.meta.outputs.directory }}
+      package_name: ${{ steps.meta.outputs.package_name }}
+      archive: ${{ steps.meta.outputs.archive }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
       npm_tag: ${{ steps.meta.outputs.npm_tag }}
     steps:
@@ -35,7 +39,7 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
           fetch-depth: 0
-      - name: Validate tag against the package manifests
+      - name: Validate the scoped package tag
         id: meta
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -46,27 +50,33 @@ jobs:
           set -euo pipefail
           tag="$INPUT_TAG"
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            [[ "$CONFIRM_TAG" == "$tag" ]] \
-              || { echo "Publication confirmation must exactly match $tag."; exit 1; }
-            [[ "$EVENT_REF" == "refs/tags/$tag" ]] \
-              || { echo "Publication dispatch must run from the exact tag ref refs/tags/$tag."; exit 1; }
+            [[ "$CONFIRM_TAG" == "$tag" ]] || { echo "Publication confirmation must exactly match $tag."; exit 1; }
+            [[ "$EVENT_REF" == "refs/tags/$tag" ]] || { echo "Publication dispatch must run from the exact tag ref refs/tags/$tag."; exit 1; }
           fi
-          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]] \
-            || { echo "The tag $tag does not match the release tag format."; exit 1; }
-          git show-ref --verify --quiet "refs/tags/$tag" \
-            || { echo "The tag $tag does not exist in this checkout."; exit 1; }
+          [[ "$tag" =~ ^[a-z0-9-]+@[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]] || { echo "The tag $tag does not match the scoped release tag format."; exit 1; }
+          git show-ref --verify --quiet "refs/tags/$tag" || { echo "The tag $tag does not exist in this checkout."; exit 1; }
           tag_commit="$(git rev-list -n 1 "$tag")"
           head_commit="$(git rev-parse HEAD)"
-          [[ "$head_commit" == "$tag_commit" ]] \
-            || { echo "HEAD $head_commit is not the exact commit for $tag ($tag_commit)."; exit 1; }
-          version="${tag#v}"
-          for manifest in packages/telemetry/package.json packages/cli/package.json; do
-            manifest_version="$(jq -r .version "$manifest")"
-            [[ "$manifest_version" == "$version" ]] \
-              || { echo "The tag $tag does not match $manifest ($manifest_version)."; exit 1; }
+          [[ "$head_commit" == "$tag_commit" ]] || { echo "HEAD $head_commit is not the exact commit for $tag ($tag_commit)."; exit 1; }
+          slug="${tag%@*}"
+          version="${tag#*@}"
+          manifest=""
+          for candidate in packages/*/package.json; do
+            candidate_slug="$(jq -r .name "$candidate" | sed 's#^@equipe-tech/##')"
+            if [[ "$candidate_slug" == "$slug" ]]; then manifest="$candidate"; break; fi
           done
+          [[ -n "$manifest" ]] || { echo "The tag selects unknown package $slug."; exit 1; }
+          manifest_version="$(jq -r .version "$manifest")"
+          [[ "$manifest_version" == "$version" ]] || { echo "The tag $tag does not match $manifest ($manifest_version)."; exit 1; }
+          directory="$(dirname "$manifest")"
+          package_name="$(jq -r .name "$manifest")"
+          archive="equipe-tech-${slug}-${version}.tgz"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "directory=$directory" >> "$GITHUB_OUTPUT"
+          echo "package_name=$package_name" >> "$GITHUB_OUTPUT"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
           if [[ "$version" == *-* ]]; then
             suffix="${version#*-}"
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
@@ -85,9 +95,7 @@ jobs:
 
   release:
     if: github.event_name == 'workflow_dispatch'
-    needs:
-      - tag-check
-      - verify
+    needs: [tag-check, verify]
     runs-on: ubuntu-latest
     environment: publication
     permissions:
@@ -102,47 +110,28 @@ jobs:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       - run: bun run build
-      - name: Pack and verify release tarballs
+      - name: Pack the selected package three times
         env:
+          DIRECTORY: ${{ needs.tag-check.outputs.directory }}
+          ARCHIVE: ${{ needs.tag-check.outputs.archive }}
           TAG: ${{ needs.tag-check.outputs.tag }}
-          VERSION: ${{ needs.tag-check.outputs.version }}
         run: |
           set -euo pipefail
           rm -rf .release-pack dist-release
-          trap 'rm -rf .release-pack' EXIT
           for pack_set in pack-1 pack-2 pack-3; do
-            destination="$PWD/.release-pack/$pack_set"
-            mkdir -p "$destination"
-            (cd packages/telemetry && bun pm pack --ignore-scripts --quiet \
-              --filename "$destination/equipe-tech-observability-${VERSION}.tgz")
-            (cd packages/cli && bun pm pack --ignore-scripts --quiet \
-              --filename "$destination/equipe-tech-observability-cli-${VERSION}.tgz")
+            mkdir -p ".release-pack/$pack_set"
+            (cd "$DIRECTORY" && bun pm pack --ignore-scripts --quiet --filename "$GITHUB_WORKSPACE/.release-pack/$pack_set/$ARCHIVE")
           done
-          for pack_set in pack-2 pack-3; do
-            cmp ".release-pack/pack-1/equipe-tech-observability-${VERSION}.tgz" \
-              ".release-pack/$pack_set/equipe-tech-observability-${VERSION}.tgz"
-            cmp ".release-pack/pack-1/equipe-tech-observability-cli-${VERSION}.tgz" \
-              ".release-pack/$pack_set/equipe-tech-observability-cli-${VERSION}.tgz"
-          done
-          checksum_file="docs/releases/${TAG}.sha256"
-          [[ -f "$checksum_file" ]] \
-            || { echo "The release checksum file is missing: $checksum_file"; exit 1; }
-          sha256sum --check "$checksum_file"
+          cmp ".release-pack/pack-1/$ARCHIVE" ".release-pack/pack-2/$ARCHIVE"
+          cmp ".release-pack/pack-1/$ARCHIVE" ".release-pack/pack-3/$ARCHIVE"
+          sha256sum --check "docs/releases/${TAG}.sha256"
           mkdir dist-release
-          cp .release-pack/pack-1/*.tgz dist-release/
-          rm -rf .release-pack
-          ls -l dist-release
+          cp ".release-pack/pack-1/$ARCHIVE" dist-release/
       - name: Generate release notes
         env:
           TAG: ${{ needs.tag-check.outputs.tag }}
         run: |
-          set -euo pipefail
-          source_notes="docs/releases/${TAG}.md"
-          if [[ -f "$source_notes" ]]; then
-            cp "$source_notes" release-notes.md
-          else
-            bun scripts/release-notes.ts --tag "$TAG" > release-notes.md
-          fi
+          if [[ -f "docs/releases/${TAG}.md" ]]; then cp "docs/releases/${TAG}.md" release-notes.md; else bun scripts/release-notes.ts --tag "$TAG" > release-notes.md; fi
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -150,40 +139,22 @@ jobs:
           PRERELEASE: ${{ needs.tag-check.outputs.prerelease }}
         run: |
           set -euo pipefail
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "The release $TAG already exists. Existing assets will not be replaced."
-          else
-            create_args=(release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --title "$TAG" --notes-file release-notes.md --verify-tag)
-            if [[ "$PRERELEASE" == "true" ]]; then
-              create_args+=(--prerelease)
-            fi
-            gh "${create_args[@]}"
-            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" dist-release/*
-          fi
-      - name: Verify the release assets
+          args=(release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file release-notes.md --verify-tag)
+          if [[ "$PRERELEASE" == "true" ]]; then args+=(--prerelease); fi
+          gh "${args[@]}"
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" dist-release/*
+      - name: Verify the exact release asset
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.tag-check.outputs.tag }}
-          VERSION: ${{ needs.tag-check.outputs.version }}
-        run: |
-          set -euo pipefail
-          assets="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
-          for expected in \
-            "equipe-tech-observability-${VERSION}.tgz" \
-            "equipe-tech-observability-cli-${VERSION}.tgz"; do
-            grep -qx "$expected" <<< "$assets" \
-              || { echo "The release is missing the asset $expected."; exit 1; }
-          done
-      - name: Clean release temporary paths
-        if: always()
+          ARCHIVE: ${{ needs.tag-check.outputs.archive }}
+        run: gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qx "$ARCHIVE"
+      - if: always()
         run: rm -rf .release-pack dist-release release-notes.md
 
   publish-npm:
     if: github.event_name == 'workflow_dispatch'
-    needs:
-      - tag-check
-      - release
+    needs: [tag-check, release]
     runs-on: ubuntu-latest
     environment: publication
     permissions:
@@ -193,92 +164,29 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.tag-check.outputs.tag }}
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: "https://registry.npmjs.org"
-      - run: bun install --frozen-lockfile
-      - run: bun run build
-      - name: Download, rebuild, and verify the release tarballs
+      - name: Download the selected package archive
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.tag-check.outputs.tag }}
-          VERSION: ${{ needs.tag-check.outputs.version }}
+          ARCHIVE: ${{ needs.tag-check.outputs.archive }}
         run: |
-          set -euo pipefail
-          rm -rf .release-pack dist-release
-          trap 'rm -rf .release-pack' EXIT
           mkdir dist-release
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern "*.tgz" --dir dist-release
-          for pack_set in pack-1 pack-2 pack-3; do
-            destination="$PWD/.release-pack/$pack_set"
-            mkdir -p "$destination"
-            (cd packages/telemetry && bun pm pack --ignore-scripts --quiet \
-              --filename "$destination/equipe-tech-observability-${VERSION}.tgz")
-            (cd packages/cli && bun pm pack --ignore-scripts --quiet \
-              --filename "$destination/equipe-tech-observability-cli-${VERSION}.tgz")
-          done
-          for pack_set in pack-2 pack-3; do
-            cmp ".release-pack/pack-1/equipe-tech-observability-${VERSION}.tgz" \
-              ".release-pack/$pack_set/equipe-tech-observability-${VERSION}.tgz"
-            cmp ".release-pack/pack-1/equipe-tech-observability-cli-${VERSION}.tgz" \
-              ".release-pack/$pack_set/equipe-tech-observability-cli-${VERSION}.tgz"
-          done
-          checksum_file="docs/releases/${TAG}.sha256"
-          [[ -f "$checksum_file" ]] \
-            || { echo "The release checksum file is missing: $checksum_file"; exit 1; }
-          sha256sum --check "$checksum_file"
-          cmp ".release-pack/pack-1/equipe-tech-observability-${VERSION}.tgz" \
-            "dist-release/equipe-tech-observability-${VERSION}.tgz"
-          cmp ".release-pack/pack-1/equipe-tech-observability-cli-${VERSION}.tgz" \
-            "dist-release/equipe-tech-observability-cli-${VERSION}.tgz"
-          rm -rf .release-pack
-      - name: Validate npm authentication and trusted publishing
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ARCHIVE" --dir dist-release
+      - name: Publish the selected package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          [[ -n "$NODE_AUTH_TOKEN" ]] \
-            || { echo "NPM_TOKEN is required for publication."; exit 1; }
-          [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]] \
-            || { echo "GitHub OIDC request URL is unavailable."; exit 1; }
-          [[ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]] \
-            || { echo "GitHub OIDC request token is unavailable."; exit 1; }
-          npm whoami --registry https://registry.npmjs.org
-      - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          VERSION: ${{ needs.tag-check.outputs.version }}
+          ARCHIVE: ${{ needs.tag-check.outputs.archive }}
           NPM_TAG: ${{ needs.tag-check.outputs.npm_tag }}
         run: |
           set -euo pipefail
-          [[ -n "$NODE_AUTH_TOKEN" ]] \
-            || { echo "NPM_TOKEN is required for publication."; exit 1; }
-          [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]] \
-            || { echo "GitHub OIDC request URL is unavailable."; exit 1; }
-          [[ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]] \
-            || { echo "GitHub OIDC request token is unavailable."; exit 1; }
-          for tarball in \
-            "./dist-release/equipe-tech-observability-${VERSION}.tgz" \
-            "./dist-release/equipe-tech-observability-cli-${VERSION}.tgz"; do
-            [[ -f "$tarball" ]] || { echo "Missing tarball: $tarball"; exit 1; }
-            set +e
-            output="$(npm publish "$tarball" --access public --tag "$NPM_TAG" --provenance 2>&1)"
-            status=$?
-            set -e
-            echo "$output"
-            if [[ $status -ne 0 ]]; then
-              if grep -qiE "previously published|cannot publish over|version already exists" <<< "$output"; then
-                echo "Skipping the already published version in $tarball."
-                continue
-              fi
-              exit $status
-            fi
-          done
-      - name: Clean npm publication temporary paths
-        if: always()
-        run: rm -rf .release-pack dist-release
+          [[ -n "$NODE_AUTH_TOKEN" ]] || { echo "NPM_TOKEN is required for publication."; exit 1; }
+          [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]] || { echo "GitHub OIDC request URL is unavailable."; exit 1; }
+          [[ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]] || { echo "GitHub OIDC request token is unavailable."; exit 1; }
+          npm whoami --registry https://registry.npmjs.org
+          npm publish "dist-release/$ARCHIVE" --access public --tag "$NPM_TAG" --provenance
+      - if: always()
+        run: rm -rf dist-release

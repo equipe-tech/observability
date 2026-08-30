@@ -1,7 +1,30 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
+
+const root = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   fmt: {},
+  resolve: {
+    alias: [
+      {
+        find: "@equipe-tech/observability/browser",
+        replacement: `${root}packages/telemetry/src/browser/index.ts`,
+      },
+      {
+        find: "@equipe-tech/observability/testing",
+        replacement: `${root}packages/telemetry/src/testing/index.ts`,
+      },
+      {
+        find: "@equipe-tech/observability/node",
+        replacement: `${root}packages/telemetry/src/node/index.ts`,
+      },
+      {
+        find: "@equipe-tech/observability",
+        replacement: `${root}packages/telemetry/src/index.ts`,
+      },
+    ],
+  },
   lint: {
     jsPlugins: [
       { name: "vite-plus", specifier: "vite-plus/oxlint-plugin" },

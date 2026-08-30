@@ -13,7 +13,12 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "noImplicitOverride": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@equipe-tech/observability": ["./packages/telemetry/src/index.ts"],
+      "@equipe-tech/observability/*": ["./packages/telemetry/src/*/index.ts"],
+      "@equipe-tech/observability-nestjs": ["./packages/nestjs/src/index.ts"]
+    }
   },
   "include": ["vite.config.ts", "tools/**/*.ts", "scripts/**/*.ts", "packages/**/*.ts"],
   "exclude": ["node_modules", "repos"]

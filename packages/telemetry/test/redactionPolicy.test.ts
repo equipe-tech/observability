@@ -7,7 +7,7 @@ import {
   sensitiveFieldReplacement,
   sensitiveTextReplacement,
 } from "../src/RedactionPolicy.ts";
-import type { WideEventFields } from "../src/WideEvent.ts";
+import type { WideEventFields } from "../src/effect/WideEvent.ts";
 
 const SanitizedJson = Schema.fromJsonString(
   Schema.Struct({

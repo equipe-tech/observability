@@ -2,7 +2,7 @@ import { Effect, flow, Schema } from "effect";
 import { BrowserEventBatch } from "../BrowserEvents.ts";
 import { CurrentDataPolicy } from "../policy/DataPolicy.ts";
 import { transformSignalFields } from "../policy/PolicyTransform.ts";
-import * as WideEvent from "../WideEvent.ts";
+import * as WideEvent from "../effect/WideEvent.ts";
 
 export class InvalidBrowserEventBatch extends Schema.TaggedError<InvalidBrowserEventBatch>()(
   "InvalidBrowserEventBatch",
