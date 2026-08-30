@@ -1,3 +1,4 @@
+import type { MetricMeasurementErrorCode } from "./contract/MetricContractError.ts";
 import type { EnvironmentAliasPolicy, ResourceIdentityField } from "./ResourceIdentity.ts";
 import { createStandaloneMetrics } from "./MetricsRuntime.ts";
 import type { DataPolicy } from "./policy/DataPolicy.ts";
@@ -49,13 +50,15 @@ export type GaugeCollectionFailureCode =
   | "INVALID_OBSERVATION"
   | "ATTRIBUTE_LIMIT_EXCEEDED"
   | "SERIES_LIMIT_EXCEEDED"
-  | "POLICY_BLOCKED";
+  | "POLICY_BLOCKED"
+  | "CONTRACT_REJECTED";
 
 export interface GaugeCollectionFailure {
   readonly instrumentName: string;
   readonly code: GaugeCollectionFailureCode;
   readonly message: string;
   readonly policyReason?: MetricLabelRejection;
+  readonly contractReason?: MetricMeasurementErrorCode;
 }
 
 export interface FlushResult {

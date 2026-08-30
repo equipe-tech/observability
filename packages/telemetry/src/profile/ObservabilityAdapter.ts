@@ -4,6 +4,7 @@ import type {
   CompiledAuditActionDefinition,
   CompiledEventDefinition,
 } from "../contract/TelemetryContract.ts";
+import type { CompiledMetricDefinition } from "../contract/MetricDefinition.ts";
 import type { EventName } from "../contract/EventName.ts";
 import type { TelemetryEventSink } from "../contract/EventProducer.ts";
 import type { ResourceIdentity } from "../ResourceIdentity.ts";
@@ -36,6 +37,8 @@ export type ContractRegistry = {
   readonly eventByName: ReadonlyMap<EventName, CompiledEventDefinition>;
   readonly auditActionByAlias: ReadonlyMap<string, CompiledAuditActionDefinition>;
   readonly auditActionByName: ReadonlyMap<string, CompiledAuditActionDefinition>;
+  readonly metricByAlias: ReadonlyMap<string, CompiledMetricDefinition>;
+  readonly metricByName: ReadonlyMap<string, CompiledMetricDefinition>;
 };
 
 export type ObservabilityAdapterContext = {

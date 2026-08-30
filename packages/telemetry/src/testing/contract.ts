@@ -7,6 +7,7 @@ import {
   type TelemetryContract,
   type TelemetryContractInput,
 } from "../contract/index.ts";
+import { defineMetricDefinitions, type MetricKind } from "../contract/MetricDefinition.ts";
 import { ContractIssueCode, TelemetryEventErrorCode } from "../contract/TelemetryContractError.ts";
 import type { TelemetryEvent } from "../contract/TelemetryEvent.ts";
 import { organizationEvents } from "../contract/OrganizationEvents.ts";
@@ -24,6 +25,42 @@ export const organizationEventFixtures: ReadonlyArray<OrganizationEventFixture> 
 export const contractIssueFixtures = ContractIssueCode.literals;
 
 export const telemetryEventErrorFixtures = TelemetryEventErrorCode.literals;
+
+export const metricDefinitionFixtures = defineMetricDefinitions({
+  Counter: {
+    name: "fixture.counter",
+    description: "Counter fixture",
+    unit: "1",
+    kind: "counter",
+    attributes: {},
+  },
+  Histogram: {
+    name: "fixture.histogram",
+    description: "Histogram fixture",
+    unit: "ms",
+    kind: "histogram",
+    boundaries: [1, 10],
+    attributes: {},
+  },
+  ObservableGauge: {
+    name: "fixture.gauge",
+    description: "Observable gauge fixture",
+    unit: "1",
+    kind: "observable_gauge",
+    attributes: {},
+  },
+});
+
+export type InvalidMetricDefinitionFixture = {
+  readonly kind: MetricKind;
+  readonly issue: ContractIssueCode;
+};
+
+export const invalidMetricDefinitionFixtures: ReadonlyArray<InvalidMetricDefinitionFixture> = [
+  { kind: "counter", issue: "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES" },
+  { kind: "histogram", issue: "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES" },
+  { kind: "observable_gauge", issue: "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES" },
+];
 
 export type CollectingTelemetryEventSink = {
   readonly layer: Layer.Layer<TelemetryEventSink>;

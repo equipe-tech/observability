@@ -605,8 +605,44 @@ try {
   );
   await writeFile(
     join(consumer, "metrics-consumer.ts"),
-    "import { createMetrics, type MetricAttribute, type MetricLabelRejection } from '@equipe-tech/observability/metrics';\nconst rejection: MetricLabelRejection = 'classification';\nvoid rejection;\nconst metrics = await createMetrics({ enabled: false, serviceName: 'packed-consumer', serviceVersion: '1.0.0', environment: 'test', otlpEndpoint: 'http://localhost:4318' });\nconst attributes: ReadonlyArray<MetricAttribute> = [{ key: 'packed.value', value: true }];\nconst counter = metrics.counter({ name: 'packed.counter', description: 'Packed counter', unit: '1' });\nconst histogram = metrics.histogram({ name: 'packed.histogram', description: 'Packed histogram', unit: 'ms', boundaries: [1, 10] });\nconst gauge = metrics.observableGauge({ name: 'packed.gauge', description: 'Packed gauge', unit: '%' }, () => [{ value: 4, attributes }]);\ncounter.add(1, attributes);\nhistogram.record(5, attributes);\ngauge.unregister();\nawait metrics.flush();\nawait metrics.close();\n",
+    "import { Effect } from 'effect';\nimport { defineTelemetryContract, makeMetricProducer } from '@equipe-tech/observability';\nimport { createMetrics, type MetricLabelRejection } from '@equipe-tech/observability/metrics';\nconst rejection: MetricLabelRejection = 'classification';\nvoid rejection;\nconst contract = await Effect.runPromise(defineTelemetryContract({ version: 1, events: {}, metrics: { PackedCounter: { name: 'packed.counter', description: 'Packed counter', unit: '1', kind: 'counter', attributes: { 'packed.value': { classification: 'public', allowedValues: [true], maximumCardinality: 1 } } }, PackedHistogram: { name: 'packed.histogram', description: 'Packed histogram', unit: 'ms', kind: 'histogram', boundaries: [1, 10], attributes: {} }, PackedGauge: { name: 'packed.gauge', description: 'Packed gauge', unit: '%', kind: 'observable_gauge', attributes: {} } }, auditActions: {} }));\nconst metrics = await createMetrics({ enabled: false, serviceName: 'packed-consumer', serviceVersion: '1.0.0', environment: 'test', otlpEndpoint: 'http://localhost:4318' });\nconst producer = makeMetricProducer(contract, metrics);\nproducer.counter('PackedCounter').add(1, { 'packed.value': true });\nproducer.histogram('PackedHistogram').record(5, {});\nconst gauge = producer.observableGauge('PackedGauge', () => [{ value: 4, attributes: {} }]);\ngauge.unregister();\nawait metrics.flush();\nawait metrics.close();\n",
   );
+  const producerTypePrefix =
+    "import { Contract, makeMetricProducer } from '@equipe-tech/observability';\nimport type { Metrics } from '@equipe-tech/observability/metrics';\nconst definition = Contract.telemetryContractDefinition({ version: 1, events: {}, metrics: { Counter: { name: 'packed.counter', description: 'Counter', unit: '1', kind: 'counter', attributes: { 'packed.channel': { classification: 'public', allowedValues: ['web', 'mobile'], maximumCardinality: 2 } } }, Histogram: { name: 'packed.histogram', description: 'Histogram', unit: 'ms', kind: 'histogram', boundaries: [1, 10], attributes: {} } }, auditActions: {} });\ndeclare const contract: Contract.TelemetryContract<typeof definition>;\ndeclare const metrics: Metrics;\nconst producer = makeMetricProducer(contract, metrics);\n";
+  await writeFile(
+    join(consumer, "producer-types.ts"),
+    `${producerTypePrefix}producer.counter('Counter').add(1, { 'packed.channel': 'web' });\nproducer.histogram('Histogram').record(5, {});\n`,
+  );
+  for (const invalidProducerUse of [
+    "producer.counter('Histogram');",
+    "producer.counter('Counter').add(1, { 'packed.channel': 'partner' });",
+    "producer.counter('Counter').add(1, { 'packed.channel': 'web', 'packed.extra': true });",
+    "Contract.telemetryContractDefinition({ version: 1, events: {}, metrics: { Bad: { name: 'packed.bad', description: 'Bad', unit: '1', kind: 'counter', boundaries: [1], attributes: {} } }, auditActions: {} });",
+    "Contract.telemetryContractDefinition({ version: 1, events: {}, metrics: { Bad: { name: 'packed.bad', description: 'Bad', unit: '1', kind: 'histogram', attributes: {} } }, auditActions: {} });",
+  ]) {
+    await writeFile(
+      join(consumer, "producer-invalid.ts"),
+      `${producerTypePrefix}${invalidProducerUse}\n`,
+    );
+    const invalidProducerResult = await run(
+      [
+        "bun",
+        join(root, "node_modules/typescript/bin/tsc"),
+        "--noEmit",
+        "--module",
+        "Preserve",
+        "--moduleResolution",
+        "Bundler",
+        "--target",
+        "ESNext",
+        "producer-invalid.ts",
+      ],
+      consumer,
+    );
+    if (invalidProducerResult.exitCode === 0) {
+      throw new Error(`TypeScript accepted invalid contract producer use: ${invalidProducerUse}`);
+    }
+  }
   const metricsDeclaration = await readFile(
     join(consumer, "node_modules/@equipe-tech/observability/dist/Metrics.d.ts"),
     "utf8",
@@ -628,7 +664,7 @@ try {
         strict: true,
         noEmit: true,
       },
-      include: ["index.ts", "metrics-consumer.ts"],
+      include: ["index.ts", "metrics-consumer.ts", "producer-types.ts"],
     }),
   );
   requireSuccess(

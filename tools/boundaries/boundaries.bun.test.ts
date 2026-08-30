@@ -84,6 +84,49 @@ describe("package boundaries", () => {
     assert.deepEqual(await checkPackageBoundaries(join(projects, "allowed")), []);
   });
 
+  it("allows the root producer and rejects every direct domain metric API", async () => {
+    const temporary = await mkdtemp(join(tmpdir(), "boundaries-metric-producer-"));
+    try {
+      await cp(join(projects, "allowed"), temporary, { recursive: true });
+      const contractDirectory = join(temporary, "packages/telemetry/src/contract");
+      await writeFile(
+        join(contractDirectory, "metric-producer.ts"),
+        'import type { MetricProducer } from "@equipe-tech/observability";\nvoid (0 satisfies MetricProducer<never>);\n',
+      );
+      const source = join(contractDirectory, "direct-metrics.ts");
+      await writeFile(
+        source,
+        [
+          'import type {} from "effect/Metric";',
+          'import type {} from "@opentelemetry/api";',
+          'import type {} from "@equipe-tech/observability/metrics";',
+        ].join("\n"),
+      );
+      const allViolations = await checkPackageBoundaries(temporary);
+      assert.equal(
+        allViolations.some((violation) => violation.file.endsWith("metric-producer.ts")),
+        false,
+      );
+      const violations = allViolations.filter(
+        (violation) =>
+          violation.file.endsWith("direct-metrics.ts") &&
+          violation.rule === "boundary/domain-forbidden-metric-api",
+      );
+      assert.deepEqual(
+        violations
+          .map((violation) => [violation.rule, violation.specifier])
+          .toSorted((left, right) => String(left).localeCompare(String(right))),
+        [
+          ["boundary/domain-forbidden-metric-api", "@equipe-tech/observability/metrics"],
+          ["boundary/domain-forbidden-metric-api", "@opentelemetry/api"],
+          ["boundary/domain-forbidden-metric-api", "effect/Metric"],
+        ],
+      );
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
   it("parses external exports and import-equals declarations", async () => {
     const temporary = await mkdtemp(join(tmpdir(), "boundaries-declarations-"));
     try {

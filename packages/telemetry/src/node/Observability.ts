@@ -2,6 +2,12 @@ import { Cause, Context, Duration, Effect, Layer, ManagedRuntime, Option } from 
 import { OtlpExporter } from "effect/unstable/observability";
 import { TelemetryEventSink } from "../contract/EventProducer.ts";
 import * as Telemetry from "../Telemetry.ts";
+import type { Metrics } from "../Metrics.ts";
+import {
+  createDisabledMetrics,
+  createStandaloneMetrics,
+  releaseMetricsLease,
+} from "../MetricsRuntime.ts";
 import {
   nodeObservabilityConfigFromEnv,
   type EnvBootstrapInput,
@@ -28,6 +34,7 @@ import { profileCapabilityRank } from "../profile/ObservabilityProfile.ts";
 export type NodeObservabilityDisabled = {
   readonly enabled: false;
   readonly eventLayer: Layer.Layer<TelemetryEventSink>;
+  readonly metrics: Metrics;
   readonly flush: () => Promise<LifecycleReport>;
   readonly close: () => Promise<LifecycleReport>;
   readonly dispose: () => Promise<LifecycleReport>;
@@ -39,6 +46,7 @@ export type NodeObservabilityEnabled = {
   readonly config: NodeObservabilityConfigEnabled;
   readonly runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, InvalidObservabilityConfig>;
   readonly eventLayer: Layer.Layer<TelemetryEventSink>;
+  readonly metrics: Metrics;
   readonly flush: () => Promise<LifecycleReport>;
   readonly close: () => Promise<LifecycleReport>;
   readonly dispose: () => Promise<LifecycleReport>;
@@ -71,15 +79,19 @@ const noopEventLayer = Layer.succeed(
 
 const disabledHandle = (): NodeObservabilityDisabled => {
   const report = emptyReport("close");
-  const closePromise = Promise.resolve(report);
+  const metrics = createDisabledMetrics();
+  let closePromise: Promise<LifecycleReport> | undefined;
   let closed = false;
   const close = () => {
+    if (closePromise !== undefined) return closePromise;
     closed = true;
+    closePromise = metrics.close().then(() => report);
     return closePromise;
   };
   return {
     enabled: false,
     eventLayer: noopEventLayer,
+    metrics,
     flush: () => (closed ? closedFlush() : Promise.resolve(emptyReport("flush"))),
     close,
     dispose: close,
@@ -102,6 +114,7 @@ class LiveNodeObservability implements NodeObservabilityEnabled {
       InvalidObservabilityConfig
     >,
     readonly eventLayer: Layer.Layer<TelemetryEventSink>,
+    readonly metrics: Metrics,
     private readonly runLifecycle: (operation: "flush" | "close") => Effect.Effect<LifecycleReport>,
   ) {}
 
@@ -128,7 +141,8 @@ class LiveNodeObservability implements NodeObservabilityEnabled {
       return this.#closePromise;
     }
     this.#closed = true;
-    const close = () => Effect.runPromise(this.runLifecycle("close"));
+    const close = () =>
+      releaseMetricsLease(this.metrics).then(() => Effect.runPromise(this.runLifecycle("close")));
     const pendingFlush = this.#flushPromise;
     this.#closePromise = pendingFlush === undefined ? close() : pendingFlush.then(close, close);
     return this.#closePromise;
@@ -191,6 +205,17 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
     }),
   );
   const flusher = yield* acquireRuntimeFlusher(runtime);
+  const metrics = yield* Effect.promise(() =>
+    createStandaloneMetrics({
+      serviceName: config.identity.serviceName,
+      serviceVersion: config.identity.serviceVersion,
+      environment: config.identity.environment,
+      deploymentEnvironmentAlias: config.telemetry.environmentAlias,
+      otlpEndpoint: config.telemetry.otlpEndpoint.toString(),
+      flushTimeoutMilliseconds: 400,
+      policy: config.evlog.policy,
+    }),
+  );
   const context = {
     profile: config.profile,
     identity: config.identity,
@@ -213,6 +238,7 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
     const result = yield* registration.adapter.start(context).pipe(Effect.exit);
     if (result._tag === "Failure") {
       yield* rollbackStartedAdapters(started);
+      yield* Effect.promise(() => releaseMetricsLease(metrics));
       yield* runtime.disposeEffect;
       return yield* new ObservabilityLifecycleError({
         code: "OBS_OBSERVABILITY_STARTUP_FAILED",
@@ -229,6 +255,7 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
   const eventLayer = eventHandle?.eventLayer ?? Option.none();
   if (Option.isNone(eventLayer)) {
     yield* rollbackStartedAdapters(started);
+    yield* Effect.promise(() => releaseMetricsLease(metrics));
     yield* runtime.disposeEffect;
     return yield* new ObservabilityLifecycleError({
       code: "OBS_OBSERVABILITY_STARTUP_FAILED",
@@ -242,7 +269,7 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
     });
   }
   const registry = createLifecycleRegistry(config.profile, started, flusher, runtime.disposeEffect);
-  return new LiveNodeObservability(config, runtime, eventLayer.value, registry.run);
+  return new LiveNodeObservability(config, runtime, eventLayer.value, metrics, registry.run);
 });
 
 export const makeNodeObservability = (

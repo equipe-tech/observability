@@ -15,6 +15,28 @@ import {
   type ContractIssue,
   type ContractIssueCode,
 } from "./TelemetryContractError.ts";
+import {
+  type CompiledMetricDefinition,
+  type MetricDefinitionsInput,
+  isValidHistogramBoundaries,
+  isValidMetricAttributeCount,
+  isValidMetricAttributeName,
+  isValidMetricCardinality,
+  isValidMetricDescription,
+  isValidMetricName,
+  isValidMetricUnit,
+  validAllowedValues,
+} from "./MetricDefinition.ts";
+export type {
+  CounterMetricDefinitionInput,
+  HistogramMetricDefinitionInput,
+  MetricAttributeDefinitionInput,
+  MetricDefinitionInput,
+  MetricDefinitionsInput,
+  MetricKind,
+  ObservableGaugeMetricDefinitionInput,
+} from "./MetricDefinition.ts";
+export { defineMetricDefinitions, isValidMetricName } from "./MetricDefinition.ts";
 
 export const AttributeClassification = Schema.Literals([
   "public",
@@ -54,10 +76,6 @@ export type EventDefinitionsInput = {
 export const defineEventDefinitions = <const Events extends EventDefinitionsInput>(
   events: Events,
 ): Events => events;
-
-export type MetricDefinitionsInput = {
-  readonly [alias: string]: typeof Schema.Json.Type;
-};
 
 export type AuditActionDefinitionInput = {
   readonly action: string;
@@ -155,6 +173,8 @@ export type TelemetryContract<Definition extends TelemetryContractInput> = {
   readonly auditActionByAlias: ReadonlyMap<string, CompiledAuditActionDefinition>;
   readonly auditActionByName: ReadonlyMap<string, CompiledAuditActionDefinition>;
   readonly metrics: Definition["metrics"];
+  readonly metricByAlias: ReadonlyMap<string, CompiledMetricDefinition>;
+  readonly metricByName: ReadonlyMap<string, CompiledMetricDefinition>;
 };
 
 const isAttributeClassification = Schema.is(AttributeClassification);
@@ -206,6 +226,21 @@ const EventDefinitionDocument = Schema.Struct({
   }),
   attributes: Schema.Record(Schema.String, AttributeDefinitionDocument),
 });
+const MetricAttributeDefinitionDocument = Schema.Struct({
+  classification: Schema.String,
+  maximumCardinality: Schema.Number,
+  allowedValues: Schema.Array(Schema.Union([Schema.String, Schema.Number, Schema.Boolean])).pipe(
+    Schema.optionalKey,
+  ),
+});
+const MetricDefinitionDocument = Schema.Struct({
+  name: Schema.String,
+  description: Schema.String,
+  unit: Schema.String,
+  kind: Schema.String,
+  boundaries: Schema.Array(Schema.Number).pipe(Schema.optionalKey),
+  attributes: Schema.Record(Schema.String, MetricAttributeDefinitionDocument),
+});
 const AuditActionDefinitionDocument = Schema.Struct({
   action: Schema.String,
   resourceType: Schema.String,
@@ -214,7 +249,7 @@ const AuditActionDefinitionDocument = Schema.Struct({
 const TelemetryContractDocument = Schema.Struct({
   version: Schema.Number,
   events: Schema.Record(Schema.String, EventDefinitionDocument),
-  metrics: Schema.Record(Schema.String, Schema.Any),
+  metrics: Schema.Record(Schema.String, MetricDefinitionDocument),
   auditActions: Schema.Record(Schema.String, AuditActionDefinitionDocument),
 });
 const decodeTelemetryContractDocument = Schema.decodeUnknownEffect(TelemetryContractDocument);
@@ -228,6 +263,8 @@ const issue = (
     readonly attributeName?: string;
     readonly auditActionAlias?: string;
     readonly auditActionName?: string;
+    readonly metricAlias?: string;
+    readonly metricName?: string;
   } = {},
 ): ContractIssue => ({ code, message, ...context });
 
@@ -235,6 +272,7 @@ const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<Contra
   const issues: Array<ContractIssue> = [];
   const eventAliasesByName = new Map<string, string>();
   const auditActionAliasesByName = new Map<string, string>();
+  const metricAliasesByName = new Map<string, string>();
   if (definition.version !== 1) {
     issues.push(
       issue(
@@ -340,6 +378,123 @@ const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<Contra
       }
     }
   }
+  for (const [alias, metric] of Object.entries(definition.metrics)) {
+    const metricName = metric.name;
+    const context = { metricAlias: alias, metricName };
+    if (!isValidMetricName(metric.name)) {
+      issues.push(
+        issue(
+          "OBS_CONTRACT_INVALID_METRIC_NAME",
+          `Metric "${metric.name}" is invalid. Use exactly two lowercase dot-separated parts, no reserved dimensions, and at most 128 characters.`,
+          context,
+        ),
+      );
+    }
+    const existingMetricAlias = metricAliasesByName.get(metric.name);
+    if (existingMetricAlias !== undefined) {
+      issues.push(
+        issue(
+          "OBS_CONTRACT_DUPLICATE_METRIC_NAME",
+          `Metric "${metric.name}" is declared by aliases "${existingMetricAlias}" and "${alias}". Give each metric one canonical name.`,
+          context,
+        ),
+      );
+    } else {
+      metricAliasesByName.set(metric.name, alias);
+    }
+    if (
+      metric.kind !== "counter" &&
+      metric.kind !== "histogram" &&
+      metric.kind !== "observable_gauge"
+    ) {
+      issues.push(
+        issue(
+          "OBS_CONTRACT_INVALID_METRIC_KIND",
+          `Metric "${metricName}" has an invalid kind. Use counter, histogram, or observable_gauge.`,
+          context,
+        ),
+      );
+    }
+    if (!isValidMetricDescription(metric.description)) {
+      issues.push(
+        issue(
+          "OBS_CONTRACT_INVALID_METRIC_DESCRIPTION",
+          `Metric "${metric.name}" has an invalid description. Use 1 to 1024 characters without control characters.`,
+          context,
+        ),
+      );
+    }
+    if (!isValidMetricUnit(metric.unit)) {
+      issues.push(
+        issue(
+          "OBS_CONTRACT_INVALID_METRIC_UNIT",
+          `Metric "${metric.name}" has an invalid unit. Use the runtime unit grammar and at most 63 characters.`,
+          context,
+        ),
+      );
+    }
+    if (
+      (metric.kind === "histogram" &&
+        (metric.boundaries === undefined || !isValidHistogramBoundaries(metric.boundaries))) ||
+      (metric.kind !== "histogram" && metric.boundaries !== undefined)
+    ) {
+      issues.push(
+        issue(
+          "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES",
+          `Metric "${metric.name}" has invalid boundaries. Histograms require 1 to 50 sorted finite boundaries and other kinds reject boundaries.`,
+          context,
+        ),
+      );
+    }
+    if (!isValidMetricAttributeCount(Object.keys(metric.attributes).length)) {
+      issues.push(
+        issue(
+          "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_DEFINITION",
+          `Metric "${metric.name}" exceeds the runtime ceiling of 16 attributes. Remove attributes before compiling.`,
+          context,
+        ),
+      );
+    }
+    for (const [attributeName, attribute] of Object.entries(metric.attributes)) {
+      const attributeContext = { ...context, attributeName };
+      if (!isValidMetricAttributeName(attributeName)) {
+        issues.push(
+          issue(
+            "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_NAME",
+            `Metric attribute "${attributeName}" is invalid. Use a dotted lowercase name no longer than 128 characters.`,
+            attributeContext,
+          ),
+        );
+      }
+      if (attribute.classification !== "public" && attribute.classification !== "internal") {
+        issues.push(
+          issue(
+            "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_DEFINITION",
+            `Metric attribute "${attributeName}" has an invalid classification. Use public or internal; sensitive and forbidden attributes cannot be metric labels.`,
+            attributeContext,
+          ),
+        );
+      }
+      if (!isValidMetricCardinality(attribute.maximumCardinality)) {
+        issues.push(
+          issue(
+            "OBS_CONTRACT_INVALID_METRIC_CARDINALITY",
+            `Metric attribute "${attributeName}" has invalid maximumCardinality. Use an integer from 1 through 100.`,
+            attributeContext,
+          ),
+        );
+      }
+      if (!validAllowedValues(attribute.allowedValues, attribute.maximumCardinality)) {
+        issues.push(
+          issue(
+            "OBS_CONTRACT_INVALID_METRIC_ALLOWED_VALUES",
+            `Metric attribute "${attributeName}" has invalid allowedValues. Use a non-empty unique scalar list no larger than maximumCardinality.`,
+            attributeContext,
+          ),
+        );
+      }
+    }
+  }
   for (const [alias, action] of Object.entries(definition.auditActions)) {
     const existingAlias = auditActionAliasesByName.get(action.action);
     if (existingAlias !== undefined) {
@@ -430,6 +585,17 @@ export const defineTelemetryContract = Effect.fn("defineTelemetryContract")(func
     auditActionByAlias.set(alias, compiled);
     auditActionByName.set(action.action, compiled);
   }
+  const metricByAlias = new Map<string, CompiledMetricDefinition>();
+  const metricByName = new Map<string, CompiledMetricDefinition>();
+  for (const [alias, metric] of Object.entries(definition.metrics)) {
+    const compiled: CompiledMetricDefinition = {
+      ...metric,
+      alias,
+      attributes: new Map(Object.entries(metric.attributes)),
+    };
+    metricByAlias.set(alias, compiled);
+    metricByName.set(metric.name, compiled);
+  }
   return {
     version: 1,
     definition,
@@ -439,5 +605,7 @@ export const defineTelemetryContract = Effect.fn("defineTelemetryContract")(func
     auditActionByAlias,
     auditActionByName,
     metrics: definition.metrics,
+    metricByAlias,
+    metricByName,
   };
 });

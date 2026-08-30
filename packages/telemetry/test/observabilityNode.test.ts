@@ -22,6 +22,8 @@ const contract: ContractRegistry = {
   eventByName: new Map<EventName, CompiledEventDefinition>(),
   auditActionByAlias: new Map<string, CompiledAuditActionDefinition>(),
   auditActionByName: new Map<string, CompiledAuditActionDefinition>(),
+  metricByAlias: new Map(),
+  metricByName: new Map(),
 };
 const policy = { attributes: {}, blockedKeys: [], blockedValuePatterns: [] };
 const events = registerTestingAdapter({
@@ -75,6 +77,9 @@ describe("Node observability boundary", () => {
     const handle = await createTestingNodeObservabilityFromConfig(parsed, [events]);
     if (!handle.enabled) throw new Error("Expected enabled observability.");
     const counter = Metric.counter("worker.jobs");
+    handle.metrics
+      .counter({ name: "worker.facade", description: "Worker facade", unit: "1" })
+      .add(1);
     await handle.runtime.runPromise(
       Effect.gen(function* () {
         yield* Effect.logInfo("worker completed");

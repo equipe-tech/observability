@@ -44,6 +44,47 @@ queue.unregister();
 await metrics.close();
 ```
 
+## Contract-bound producer
+
+Application code should define metrics in `defineTelemetryContract` and bind the compiled contract to the existing facade. `makeMetricProducer` is exported from the package root and does not expose Effect types.
+
+```ts
+import { Effect } from "effect";
+import { defineTelemetryContract, makeMetricProducer } from "@equipe-tech/observability";
+
+const contract = await Effect.runPromise(
+  defineTelemetryContract({
+    version: 1,
+    events: {},
+    metrics: {
+      OrdersCreated: {
+        name: "orders.created",
+        description: "Created orders",
+        unit: "1",
+        kind: "counter",
+        attributes: {
+          "order.channel": {
+            classification: "public",
+            allowedValues: ["web", "mobile"],
+            maximumCardinality: 2,
+          },
+        },
+      },
+    },
+    auditActions: {},
+  }),
+);
+
+const producer = makeMetricProducer(contract, observability.metrics);
+producer.counter("OrdersCreated").add(1, { "order.channel": "web" });
+```
+
+Contract checks run before data-policy checks and existing runtime limits. A rejected runtime record does not consume declared cardinality. The declared cardinality catalog belongs to the shared runtime, so producers and facade leases with equal options share it. Enabled Node observability handles expose the pool-matched facade through `metrics`. Disabled handles expose the same validation path without exports.
+
+`InvalidMetricMeasurement` reports stable `OBS_METRIC_*` codes for unknown aliases, kind mismatches, missing or undeclared attributes, closed-set violations, invalid values, and declared cardinality overflow. Gauge callback failures use `CONTRACT_REJECTED` and expose the evidence-safe code through `contractReason`.
+
+`createMetrics` remains available for framework integration and low-level runtime use. It does not require a telemetry contract.
+
 ## Configuration
 
 `createMetrics` parses identity before acquiring a runtime. `serviceName` uses lowercase letters, numbers, and single hyphens between segments, with at most 63 characters. `environment` uses the same grammar with at most 32 characters. `serviceVersion` accepts SemVer 2.0.0 or a 7 to 64 character lowercase hexadecimal immutable release identifier. Metrics omit `service.instance.id` from resources.

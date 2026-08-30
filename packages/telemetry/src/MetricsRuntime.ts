@@ -18,6 +18,7 @@ import type {
   ObservableGaugeRegistration,
 } from "./Metrics.ts";
 import { MetricsError } from "./Metrics.ts";
+import { InvalidMetricMeasurement } from "./contract/MetricContractError.ts";
 import type { ResourceIdentity } from "./ResourceIdentity.ts";
 import {
   EnvironmentAliasPolicy as EnvironmentAliasPolicySchema,
@@ -27,23 +28,19 @@ import {
 import type { TelemetryConfig } from "./TelemetryConfig.ts";
 import { baseDataPolicy, type DataPolicy } from "./policy/DataPolicy.ts";
 import { metricLabelRejection, type MetricLabelRejection } from "./policy/MetricLabelPolicy.ts";
+import {
+  containsControlCharacter,
+  instrumentNamePattern,
+  maximumMetricAttributeCardinality,
+  maximumMetricAttributes,
+  unitPattern,
+} from "./metrics/InstrumentGrammar.ts";
 
-const instrumentNamePattern = /^[A-Za-z][A-Za-z0-9_.\-/]{0,254}$/;
-const unitPattern = /^(?:1|%|[A-Za-z][A-Za-z0-9]*(?:[./*^][A-Za-z0-9]+)*)$/;
-const containsControlCharacter = (value: string): boolean => {
-  for (const character of value) {
-    const codePoint = character.codePointAt(0);
-    if (codePoint !== undefined && (codePoint <= 31 || codePoint === 127)) {
-      return true;
-    }
-  }
-  return false;
-};
 const maximumInstruments = 100;
 const maximumInstrumentSeries = 1_000;
-const maximumAttributeCardinality = 100;
+const maximumAttributeCardinality = maximumMetricAttributeCardinality;
 const maximumRuntimeSeries = 10_000;
-const maximumAttributes = 16;
+const maximumAttributes = maximumMetricAttributes;
 const maximumCallbacks = 16;
 const maximumObservations = 100;
 
@@ -85,6 +82,15 @@ const decodeInstrumentDefinition = Schema.decodeUnknownSync(InstrumentDefinition
 const decodeHistogramDefinition = Schema.decodeUnknownSync(HistogramDefinitionInput);
 const decodeGaugeObservations = Schema.decodeUnknownSync(GaugeObservationsInput);
 const decodeMetricsOptions = Schema.decodeUnknownSync(MetricsOptionsInput);
+const gaugeObservationCommits = new WeakMap<GaugeObservation, () => void>();
+
+export const registerContractGaugeObservation = (
+  observation: GaugeObservation,
+  commit: () => void,
+): GaugeObservation => {
+  gaugeObservationCommits.set(observation, commit);
+  return observation;
+};
 
 interface NormalizedOptions {
   readonly enabled: boolean;
@@ -650,6 +656,7 @@ class MetricsRuntimeState {
   readonly runtimeLifetimeSeries = new Set<string>();
   readonly lifetimeSeriesByInstrument = new Map<string, Set<string>>();
   readonly lifetimeValuesByInstrumentKey = new Map<string, Set<string>>();
+  readonly contractValuesByInstrumentKey = new Map<string, Set<string>>();
   readonly lifetimeInstrumentNames = new Set<string>();
   private readonly leases = new Set<number>();
   private readonly transports = new Map<number, MetricsTransportBinding>();
@@ -692,24 +699,29 @@ class MetricsRuntimeState {
     return this.scheduleExport(timeoutMilliseconds);
   }
 
-  async closeLease(leaseId: number, timeoutMilliseconds: number): Promise<FlushResult> {
-    let result: FlushResult;
+  async closeLease(
+    leaseId: number,
+    timeoutMilliseconds: number,
+    exportBeforeClose = true,
+  ): Promise<FlushResult> {
+    let result: FlushResult = { gaugeFailures: [] };
     let failure: MetricsError | undefined;
-    try {
-      result = await this.scheduleExport(timeoutMilliseconds);
-    } catch (cause) {
-      result = { gaugeFailures: [] };
-      failure =
-        cause instanceof MetricsError
-          ? cause
-          : metricError(
-              "EXPORT_FAILED",
-              "close",
-              "The final metrics export failed. The runtime lease was still released.",
-              undefined,
-              true,
-              cause,
-            );
+    if (exportBeforeClose) {
+      try {
+        result = await this.scheduleExport(timeoutMilliseconds);
+      } catch (cause) {
+        failure =
+          cause instanceof MetricsError
+            ? cause
+            : metricError(
+                "EXPORT_FAILED",
+                "close",
+                "The final metrics export failed. The runtime lease was still released.",
+                undefined,
+                true,
+                cause,
+              );
+      }
     }
     this.removeLeaseState(leaseId);
     this.leases.delete(leaseId);
@@ -1489,6 +1501,7 @@ class MetricsRuntimeState {
     const observations: Array<{
       readonly value: number;
       readonly attributes: NormalizedAttributes;
+      readonly contractCommit?: () => void;
     }> = [];
     const failures: Array<GaugeCollectionFailure> = [];
     const proposedIdentities = new Set<string>();
@@ -1496,12 +1509,21 @@ class MetricsRuntimeState {
       let callbackResult: ReadonlyArray<GaugeObservation>;
       try {
         callbackResult = registration.callback();
-      } catch {
-        failures.push({
-          instrumentName: entry.definition.name,
-          code: "CALLBACK_FAILED",
-          message: `Observable gauge "${entry.definition.name}" callback failed and was omitted from this export.`,
-        });
+      } catch (cause) {
+        if (cause instanceof InvalidMetricMeasurement) {
+          failures.push({
+            instrumentName: entry.definition.name,
+            code: "CONTRACT_REJECTED",
+            message: `Observable gauge "${entry.definition.name}" callback violated its metric contract and was omitted from this export.`,
+            contractReason: cause.code,
+          });
+        } else {
+          failures.push({
+            instrumentName: entry.definition.name,
+            code: "CALLBACK_FAILED",
+            message: `Observable gauge "${entry.definition.name}" callback failed and was omitted from this export.`,
+          });
+        }
         continue;
       }
       let callbackObservations: ReadonlyArray<GaugeObservation>;
@@ -1526,10 +1548,11 @@ class MetricsRuntimeState {
       const callbackBatch: Array<{
         readonly value: number;
         readonly attributes: NormalizedAttributes;
+        readonly contractCommit?: () => void;
       }> = [];
       const callbackIdentities = new Set<string>();
       let callbackFailed = false;
-      for (const observation of callbackObservations) {
+      for (const [index, observation] of callbackObservations.entries()) {
         if (!Number.isFinite(observation.value)) {
           failures.push({
             instrumentName: entry.definition.name,
@@ -1559,7 +1582,12 @@ class MetricsRuntimeState {
             break;
           }
           callbackIdentities.add(attributes.identity);
-          callbackBatch.push({ value: observation.value, attributes });
+          const contractCommit = gaugeObservationCommits.get(callbackResult[index] ?? observation);
+          callbackBatch.push(
+            contractCommit === undefined
+              ? { value: observation.value, attributes }
+              : { value: observation.value, attributes, contractCommit },
+          );
         } catch (cause) {
           const code =
             cause instanceof MetricsError && cause.code === "LIMIT_EXCEEDED"
@@ -1613,6 +1641,7 @@ class MetricsRuntimeState {
         this.commitSeries(entry, observation.attributes);
       }
     }
+    for (const observation of observations) observation.contractCommit?.();
     return {
       metric: {
         name: entry.definition.name,
@@ -1833,6 +1862,17 @@ class ActiveMetrics implements Metrics {
     return this.closePromise;
   }
 
+  releaseWithoutFlush(): Promise<FlushResult> {
+    if (this.closePromise !== undefined) return this.closePromise;
+    this.closed = true;
+    this.closePromise = this.lease.state.closeLease(
+      this.lease.leaseId,
+      this.timeoutMilliseconds,
+      false,
+    );
+    return this.closePromise;
+  }
+
   private assertOpen(operation: string, instrumentName?: string): void {
     if (this.closed) {
       throw metricError(
@@ -1938,16 +1978,118 @@ class DisabledMetrics implements Metrics {
   }
 }
 
+type ContractCardinalityLimit = {
+  readonly attributeName: string;
+  readonly maximumCardinality: number;
+};
+
+type ContractMetricAttribute = {
+  readonly key: string;
+  readonly value: MetricAttributeValue;
+};
+
+type MetricContractState = {
+  readonly policy: DataPolicy;
+  readonly values: Map<string, Set<string>>;
+};
+
+const metricContractStates = new WeakMap<Metrics, MetricContractState>();
+
+const contractValueIdentity = (value: MetricAttributeValue): string =>
+  `${Predicate.isString(value) ? "string" : Predicate.isNumber(value) ? "number" : "boolean"}:${String(value)}`;
+
+export const prepareContractMetricAttributes = (
+  metrics: Metrics,
+  metricAlias: string,
+  metricName: string,
+  attributes: ReadonlyArray<ContractMetricAttribute>,
+  limits: ReadonlyArray<ContractCardinalityLimit>,
+): (() => void) => {
+  const state = metricContractStates.get(metrics);
+  if (state === undefined) {
+    throw new InvalidMetricMeasurement({
+      code: "OBS_METRIC_INVALID_VALUE",
+      operation: "record",
+      message: `Metric alias "${metricAlias}" is bound to an unsupported metrics facade. Use createMetrics or a Node observability handle.`,
+      metricAlias,
+      metricName,
+    });
+  }
+  for (const attribute of attributes) {
+    const rejection = metricLabelRejection(state.policy, attribute.key, attribute.value);
+    if (rejection !== undefined) {
+      throw metricError(
+        "POLICY_BLOCKED",
+        "record",
+        `Metric attribute "${attribute.key}" was blocked by the data policy before recording.`,
+        metricName,
+        false,
+        undefined,
+        attribute.key,
+        rejection,
+      );
+    }
+  }
+  const additions: Array<{
+    readonly catalogKey: string;
+    readonly values: Set<string>;
+    readonly identity: string;
+  }> = [];
+  for (const limit of limits) {
+    const attribute = attributes.find((candidate) => candidate.key === limit.attributeName);
+    if (attribute === undefined) continue;
+    const catalogKey = `${metricName}\u0000${limit.attributeName}`;
+    const values = state.values.get(catalogKey) ?? new Set<string>();
+    const identity = contractValueIdentity(attribute.value);
+    if (!values.has(identity) && values.size >= limit.maximumCardinality) {
+      throw new InvalidMetricMeasurement({
+        code: "OBS_METRIC_CARDINALITY_EXCEEDED",
+        operation: "record",
+        message: `Metric "${metricName}" attribute "${limit.attributeName}" exceeds its declared maximum cardinality of ${limit.maximumCardinality}. Reuse a declared value or revise the contract.`,
+        metricAlias,
+        metricName,
+        attributeName: limit.attributeName,
+      });
+    }
+    if (!values.has(identity)) additions.push({ catalogKey, values, identity });
+  }
+  return () => {
+    for (const addition of additions) {
+      state.values.set(addition.catalogKey, addition.values);
+      addition.values.add(addition.identity);
+    }
+  };
+};
+
+export const releaseMetricsLease = async (metrics: Metrics): Promise<void> => {
+  if (metrics instanceof ActiveMetrics) {
+    await metrics.releaseWithoutFlush();
+    return;
+  }
+  await metrics.close();
+};
+
+export const createDisabledMetrics = (policy: DataPolicy = baseDataPolicy): Metrics => {
+  const metrics = new DisabledMetrics(policy);
+  metricContractStates.set(metrics, { policy, values: new Map() });
+  return metrics;
+};
+
 export const createStandaloneMetrics = async (optionsInput: MetricsOptions): Promise<Metrics> => {
   const options = parseOptions(optionsInput);
   if (!options.enabled) {
-    return new DisabledMetrics(options.policy);
+    return createDisabledMetrics(options.policy);
   }
   const lease = acquireRuntime(options, {
     kind: "fetch",
     send: fetchTransport(options.metricsEndpoint),
   });
-  return new ActiveMetrics(lease, options.flushTimeoutMilliseconds);
+  const metrics = new ActiveMetrics(lease, options.flushTimeoutMilliseconds);
+  metricContractStates.set(metrics, {
+    policy: lease.state.policy,
+    values: lease.state.contractValuesByInstrumentKey,
+  });
+  return metrics;
 };
 
 interface LayerMetricsOptions {
