@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Logger, References } from "effect";
+import { Effect, Logger, Option, References } from "effect";
 import { emit } from "../src/WideEvent.ts";
+import * as Testing from "../src/testing/index.ts";
 
 type CapturedEvent = {
   readonly eventName: unknown;
@@ -44,6 +45,89 @@ describe("WideEvent.emit", () => {
       const events = yield* captureEvent({ "operation.id": "order-123" });
       assert.lengthOf(events, 1);
       assert.strictEqual(events[0]?.operationId, "order-123");
+    }),
+  );
+
+  it.live("reports policy drops without exporting internal metadata", () =>
+    Effect.gen(function* () {
+      const result = yield* Testing.run(
+        emit("policy.drop", { badKey: "drop", "operation.id": "kept" }).pipe(
+          Effect.withSpan("policy.parent"),
+        ),
+      );
+      const log = result.telemetry.logs[0];
+      const span = result.telemetry.spans[0];
+      const event = span?.events[0];
+      assert.isDefined(log);
+      assert.isDefined(span);
+      assert.isDefined(event);
+      assert.strictEqual(log.droppedAttributesCount, 1);
+      assert.strictEqual(event.droppedAttributesCount, 1);
+      assert.isUndefined(log.attributes.get("effect.dropped_attributes_count"));
+      assert.isUndefined(event.attributes.get("effect.dropped_attributes_count"));
+    }),
+  );
+
+  const boundCases: ReadonlyArray<{
+    readonly applicationCount: number;
+    readonly expectedLogDropped: number;
+  }> = [
+    { applicationCount: 128, expectedLogDropped: 3 },
+    { applicationCount: 129, expectedLogDropped: 4 },
+    { applicationCount: 200, expectedLogDropped: 75 },
+  ];
+  for (const boundCase of boundCases) {
+    const { applicationCount, expectedLogDropped } = boundCase;
+    it.live(`reserves canonical fields within ${applicationCount} application fields`, () =>
+      Effect.gen(function* () {
+        const fields = Object.fromEntries(
+          Array.from({ length: applicationCount }, (_, index) => [`app.field${index}`, index]),
+        );
+        const result = yield* Testing.run(
+          emit("bounded.event", fields).pipe(Effect.withSpan("bounded.parent")),
+        );
+        const log = result.telemetry.logs[0];
+        const event = result.telemetry.spans[0]?.events[0];
+        assert.isDefined(log);
+        assert.isDefined(event);
+        for (const signal of [log, event]) {
+          assert.strictEqual(signal.attributes.get("event.name"), "bounded.event");
+          assert.strictEqual(signal.attributes.get("event.kind"), "wide");
+          assert.strictEqual(
+            [...signal.attributes.keys()].filter((key) => key.startsWith("app.field")).length,
+            126,
+          );
+          assert.isUndefined(signal.attributes.get("effect.dropped_attributes_count"));
+        }
+        assert.strictEqual(log.droppedAttributesCount, expectedLogDropped);
+        assert.strictEqual(event.droppedAttributesCount, expectedLogDropped + 1);
+      }),
+    );
+  }
+
+  it.live("records two wide events on their enclosing span without synthetic spans", () =>
+    Effect.gen(function* () {
+      const result = yield* Testing.run(
+        Effect.gen(function* () {
+          yield* emit("order.created", { "order.id": "order-123" });
+          yield* emit("order.paid", { "order.id": "order-123" });
+        }).pipe(Effect.withSpan("http.server.request")),
+      );
+      assert.deepStrictEqual(
+        result.telemetry.spans.map((span) => span.name),
+        ["http.server.request"],
+      );
+      const parent = result.telemetry.spans[0];
+      assert.isDefined(parent);
+      assert.deepStrictEqual(
+        parent.events.map((event) => event.name),
+        ["order.created", "order.paid"],
+      );
+      assert.lengthOf(result.telemetry.logs, 2);
+      for (const log of result.telemetry.logs) {
+        assert.deepStrictEqual(log.traceId, Option.some(parent.traceId));
+        assert.deepStrictEqual(log.spanId, Option.some(parent.spanId));
+      }
     }),
   );
 });

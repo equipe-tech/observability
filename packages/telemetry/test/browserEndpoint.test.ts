@@ -3,6 +3,15 @@ import { Module } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { Effect, ManagedRuntime, Option, Schema } from "effect";
 import { assert, describe, it } from "vite-plus/test";
+import {
+  browserRequestByteBudget,
+  createBrowserTelemetryClient,
+  maxEventNameLength,
+  maxEventsPerBatch,
+  maxFieldKeyLength,
+  maxFieldsPerEvent,
+  maxFieldValueLength,
+} from "../src/browser/index.ts";
 import { createBrowserEventsController, TelemetryInterceptor } from "../src/nestjs/index.ts";
 import * as Testing from "../src/testing/index.ts";
 
@@ -61,6 +70,7 @@ const postEvents = (baseUrl: string, body: string): Promise<Response> =>
 describe("browser events endpoint", () => {
   it("accepts a valid batch with 202 while the telemetry route stays excluded", async () => {
     const harness = await startApp(true);
+    const secret = crypto.randomUUID().replaceAll("-", "");
     const response = await postEvents(
       harness.baseUrl,
       JSON.stringify({
@@ -70,7 +80,10 @@ describe("browser events endpoint", () => {
             id: "evt-1",
             name: "checkout.completed",
             occurredAt: 1700000000000,
-            fields: { "cart.total": 42 },
+            fields: {
+              "cart.total": 42,
+              "http.authorization": `Bearer ${secret}`,
+            },
           },
           { id: "evt-2", name: "page.viewed", occurredAt: 1700000000500, fields: {} },
         ],
@@ -78,7 +91,7 @@ describe("browser events endpoint", () => {
     );
 
     assert.strictEqual(response.status, 202);
-    assert.deepStrictEqual(await response.json(), { accepted: 2 });
+    assert.deepStrictEqual(await response.json(), { accepted: 2, redacted: 1, dropped: 0 });
 
     const telemetry = await harness.close();
     const boundary = telemetry.spans.find((span) => span.name.includes("/_telemetry/events"));
@@ -89,6 +102,53 @@ describe("browser events endpoint", () => {
     );
     assert.isDefined(checkout);
     assert.strictEqual(attributeOrUndefined(checkout.attributes, "event.source"), "browser");
+    assert.notInclude(JSON.stringify(telemetry), secret);
+  }, 30_000);
+
+  it("accepts a valid request near the documented browser byte budget", async () => {
+    const harness = await startApp(true);
+    const maximumFields = Object.fromEntries(
+      Array.from({ length: maxFieldsPerEvent }, (_, index) => [
+        `field.${String(index).padStart(2, "0")}${"k".repeat(maxFieldKeyLength - 8)}`,
+        "x".repeat(maxFieldValueLength),
+      ]),
+    );
+    const partialFields = Object.fromEntries(Object.entries(maximumFields).slice(0, 13));
+    const body = JSON.stringify({
+      version: 1,
+      events: [
+        { id: "evt-1", name: "maximum.one", occurredAt: 1, fields: maximumFields },
+        { id: "evt-2", name: "maximum.two", occurredAt: 1, fields: maximumFields },
+        { id: "evt-3", name: "maximum.three", occurredAt: 1, fields: partialFields },
+      ],
+    });
+    const bytes = new TextEncoder().encode(body).byteLength;
+    assert.isAbove(bytes, 85_000);
+    assert.isAtMost(bytes, browserRequestByteBudget);
+    const response = await postEvents(harness.baseUrl, body);
+    assert.strictEqual(response.status, 202);
+    await harness.close();
+  }, 30_000);
+
+  it("delivers maximum multibyte inputs through the default fetch transport", async () => {
+    const harness = await startApp(true);
+    const fields = Object.fromEntries(
+      Array.from({ length: maxFieldsPerEvent }, (_, index) => [
+        `${String(index).padStart(2, "0")}${"界".repeat(maxFieldKeyLength - 2)}`,
+        "界".repeat(maxFieldValueLength),
+      ]),
+    );
+    const client = createBrowserTelemetryClient({
+      endpoint: `${harness.baseUrl}/_telemetry/events`,
+      flushIntervalMs: 60_000,
+    });
+    for (let index = 0; index < maxEventsPerBatch; index += 1) {
+      client.emit("n".repeat(maxEventNameLength), fields);
+    }
+    await client.flush();
+    assert.strictEqual(client.pending(), 0);
+    await client.dispose();
+    await harness.close();
   }, 30_000);
 
   it("rejects an invalid batch with the public contract and a safe correlation id", async () => {
@@ -115,12 +175,11 @@ describe("browser events endpoint", () => {
     await harness.close();
   }, 30_000);
 
-  it("answers 413 when the raw body exceeds the transport limit", async () => {
+  it("answers 413 above Express's 100 KB transport limit", async () => {
     const harness = await startApp(true);
-    const response = await postEvents(
-      harness.baseUrl,
-      JSON.stringify({ version: 1, junk: "x".repeat(200_000), events: [] }),
-    );
+    const body = JSON.stringify({ version: 1, junk: "x".repeat(102_401), events: [] });
+    assert.isAbove(new TextEncoder().encode(body).byteLength, 102_400);
+    const response = await postEvents(harness.baseUrl, body);
     assert.strictEqual(response.status, 413);
     await harness.close();
   }, 30_000);

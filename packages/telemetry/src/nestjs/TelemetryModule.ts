@@ -26,6 +26,7 @@ import {
   ServiceVersion,
 } from "../ResourceIdentity.ts";
 import { layer } from "../Telemetry.ts";
+import type { InvalidDataPolicy } from "../policy/DataPolicyError.ts";
 import { OtlpEndpoint, TelemetryConfig } from "../TelemetryConfig.ts";
 import { telemetryRoutePolicy, type ProxyPolicy } from "./HttpRoutePolicy.ts";
 import { RequestWideEventTraceCorrelation } from "./RequestWideEventTraceCorrelation.ts";
@@ -209,7 +210,7 @@ class DisabledTelemetryIntegration implements TelemetryIntegration {
 
 class EnabledTelemetryIntegration implements TelemetryIntegration {
   readonly interceptor: NestInterceptor;
-  readonly #runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, never>;
+  readonly #runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, InvalidDataPolicy>;
   readonly #flusher: OtlpExporter.Flusher["Service"];
   readonly #requestTracker: TelemetryRequestTracker;
   readonly #shutdownTimeoutMilliseconds: number;
@@ -220,7 +221,7 @@ class EnabledTelemetryIntegration implements TelemetryIntegration {
   #shutdownError: TelemetryShutdownError | undefined;
 
   constructor(
-    runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, never>,
+    runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, InvalidDataPolicy>,
     flusher: OtlpExporter.Flusher["Service"],
     options: EnabledNormalizedOptions,
     releaseRuntime: () => Promise<void>,
@@ -400,7 +401,7 @@ const NORMALIZED_OPTIONS = Symbol("TelemetryModuleNormalizedOptions");
 const TELEMETRY_INTEGRATION = Symbol("TelemetryModuleIntegration");
 
 interface SharedRuntime {
-  readonly runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, never>;
+  readonly runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, InvalidDataPolicy>;
   readonly flusher: OtlpExporter.Flusher["Service"];
 }
 
@@ -411,7 +412,7 @@ interface RuntimePoolEntry {
 }
 
 interface RuntimeLease {
-  readonly runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, never>;
+  readonly runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, InvalidDataPolicy>;
   readonly flusher: OtlpExporter.Flusher["Service"];
   readonly release: () => Promise<void>;
 }
@@ -455,7 +456,7 @@ const createSharedRuntime = async (
   options: EnabledNormalizedOptions,
   overrides: TelemetryModuleTestingOverrides,
 ): Promise<SharedRuntime> => {
-  let runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, never> | undefined;
+  let runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, InvalidDataPolicy> | undefined;
   try {
     let runtimeLayer = layer(options.config, {
       shutdownTimeout: Duration.millis(options.shutdownTimeoutMilliseconds),

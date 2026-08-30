@@ -114,7 +114,7 @@ const toAxiomRedactionAttributes = (row: AxiomRedactionRow): AxiomRedactionAttri
 });
 
 const redactionProjection =
-  "authorization = tostring(['attributes.custom']['authorization']), password = tostring(['attributes.custom']['password']), access_token = tostring(['attributes.custom']['accessToken']), user_password = tostring(['attributes.custom']['userPassword']), phone_number = tostring(['attributes.custom']['phoneNumber']), tokenizer = tostring(['attributes.custom']['tokenizer']), documentation = tostring(['attributes.custom']['documentation']), safe_message = tostring(['attributes.custom']['safe.message'])";
+  "authorization = tostring(['attributes.custom']['http.authorization']), password = tostring(['attributes.custom']['user.password']), access_token = tostring(['attributes.custom']['auth.access_token']), user_password = tostring(['attributes.custom']['profile.password']), phone_number = tostring(['attributes.custom']['contact.phone']), tokenizer = tostring(['attributes.custom']['tool.tokenizer']), documentation = tostring(['attributes.custom']['docs.documentation']), safe_message = tostring(['attributes.custom']['safe.message'])";
 
 const AxiomSpanRow = Schema.Struct({
   trace_id: Schema.NonEmptyString,

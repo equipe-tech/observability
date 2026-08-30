@@ -1,14 +1,71 @@
-import { Cause, Duration, Effect, Layer, Option, Schema, Tracer } from "effect";
+import { Cause, Duration, Effect, Layer, Option, Predicate, Schema, Tracer } from "effect";
 import type { Exit } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 import { OtlpExporter, OtlpResource, OtlpSerialization } from "effect/unstable/observability";
 import type { ResourceAttributes } from "../ResourceIdentity.ts";
+import type { DataPolicy } from "../policy/DataPolicy.ts";
+import { sanitizeText, transformSignalFields } from "../policy/PolicyTransform.ts";
+import { effectDroppedAttributesKey } from "../policy/PolicyVocabulary.ts";
 
 const HttpStatusCode = Schema.Number.check(
   Schema.isInt(),
   Schema.isBetween({ minimum: 100, maximum: 599 }),
 );
 const decodeHttpStatusCode = Schema.decodeUnknownOption(HttpStatusCode);
+const SpanScalar = Schema.Union([
+  Schema.String,
+  Schema.Number.check(Schema.isFinite()),
+  Schema.Boolean,
+]);
+const decodeSpanScalar = Schema.decodeUnknownOption(SpanScalar);
+
+const maxSpanEvents = 128;
+const maxSpanLinks = 128;
+
+type SanitizedEntries = {
+  readonly attributes: Array<OtlpResource.KeyValue>;
+  readonly dropped: number;
+};
+
+const sanitizeEntries = (
+  policy: DataPolicy,
+  fields: { readonly [key: string]: string | number | boolean },
+  unsupported = 0,
+): SanitizedEntries => {
+  const decision = transformSignalFields(policy, "span", fields);
+  return {
+    attributes: OtlpResource.entriesToAttributes(Object.entries(decision.value)),
+    dropped: decision.dropped + unsupported,
+  };
+};
+
+const scalarFields = (
+  entries: Iterable<readonly [string, unknown]>,
+  canonicalizeEffectKeys = false,
+) => {
+  const fields: { [key: string]: string | number | boolean } = {};
+  let unsupported = 0;
+  for (const [key, value] of entries) {
+    const decoded = decodeSpanScalar(value);
+    if (key === effectDroppedAttributesKey && Option.isSome(decoded)) {
+      if (Predicate.isNumber(decoded.value)) unsupported += decoded.value;
+      continue;
+    }
+    if (Option.isNone(decoded)) {
+      unsupported += 1;
+      continue;
+    }
+    const canonicalKey = canonicalizeEffectKeys
+      ? key === "effect.fiberId"
+        ? "effect.fiber.id"
+        : key === "effect.logLevel"
+          ? "effect.log.level"
+          : key
+      : key;
+    fields[canonicalKey] = decoded.value;
+  }
+  return { fields, unsupported };
+};
 
 const statusCodeUnset = 0;
 const statusCodeOk = 1;
@@ -85,71 +142,80 @@ class ExportingSpan extends Tracer.NativeSpan {
   }
 
   override end(endTime: bigint, exit: Exit.Exit<unknown, unknown>): void {
-    if (this.#ended) {
-      return;
-    }
+    if (this.#ended) return;
     this.#ended = true;
     super.end(endTime, exit);
-    if (this.sampled) {
-      this.#exportSpan(this);
-    }
+    if (this.sampled) this.#exportSpan(this);
   }
 }
 
-const makeEvents = (span: ExportingSpan): Array<OtlpEvent> =>
-  span.events.map(([name, startTime, attributes]) => ({
-    name,
-    timeUnixNano: String(startTime),
-    attributes: OtlpResource.entriesToAttributes(Object.entries(attributes)),
-    droppedAttributesCount: 0,
-  }));
+const makeEvents = (policy: DataPolicy, span: ExportingSpan): Array<OtlpEvent> =>
+  span.events.map(([name, startTime, attributes]) => {
+    const canonicalizeEffectKeys =
+      Object.hasOwn(attributes, "effect.fiberId") && Object.hasOwn(attributes, "effect.logLevel");
+    const input = scalarFields(Object.entries(attributes), canonicalizeEffectKeys);
+    const decision = sanitizeEntries(policy, input.fields, input.unsupported);
+    return {
+      name: sanitizeText(policy, name, "span"),
+      timeUnixNano: String(startTime),
+      attributes: decision.attributes,
+      droppedAttributesCount: decision.dropped,
+    };
+  });
 
-const makeNonHttpStatus = (
-  span: ExportingSpan,
-  attributes: Array<OtlpResource.KeyValue>,
-  events: Array<OtlpEvent>,
-): OtlpStatus => {
+type NonHttpStatus = {
+  readonly status: OtlpStatus;
+  readonly attributes: ReadonlyArray<readonly [string, string | boolean]>;
+  readonly events: ReadonlyArray<OtlpEvent>;
+};
+
+const makeNonHttpStatus = (policy: DataPolicy, span: ExportingSpan): NonHttpStatus => {
   if (span.status._tag !== "Ended") {
-    return { code: statusCodeUnset };
+    return { status: { code: statusCodeUnset }, attributes: [], events: [] };
   }
   if (span.status.exit._tag === "Success") {
-    return { code: statusCodeOk };
+    return { status: { code: statusCodeOk }, attributes: [], events: [] };
   }
   if (Cause.hasInterruptsOnly(span.status.exit.cause)) {
-    attributes.push(
-      {
-        key: "span.label",
-        value: { stringValue: "⚠︎ Interrupted" },
-      },
-      {
-        key: "status.interrupted",
-        value: { boolValue: true },
-      },
-    );
-    return { code: statusCodeOk, message: "Interrupted" };
+    return {
+      status: { code: statusCodeOk, message: "Interrupted" },
+      attributes: [
+        ["span.label", "⚠︎ Interrupted"],
+        ["status.interrupted", true],
+      ],
+      events: [],
+    };
   }
   const errors = Cause.prettyErrors(span.status.exit.cause, { includeCauseInStack: true });
-  for (const error of errors) {
-    events.push({
-      name: "exception",
-      timeUnixNano: String(span.status.endTime),
-      droppedAttributesCount: 0,
-      attributes: OtlpResource.entriesToAttributes([
-        ["exception.type", error.name],
-        ["exception.message", error.message],
-        ["exception.stacktrace", error.stack ?? "No stack trace available"],
-      ]),
+  const endTime = span.status.endTime;
+  const events = errors.map((error): OtlpEvent => {
+    const decision = sanitizeEntries(policy, {
+      "exception.type": error.name,
+      "exception.message": error.message,
+      "exception.stacktrace": error.stack ?? "No stack trace available",
     });
-  }
-  return errors.length === 0
-    ? { code: statusCodeError }
-    : { code: statusCodeError, message: errors[0]?.message };
+    return {
+      name: "exception",
+      timeUnixNano: String(endTime),
+      attributes: decision.attributes,
+      droppedAttributesCount: decision.dropped,
+    };
+  });
+  return {
+    status:
+      errors.length === 0
+        ? { code: statusCodeError }
+        : {
+            code: statusCodeError,
+            message: sanitizeText(policy, errors[0]?.message ?? "Error", "span"),
+          },
+    attributes: [],
+    events,
+  };
 };
 
 const makeHttpStatus = (span: ExportingSpan): OtlpStatus => {
-  if (span.attributes.has("error.type")) {
-    return { code: statusCodeError };
-  }
+  if (span.attributes.has("error.type")) return { code: statusCodeError };
   return decodeHttpStatusCode(span.attributes.get("http.response.status_code")).pipe(
     Option.match({
       onNone: () => ({ code: statusCodeUnset }),
@@ -158,38 +224,49 @@ const makeHttpStatus = (span: ExportingSpan): OtlpStatus => {
   );
 };
 
-const makeOtlpSpan = (span: ExportingSpan): Option.Option<OtlpSpan> => {
-  if (span.status._tag !== "Ended") {
-    return Option.none();
-  }
-  const attributes = OtlpResource.entriesToAttributes(span.attributes.entries());
-  const events = makeEvents(span);
+const makeOtlpSpan = (policy: DataPolicy, span: ExportingSpan): Option.Option<OtlpSpan> => {
+  if (span.status._tag !== "Ended") return Option.none();
   const isHttpServer = span.kind === "server" && span.attributes.has("http.request.method");
+  const nonHttp = isHttpServer
+    ? { status: makeHttpStatus(span), attributes: [], events: [] }
+    : makeNonHttpStatus(policy, span);
+  const spanInput = scalarFields(span.attributes);
+  for (const [key, value] of nonHttp.attributes) spanInput.fields[key] = value;
+  const attributeDecision = sanitizeEntries(policy, spanInput.fields, spanInput.unsupported);
+  const allEvents = [...makeEvents(policy, span), ...nonHttp.events];
+  const events = allEvents.slice(0, maxSpanEvents);
+  const allLinks = span.links.map((link): OtlpLink => {
+    const input = scalarFields(Object.entries(link.attributes));
+    const decision = sanitizeEntries(policy, input.fields, input.unsupported);
+    return {
+      traceId: link.span.traceId,
+      spanId: link.span.spanId,
+      attributes: decision.attributes,
+      droppedAttributesCount: decision.dropped,
+    };
+  });
+  const links = allLinks.slice(0, maxSpanLinks);
   return Option.some({
     traceId: span.traceId,
     spanId: span.spanId,
     parentSpanId: Option.getOrUndefined(Option.map(span.parent, (parent) => parent.spanId)),
-    name: span.name,
+    name: sanitizeText(policy, span.name, "span"),
     kind: spanKindCode(span.kind),
     startTimeUnixNano: String(span.status.startTime),
     endTimeUnixNano: String(span.status.endTime),
-    attributes,
-    droppedAttributesCount: 0,
+    attributes: attributeDecision.attributes,
+    droppedAttributesCount: attributeDecision.dropped,
     events,
-    droppedEventsCount: 0,
-    status: isHttpServer ? makeHttpStatus(span) : makeNonHttpStatus(span, attributes, events),
-    links: span.links.map((link) => ({
-      traceId: link.span.traceId,
-      spanId: link.span.spanId,
-      attributes: OtlpResource.entriesToAttributes(Object.entries(link.attributes)),
-      droppedAttributesCount: 0,
-    })),
-    droppedLinksCount: 0,
+    droppedEventsCount: allEvents.length - events.length,
+    status: nonHttp.status,
+    links,
+    droppedLinksCount: allLinks.length - links.length,
   });
 };
 
 export type HttpServerOtlpTracerOptions = {
   readonly url: string;
+  readonly policy: DataPolicy;
   readonly resource: {
     readonly serviceName: string;
     readonly serviceVersion: string;
@@ -230,10 +307,8 @@ const makeHttpServerOtlpTracer = Effect.fn("makeHttpServerOtlpTracer")(function*
   return Tracer.make({
     span: (spanOptions) =>
       new ExportingSpan(spanOptions, (span) => {
-        const exported = makeOtlpSpan(span);
-        if (Option.isSome(exported)) {
-          exporter.push(exported.value);
-        }
+        const exported = makeOtlpSpan(options.policy, span);
+        if (Option.isSome(exported)) exporter.push(exported.value);
       }),
   });
 });

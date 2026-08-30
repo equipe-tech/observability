@@ -11,6 +11,7 @@ import { BrowserClientEngine, normalizePositiveInteger } from "./BrowserClient.t
 export {
   BrowserTelemetryClientDeliveryError,
   BrowserTelemetryClientShutdownError,
+  browserBatchByteLength,
   createBrowserTelemetryClient,
 } from "./BrowserClient.ts";
 export type {
@@ -25,6 +26,7 @@ export type {
 export {
   BrowserEvent,
   BrowserEventBatch,
+  browserRequestByteBudget,
   maxEventNameLength,
   maxEventsPerBatch,
   maxFieldKeyLength,

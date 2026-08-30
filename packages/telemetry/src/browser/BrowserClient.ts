@@ -1,4 +1,6 @@
-import { sanitizeBrowserEventName, sanitizeBrowserFields } from "../RedactionPolicy.ts";
+import { Predicate } from "effect";
+import { browserRequestByteBudget } from "../BrowserEvents.ts";
+import { sanitizeBrowserFields, sanitizeEventName } from "../RedactionPolicy.ts";
 
 export type BrowserTelemetryClientFields = {
   readonly [field: string]: string | number | boolean;
@@ -70,6 +72,56 @@ const defaultFlushIntervalMs = 5_000;
 const defaultShutdownTimeoutMs = 2_000;
 const maxBatchSizeLimit = 64;
 const fallbackEventName = "browser.event";
+const browserFieldValueByteBudget = 2_048;
+const textEncoder = new TextEncoder();
+
+export const browserBatchByteLength = (batch: BrowserTelemetryClientBatch): number =>
+  textEncoder.encode(JSON.stringify(batch)).byteLength;
+
+const fitStringToByteBudget = (value: string): string => {
+  if (textEncoder.encode(value).byteLength <= browserFieldValueByteBudget) return value;
+  let output = "";
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = textEncoder.encode(character).byteLength;
+    if (bytes + characterBytes > browserFieldValueByteBudget) break;
+    output += character;
+    bytes += characterBytes;
+  }
+  return output;
+};
+
+const fitEventToRequestBudget = (
+  event: BrowserTelemetryClientEvent,
+): BrowserTelemetryClientEvent => {
+  const byteBoundedEvent = {
+    ...event,
+    fields: Object.fromEntries(
+      Object.entries(event.fields).map(([key, value]) => [
+        key,
+        Predicate.isString(value) ? fitStringToByteBudget(value) : value,
+      ]),
+    ),
+  };
+  if (
+    browserBatchByteLength({ version: 1, events: [byteBoundedEvent] }) <= browserRequestByteBudget
+  ) {
+    return byteBoundedEvent;
+  }
+  const fields: { [field: string]: string | number | boolean } = {};
+  for (const [key, value] of Object.entries(byteBoundedEvent.fields)) {
+    const candidate = { ...fields, [key]: value };
+    if (
+      browserBatchByteLength({
+        version: 1,
+        events: [{ ...byteBoundedEvent, fields: candidate }],
+      }) <= browserRequestByteBudget
+    ) {
+      fields[key] = value;
+    }
+  }
+  return { ...byteBoundedEvent, fields };
+};
 
 export const normalizePositiveInteger = (value: number | undefined, fallback: number): number =>
   value === undefined || !Number.isSafeInteger(value) || value <= 0 ? fallback : value;
@@ -139,7 +191,7 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
 
   emit(name: string, fields: BrowserTelemetryClientFields = {}): void {
     if (this.options.disabled || this.disposed) return;
-    const sanitizedName = sanitizeBrowserEventName(name);
+    const sanitizedName = sanitizeEventName(name);
     const event: BrowserTelemetryClientEvent = {
       id: crypto.randomUUID(),
       name: sanitizedName.length === 0 ? fallbackEventName : sanitizedName,
@@ -150,7 +202,7 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
       this.events.shift();
       this.droppedEvents += 1;
     }
-    this.events.push(event);
+    this.events.push(fitEventToRequestBudget(event));
   }
 
   flush(): Promise<void> {
@@ -215,7 +267,18 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
     if (this.activeFlush !== undefined) return this.activeFlush;
     const run = async (): Promise<void> => {
       while (this.events.length > 0 && (!this.disposed || allowDisposed)) {
-        const batchEvents = this.events.splice(0, this.options.maxBatchSize);
+        const batchEvents: Array<BrowserTelemetryClientEvent> = [];
+        for (const event of this.events.slice(0, this.options.maxBatchSize)) {
+          const candidate = [...batchEvents, event];
+          if (
+            batchEvents.length > 0 &&
+            browserBatchByteLength({ version: 1, events: candidate }) > browserRequestByteBudget
+          ) {
+            break;
+          }
+          batchEvents.push(event);
+        }
+        this.events.splice(0, batchEvents.length);
         const delivery: ActiveDelivery = { events: batchEvents, abandoned: false };
         const controller = new AbortController();
         this.activeDelivery = delivery;

@@ -18,13 +18,15 @@ import type {
   ObservableGaugeRegistration,
 } from "./Metrics.ts";
 import { MetricsError } from "./Metrics.ts";
-import type { EnvironmentAliasPolicy, ResourceIdentity } from "./ResourceIdentity.ts";
+import type { ResourceIdentity } from "./ResourceIdentity.ts";
 import {
   EnvironmentAliasPolicy as EnvironmentAliasPolicySchema,
   parseResourceIdentity,
   serviceResourceAttributes,
 } from "./ResourceIdentity.ts";
 import type { TelemetryConfig } from "./TelemetryConfig.ts";
+import { baseDataPolicy, type DataPolicy } from "./policy/DataPolicy.ts";
+import { metricLabelRejection, type MetricLabelRejection } from "./policy/MetricLabelPolicy.ts";
 
 const instrumentNamePattern = /^[A-Za-z][A-Za-z0-9_.\-/]{0,254}$/;
 const unitPattern = /^(?:1|%|[A-Za-z][A-Za-z0-9]*(?:[./*^][A-Za-z0-9]+)*)$/;
@@ -39,6 +41,7 @@ const containsControlCharacter = (value: string): boolean => {
 };
 const maximumInstruments = 100;
 const maximumInstrumentSeries = 1_000;
+const maximumAttributeCardinality = 100;
 const maximumRuntimeSeries = 10_000;
 const maximumAttributes = 16;
 const maximumCallbacks = 16;
@@ -86,11 +89,12 @@ const decodeMetricsOptions = Schema.decodeUnknownSync(MetricsOptionsInput);
 interface NormalizedOptions {
   readonly enabled: boolean;
   readonly identity: ResourceIdentity;
-  readonly environmentAlias: EnvironmentAliasPolicy;
   readonly metricsEndpoint: string;
   readonly exportIntervalMilliseconds: number;
   readonly flushTimeoutMilliseconds: number;
   readonly poolKey: string;
+  readonly policy: DataPolicy;
+  readonly resourceAttributes: ReadonlyMap<string, string>;
 }
 
 interface NormalizedDefinition {
@@ -251,14 +255,21 @@ const metricError = (
   instrumentName: string | undefined,
   retryable: boolean,
   cause?: unknown,
+  attributeKey?: string,
+  policyReason?: MetricLabelRejection,
 ): MetricsError => {
-  const options = {
-    code,
-    operation,
-    message,
-    retryable,
-    cause,
-  };
+  const options: {
+    code: MetricsError["code"];
+    operation: string;
+    message: string;
+    retryable: boolean;
+    cause?: unknown;
+    attributeKey?: string;
+    policyReason?: MetricLabelRejection;
+  } = { code, operation, message, retryable };
+  if (cause !== undefined) options.cause = cause;
+  if (attributeKey !== undefined) options.attributeKey = attributeKey;
+  if (policyReason !== undefined) options.policyReason = policyReason;
   if (instrumentName === undefined) {
     return new MetricsError(options);
   }
@@ -266,6 +277,7 @@ const metricError = (
 };
 
 const parseOptions = (input: MetricsOptions): NormalizedOptions => {
+  const policy = input.policy ?? baseDataPolicy;
   let options: typeof MetricsOptionsInput.Type;
   try {
     options = decodeMetricsOptions(input);
@@ -348,6 +360,12 @@ const parseOptions = (input: MetricsOptions): NormalizedOptions => {
   endpoint.search = "";
   endpoint.hash = "";
   const enabled = options.enabled ?? true;
+  const policyKey = JSON.stringify([
+    Array.from(policy.attributes.entries()),
+    policy.blockedKeys.map((pattern) => [pattern.source, pattern.flags]),
+    policy.blockedValuePatterns.map((pattern) => [pattern.source, pattern.flags]),
+  ]);
+  const environmentAlias = options.deploymentEnvironmentAlias ?? "omitted";
   const poolKey = JSON.stringify([
     endpoint.toString(),
     options.serviceName,
@@ -356,15 +374,19 @@ const parseOptions = (input: MetricsOptions): NormalizedOptions => {
     options.deploymentEnvironmentAlias ?? "omitted",
     exportIntervalMilliseconds,
     flushTimeoutMilliseconds,
+    policyKey,
   ]);
   return {
     enabled,
     identity,
-    environmentAlias: options.deploymentEnvironmentAlias ?? "omitted",
     metricsEndpoint: endpoint.toString(),
     exportIntervalMilliseconds,
     flushTimeoutMilliseconds,
     poolKey,
+    policy,
+    resourceAttributes: new Map(
+      Object.entries(serviceResourceAttributes(identity, environmentAlias)),
+    ),
   };
 };
 
@@ -455,6 +477,7 @@ const parseAttributes = (
   input: ReadonlyArray<MetricAttribute> | undefined,
   operation: string,
   instrumentName: string,
+  policy: DataPolicy,
 ): NormalizedAttributes => {
   let attributes: ReadonlyArray<typeof MetricAttributeInput.Type>;
   try {
@@ -483,9 +506,6 @@ const parseAttributes = (
   for (const attribute of attributes) {
     const numberIsInvalid =
       Predicate.isNumber(attribute.value) && !Number.isFinite(attribute.value);
-    const stringIsInvalid =
-      Predicate.isString(attribute.value) &&
-      (attribute.value.length > 256 || containsControlCharacter(attribute.value));
     if (
       attribute.key.length > 128 ||
       !instrumentNamePattern.test(attribute.key) ||
@@ -493,8 +513,7 @@ const parseAttributes = (
       attribute.key === "time_unit" ||
       attribute.key === "service.instance.id" ||
       keys.has(attribute.key) ||
-      numberIsInvalid ||
-      stringIsInvalid
+      numberIsInvalid
     ) {
       throw metricError(
         "INVALID_MEASUREMENT",
@@ -502,6 +521,19 @@ const parseAttributes = (
         `Metric "${instrumentName}" attributes are invalid. Use unique bounded keys and finite scalar values.`,
         instrumentName,
         false,
+      );
+    }
+    const rejection = metricLabelRejection(policy, attribute.key, attribute.value);
+    if (rejection !== undefined) {
+      throw metricError(
+        "POLICY_BLOCKED",
+        operation,
+        `Metric "${instrumentName}" contains a label blocked by the data policy. Remove the label before recording.`,
+        instrumentName,
+        false,
+        undefined,
+        undefined,
+        rejection,
       );
     }
     keys.add(attribute.key);
@@ -539,12 +571,18 @@ const attributesToOtlp = (
 const directAttributesToOtlp = (
   attributes: Metric.Metric.AttributeSet | undefined,
   instrumentName: string,
-): ReadonlyArray<OtlpKeyValue> => {
+  policy: DataPolicy,
+): {
+  readonly values: ReadonlyArray<OtlpKeyValue>;
+  readonly failures: ReadonlyArray<GaugeCollectionFailure>;
+} => {
   if (attributes === undefined) {
-    return [];
+    return { values: [], failures: [] };
   }
   const values: Array<OtlpKeyValue> = [];
+  const failures: Array<GaugeCollectionFailure> = [];
   for (const [key, value] of Object.entries(attributes)) {
+    if (key === "unit" || key === "time_unit") continue;
     if (key === "service.instance.id") {
       throw metricError(
         "EXPORT_FAILED",
@@ -554,11 +592,19 @@ const directAttributesToOtlp = (
         false,
       );
     }
-    if (key !== "unit" && key !== "time_unit") {
-      values.push({ key, value: { stringValue: value } });
+    const rejection = metricLabelRejection(policy, key, value);
+    if (rejection !== undefined) {
+      failures.push({
+        instrumentName,
+        code: "POLICY_BLOCKED",
+        message: `Metric "${instrumentName}" dropped a label blocked by the data policy.`,
+        policyReason: rejection,
+      });
+      continue;
     }
+    values.push({ key, value: { stringValue: value } });
   }
-  return values;
+  return { values, failures };
 };
 
 const sameDefinition = (
@@ -598,10 +644,12 @@ const nanosNow = (): string => String(BigInt(Date.now()) * 1_000_000n);
 
 class MetricsRuntimeState {
   readonly registry = new Map();
+  readonly policy: DataPolicy;
   readonly directContext = Context.make(Metric.MetricRegistry, this.registry);
   readonly catalog = new Map<string, CatalogEntry>();
   readonly runtimeLifetimeSeries = new Set<string>();
   readonly lifetimeSeriesByInstrument = new Map<string, Set<string>>();
+  readonly lifetimeValuesByInstrumentKey = new Map<string, Set<string>>();
   readonly lifetimeInstrumentNames = new Set<string>();
   private readonly leases = new Set<number>();
   private readonly transports = new Map<number, MetricsTransportBinding>();
@@ -617,6 +665,7 @@ class MetricsRuntimeState {
 
   constructor(options: NormalizedOptions, removeFromPool: () => void) {
     this.options = options;
+    this.policy = options.policy;
     this.removeFromPool = removeFromPool;
     this.timer = setInterval(() => {
       this.scheduleExport(this.options.flushTimeoutMilliseconds).then(
@@ -813,7 +862,7 @@ class MetricsRuntimeState {
     const current = leaseSeries.get(attributes.identity);
     if (current === undefined) {
       leaseSeries.set(attributes.identity, { attributes, value });
-      this.commitSeries(entry, attributes.identity);
+      this.commitSeries(entry, attributes);
     } else {
       current.value += value;
     }
@@ -854,7 +903,7 @@ class MetricsRuntimeState {
         max: value,
         bucketCounts,
       });
-      this.commitSeries(entry, attributes.identity);
+      this.commitSeries(entry, attributes);
     } else {
       current.count++;
       current.sum += value;
@@ -931,6 +980,26 @@ class MetricsRuntimeState {
     operation: string,
   ): string {
     const runtimeIdentity = `${entry.definition.name}:${attributes.identity}`;
+    for (const attribute of attributes.values) {
+      const key = `${entry.definition.name}:${attribute.key}`;
+      const values = this.lifetimeValuesByInstrumentKey.get(key);
+      const identity = attributeIdentity(attribute.value);
+      if (
+        values !== undefined &&
+        !values.has(identity) &&
+        values.size >= maximumAttributeCardinality
+      ) {
+        throw metricError(
+          "LIMIT_EXCEEDED",
+          operation,
+          `Metric "${entry.definition.name}" exceeds the ${maximumAttributeCardinality}-value lifetime limit for one label.`,
+          entry.definition.name,
+          false,
+          undefined,
+          attribute.key,
+        );
+      }
+    }
     if (
       !entry.lifetimeSeries.has(attributes.identity) &&
       entry.lifetimeSeries.size >= maximumInstrumentSeries
@@ -958,9 +1027,18 @@ class MetricsRuntimeState {
     return runtimeIdentity;
   }
 
-  private commitSeries(entry: CatalogEntry, identity: string): void {
-    entry.lifetimeSeries.add(identity);
-    this.runtimeLifetimeSeries.add(`${entry.definition.name}:${identity}`);
+  private commitSeries(entry: CatalogEntry, attributes: NormalizedAttributes): void {
+    entry.lifetimeSeries.add(attributes.identity);
+    this.runtimeLifetimeSeries.add(`${entry.definition.name}:${attributes.identity}`);
+    for (const attribute of attributes.values) {
+      const key = `${entry.definition.name}:${attribute.key}`;
+      let values = this.lifetimeValuesByInstrumentKey.get(key);
+      if (values === undefined) {
+        values = new Set();
+        this.lifetimeValuesByInstrumentKey.set(key, values);
+      }
+      values.add(attributeIdentity(attribute.value));
+    }
   }
 
   private transportForExport(): MetricsTransport {
@@ -1052,10 +1130,10 @@ class MetricsRuntimeState {
     const timeUnixNano = nanosNow();
     const metrics: Array<OtlpMetric> = [];
     const names = new Map<string, { readonly kind: string; readonly definition: string }>();
-    for (const snapshot of Metric.snapshotUnsafe(this.directContext)) {
-      this.appendDirectMetric(metrics, names, snapshot, timeUnixNano);
-    }
     const gaugeFailures: Array<GaugeCollectionFailure> = [];
+    for (const snapshot of Metric.snapshotUnsafe(this.directContext)) {
+      this.appendDirectMetric(metrics, names, snapshot, timeUnixNano, gaugeFailures);
+    }
     for (const entry of this.catalog.values()) {
       const existing = names.get(entry.definition.name);
       const definitionIdentity = `${entry.kind}:${entry.definition.unit}:${entry.definition.description}`;
@@ -1086,9 +1164,10 @@ class MetricsRuntimeState {
         resourceMetrics: [
           {
             resource: {
-              attributes: Object.entries(
-                serviceResourceAttributes(this.options.identity, this.options.environmentAlias),
-              ).map(([key, value]) => ({ key, value: { stringValue: value } })),
+              attributes: Array.from(this.options.resourceAttributes, ([key, value]) => ({
+                key,
+                value: { stringValue: value },
+              })),
               droppedAttributesCount: 0,
             },
             scopeMetrics: [
@@ -1109,6 +1188,7 @@ class MetricsRuntimeState {
     names: Map<string, { readonly kind: string; readonly definition: string }>,
     snapshot: Metric.Metric.Snapshot,
     timeUnixNano: string,
+    failures: Array<GaugeCollectionFailure>,
   ): void {
     const unit = snapshot.attributes?.unit ?? snapshot.attributes?.time_unit ?? "1";
     const description = snapshot.description ?? "";
@@ -1123,7 +1203,13 @@ class MetricsRuntimeState {
         false,
       );
     }
-    const attributes = directAttributesToOtlp(snapshot.attributes, snapshot.id);
+    const policyAttributes = directAttributesToOtlp(
+      snapshot.attributes,
+      snapshot.id,
+      this.options.policy,
+    );
+    const attributes = policyAttributes.values;
+    failures.push(...policyAttributes.failures);
     const previous = metrics.find((metric) => metric.name === snapshot.id);
     names.set(snapshot.id, { kind: snapshot.type, definition: definitionIdentity });
     if (snapshot.type === "Counter") {
@@ -1458,6 +1544,7 @@ class MetricsRuntimeState {
             observation.attributes,
             "collectObservableGauge",
             entry.definition.name,
+            this.policy,
           );
           if (
             proposedIdentities.has(attributes.identity) ||
@@ -1519,7 +1606,12 @@ class MetricsRuntimeState {
       };
     }
     for (const identity of newIdentities) {
-      this.commitSeries(entry, identity);
+      const observation = observations.find(
+        (candidate) => candidate.attributes.identity === identity,
+      );
+      if (observation !== undefined) {
+        this.commitSeries(entry, observation.attributes);
+      }
     }
     return {
       metric: {
@@ -1671,7 +1763,12 @@ class ActiveMetrics implements Metrics {
     return {
       add: (value, attributes) => {
         this.assertOpen("add", definition.name);
-        const parsedAttributes = parseAttributes(attributes, "add", definition.name);
+        const parsedAttributes = parseAttributes(
+          attributes,
+          "add",
+          definition.name,
+          this.lease.state.policy,
+        );
         this.lease.state.addCounter(this.lease.leaseId, entry, value, parsedAttributes);
       },
     };
@@ -1684,7 +1781,12 @@ class ActiveMetrics implements Metrics {
     return {
       record: (value, attributes) => {
         this.assertOpen("record", definition.name);
-        const parsedAttributes = parseAttributes(attributes, "record", definition.name);
+        const parsedAttributes = parseAttributes(
+          attributes,
+          "record",
+          definition.name,
+          this.lease.state.policy,
+        );
         this.lease.state.recordHistogram(this.lease.leaseId, entry, value, parsedAttributes);
       },
     };
@@ -1748,6 +1850,8 @@ class DisabledMetrics implements Metrics {
   private closed = false;
   private closePromise: Promise<FlushResult> | undefined;
 
+  constructor(private readonly policy: DataPolicy) {}
+
   counter(definitionInput: CounterDefinition): Counter {
     this.assertOpen("counter");
     const definition = parseDefinition(definitionInput, "counter");
@@ -1763,7 +1867,7 @@ class DisabledMetrics implements Metrics {
             false,
           );
         }
-        parseAttributes(attributes, "add", definition.name);
+        parseAttributes(attributes, "add", definition.name, this.policy);
       },
     };
   }
@@ -1783,7 +1887,7 @@ class DisabledMetrics implements Metrics {
             false,
           );
         }
-        parseAttributes(attributes, "record", definition.name);
+        parseAttributes(attributes, "record", definition.name, this.policy);
       },
     };
   }
@@ -1837,7 +1941,7 @@ class DisabledMetrics implements Metrics {
 export const createStandaloneMetrics = async (optionsInput: MetricsOptions): Promise<Metrics> => {
   const options = parseOptions(optionsInput);
   if (!options.enabled) {
-    return new DisabledMetrics();
+    return new DisabledMetrics(options.policy);
   }
   const lease = acquireRuntime(options, {
     kind: "fetch",
@@ -1848,6 +1952,8 @@ export const createStandaloneMetrics = async (optionsInput: MetricsOptions): Pro
 
 interface LayerMetricsOptions {
   readonly shutdownTimeoutMilliseconds: number;
+  readonly policy: DataPolicy;
+  readonly resourceAttributes: ReadonlyMap<string, string>;
 }
 
 const makeEffectTransport = (endpoint: string, client: HttpClient.HttpClient): MetricsTransport => {
@@ -1890,10 +1996,23 @@ const makeMetricsRuntime = Effect.fn("makeMetricsRuntime")(function* (
     deploymentEnvironmentAlias: config.environmentAlias,
     otlpEndpoint: config.otlpEndpoint.toString(),
     flushTimeoutMilliseconds: options.shutdownTimeoutMilliseconds,
+    policy: options.policy,
   });
-  const lease = acquireRuntime(parsed, {
+  const resourceAttributes = new Map(options.resourceAttributes);
+  resourceAttributes.delete("service.instance.id");
+  const parsedResourceKey = JSON.stringify(Array.from(parsed.resourceAttributes));
+  const resourceKey = JSON.stringify(Array.from(resourceAttributes));
+  const normalized = {
+    ...parsed,
+    poolKey:
+      resourceKey === parsedResourceKey
+        ? parsed.poolKey
+        : JSON.stringify([parsed.poolKey, resourceKey]),
+    resourceAttributes,
+  } satisfies NormalizedOptions;
+  const lease = acquireRuntime(normalized, {
     kind: "layer",
-    send: makeEffectTransport(parsed.metricsEndpoint, client),
+    send: makeEffectTransport(normalized.metricsEndpoint, client),
   });
   yield* flusher.register(
     Effect.tryPromise(() => lease.state.flush(parsed.flushTimeoutMilliseconds)).pipe(

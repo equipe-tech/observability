@@ -1,9 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Exit, Option } from "effect";
+import { Cause, Console, Effect, Exit, Layer, Logger, Metric, Option, References } from "effect";
+import type * as LogLevel from "effect/LogLevel";
 import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
+import { logLevelSeverityNumber } from "../src/PolicyOtlpLogger.ts";
 import { layer } from "../src/Telemetry.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 import * as Testing from "../src/testing/index.ts";
+import { parseDataPolicy } from "../src/policy/DataPolicy.ts";
 
 const unavailableCollector = new TelemetryConfig({
   identity: Effect.runSync(
@@ -17,6 +20,416 @@ const unavailableCollector = new TelemetryConfig({
 });
 
 describe("Telemetry.layer", () => {
+  it("maps every Effect log level to the pinned OTLP severity", () => {
+    const levels = [
+      "All",
+      "Trace",
+      "Debug",
+      "Info",
+      "Warn",
+      "Error",
+      "Fatal",
+      "None",
+    ] satisfies ReadonlyArray<LogLevel.LogLevel>;
+    assert.deepStrictEqual(levels.map(logLevelSeverityNumber), [0, 1, 5, 9, 13, 17, 21, 0]);
+  });
+  it.live(
+    "captures severity, span correlation, annotations, and fiber identity from Effect logs",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* Testing.run(
+          Effect.logInfo("record-shape").pipe(
+            Effect.annotateLogs({ "probe.value": "kept" }),
+            Effect.withSpan("record.shape"),
+          ),
+        );
+        const log = result.telemetry.logs.find((candidate) =>
+          Option.contains(candidate.body, "record-shape"),
+        );
+        assert.isDefined(log);
+        assert.strictEqual(Option.getOrUndefined(log.severityText), "Info");
+        assert.isTrue(Option.isSome(log.traceId));
+        assert.isTrue(Option.isSome(log.spanId));
+        assert.strictEqual(
+          Option.getOrUndefined(Testing.attribute(log.attributes, "probe.value")),
+          "kept",
+        );
+        assert.isTrue(Option.isSome(Testing.attribute(log.attributes, "effect.fiber.id")));
+      }),
+  );
+
+  it.live("sanitizes console fallback before output", () =>
+    Effect.gen(function* () {
+      const secret = crypto.randomUUID().replaceAll("-", "");
+      const messages: Array<string> = [];
+      const recording: Console.Console = Object.assign(Object.create(globalThis.console), {
+        log: (...args: Parameters<Console.Console["log"]>) => {
+          messages.push(JSON.stringify(args));
+        },
+      });
+      yield* Testing.run(
+        Effect.logInfo(`Bearer ${secret}`).pipe(
+          Effect.annotateLogs({ "http.authorization": secret }),
+          Effect.provideService(Console.Console, recording),
+        ),
+      );
+      assert.notInclude(JSON.stringify(messages), secret);
+      assert.include(JSON.stringify(messages), "[REDACTED]");
+      assert.include(JSON.stringify(messages), "****");
+    }),
+  );
+
+  it.live("installs the compiled application policy in the runtime context", () =>
+    Effect.gen(function* () {
+      const policy = yield* parseDataPolicy({
+        attributes: {},
+        blockedKeys: ["customer[.]tier"],
+        blockedValuePatterns: [],
+      });
+      const result = yield* Testing.run(
+        Effect.logInfo("custom-policy").pipe(Effect.annotateLogs({ "customer.tier": "gold" })),
+        { policy },
+      );
+      const log = result.telemetry.logs.find((candidate) =>
+        Option.contains(candidate.body, "custom-policy"),
+      );
+      assert.isDefined(log);
+      assert.strictEqual(
+        Option.getOrUndefined(Testing.attribute(log.attributes, "customer.tier")),
+        "****",
+      );
+    }),
+  );
+
+  it.live("applies the application policy to every captured span field", () =>
+    Effect.gen(function* () {
+      const marker = crypto.randomUUID().replaceAll("-", "");
+      const raw = `provider_${marker}`;
+      const policy = yield* parseDataPolicy({
+        attributes: {
+          "customer.tier": {
+            classification: "sensitive",
+            required: false,
+            metricLabel: false,
+          },
+          "payment.card": {
+            classification: "forbidden",
+            required: false,
+            metricLabel: false,
+          },
+        },
+        blockedKeys: ["application[.]secret"],
+        blockedValuePatterns: ["provider_[A-Za-z0-9]+"],
+      });
+      const result = yield* Testing.run(
+        Effect.gen(function* () {
+          const span = yield* Effect.currentSpan;
+          yield* Effect.annotateCurrentSpan({
+            "probe.value": raw,
+            "customer.tier": "gold",
+            "payment.card": marker,
+            "application.secret": marker,
+          });
+          span.event(`event.${raw}`, 1n, {
+            "probe.value": raw,
+            "customer.tier": "gold",
+            "payment.card": marker,
+          });
+          span.addLinks([
+            {
+              span,
+              attributes: {
+                "probe.value": raw,
+                "customer.tier": "gold",
+                "payment.card": marker,
+              },
+            },
+          ]);
+          return yield* Effect.fail(new Error(`exception.${raw}`));
+        }).pipe(Effect.withSpan(`span.${raw}`)),
+        { policy },
+      );
+      assert.notInclude(JSON.stringify(result.telemetry), marker);
+      const span = result.telemetry.spans[0];
+      assert.isDefined(span);
+      assert.strictEqual(span.name, "span.[REDACTED]");
+      assert.strictEqual(
+        Option.getOrUndefined(Testing.attribute(span.attributes, "probe.value")),
+        "[REDACTED]",
+      );
+      assert.strictEqual(
+        Option.getOrUndefined(Testing.attribute(span.attributes, "customer.tier")),
+        "****",
+      );
+      assert.isFalse(span.attributes.has("payment.card"));
+      assert.strictEqual(span.attributes.get("application.secret"), "****");
+      const event = span.events.find((candidate) => candidate.name.startsWith("event."));
+      assert.isDefined(event);
+      assert.strictEqual(event.name, "event.[REDACTED]");
+      assert.strictEqual(event.attributes.get("customer.tier"), "****");
+      assert.isFalse(event.attributes.has("payment.card"));
+      const link = span.links[0];
+      assert.isDefined(link);
+      assert.strictEqual(link.attributes.get("probe.value"), "[REDACTED]");
+      assert.strictEqual(link.attributes.get("customer.tier"), "****");
+      assert.isFalse(link.attributes.has("payment.card"));
+      const exception = span.events.find((candidate) => candidate.name === "exception");
+      assert.isDefined(exception);
+      assert.strictEqual(exception.attributes.get("exception.message"), "exception.[REDACTED]");
+      assert.include(
+        Option.getOrElse(span.statusMessage, () => ""),
+        "exception.[REDACTED]",
+      );
+    }),
+  );
+
+  it.live("publishes exact span drop counts and bounds events and links", () =>
+    Effect.gen(function* () {
+      const result = yield* Testing.run(
+        Effect.gen(function* () {
+          const span = yield* Effect.currentSpan;
+          yield* Effect.annotateCurrentSpan(
+            Object.fromEntries(
+              Array.from({ length: 200 }, (_, index) => [`field.value${index}`, index]),
+            ),
+          );
+          for (let index = 0; index < 200; index += 1) {
+            span.event(`event.${index}`, BigInt(index), {
+              ...Object.fromEntries(
+                Array.from({ length: 200 }, (_, field) => [`field.value${field}`, field]),
+              ),
+              "unsupported.value": { index },
+            });
+            span.addLinks([
+              {
+                span,
+                attributes: Object.fromEntries(
+                  Array.from({ length: 200 }, (_, field) => [`field.value${field}`, field]),
+                ),
+              },
+            ]);
+          }
+        }).pipe(Effect.withSpan("bounded.span")),
+      );
+      const span = result.telemetry.spans.find((candidate) => candidate.name === "bounded.span");
+      assert.isDefined(span);
+      assert.strictEqual(span.attributes.size, 128);
+      assert.strictEqual(span.droppedAttributesCount, 72);
+      assert.lengthOf(span.events, 128);
+      assert.strictEqual(span.droppedEventsCount, 72);
+      assert.strictEqual(span.events[0]?.name, "event.0");
+      assert.strictEqual(span.events[127]?.name, "event.127");
+      assert.strictEqual(span.events[0]?.attributes.size, 128);
+      assert.strictEqual(span.events[0]?.droppedAttributesCount, 73);
+      assert.lengthOf(span.links, 128);
+      assert.strictEqual(span.droppedLinksCount, 72);
+      assert.strictEqual(span.links[0]?.attributes.size, 128);
+      assert.strictEqual(span.links[0]?.droppedAttributesCount, 72);
+    }),
+  );
+
+  it.live("publishes the exact dropped attribute count", () =>
+    Effect.gen(function* () {
+      const annotations = {
+        ...Object.fromEntries(
+          Array.from({ length: 130 }, (_, index) => [`field.value${index}`, index]),
+        ),
+        "unsupported.value": { nested: true },
+      };
+      const result = yield* Testing.run(
+        Effect.logInfo("drop-count").pipe(Effect.annotateLogs(annotations)),
+      );
+      const log = result.telemetry.logs.find((candidate) =>
+        Option.contains(candidate.body, "drop-count"),
+      );
+      assert.isDefined(log);
+      assert.strictEqual(log.droppedAttributesCount, 4);
+      assert.lengthOf(log.attributes, 128);
+    }),
+  );
+
+  it.live("counts upstream and tracer span-event attribute drops exactly", () =>
+    Effect.gen(function* () {
+      const result = yield* Testing.run(
+        Effect.gen(function* () {
+          yield* Effect.logInfo("upstream-drop").pipe(
+            Effect.annotateLogs({
+              "app.field": "kept",
+              plainkey: "dropped",
+              "unsupported.field": { nested: true },
+            }),
+          );
+          const span = yield* Effect.currentSpan;
+          span.event("tracer-drop", 1n, {
+            "app.field": "kept",
+            plainkey: "dropped",
+            "unsupported.field": { nested: true },
+          });
+        }).pipe(Effect.withSpan("drop.differential")),
+      );
+      const span = result.telemetry.spans.find(
+        (candidate) => candidate.name === "drop.differential",
+      );
+      assert.isDefined(span);
+      const upstream = span.events.find((event) => event.name === "upstream-drop");
+      const tracer = span.events.find((event) => event.name === "tracer-drop");
+      assert.isDefined(upstream);
+      assert.isDefined(tracer);
+      assert.strictEqual(upstream.droppedAttributesCount, 2);
+      assert.strictEqual(upstream.attributes.get("app.field"), "kept");
+      assert.isTrue(upstream.attributes.has("effect.fiber.id"));
+      assert.isTrue(upstream.attributes.has("effect.log.level"));
+      assert.isFalse(upstream.attributes.has("effect.fiberId"));
+      assert.isFalse(upstream.attributes.has("effect.logLevel"));
+      assert.strictEqual(tracer.droppedAttributesCount, 2);
+      assert.deepStrictEqual([...tracer.attributes], [["app.field", "kept"]]);
+    }),
+  );
+
+  it.live("sanitizes direct Effect logs before OTLP buffering", () =>
+    Effect.gen(function* () {
+      const secret = crypto.randomUUID().replaceAll("-", "");
+      const result = yield* Testing.run(
+        Effect.logInfo(`Bearer ${secret} Bearer ${secret}`).pipe(
+          Effect.annotateLogs({ "http.authorization": secret }),
+        ),
+      );
+      assert.notInclude(JSON.stringify(result.telemetry), secret);
+      const log = result.telemetry.logs[0];
+      assert.isDefined(log);
+      assert.strictEqual(
+        Option.getOrUndefined(Testing.attribute(log.attributes, "http.authorization")),
+        "****",
+      );
+    }),
+  );
+
+  it.live("delegates only sanitized records to an existing logger", () =>
+    Effect.gen(function* () {
+      const secret = crypto.randomUUID().replaceAll("-", "");
+      const records: Array<string> = [];
+      const existing = Logger.make((entry) => {
+        records.push(
+          JSON.stringify([
+            entry.message,
+            entry.fiber.getRef(References.CurrentLogAnnotations),
+            Cause.pretty(entry.cause),
+          ]),
+        );
+      });
+      const policy = yield* parseDataPolicy({
+        attributes: {},
+        blockedKeys: [],
+        blockedValuePatterns: ["provider_[A-Za-z0-9]+"],
+      });
+      const capture = yield* Testing.makeCapture({ policy });
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const context = yield* Layer.build(capture.layer).pipe(
+            Effect.provide(Logger.layer([existing], { mergeWithExisting: true })),
+          );
+          yield* Effect.logInfo(
+            `provider_${secret} provider_${secret}`,
+            Cause.fail(`provider_${secret} provider_${secret}`),
+          ).pipe(Effect.annotateLogs({ "http.authorization": secret }), Effect.provide(context));
+        }),
+      );
+      assert.notInclude(JSON.stringify(records), secret);
+      assert.include(JSON.stringify(records), "[REDACTED]");
+      assert.include(JSON.stringify(records), "****");
+    }),
+  );
+
+  it.live("preserves log spans and bounded Cause output", () =>
+    Effect.gen(function* () {
+      const result = yield* Testing.run(
+        Effect.logInfo("bounded-cause", Cause.fail(`Error: ${"x".repeat(40_000)}`)).pipe(
+          Effect.withLogSpan("database"),
+        ),
+      );
+      const log = result.telemetry.logs.find((candidate) =>
+        Option.contains(candidate.body, "bounded-cause"),
+      );
+      assert.isDefined(log);
+      assert.isTrue(Option.isSome(Testing.attribute(log.attributes, "effect.log_span.database")));
+      const renderedCause = String(
+        Option.getOrUndefined(Testing.attribute(log.attributes, "log.error")),
+      );
+      assert.strictEqual(renderedCause.length, 32_768);
+      assert.include(renderedCause, "Error:");
+    }),
+  );
+
+  it.live("sanitizes and bounds resources for logs, traces, and metrics", () =>
+    Effect.gen(function* () {
+      const secret = crypto.randomUUID().replaceAll("-", "");
+      const policy = yield* parseDataPolicy({
+        attributes: {},
+        blockedKeys: [],
+        blockedValuePatterns: ["provider_[A-Za-z0-9]+"],
+      });
+      const resourceAttributes = [
+        {
+          key: "deployment.note",
+          value: `provider_${secret} provider_${secret}`,
+        },
+        { key: "deployment.long", value: "x".repeat(9_000) },
+        ...Array.from({ length: 130 }, (_, index) => ({
+          key: `resource.field${index}`,
+          value: String(index),
+        })),
+      ];
+      const result = yield* Testing.run(
+        Effect.gen(function* () {
+          yield* Effect.logInfo("resource-policy");
+          yield* Metric.update(Metric.counter("resource.policy.count"), 1);
+        }).pipe(Effect.withSpan("resource.policy")),
+        { policy, resourceAttributes },
+      );
+      assert.notInclude(JSON.stringify(result.telemetry), secret);
+      const span = result.telemetry.spans.find((candidate) => candidate.name === "resource.policy");
+      const log = result.telemetry.logs.find((candidate) =>
+        Option.contains(candidate.body, "resource-policy"),
+      );
+      const metric = result.telemetry.metrics.find(
+        (candidate) => candidate.name === "resource.policy.count",
+      );
+      assert.isDefined(span);
+      assert.isDefined(log);
+      assert.isDefined(metric);
+      for (const resource of [
+        span.resourceAttributes,
+        log.resourceAttributes,
+        metric.resourceAttributes,
+      ]) {
+        assert.strictEqual(resource.size, 128);
+        assert.strictEqual(resource.get("deployment.note"), "[REDACTED] [REDACTED]");
+        assert.strictEqual(String(resource.get("deployment.long")).length, 8_192);
+      }
+    }),
+  );
+
+  it.live("rejects duplicate resource attributes through layer construction", () =>
+    Effect.gen(function* () {
+      const exit = yield* Effect.scoped(
+        Layer.build(
+          layer(unavailableCollector, {
+            resourceAttributes: [{ key: "service.name", value: "duplicate" }],
+          }),
+        ),
+      ).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(exit));
+      if (Exit.isFailure(exit)) {
+        const failure = Cause.findErrorOption(exit.cause);
+        assert.isTrue(Option.isSome(failure));
+        assert.include(
+          JSON.stringify(Option.getOrUndefined(failure)),
+          "OBS_POLICY_DUPLICATE_RESOURCE_ATTRIBUTE",
+        );
+      }
+    }),
+  );
+
   it.live("ignores hostile ambient resource identity and optional canonical keys", () =>
     Effect.gen(function* () {
       const previous = process.env["OTEL_RESOURCE_ATTRIBUTES"];

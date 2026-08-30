@@ -2,7 +2,14 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   BrowserTelemetryClientDeliveryError,
   BrowserTelemetryClientShutdownError,
+  browserBatchByteLength,
+  browserRequestByteBudget,
   createBrowserTelemetryClient,
+  maxEventNameLength,
+  maxEventsPerBatch,
+  maxFieldKeyLength,
+  maxFieldsPerEvent,
+  maxFieldValueLength,
   type BrowserTelemetryClientBatch,
   type BrowserTelemetryClientTransport,
 } from "../src/browser/index.ts";
@@ -50,6 +57,32 @@ describe("browser telemetry client", () => {
     expect(serialized).not.toContain(secret);
     expect(serialized).toContain(sensitiveFieldReplacement);
     expect(serialized).toContain(sensitiveTextReplacement);
+    await client.dispose();
+  });
+
+  it("splits maximum browser inputs below the HTTP request byte budget", async () => {
+    const batches: Array<BrowserTelemetryClientBatch> = [];
+    const client = createBrowserTelemetryClient({
+      transport: async (batch) => {
+        batches.push(batch);
+      },
+      flushIntervalMs: 60_000,
+    });
+    const fields = Object.fromEntries(
+      Array.from({ length: maxFieldsPerEvent }, (_, index) => [
+        `${String(index).padStart(2, "0")}${"界".repeat(maxFieldKeyLength - 2)}`,
+        "界".repeat(maxFieldValueLength),
+      ]),
+    );
+    for (let index = 0; index < maxEventsPerBatch; index += 1) {
+      client.emit("n".repeat(maxEventNameLength), fields);
+    }
+    await client.flush();
+    expect(batches.length).toBeGreaterThan(1);
+    expect(batches.flatMap((batch) => batch.events)).toHaveLength(maxEventsPerBatch);
+    for (const batch of batches) {
+      expect(browserBatchByteLength(batch)).toBeLessThanOrEqual(browserRequestByteBudget);
+    }
     await client.dispose();
   });
 
