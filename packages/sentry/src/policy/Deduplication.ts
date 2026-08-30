@@ -1,12 +1,18 @@
 import type { DefectEnvelope } from "@equipe-tech/observability/policy";
 
 export type DedupeDecision =
-  | { readonly kind: "admitted"; readonly fingerprint: string }
+  | { readonly kind: "admitted" }
   | { readonly kind: "deduplicated"; readonly reason: "identity" | "fingerprint" };
 
 export type DefectDeduplicator = {
-  readonly admit: (envelope: DefectEnvelope, now: number) => DedupeDecision;
-  readonly rollback: (envelope: DefectEnvelope, fingerprint: string) => void;
+  readonly admit: (eventId: string, envelope: DefectEnvelope, now: number) => DedupeDecision;
+  readonly rollback: (eventId: string) => void;
+  readonly release: (eventId: string) => void;
+};
+
+type Reservation = {
+  readonly envelope: DefectEnvelope;
+  readonly fingerprint: string;
 };
 
 const normalizedFingerprint = (envelope: DefectEnvelope): string =>
@@ -23,8 +29,9 @@ const normalizedFingerprint = (envelope: DefectEnvelope): string =>
 export const defectDeduplicator = (windowMillis: number, capacity: number): DefectDeduplicator => {
   const identities = new WeakSet<DefectEnvelope>();
   const fingerprints = new Map<string, number>();
+  const reservations = new Map<string, Reservation>();
   return {
-    admit: (envelope, now) => {
+    admit: (eventId, envelope, now) => {
       if (identities.has(envelope)) return { kind: "deduplicated", reason: "identity" };
       const fingerprint = normalizedFingerprint(envelope);
       const previous = fingerprints.get(fingerprint);
@@ -34,15 +41,22 @@ export const defectDeduplicator = (windowMillis: number, capacity: number): Defe
       identities.add(envelope);
       fingerprints.delete(fingerprint);
       fingerprints.set(fingerprint, now);
+      reservations.set(eventId, { envelope, fingerprint });
       while (fingerprints.size > capacity) {
         const oldest = fingerprints.keys().next().value;
         if (oldest !== undefined) fingerprints.delete(oldest);
       }
-      return { kind: "admitted", fingerprint };
+      return { kind: "admitted" };
     },
-    rollback: (envelope, fingerprint) => {
-      identities.delete(envelope);
-      fingerprints.delete(fingerprint);
+    rollback: (eventId) => {
+      const reservation = reservations.get(eventId);
+      if (reservation === undefined) return;
+      reservations.delete(eventId);
+      identities.delete(reservation.envelope);
+      fingerprints.delete(reservation.fingerprint);
+    },
+    release: (eventId) => {
+      reservations.delete(eventId);
     },
   };
 };

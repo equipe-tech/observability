@@ -8,7 +8,7 @@ O Node usa `LightNodeClient` de `@sentry/node-core/light`. O pacote não chama o
 
 A deduplicação combina identidade do envelope e fingerprint normalizado. A janela e a capacidade têm limites configuráveis. `reports()` retorna somente contagens, horários e motivos.
 
-`sendVerificationDefect` captura e faz flush. O recibo usa `flushed: true` somente quando o transporte aceitou o lote. `flush` e `dispose` respeitam o prazo configurado e podem ser repetidos.
+`sendVerificationDefect` retorna o `eventId` gravado no envelope e só emite `flushed: true` quando esse evento recebeu uma resposta HTTP 2xx e o flush terminou dentro do prazo. Supressão, respostas não 2xx, falha de rede e timeout retornam uma falha de transporte. `flush` pode ser repetido antes do fechamento. `close` e `dispose` são idempotentes. Depois que o fechamento do SDK termina, inclusive com `false` ou timeout, o reporter permanece fechado e novas capturas são suprimidas. O fechamento não é repetido porque o SDK desabilita o cliente na primeira chamada.
 
 ## Source maps
 

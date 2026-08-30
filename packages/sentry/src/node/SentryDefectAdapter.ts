@@ -11,13 +11,15 @@ import { Context, Effect, Layer, Option, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { parseSentryDsn } from "../SentryDsn.ts";
 import { SentryAdapterError } from "../SentryAdapterError.ts";
-import { defectDeduplicator } from "../policy/Deduplication.ts";
+import { defectDeduplicator, type DefectDeduplicator } from "../policy/Deduplication.ts";
+import { eventSettlements, type EventSettlements } from "../policy/EventSettlement.ts";
 import {
   projectDefect,
   type ProjectionIdentity,
   type SentryCaptureOutcome,
   type SentryDefectCapture,
   type SentryDefectReport,
+  type SentryVerificationReceipt,
 } from "../policy/DefectProjection.ts";
 import { sentryReportState } from "../policy/ReportState.ts";
 
@@ -26,11 +28,6 @@ export type SentryDefectAdapterOptions = {
   readonly closeDeadlineMillis?: number;
   readonly dedupeWindowMillis?: number;
   readonly dedupeCapacity?: number;
-};
-
-export type SentryVerificationReceipt = {
-  readonly eventId: string;
-  readonly flushed: true;
 };
 
 export type SentryDefectAdapter = {
@@ -67,7 +64,7 @@ const optionNames = new Set([
   "dedupeCapacity",
 ]);
 
-type ResolvedOptions = {
+type AdapterOptions = {
   readonly flushDeadlineMillis: number;
   readonly closeDeadlineMillis: number;
   readonly dedupeWindowMillis: number;
@@ -78,11 +75,19 @@ type ActiveClient = {
   readonly client: LightNodeClient;
   readonly context: ObservabilityAdapterContext;
   readonly identity: ProjectionIdentity;
+  readonly dedupe: DefectDeduplicator;
+  readonly settlements: EventSettlements;
+  readonly options: AdapterOptions;
+};
+
+type CaptureResult = {
+  readonly outcome: SentryCaptureOutcome;
+  readonly completion?: Promise<boolean>;
 };
 
 const resolveOptions = (
   options: SentryDefectAdapterOptions,
-): Effect.Effect<ResolvedOptions, SentryAdapterError> => {
+): Effect.Effect<AdapterOptions, SentryAdapterError> => {
   if (
     Option.isNone(decodeOptions(options)) ||
     Object.keys(options).some((name) => !optionNames.has(name))
@@ -112,6 +117,9 @@ const adapterFailure = (cause: SentryAdapterError): AdapterFailure =>
   });
 
 const eventId = (): string => randomUUID().replaceAll("-", "");
+const acceptedStatus = (statusCode: number | undefined): boolean =>
+  statusCode !== undefined && statusCode >= 200 && statusCode < 300;
+const decodeEventId = Schema.decodeUnknownOption(Schema.String);
 
 export const sentryDefectAdapter = (
   options: SentryDefectAdapterOptions = {},
@@ -121,63 +129,84 @@ export const sentryDefectAdapter = (
   let closed = false;
   let flushInFlight: Promise<boolean> | undefined;
   let closeInFlight: Promise<boolean> | undefined;
-  const admitted = new Map<string, SentryDefectCapture>();
-  const lifecycleOptions = {
-    flushDeadlineMillis: options.flushDeadlineMillis ?? 2_000,
-    closeDeadlineMillis: options.closeDeadlineMillis ?? 2_000,
-    dedupeWindowMillis: options.dedupeWindowMillis ?? 60_000,
-    dedupeCapacity: options.dedupeCapacity ?? 256,
-  };
-  const dedupe = defectDeduplicator(
-    lifecycleOptions.dedupeWindowMillis,
-    lifecycleOptions.dedupeCapacity,
-  );
+  let closeResult: boolean | undefined;
 
-  const captureNow = (input: SentryDefectCapture): SentryCaptureOutcome => {
+  const captureNow = (input: SentryDefectCapture): CaptureResult => {
     if (closed) {
       reportState.increment("closed");
-      return { kind: "suppressed", reason: "closed" };
+      return { outcome: { kind: "suppressed", reason: "closed" } };
     }
-    if (active === undefined) {
+    const current = active;
+    if (current === undefined) {
       reportState.increment("disabled");
-      return { kind: "suppressed", reason: "disabled" };
-    }
-    const decision = dedupe.admit(input.envelope, Date.now());
-    if (decision.kind === "deduplicated") {
-      reportState.increment(decision.reason);
-      return decision;
+      return { outcome: { kind: "suppressed", reason: "disabled" } };
     }
     const id = eventId();
-    const projected = projectDefect(active.context.policy, active.identity, input.envelope, id);
-    if (Option.isNone(projected)) {
-      dedupe.rollback(input.envelope, decision.fingerprint);
-      reportState.increment("policy");
-      return { kind: "suppressed", reason: "policy" };
+    const decision = current.dedupe.admit(id, input.envelope, Date.now());
+    if (decision.kind === "deduplicated") {
+      reportState.increment(decision.reason);
+      return { outcome: decision };
     }
-    admitted.set(id, input);
-    const capturedId = active.client.captureEvent(projected.value);
+    const projected = projectDefect(current.context.policy, current.identity, input.envelope, id);
+    if (Option.isNone(projected)) {
+      current.dedupe.rollback(id);
+      reportState.increment("policy");
+      return { outcome: { kind: "suppressed", reason: "policy" } };
+    }
+    const completion = current.settlements.reserve(id, input);
+    if (completion === undefined) {
+      current.dedupe.rollback(id);
+      reportState.increment("transport");
+      return { outcome: { kind: "failed", reason: "transport" } };
+    }
+    try {
+      current.client.captureEvent(projected.value);
+    } catch {
+      current.settlements.reject(id);
+      reportState.increment("transport");
+      return { outcome: { kind: "failed", reason: "transport" } };
+    }
     reportState.increment("captured");
-    return { kind: "captured", eventId: capturedId };
+    return { outcome: { kind: "captured", eventId: id }, completion };
   };
 
   const flush = async (): Promise<boolean> => {
-    if (active === undefined) return true;
-    flushInFlight ??= Promise.resolve(active.client.flush(lifecycleOptions.flushDeadlineMillis));
-    const completed = await flushInFlight;
-    flushInFlight = undefined;
-    if (!completed) reportState.increment("flushIncomplete");
-    return completed;
+    const current = active;
+    if (current === undefined) return true;
+    if (flushInFlight === undefined) {
+      const operation = Promise.resolve(current.client.flush(current.options.flushDeadlineMillis))
+        .catch(() => false)
+        .then((completed) => {
+          if (!completed) reportState.increment("flushIncomplete");
+          return completed;
+        });
+      flushInFlight = operation.finally(() => {
+        flushInFlight = undefined;
+      });
+    }
+    return flushInFlight;
   };
 
   const close = async (): Promise<boolean> => {
-    if (active === undefined) return true;
-    closeInFlight ??= Promise.resolve(active.client.close(lifecycleOptions.closeDeadlineMillis));
-    const completed = await closeInFlight;
-    if (completed) {
-      active = undefined;
+    if (closed) return closeResult ?? true;
+    const current = active;
+    if (current === undefined) {
       closed = true;
+      closeResult = true;
+      return true;
     }
-    return completed;
+    if (closeInFlight === undefined) {
+      closeInFlight = Promise.resolve(current.client.close(current.options.closeDeadlineMillis))
+        .catch(() => false)
+        .then((completed) => {
+          current.settlements.clear();
+          active = undefined;
+          closed = true;
+          closeResult = completed;
+          return completed;
+        });
+    }
+    return closeInFlight;
   };
 
   const registration = registerOfficialAdapter({
@@ -186,7 +215,7 @@ export const sentryDefectAdapter = (
     stage: "server",
     start: (context) =>
       Effect.gen(function* () {
-        yield* resolveOptions(options).pipe(Effect.mapError(adapterFailure));
+        const resolved = yield* resolveOptions(options).pipe(Effect.mapError(adapterFailure));
         if (!context.sentry.enabled) {
           return yield* adapterFailure(
             new SentryAdapterError({
@@ -204,11 +233,32 @@ export const sentryDefectAdapter = (
           serviceVersion: context.identity.serviceVersion,
           environment: context.identity.environment,
         };
+        const dedupe = defectDeduplicator(resolved.dedupeWindowMillis, resolved.dedupeCapacity);
+        const settlements = eventSettlements(resolved.dedupeCapacity, dedupe);
         const client = new LightNodeClient({
           dsn: parsed.dsn.href,
           release: identity.serviceVersion,
           environment: identity.environment,
-          transport: makeNodeTransport,
+          transport: (transportOptions) => {
+            const transport = makeNodeTransport(transportOptions);
+            return {
+              flush: (timeout) => transport.flush(timeout),
+              send: (envelope) => {
+                const id = decodeEventId(envelope[0].event_id);
+                return Promise.resolve(transport.send(envelope)).then(
+                  (response) => {
+                    if (Option.isSome(id))
+                      settlements.settle(id.value, acceptedStatus(response.statusCode));
+                    return response;
+                  },
+                  (cause) => {
+                    if (Option.isSome(id)) settlements.reject(id.value);
+                    throw cause;
+                  },
+                );
+              },
+            };
+          },
           stackParser: defaultStackParser,
           integrations: [],
           sendDefaultPii: false,
@@ -217,7 +267,6 @@ export const sentryDefectAdapter = (
             cookies: false,
             httpHeaders: { request: false, response: false },
             httpBodies: [],
-            queryParams: false,
             urlQueryParams: false,
             graphQL: { document: false, variables: false },
             genAI: { inputs: false, outputs: false },
@@ -231,16 +280,19 @@ export const sentryDefectAdapter = (
           beforeSend: (event): ErrorEvent | null => {
             const id = event.event_id;
             if (id === undefined) return null;
-            const accepted = admitted.get(id);
-            admitted.delete(id);
+            const accepted = settlements.input(id);
             if (accepted === undefined) return null;
-            return Option.getOrNull(projectDefect(context.policy, identity, accepted.envelope, id));
+            const projected = projectDefect(context.policy, identity, accepted.envelope, id);
+            if (Option.isNone(projected)) settlements.reject(id);
+            return Option.getOrNull(projected);
           },
           beforeSendTransaction: () => null,
           beforeBreadcrumb: () => null,
         });
-        active = { client, context, identity };
+        active = { client, context, identity, dedupe, settlements, options: resolved };
         closed = false;
+        closeResult = undefined;
+        closeInFlight = undefined;
         return {
           flush: Effect.promise(flush).pipe(Effect.asVoid),
           close: Effect.promise(close).pipe(Effect.asVoid),
@@ -251,16 +303,23 @@ export const sentryDefectAdapter = (
   });
 
   const capture = (input: SentryDefectCapture): Effect.Effect<SentryCaptureOutcome> =>
-    Effect.sync(() => captureNow(input));
+    Effect.sync(() => captureNow(input).outcome);
   const captureAsync = (input: SentryDefectCapture): Promise<SentryCaptureOutcome> =>
-    Promise.resolve(captureNow(input));
+    Promise.resolve(captureNow(input).outcome);
   const sendVerificationDefect = async (
     input: SentryDefectCapture,
   ): Promise<SentryVerificationReceipt | SentryCaptureOutcome> => {
-    const outcome = captureNow(input);
-    if (outcome.kind !== "captured") return outcome;
-    if (!(await flush())) return { kind: "failed", reason: "transport" };
-    return { eventId: outcome.eventId, flushed: true };
+    const result = captureNow(input);
+    if (result.outcome.kind !== "captured" || result.completion === undefined)
+      return result.outcome;
+    const completed = await flush();
+    if (!completed) active?.settlements.reject(result.outcome.eventId);
+    const accepted = await result.completion;
+    if (!completed || !accepted) {
+      reportState.increment("transport");
+      return { kind: "failed", reason: "transport" };
+    }
+    return { eventId: result.outcome.eventId, flushed: true };
   };
   return {
     registration,

@@ -12,6 +12,11 @@ export type SentryDefectCapture = {
   readonly envelope: DefectEnvelope;
 };
 
+export type SentryVerificationReceipt = {
+  readonly eventId: string;
+  readonly flushed: true;
+};
+
 export type SentryCaptureOutcome =
   | { readonly kind: "captured"; readonly eventId: string }
   | { readonly kind: "deduplicated"; readonly reason: "identity" | "fingerprint" }

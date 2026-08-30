@@ -4,8 +4,6 @@ export const SentryErrorCode = Schema.Literals([
   "OBS_SENTRY_CONFIG_INVALID",
   "OBS_SENTRY_DSN_INVALID",
   "OBS_SENTRY_DISABLED",
-  "OBS_SENTRY_CLIENT_CONFLICT",
-  "OBS_SENTRY_FLUSH_INCOMPLETE",
   "OBS_SENTRY_SOURCE_MAP_INVALID",
 ]);
 export type SentryErrorCode = typeof SentryErrorCode.Type;
