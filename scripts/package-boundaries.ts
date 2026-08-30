@@ -14,8 +14,8 @@ const PackageManifest = Schema.Struct({
 });
 export const decodePackageManifest = Schema.decodeUnknownSync(PackageManifest);
 
-export type BoundaryRole = "core" | "adapter" | "bootstrap" | "domain";
-export type BoundaryViolation = {
+type BoundaryRole = "core" | "adapter" | "bootstrap" | "domain";
+type BoundaryViolation = {
   readonly rule: string;
   readonly file: string;
   readonly specifier: string;

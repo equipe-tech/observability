@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,8 @@ const cleanupScenario =
 const requestedCleanupDeadline = Number(
   cleanupTestIndex === -1 ? "3000" : (process.argv[cleanupTestIndex + 3] ?? "3000"),
 );
+const cleanupSignalConfirmationFile =
+  cleanupTestIndex === -1 ? "" : (process.argv[cleanupTestIndex + 4] ?? "");
 const cleanupDeadlineMilliseconds =
   Number.isFinite(requestedCleanupDeadline) && requestedCleanupDeadline > 0
     ? requestedCleanupDeadline
@@ -22,6 +25,7 @@ let cleanupStarted = false;
 let cleanupResult = Promise.resolve();
 let terminationRequested = false;
 let terminationExitCode = 1;
+let observedSignalCount = 0;
 const activeChildren = new Set<ReturnType<typeof Bun.spawn>>();
 let allocationPromise = Promise.resolve("");
 
@@ -143,7 +147,17 @@ const cleanup = (): Promise<void> => {
   return cleanupResult;
 };
 
-const terminateAfterCleanup = (exitCode: number): void => {
+type CleanupSignal = "SIGINT" | "SIGTERM";
+
+const terminateAfterCleanup = (exitCode: number, signal: CleanupSignal): void => {
+  observedSignalCount += 1;
+  if (cleanupSignalConfirmationFile !== "") {
+    writeFileSync(
+      cleanupSignalConfirmationFile,
+      JSON.stringify({ count: observedSignalCount, signal }),
+      "utf8",
+    );
+  }
   if (!terminationRequested) {
     terminationRequested = true;
     terminationExitCode = exitCode;
@@ -159,8 +173,8 @@ const terminateAfterCleanup = (exitCode: number): void => {
   );
 };
 
-const onSigint = (): void => terminateAfterCleanup(130);
-const onSigterm = (): void => terminateAfterCleanup(143);
+const onSigint = (): void => terminateAfterCleanup(130, "SIGINT");
+const onSigterm = (): void => terminateAfterCleanup(143, "SIGTERM");
 
 const allocateTemporaryDirectory = async (): Promise<string> => {
   if (cleanupScenario === "allocation") {

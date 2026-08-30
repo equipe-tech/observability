@@ -1,4 +1,4 @@
-export type NpmPublicationState = "missing" | "published";
+type NpmPublicationState = "missing" | "published";
 
 type NpmViewResult = {
   readonly exitCode: number;
