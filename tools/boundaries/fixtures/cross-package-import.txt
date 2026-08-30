@@ -1,0 +1,1 @@
+export type { DynamicMetric } from "../../telemetry/src/contract/dynamic.ts";

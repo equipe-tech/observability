@@ -5,7 +5,7 @@ import {
   encodeBrowserEventBatch,
   maxEventsPerBatch,
 } from "../BrowserEvents.ts";
-import type { WideEventFields } from "../WideEvent.ts";
+import type { EventAttributes } from "../contract/TelemetryEvent.ts";
 import { BrowserClientEngine, normalizePositiveInteger } from "./BrowserClient.ts";
 
 export {
@@ -155,7 +155,7 @@ const makeBrowserTelemetry = Effect.fn("makeBrowserTelemetry")(function* (
   );
 
   return {
-    emit: (name: string, fields?: WideEventFields) =>
+    emit: (name: string, fields?: EventAttributes) =>
       Effect.sync(() => engine.emit(name, fields ?? {})),
     flush: () => flush,
     pending: () => Effect.sync(() => engine.pending()),
@@ -166,7 +166,7 @@ const makeBrowserTelemetry = Effect.fn("makeBrowserTelemetry")(function* (
 export class BrowserTelemetry extends Context.Service<
   BrowserTelemetry,
   {
-    emit(name: string, fields?: WideEventFields): Effect.Effect<void>;
+    emit(name: string, fields?: EventAttributes): Effect.Effect<void>;
     flush(): Effect.Effect<void, BrowserEventDeliveryError>;
     pending(): Effect.Effect<number>;
     dropped(): Effect.Effect<number>;

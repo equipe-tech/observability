@@ -85,4 +85,34 @@ Remova `SENTRY_RELEASE` e `OTEL_SERVICE_RELEASE`. Um valor não vazio em qualque
 
 ## Compatibilidade de release
 
-Esta migração documenta a quebra intencional da próxima versão minor. O OBS-57 adicionará a verificação automatizada de compatibilidade e o bloqueio de versionamento. O OBS-49 não implementa esse bloqueio e não altera a versão dos pacotes.
+Esta migração documenta a quebra intencional da linha 0.3. O OBS-57 adicionará a verificação automatizada de compatibilidade e o bloqueio de versionamento.
+
+## Migrar os entrypoints de Effect e NestJS
+
+`WideEvent` e `layerWideEvent` não pertencem mais à raiz do núcleo. Importe ambos do entrypoint Effect:
+
+```ts
+import { WideEvent, layerWideEvent } from "@equipe-tech/observability/effect";
+```
+
+O tipo público `WideEventFields` foi removido. Substitua-o por `EventAttributes`, exportado pela raiz do núcleo:
+
+```ts
+import type { EventAttributes } from "@equipe-tech/observability";
+```
+
+O caminho `@equipe-tech/observability/nestjs` foi removido. Instale `@equipe-tech/observability-nestjs@0.3.x` e importe a integração pela raiz do pacote:
+
+```ts
+import {
+  createBrowserEventsController,
+  TelemetryInterceptor,
+  TelemetryModule,
+} from "@equipe-tech/observability-nestjs";
+```
+
+O núcleo mantém `./metrics`, `./node`, `./browser`, `./browser/client` e `./testing`. `effect@4.0.0-rc.111` passa a ser peer obrigatório do núcleo e do pacote NestJS. O consumidor deve instalar uma única cópia.
+
+## Usar releases independentes
+
+Os pacotes não compartilham versão. O núcleo e o pacote NestJS começam em `0.3.0`. A CLI permanece em `0.2.1`. Tags usam `<slug>@<semver>`, por exemplo `observability@0.3.0`, `observability-nestjs@0.3.0` e `observability-cli@0.2.1`.

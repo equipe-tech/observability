@@ -1,13 +1,12 @@
 import { Predicate } from "effect";
 import { maxFieldKeyLength } from "../BrowserEvents.ts";
 import { isValidAttributeName } from "../contract/EventName.ts";
-import type { AttributeValue } from "../contract/TelemetryEvent.ts";
+import type { AttributeValue, EventAttributes } from "../contract/TelemetryEvent.ts";
 import {
   maxOriginalStringLength,
   replaceStructuredText,
   sanitizeBrowserFields,
 } from "./BrowserFieldPolicy.ts";
-import type { WideEventFields } from "../WideEvent.ts";
 import type { DataPolicy, PolicySurface } from "./DataPolicy.ts";
 import {
   replaceEmailCandidates,
@@ -80,8 +79,8 @@ const sanitizeBoundedText = (
 
 const transformBrowserFields = (
   policy: DataPolicy,
-  fields: WideEventFields,
-): PolicyDecision<WideEventFields> => {
+  fields: EventAttributes,
+): PolicyDecision<EventAttributes> => {
   const admitted: MutableFields = {};
   const redactions: Array<PolicyRedaction> = [];
   for (const [key, value] of Object.entries(fields)) {
@@ -143,8 +142,8 @@ const transformBrowserFields = (
 export const transformSignalFields = (
   policy: DataPolicy,
   surface: Exclude<PolicySurface, "metric">,
-  fields: WideEventFields,
-): PolicyDecision<WideEventFields> => {
+  fields: EventAttributes,
+): PolicyDecision<EventAttributes> => {
   if (surface === "browser-ingest") return transformBrowserFields(policy, fields);
   const admitted: MutableFields = {};
   const redactions: Array<PolicyRedaction> = [];

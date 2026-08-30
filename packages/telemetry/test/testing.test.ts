@@ -3,7 +3,7 @@ import { Cause, Effect, Exit, Metric, Option } from "effect";
 import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
 import * as Testing from "../src/testing/index.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
-import * as WideEvent from "../src/WideEvent.ts";
+import * as WideEvent from "../src/effect/WideEvent.ts";
 
 const attributeOrUndefined = (
   attributes: Testing.CapturedAttributes,

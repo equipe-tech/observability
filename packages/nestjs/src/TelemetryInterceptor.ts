@@ -10,7 +10,7 @@ import {
   parseTraceId,
   type RequestId,
   withCorrelation,
-} from "../Correlation.ts";
+} from "@equipe-tech/observability";
 import { Observable } from "rxjs";
 import {
   telemetryRoutePolicy,

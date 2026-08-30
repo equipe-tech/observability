@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Logger, Option, References } from "effect";
-import { emit } from "../src/WideEvent.ts";
+import { emit } from "../src/effect/WideEvent.ts";
 import * as Testing from "../src/testing/index.ts";
 
 type CapturedEvent = {

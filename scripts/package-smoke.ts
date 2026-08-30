@@ -1,8 +1,10 @@
 import { Schema } from "effect";
+import { writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { declarationReferenceViolations } from "./declaration-references.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const cleanupTestIndex = process.argv.indexOf("--signal-cleanup-test");
@@ -12,6 +14,8 @@ const cleanupScenario =
 const requestedCleanupDeadline = Number(
   cleanupTestIndex === -1 ? "3000" : (process.argv[cleanupTestIndex + 3] ?? "3000"),
 );
+const cleanupSignalConfirmationFile =
+  cleanupTestIndex === -1 ? "" : (process.argv[cleanupTestIndex + 4] ?? "");
 const cleanupDeadlineMilliseconds =
   Number.isFinite(requestedCleanupDeadline) && requestedCleanupDeadline > 0
     ? requestedCleanupDeadline
@@ -22,6 +26,7 @@ let cleanupStarted = false;
 let cleanupResult = Promise.resolve();
 let terminationRequested = false;
 let terminationExitCode = 1;
+let observedSignalCount = 0;
 const activeChildren = new Set<ReturnType<typeof Bun.spawn>>();
 let allocationPromise = Promise.resolve("");
 
@@ -30,6 +35,12 @@ type CommandResult = {
   readonly stdout: string;
   readonly stderr: string;
 };
+
+const PackedManifest = Schema.Struct({
+  dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  peerDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+});
+const decodePackedManifest = Schema.decodeUnknownSync(PackedManifest);
 
 const run = (command: Array<string>, cwd: string, env = process.env): Promise<CommandResult> => {
   const child = Bun.spawn(command, {
@@ -132,7 +143,17 @@ const cleanup = (): Promise<void> => {
   return cleanupResult;
 };
 
-const terminateAfterCleanup = (exitCode: number): void => {
+type CleanupSignal = "SIGINT" | "SIGTERM";
+
+const terminateAfterCleanup = (exitCode: number, signal: CleanupSignal): void => {
+  observedSignalCount += 1;
+  if (cleanupSignalConfirmationFile !== "") {
+    writeFileSync(
+      cleanupSignalConfirmationFile,
+      JSON.stringify({ count: observedSignalCount, signal }),
+      "utf8",
+    );
+  }
   if (!terminationRequested) {
     terminationRequested = true;
     terminationExitCode = exitCode;
@@ -148,8 +169,8 @@ const terminateAfterCleanup = (exitCode: number): void => {
   );
 };
 
-const onSigint = (): void => terminateAfterCleanup(130);
-const onSigterm = (): void => terminateAfterCleanup(143);
+const onSigint = (): void => terminateAfterCleanup(130, "SIGINT");
+const onSigterm = (): void => terminateAfterCleanup(143, "SIGTERM");
 
 const allocateTemporaryDirectory = async (): Promise<string> => {
   if (cleanupScenario === "allocation") {
@@ -221,16 +242,27 @@ try {
         "package/dist/Metrics.d.ts",
         "package/dist/node/index.js",
         "package/dist/node/index.d.ts",
-        "package/dist/nestjs/index.js",
-        "package/dist/nestjs/index.d.ts",
-        "package/dist/nestjs/RequestWideEventTraceCorrelation.js",
-        "package/dist/nestjs/RequestWideEventTraceCorrelation.d.ts",
+        "package/dist/effect/index.js",
+        "package/dist/effect/index.d.ts",
         "package/dist/browser/index.js",
         "package/dist/browser/index.d.ts",
         "package/dist/browser/client.js",
         "package/dist/browser/client.d.ts",
         "package/dist/testing/index.js",
         "package/dist/testing/index.d.ts",
+      ],
+    },
+    {
+      directory: join(root, "packages/nestjs"),
+      archive: "nestjs.tgz",
+      required: [
+        "package/LICENSE",
+        "package/README.md",
+        "package/dist/LICENSE",
+        "package/dist/index.js",
+        "package/dist/index.d.ts",
+        "package/dist/RequestWideEventTraceCorrelation.js",
+        "package/dist/RequestWideEventTraceCorrelation.d.ts",
       ],
     },
     {
@@ -293,10 +325,12 @@ try {
         type: "module",
         dependencies: {
           "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
+          "@equipe-tech/observability-nestjs": `file:${join(temporaryDirectory, "nestjs.tgz")}`,
           "@nestjs/common": `^${nestMajor}.0.0`,
           "@nestjs/core": `^${nestMajor}.0.0`,
           "@nestjs/platform-express": `^${nestMajor}.0.0`,
           "@types/node": "^22.0.0",
+          effect: "4.0.0-rc.111",
           "reflect-metadata": "^0.2.2",
           rxjs: "^7.8.2",
         },
@@ -324,7 +358,7 @@ try {
     }
     await writeFile(
       join(nestConsumer, "app.ts"),
-      "import 'reflect-metadata';\nimport { Controller, Get, Module } from '@nestjs/common';\nimport { NestFactory } from '@nestjs/core';\nimport { createRequestWideEventTraceCorrelation, TelemetryModule } from '@equipe-tech/observability/nestjs';\nconst correlations: Array<{ readonly traceId: string; readonly spanId: string }> = [];\nconst traceCorrelation = createRequestWideEventTraceCorrelation(() => ({ set: (value) => correlations.push(value) }));\ntraceCorrelation.correlate({}, { traceId: '11111111111111111111111111111111', spanId: '1111111111111111' });\nif (correlations.length !== 1 || correlations[0]?.spanId !== '1111111111111111') throw new Error('Packed trace correlation bridge failed.');\nclass AppController { ping() { return { ok: true }; } }\nController()(AppController);\nconst descriptor = Object.getOwnPropertyDescriptor(AppController.prototype, 'ping');\nif (!descriptor) throw new Error('Missing ping descriptor.');\nGet('ping')(AppController.prototype, 'ping', descriptor);\nclass AppModule {}\nModule({ imports: [TelemetryModule.forRootAsync({ imports: undefined, inject: undefined, useFactory: async () => ({ enabled: false }) })], controllers: [AppController] })(AppModule);\nconst app = await NestFactory.create(AppModule, { logger: false });\nawait app.listen(0, '127.0.0.1');\nconst address = app.getHttpServer().address();\nif (!address || typeof address === 'string') throw new Error('Missing server address.');\nconst response = await fetch(`http://127.0.0.1:${address.port}/ping`);\nif (response.status !== 200 || (await response.json()).ok !== true) throw new Error('Packed Nest request failed.');\nawait app.close();\n",
+      "import 'reflect-metadata';\nimport { Controller, Get, Module } from '@nestjs/common';\nimport { NestFactory } from '@nestjs/core';\nimport { Schema } from 'effect';\nimport { createRequestWideEventTraceCorrelation, TelemetryModule } from '@equipe-tech/observability-nestjs';\nconst correlations: Array<{ readonly traceId: string; readonly spanId: string }> = [];\nconst traceCorrelation = createRequestWideEventTraceCorrelation(() => ({ set: (value) => correlations.push(value) }));\ntraceCorrelation.correlate({}, { traceId: '11111111111111111111111111111111', spanId: '1111111111111111' });\nif (correlations.length !== 1 || correlations[0]?.spanId !== '1111111111111111') throw new Error('Packed trace correlation bridge failed.');\nclass AppController { ping() { return { ok: true }; } }\nController()(AppController);\nconst descriptor = Object.getOwnPropertyDescriptor(AppController.prototype, 'ping');\nif (!descriptor) throw new Error('Missing ping descriptor.');\nGet('ping')(AppController.prototype, 'ping', descriptor);\nclass AppModule {}\nModule({ imports: [TelemetryModule.forRootAsync({ imports: undefined, inject: undefined, useFactory: async () => ({ enabled: false }) })], controllers: [AppController] })(AppModule);\nconst app = await NestFactory.create(AppModule, { logger: false });\nawait app.listen(0, '127.0.0.1');\nconst address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Number }))(app.getHttpServer().address());\nconst response = await fetch(`http://127.0.0.1:${address.port}/ping`);\nif (response.status !== 200 || (await response.json()).ok !== true) throw new Error('Packed Nest request failed.');\nawait app.close();\n",
     );
     await writeFile(
       join(nestConsumer, "tsconfig.json"),
@@ -350,7 +384,7 @@ try {
     const bridgeDeclaration = await readFile(
       join(
         nestConsumer,
-        "node_modules/@equipe-tech/observability/dist/nestjs/RequestWideEventTraceCorrelation.d.ts",
+        "node_modules/@equipe-tech/observability-nestjs/dist/RequestWideEventTraceCorrelation.d.ts",
       ),
       "utf8",
     );
@@ -379,6 +413,8 @@ try {
       dependencies: {
         "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
         "@equipe-tech/observability-cli": `file:${join(temporaryDirectory, "cli.tgz")}`,
+        "@equipe-tech/observability-nestjs": `file:${join(temporaryDirectory, "nestjs.tgz")}`,
+        effect: "4.0.0-rc.111",
       },
     }),
   );
@@ -394,6 +430,12 @@ try {
       dependencies: {
         "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
         "@equipe-tech/observability-cli": `file:${join(temporaryDirectory, "cli.tgz")}`,
+        "@equipe-tech/observability-nestjs": `file:${join(temporaryDirectory, "nestjs.tgz")}`,
+        "@nestjs/common": "^11.0.0",
+        "@nestjs/core": "^11.0.0",
+        effect: "4.0.0-rc.111",
+        "reflect-metadata": "^0.2.2",
+        rxjs: "^7.2.0",
       },
     }),
   );
@@ -407,7 +449,7 @@ try {
         "node",
         "--input-type=module",
         "--eval",
-        "const [root, metrics, node, browser, client, testing] = await Promise.all([import('@equipe-tech/observability'), import('@equipe-tech/observability/metrics'), import('@equipe-tech/observability/node'), import('@equipe-tech/observability/browser'), import('@equipe-tech/observability/browser/client'), import('@equipe-tech/observability/testing')]); if (!root.Telemetry || !root.ServiceName || !root.EnvironmentName || !root.CorrelationContext || root.Correlation || root.registerTestingAdapter || root.profileCapabilityRank || root.profileCapabilityRequirement || root.secondReleaseVariables || root.baseBlockedValuePatterns || !root.registerOfficialAdapter || !root.ObservabilityLifecycleError || node.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || !metrics.createMetrics || !node.runMain || !node.createNodeObservability || !node.makeNodeObservability || !node.layerNodeObservability || !browser.BrowserTelemetry || !client.createBrowserTelemetryClient || !testing.run || !testing.registerTestingAdapter) process.exit(1);",
+        "const [root, effectEntry, metrics, node, nestjs, browser, client, testing] = await Promise.all([import('@equipe-tech/observability'), import('@equipe-tech/observability/effect'), import('@equipe-tech/observability/metrics'), import('@equipe-tech/observability/node'), import('@equipe-tech/observability-nestjs'), import('@equipe-tech/observability/browser'), import('@equipe-tech/observability/browser/client'), import('@equipe-tech/observability/testing')]); if ('WideEvent' in root || 'layerWideEvent' in root || !effectEntry.WideEvent || !effectEntry.layerWideEvent || !root.Telemetry || !root.ServiceName || !root.EnvironmentName || !root.CorrelationContext || root.Correlation || root.registerTestingAdapter || root.profileCapabilityRank || root.profileCapabilityRequirement || root.secondReleaseVariables || root.baseBlockedValuePatterns || !root.registerOfficialAdapter || !root.ObservabilityLifecycleError || node.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.CurrentCorrelation !== root.CurrentCorrelation || nestjs.TelemetryEventSink !== root.TelemetryEventSink || !nestjs.TelemetryModule || !metrics.createMetrics || !node.runMain || !node.createNodeObservability || !node.makeNodeObservability || !node.layerNodeObservability || !browser.BrowserTelemetry || !client.createBrowserTelemetryClient || !testing.run || !testing.registerTestingAdapter) process.exit(1); try { await import('@equipe-tech/observability/nestjs'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') process.exit(1); }",
       ],
       nodeConsumer,
     ),
@@ -419,12 +461,42 @@ try {
   );
 
   const declarations = new Bun.Glob("**/*.d.ts");
-  for (const packageName of ["observability", "observability-cli"]) {
-    const distribution = join(consumer, "node_modules/@equipe-tech", packageName, "dist");
+  for (const packageName of ["observability", "observability-nestjs", "observability-cli"]) {
+    const packageDirectory = join(consumer, "node_modules/@equipe-tech", packageName);
+    const distribution = join(packageDirectory, "dist");
+    const manifestValue: unknown = JSON.parse(
+      await readFile(join(packageDirectory, "package.json"), "utf8"),
+    );
+    const manifest = decodePackedManifest(manifestValue);
+    const declared = new Set([
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.peerDependencies ?? {}),
+    ]);
     for await (const declaration of declarations.scan({ cwd: distribution })) {
       const source = await Bun.file(join(distribution, declaration)).text();
       if (/(["']\.[^"']+)\.ts(["'])/.test(source)) {
         throw new Error(`The declaration ${declaration} contains a TypeScript source specifier.`);
+      }
+      if (source.includes("packages/") || source.includes("/src/") || source.includes(root)) {
+        throw new Error(`The declaration ${declaration} exposes a source or absolute path.`);
+      }
+      if (
+        packageName === "observability" &&
+        /@nestjs\/|(?:from|import\()["'](?:rxjs|evlog|reflect-metadata|react|react-dom|@sentry\/)/.test(
+          source,
+        )
+      ) {
+        throw new Error(`The core declaration ${declaration} exposes a framework dependency.`);
+      }
+      for (const violation of declarationReferenceViolations(source, declared)) {
+        if (violation.kind === "source-path") {
+          throw new Error(
+            `The declaration ${declaration} exposes source path reference ${violation.specifier}.`,
+          );
+        }
+        throw new Error(
+          `The declaration ${declaration} imports undeclared dependency ${violation.specifier}.`,
+        );
       }
     }
   }
@@ -433,12 +505,34 @@ try {
       [
         "bun",
         "-e",
-        "import * as Root from '@equipe-tech/observability'; import { Telemetry, WideEvent } from '@equipe-tech/observability'; import { createMetrics } from '@equipe-tech/observability/metrics'; import { createNodeObservability, ingestBrowserEvents, layerNodeObservability, makeNodeObservability, runMain } from '@equipe-tech/observability/node'; import { BrowserTelemetry } from '@equipe-tech/observability/browser'; import { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client'; import { registerTestingAdapter, run } from '@equipe-tech/observability/testing'; if (!Telemetry.layer || !WideEvent.emit || !createMetrics || !runMain || !createNodeObservability || !makeNodeObservability || !layerNodeObservability || !ingestBrowserEvents || !BrowserTelemetry.layer || !createBrowserTelemetryClient || !run || !registerTestingAdapter || 'registerTestingAdapter' in Root || 'baseBlockedValuePatterns' in Root) process.exit(1);",
+        "import * as Root from '@equipe-tech/observability'; import { Telemetry } from '@equipe-tech/observability'; import { WideEvent, layerWideEvent } from '@equipe-tech/observability/effect'; import { createMetrics } from '@equipe-tech/observability/metrics'; import { createNodeObservability, ingestBrowserEvents, layerNodeObservability, makeNodeObservability, runMain } from '@equipe-tech/observability/node'; import { BrowserTelemetry } from '@equipe-tech/observability/browser'; import { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client'; import { registerTestingAdapter, run } from '@equipe-tech/observability/testing'; const failed = [!Telemetry.layer, !WideEvent.emit, !layerWideEvent, 'WideEvent' in Root, 'layerWideEvent' in Root, !createMetrics, !runMain, !createNodeObservability, !makeNodeObservability, !layerNodeObservability, !ingestBrowserEvents, !BrowserTelemetry.layer, !createBrowserTelemetryClient, !run, !registerTestingAdapter, 'registerTestingAdapter' in Root, 'baseBlockedValuePatterns' in Root].findIndex(Boolean); if (failed !== -1) throw new Error(`Packed export check ${failed} failed.`); let rejected = false; try { await import('@equipe-tech/observability/nestjs'); } catch { rejected = true; } if (!rejected) throw new Error('The removed NestJS path resolved in Bun.');",
       ],
       consumer,
     ),
     "Importing the telemetry package",
   );
+  await writeFile(
+    join(consumer, "old-nestjs.ts"),
+    "import { TelemetryModule } from '@equipe-tech/observability/nestjs';\nvoid TelemetryModule;\n",
+  );
+  const oldNestResolution = await run(
+    [
+      "bun",
+      join(root, "node_modules/typescript/bin/tsc"),
+      "--noEmit",
+      "--module",
+      "Preserve",
+      "--moduleResolution",
+      "Bundler",
+      "--target",
+      "ESNext",
+      "old-nestjs.ts",
+    ],
+    consumer,
+  );
+  if (oldNestResolution.exitCode === 0) {
+    throw new Error("TypeScript resolved the removed core NestJS entrypoint.");
+  }
   await writeFile(
     join(consumer, "index.ts"),
     "import { Effect } from 'effect';\nimport { parseResourceIdentity, TelemetryConfig, type LifecycleCleanupResult as RootLifecycleCleanupResult } from '@equipe-tech/observability';\nimport { layer, type LifecycleCleanupResult as NodeLifecycleCleanupResult } from '@equipe-tech/observability/node';\nimport { BrowserTelemetry } from '@equipe-tech/observability/browser';\nimport { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client';\nimport { run } from '@equipe-tech/observability/testing';\nconst identity = await Effect.runPromise(parseResourceIdentity({ serviceName: 'test', serviceVersion: '1.0.0', environment: 'test' }));\nconst invalid = await Effect.runPromise(Effect.flip(parseResourceIdentity({ serviceName: 'Invalid', serviceVersion: '1.0.0', environment: 'test' })));\nif (invalid.code !== 'OBS_RESOURCE_IDENTITY_INVALID') throw new Error('Invalid packed identity did not return the public error code.');\nconst config = new TelemetryConfig({ identity, otlpEndpoint: new URL('http://localhost:4318') });\nconst rootCleanup: RootLifecycleCleanupResult = { kind: 'completed', durationMillis: 1 };\nconst nodeCleanup: NodeLifecycleCleanupResult = rootCleanup;\nvoid config;\nvoid rootCleanup;\nvoid nodeCleanup;\nvoid layer;\nvoid BrowserTelemetry;\nvoid createBrowserTelemetryClient;\nvoid run;\n",

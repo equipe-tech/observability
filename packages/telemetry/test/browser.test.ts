@@ -9,7 +9,7 @@ import {
   maxFieldValueLength,
 } from "../src/browser/index.ts";
 import { sensitiveFieldReplacement, sensitiveTextReplacement } from "../src/RedactionPolicy.ts";
-import type { WideEventFields } from "../src/WideEvent.ts";
+import type { EventAttributes } from "../src/contract/TelemetryEvent.ts";
 
 const AddressInfo = Schema.Struct({ port: Schema.Number });
 const decodeAddressInfo = Schema.decodeUnknownOption(AddressInfo);
@@ -177,7 +177,7 @@ describe("BrowserTelemetry", () => {
             }),
         }),
       );
-      const fields: WideEventFields = {
+      const fields: EventAttributes = {
         authorization: secret,
         note: `Bearer ${secret}`,
         control: "tokenizer",
@@ -296,7 +296,7 @@ describe("BrowserEventTransport.layerFetch", () => {
         object: { assignment: `authorization=${secret}`, ordinary: "authorization guide" },
         array: [`password:${secret}`, "ordinary value"],
       });
-      const fields: WideEventFields = Object.fromEntries([
+      const fields: EventAttributes = Object.fromEntries([
         ["authorization", secret],
         ["note", `before Bearer ${secret} after`],
         ["control", "tokenizer"],

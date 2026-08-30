@@ -1,4 +1,9 @@
 export {
+  CurrentCorrelation,
+  ObservabilityLifecycleError,
+  TelemetryEventSink,
+} from "@equipe-tech/observability";
+export {
   BrowserEventsRejection,
   createBrowserEventsController,
   defaultBrowserEventsPath,
