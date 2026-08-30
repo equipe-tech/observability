@@ -3,14 +3,10 @@ import { Schema } from "effect";
 export const ObservabilityConfigField = Schema.Literals([
   "profile",
   "adapters",
-  "contract",
   "policy",
-  "policy.blockedKeys",
   "policy.blockedValuePatterns",
-  "OTEL_SERVICE_NAME",
   "OTEL_SERVICE_VERSION",
   "OTEL_DEPLOYMENT_ENVIRONMENT",
-  "OTEL_EXPORTER_OTLP_ENDPOINT",
   "SENTRY_DSN",
 ]);
 export type ObservabilityConfigField = typeof ObservabilityConfigField.Type;

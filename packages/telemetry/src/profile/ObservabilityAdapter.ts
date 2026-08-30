@@ -1,4 +1,4 @@
-import { Effect, ManagedRuntime, Option, Schema } from "effect";
+import { Effect, ManagedRuntime, Option, Predicate, Schema } from "effect";
 import type { OtlpExporter } from "effect/unstable/observability";
 import type {
   CompiledAuditActionDefinition,
@@ -88,13 +88,13 @@ const AdapterRegistrationPayload = Schema.Struct({
 
 const parseAdapterRegistrationPayload = (adapter: ObservabilityAdapter): ObservabilityAdapter => {
   const decoded = Schema.decodeUnknownOption(AdapterRegistrationPayload)(adapter);
-  if (Option.isNone(decoded)) {
+  if (Option.isNone(decoded) || !Predicate.isFunction(adapter.start)) {
     throw new InvalidObservabilityConfig({
       code: "OBS_OBSERVABILITY_ADAPTER_UNSUPPORTED",
       field: "adapters",
       message:
-        "The adapter payload is invalid. Use a valid adapter name, capability, and lifecycle stage.",
-      rule: "a schema-valid adapter payload",
+        "The adapter payload is invalid. Use a valid adapter name, capability, lifecycle stage, and callable start.",
+      rule: "a schema-valid adapter payload with a callable start",
     });
   }
   return Object.freeze(adapter);

@@ -53,8 +53,12 @@ describe("telemetryConfigFromEnv", () => {
   );
 
   for (const endpoint of [
+    "http://localhost:4318",
     "http://localhost.:4318",
+    "http://127.0.0.0:4318",
     "http://127.0.0.1:4318",
+    "http://127.255.255.255:4318",
+    "http://127.1:4318",
     "http://[::1]:4318",
     "http://[::ffff:127.0.0.1]:4318",
   ]) {
@@ -66,6 +70,26 @@ describe("telemetryConfigFromEnv", () => {
         });
         assert.strictEqual(config.identity.serviceVersion, "0.0.0");
         assert.strictEqual(config.identity.environment, "development");
+      }),
+    );
+  }
+
+  for (const endpoint of [
+    "http://127.example.com:4318",
+    "http://127.0.0.1.example.com:4318",
+    "http://localhost.example.com:4318",
+    "http://localhost..:4318",
+  ]) {
+    it.effect(`requires explicit identity for the DNS endpoint ${endpoint}`, () =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(
+          telemetryConfigFromEnv({
+            OTEL_SERVICE_NAME: "checkout-api",
+            OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+          }),
+        );
+        assert.strictEqual(error._tag, "InvalidTelemetryEnvironment");
+        assert.strictEqual(error.code, "OBS_TELEMETRY_INVALID_ENVIRONMENT");
       }),
     );
   }

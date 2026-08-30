@@ -41,11 +41,15 @@ describe("node observability configuration", () => {
     }
   });
 
-  it("classifies container loopback spellings as local", async () => {
+  it("classifies exact loopback spellings as local", async () => {
     for (const endpoint of [
-      "http://127.0.0.1:4318",
-      "http://[::1]:4318",
+      "http://localhost:4318",
       "http://localhost.:4318",
+      "http://127.0.0.0:4318",
+      "http://127.0.0.1:4318",
+      "http://127.255.255.255:4318",
+      "http://127.1:4318",
+      "http://[::1]:4318",
       "http://[::ffff:127.0.0.1]:4318",
     ]) {
       const config = await Effect.runPromise(
@@ -55,6 +59,28 @@ describe("node observability configuration", () => {
         }),
       );
       expect(config.enabled && config.deployment).toBe("local");
+    }
+  });
+
+  it("requires explicit identity for DNS names that resemble loopback", async () => {
+    for (const endpoint of [
+      "http://127.example.com:4318",
+      "http://127.0.0.1.example.com:4318",
+      "http://localhost.example.com:4318",
+      "http://localhost..:4318",
+    ]) {
+      const error = await Effect.runPromise(
+        Effect.flip(
+          fromEnv("worker", {
+            OTEL_SERVICE_NAME: "jobs",
+            OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+          }),
+        ),
+      );
+      expect(error._tag).toBe("InvalidObservabilityConfig");
+      expect(error.code).toBe("OBS_OBSERVABILITY_CONFIG_INVALID");
+      if (error._tag !== "InvalidObservabilityConfig") throw new Error("Expected config error.");
+      expect(error.field).toBe("OTEL_SERVICE_VERSION");
     }
   });
 
@@ -81,7 +107,9 @@ describe("node observability configuration", () => {
     if (environment._tag !== "InvalidObservabilityConfig") {
       throw new Error("Expected config error.");
     }
+    expect(version.code).toBe("OBS_OBSERVABILITY_CONFIG_INVALID");
     expect(version.field).toBe("OTEL_SERVICE_VERSION");
+    expect(environment.code).toBe("OBS_OBSERVABILITY_CONFIG_INVALID");
     expect(environment.field).toBe("OTEL_DEPLOYMENT_ENVIRONMENT");
   });
 
@@ -111,6 +139,7 @@ describe("node observability configuration", () => {
       ),
     );
     if (error._tag !== "InvalidObservabilityConfig") throw new Error("Expected config error.");
+    expect(error.code).toBe("OBS_OBSERVABILITY_CONFIG_INVALID");
     expect(error.field).toBe("SENTRY_DSN");
     const staging = await Effect.runPromise(
       fromEnv("nestjs-api", {
@@ -153,9 +182,15 @@ describe("node observability configuration", () => {
     }
     firstPattern.test("Bearer secret");
     expect(secondPattern.lastIndex).toBe(0);
-    const error = await Effect.runPromise(
+    const invalidPattern = await Effect.runPromise(
       Effect.flip(parseDataPolicy({ ...policy, blockedValuePatterns: ["["] })),
     );
-    expect(error.field).toBe("policy.blockedValuePatterns");
+    expect(invalidPattern.code).toBe("OBS_OBSERVABILITY_CONFIG_INVALID");
+    expect(invalidPattern.field).toBe("policy.blockedValuePatterns");
+    const invalidPolicy = await Effect.runPromise(
+      Effect.flip(parseDataPolicy({ ...policy, blockedKeys: ["x".repeat(129)] })),
+    );
+    expect(invalidPolicy.code).toBe("OBS_OBSERVABILITY_CONFIG_INVALID");
+    expect(invalidPolicy.field).toBe("policy");
   });
 });

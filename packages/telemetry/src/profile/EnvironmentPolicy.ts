@@ -26,7 +26,7 @@ export const deploymentScopeFromEndpoint = (endpoint: URL): DeploymentScope => {
   return hostname === "localhost" ||
     hostname === "localhost." ||
     hostname === "[::1]" ||
-    hostname.startsWith("127.") ||
+    /^127(?:\.\d{1,3}){3}$/.test(hostname) ||
     /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(hostname)
     ? "local"
     : "remote";
