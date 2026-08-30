@@ -1,6 +1,7 @@
 import { Effect, flow, Schema } from "effect";
-import { BrowserEventBatch, type BrowserEventFields } from "../BrowserEvents.ts";
-import type { WideEventFields } from "../WideEvent.ts";
+import { BrowserEventBatch } from "../BrowserEvents.ts";
+import { CurrentDataPolicy } from "../policy/DataPolicy.ts";
+import { sanitizeSignalFields } from "../policy/SignalPolicy.ts";
 import * as WideEvent from "../WideEvent.ts";
 
 export class InvalidBrowserEventBatch extends Schema.TaggedError<InvalidBrowserEventBatch>()(
@@ -27,35 +28,32 @@ export const parseBrowserEventBatch = flow(
   ),
 );
 
-const reservedFieldPrefixes = ["event.", "browser."];
-
-const trustedFields = (fields: BrowserEventFields): WideEventFields => {
-  const sanitized: { [attribute: string]: string | number | boolean } = {};
-  for (const [key, value] of Object.entries(fields)) {
-    if (reservedFieldPrefixes.some((prefix) => key.startsWith(prefix))) {
-      continue;
-    }
-    sanitized[key] = value;
-  }
-  return sanitized;
-};
-
 export type BrowserEventIngestReceipt = {
   readonly accepted: number;
+  readonly redacted: number;
+  readonly dropped: number;
 };
 
 export const ingestBrowserEventBatch = Effect.fn("ingestBrowserEventBatch")(function* (
   batch: BrowserEventBatch,
 ): Effect.fn.Return<BrowserEventIngestReceipt, never> {
+  const policy = yield* CurrentDataPolicy;
+  let redacted = 0;
+  let dropped = 0;
   for (const event of batch.events) {
+    const decision = sanitizeSignalFields(policy, "browser-ingest", event.fields);
+    dropped += Object.keys(event.fields).length - Object.keys(decision.value).length;
+    for (const [key, value] of Object.entries(decision.value)) {
+      if (event.fields[key] !== value) redacted += 1;
+    }
     yield* WideEvent.emit(event.name, {
-      ...trustedFields(event.fields),
+      ...decision.value,
       "event.source": "browser",
       "browser.event.id": event.id,
       "browser.event.occurred_at": event.occurredAt,
     });
   }
-  return { accepted: batch.events.length };
+  return { accepted: batch.events.length, redacted, dropped };
 });
 
 export const ingestBrowserEvents = flow(

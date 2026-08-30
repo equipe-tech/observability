@@ -287,10 +287,35 @@ describe("node observability configuration", () => {
     });
   });
 
+  it("discriminates-policy-error-envelope", async () => {
+    const secret = crypto.randomUUID().replaceAll("-", "");
+    const failure = await Effect.runPromise(
+      Effect.flip(
+        nodeObservabilityConfigFromEnv({
+          profile: "worker",
+          env: { OTEL_SERVICE_NAME: "jobs" },
+          contract,
+          policy: {
+            attributes: {},
+            blockedKeys: [],
+            blockedValuePatterns: [`[${secret}`],
+          },
+        }),
+      ),
+    );
+    expect(failure._tag).toBe("InvalidObservabilityConfig");
+    if (failure._tag !== "InvalidObservabilityConfig") {
+      throw new Error("Expected a policy configuration error.");
+    }
+    expect(failure.field).toBe("policy");
+    expect(JSON.stringify(failure)).not.toContain(secret);
+    expect(JSON.stringify(failure.cause)).not.toContain(secret);
+  });
+
   it("validates policy patterns and clones base regular expressions", async () => {
     const parsed = await Effect.runPromise(parseDataPolicy(policy));
     const second = await Effect.runPromise(parseDataPolicy(policy));
-    expect(parsed.blockedKeys).toContain("authorization");
+    expect(parsed.blockedKeys.some((pattern) => pattern.test("authorization"))).toBe(true);
     expect(parsed.blockedValuePatterns[0]).not.toBe(second.blockedValuePatterns[0]);
     const firstPattern = parsed.blockedValuePatterns[0];
     const secondPattern = second.blockedValuePatterns[0];
@@ -302,12 +327,12 @@ describe("node observability configuration", () => {
     const invalidPattern = await Effect.runPromise(
       Effect.flip(parseDataPolicy({ ...policy, blockedValuePatterns: ["["] })),
     );
-    expect(invalidPattern.code).toBe("OBS_OBSERVABILITY_CONFIG_INVALID");
-    expect(invalidPattern.field).toBe("policy.blockedValuePatterns");
+    expect(invalidPattern.code).toBe("OBS_POLICY_INVALID");
+    expect(invalidPattern.issues[0]?.code).toBe("OBS_POLICY_INVALID_BLOCKED_VALUE_PATTERN");
     const invalidPolicy = await Effect.runPromise(
       Effect.flip(parseDataPolicy({ ...policy, blockedKeys: ["x".repeat(129)] })),
     );
-    expect(invalidPolicy.code).toBe("OBS_OBSERVABILITY_CONFIG_INVALID");
-    expect(invalidPolicy.field).toBe("policy");
+    expect(invalidPolicy.code).toBe("OBS_POLICY_INVALID");
+    expect(invalidPolicy.issues[0]?.code).toBe("OBS_POLICY_INVALID_DOCUMENT");
   });
 });

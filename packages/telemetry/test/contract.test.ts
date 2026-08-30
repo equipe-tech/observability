@@ -635,6 +635,7 @@ describe("contract event producer", () => {
       "OBS_EVENT_INVALID_FIELD",
       "OBS_EVENT_INVALID_OUTCOME",
       "OBS_EVENT_RESTRICTED_ATTRIBUTE",
+      "OBS_EVENT_SENSITIVE_METRIC_LABEL",
       "OBS_EVENT_UNKNOWN_AUDIT_ACTION",
       "OBS_EVENT_INVALID_AUDIT_RESOURCE",
       "OBS_EVENT_INVALID_AUDIT_OUTCOME",
@@ -964,23 +965,32 @@ describe("contract event producer", () => {
         auditActions: {},
       });
       const sink = yield* makeCollectingTelemetryEventSink();
-      const restrictedNames = ["profile.secret", "profile.password"] satisfies ReadonlyArray<
-        "profile.secret" | "profile.password"
-      >;
-      for (const attributeName of restrictedNames) {
-        const error = yield* makeEventProducer(contract)
-          .emit("Unsafe", {
-            outcome: "success",
-            attributes: { [attributeName]: "secret" },
-          })
-          .pipe(Effect.provide(sink.layer), Effect.flip);
-        assert.include(telemetryEventErrorFixtures, "OBS_EVENT_RESTRICTED_ATTRIBUTE");
-        assert.strictEqual(error.code, "OBS_EVENT_RESTRICTED_ATTRIBUTE");
-        assert.strictEqual(error.eventName, "profile.updated");
-        assert.strictEqual(error.attributeName, attributeName);
-        assert.include(error.message, "cannot emit");
+      const producer = makeEventProducer(contract);
+      const sensitive = yield* producer
+        .emit("Unsafe", {
+          outcome: "success",
+          attributes: { "profile.secret": "secret" },
+        })
+        .pipe(Effect.provide(sink.layer));
+      assert.strictEqual(sensitive.decision, "recorded");
+      if (sensitive.decision === "recorded") {
+        assert.strictEqual(sensitive.event.attributes["profile.secret"], "****");
+        assert.deepStrictEqual(sensitive.redactions, [
+          { rule: "classification", action: "masked", surface: "event" },
+        ]);
       }
-      assert.lengthOf(yield* sink.events, 0);
+      const error = yield* producer
+        .emit("Unsafe", {
+          outcome: "success",
+          attributes: { "profile.password": "secret" },
+        })
+        .pipe(Effect.provide(sink.layer), Effect.flip);
+      assert.include(telemetryEventErrorFixtures, "OBS_EVENT_RESTRICTED_ATTRIBUTE");
+      assert.strictEqual(error.code, "OBS_EVENT_RESTRICTED_ATTRIBUTE");
+      assert.strictEqual(error.eventName, "profile.updated");
+      assert.strictEqual(error.attributeName, "profile.password");
+      assert.include(error.message, "cannot emit");
+      assert.lengthOf(yield* sink.events, 1);
     }),
   );
 

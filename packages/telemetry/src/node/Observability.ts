@@ -183,7 +183,10 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
     options,
   );
   const runtime = ManagedRuntime.make(
-    Telemetry.layer(config.telemetry, { shutdownTimeout: Duration.millis(400) }),
+    Telemetry.layer(config.telemetry, {
+      shutdownTimeout: Duration.millis(400),
+      policy: config.evlog.policy,
+    }),
   );
   const flusher = yield* acquireRuntimeFlusher(runtime);
   const context = {

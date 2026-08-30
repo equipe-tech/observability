@@ -20,6 +20,9 @@ import {
   HttpContext,
   type TelemetryEvent,
 } from "./TelemetryEvent.ts";
+import { CurrentDataPolicy, type DataPolicy } from "../policy/DataPolicy.ts";
+import { sanitizeSignalFields } from "../policy/SignalPolicy.ts";
+import type { PolicyRedaction } from "../policy/PolicyTransform.ts";
 import { InvalidTelemetryEvent } from "./TelemetryContractError.ts";
 
 export class TelemetryEventSink extends Context.Service<
@@ -96,7 +99,11 @@ export type EventPayloadOf<
 >;
 
 export type EmitReceipt =
-  | { readonly decision: "recorded"; readonly event: TelemetryEvent }
+  | {
+      readonly decision: "recorded";
+      readonly event: TelemetryEvent;
+      readonly redactions: ReadonlyArray<PolicyRedaction>;
+    }
   | { readonly decision: "sampled_out"; readonly name: string };
 
 export type EventProducer<Definition extends TelemetryContractInput> = {
@@ -135,9 +142,15 @@ const parseEventPayload = <Payload>(
 };
 
 const parseAttributes = (
+  policy: DataPolicy,
   definition: CompiledEventDefinition,
   attributes: EmittedAttributes,
-): InvalidTelemetryEvent | EventAttributes => {
+):
+  | InvalidTelemetryEvent
+  | {
+      readonly attributes: EventAttributes;
+      readonly redactions: ReadonlyArray<PolicyRedaction>;
+    } => {
   if (!Predicate.isObject(attributes)) {
     return eventError(
       "OBS_EVENT_INVALID_FIELD",
@@ -155,6 +168,7 @@ const parseAttributes = (
     }
   }
   const parsed: { [attributeName: string]: AttributeValue } = {};
+  const redactions: Array<PolicyRedaction> = [];
   for (const [attributeName, value] of Object.entries(attributes)) {
     const attribute = definition.attributes.get(attributeName);
     if (attribute === undefined) {
@@ -176,16 +190,38 @@ const parseAttributes = (
         { eventName: definition.name, attributeName },
       );
     }
-    if (attribute.classification === "sensitive" || attribute.classification === "forbidden") {
+    if (attribute.classification === "forbidden") {
       return eventError(
         "OBS_EVENT_RESTRICTED_ATTRIBUTE",
-        `Event "${definition.name}" cannot emit restricted attribute "${attributeName}". Remove it until OBS-47 supplies a policy transform.`,
+        `Event "${definition.name}" cannot emit forbidden attribute "${attributeName}". Remove the attribute before emitting.`,
         { eventName: definition.name, attributeName },
       );
     }
-    parsed[attributeName] = value;
+    if (attribute.classification === "sensitive" && attribute.metricLabel) {
+      return eventError(
+        "OBS_EVENT_SENSITIVE_METRIC_LABEL",
+        `Event "${definition.name}" cannot use sensitive attribute "${attributeName}" as a metric label. Remove the metric label declaration.`,
+        { eventName: definition.name, attributeName },
+      );
+    }
+    if (attribute.classification === "sensitive") {
+      parsed[attributeName] = "****";
+      redactions.push({ rule: "classification", action: "masked", surface: "event" });
+      continue;
+    }
+    const decision = sanitizeSignalFields(policy, "event", { [attributeName]: value });
+    const sanitized = decision.value[attributeName];
+    if (sanitized === undefined) {
+      return eventError(
+        "OBS_EVENT_RESTRICTED_ATTRIBUTE",
+        `Event "${definition.name}" cannot emit restricted attribute "${attributeName}". Remove the attribute before emitting.`,
+        { eventName: definition.name, attributeName },
+      );
+    }
+    parsed[attributeName] = sanitized;
+    redactions.push(...decision.redactions);
   }
-  return parsed;
+  return { attributes: parsed, redactions };
 };
 
 const decodeSeverity = Schema.decodeUnknownEffect(EventSeverity);
@@ -442,16 +478,22 @@ export const makeEventProducer = <const Definition extends TelemetryContractInpu
     if (parsedPayload instanceof InvalidTelemetryEvent) {
       return yield* parsedPayload;
     }
-    const attributes = parseAttributes(definition, parsedPayload.attributes);
-    if (attributes instanceof InvalidTelemetryEvent) {
-      return yield* attributes;
+    const policy = yield* CurrentDataPolicy;
+    const parsedAttributes = parseAttributes(policy, definition, parsedPayload.attributes);
+    if (parsedAttributes instanceof InvalidTelemetryEvent) {
+      return yield* parsedAttributes;
     }
-    const event = yield* buildEvent(definition, contract, attributes, parsedPayload);
+    const event = yield* buildEvent(
+      definition,
+      contract,
+      parsedAttributes.attributes,
+      parsedPayload,
+    );
     if (!(yield* shouldRecord(definition, event.outcome))) {
       return { decision: "sampled_out", name: definition.name };
     }
     const sink = yield* TelemetryEventSink;
     yield* sink.record(event);
-    return { decision: "recorded", event };
+    return { decision: "recorded", event, redactions: parsedAttributes.redactions };
   }),
 });

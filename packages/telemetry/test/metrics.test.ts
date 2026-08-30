@@ -3,6 +3,7 @@ import { Effect, ManagedRuntime, Metric, Option, Predicate, Schema } from "effec
 import { createServer, type Server } from "node:http";
 import { createMetrics, MetricsError, type MetricAttribute } from "../src/Metrics.ts";
 import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
+import { parseDataPolicy } from "../src/policy/DataPolicy.ts";
 import * as Testing from "../src/testing/index.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 
@@ -168,6 +169,34 @@ const waitFor = async (condition: () => boolean, timeoutMilliseconds = 2_000): P
 };
 
 describe("framework-neutral metrics", () => {
+  it("applies the compiled application policy before metric state", async () => {
+    const policy = await Effect.runPromise(
+      parseDataPolicy({
+        attributes: {},
+        blockedKeys: ["customer[.]tier"],
+        blockedValuePatterns: [],
+      }),
+    );
+    const metrics = await createMetrics({
+      enabled: false,
+      serviceName: "policy-metrics",
+      serviceVersion: "1.0.0",
+      environment: "test",
+      otlpEndpoint: "http://localhost:4318",
+      policy,
+    });
+    const counter = metrics.counter({
+      name: "policy.counter",
+      description: "Policy counter",
+      unit: "1",
+    });
+    assert.equal(
+      errorCode(() => counter.add(1, [{ key: "customer.tier", value: "gold" }])),
+      "POLICY_BLOCKED",
+    );
+    await metrics.close();
+  });
+
   it("uses canonical service resource identity and rejects the reserved instance datapoint key", async () => {
     const collector = await startCollector();
     try {
@@ -366,7 +395,7 @@ describe("framework-neutral metrics", () => {
           callbackCalls++;
           return Array.from({ length: observationCount }, (_, index) => ({
             value: index,
-            attributes: [{ key: "series", value: index }],
+            attributes: [{ key: "series.value", value: index }],
           }));
         },
       );
@@ -431,12 +460,12 @@ describe("framework-neutral metrics", () => {
           unit: "%",
         },
         () => [
-          { value: gaugeValue, attributes: [{ key: "worker", value: "alpha" }] },
-          { value: gaugeValue + 1, attributes: [{ key: "worker", value: "beta" }] },
+          { value: gaugeValue, attributes: [{ key: "worker.name", value: "alpha" }] },
+          { value: gaugeValue + 1, attributes: [{ key: "worker.name", value: "beta" }] },
         ],
       );
-      counter.add(2, [{ key: "region", value: "south" }]);
-      histogram.record(12, [{ key: "region", value: "south" }]);
+      counter.add(2, [{ key: "region.name", value: "south" }]);
+      histogram.record(12, [{ key: "region.name", value: "south" }]);
 
       assert.deepEqual(await metrics.flush(), { gaugeFailures: [] });
       gaugeValue = 8;
@@ -609,7 +638,7 @@ describe("framework-neutral metrics", () => {
     }
   });
 
-  it("shares compatible instruments and enforces lifetime series limits", async () => {
+  it("discriminates-per-key-cardinality", async () => {
     const collector = await startCollector();
     try {
       const metrics = await createMetrics(options(collector.endpoint));
@@ -624,20 +653,24 @@ describe("framework-neutral metrics", () => {
         description: "Cardinality total",
         unit: "1",
       });
-      first.add(1, [{ key: "series", value: 0 }]);
-      second.add(2, [{ key: "series", value: 0 }]);
-      for (let index = 1; index < 1_000; index++) {
-        first.add(1, [{ key: "series", value: index }]);
+      first.add(1, [{ key: "series.value", value: 0 }]);
+      second.add(2, [{ key: "series.value", value: 0 }]);
+      for (let index = 1; index < 100; index++) {
+        first.add(1, [{ key: "series.value", value: index }]);
       }
-      assert.equal(
-        errorCode(() => first.add(1, [{ key: "series", value: 1_000 }])),
-        "LIMIT_EXCEEDED",
-      );
+      let cardinalityFailure: MetricsError | undefined;
+      try {
+        first.add(1, [{ key: "series.value", value: 100 }]);
+      } catch (cause) {
+        if (cause instanceof MetricsError) cardinalityFailure = cause;
+      }
+      assert.strictEqual(cardinalityFailure?.code, "LIMIT_EXCEEDED");
+      assert.strictEqual(cardinalityFailure?.attributeKey, "series.value");
       await metrics.flush();
       const payload = collector.requests[0];
       assert.isDefined(payload);
       const exported = metricNamed(payload, "cardinality.total");
-      assert.equal(exported?.sum?.dataPoints.length, 1_000);
+      assert.equal(exported?.sum?.dataPoints.length, 100);
       assert.equal(exported?.sum?.dataPoints[0]?.asDouble, 3);
       await metrics.close();
       const afterClose = keeper.counter({
@@ -645,9 +678,9 @@ describe("framework-neutral metrics", () => {
         description: "Cardinality total",
         unit: "1",
       });
-      afterClose.add(1, [{ key: "series", value: 999 }]);
+      afterClose.add(1, [{ key: "series.value", value: 99 }]);
       assert.equal(
-        errorCode(() => afterClose.add(1, [{ key: "series", value: 1_000 }])),
+        errorCode(() => afterClose.add(1, [{ key: "series.value", value: 100 }])),
         "LIMIT_EXCEEDED",
       );
       await keeper.close();
@@ -837,7 +870,7 @@ describe("framework-neutral metrics", () => {
     }
   });
 
-  it("rejects service.instance.id on a direct Effect metric datapoint", async () => {
+  it("drops service.instance.id on a direct Effect metric datapoint", async () => {
     const config = new TelemetryConfig({
       identity: Effect.runSync(
         parseResourceIdentity({
@@ -862,27 +895,18 @@ describe("framework-neutral metrics", () => {
         attributes: { "service.instance.id": "instance-1" },
       });
       await runtime.runPromise(Metric.update(direct, 1));
-      let failure: MetricsError | undefined;
-      try {
-        await facade.flush();
-      } catch (cause) {
-        if (cause instanceof MetricsError) {
-          failure = cause;
-        }
-      }
-      assert.isDefined(failure);
-      assert.equal(failure.code, "EXPORT_FAILED");
-      assert.equal(failure.operation, "flush");
-      assert.equal(failure.instrumentName, "direct.instance");
-      assert.isFalse(failure.retryable);
+      const result = await facade.flush();
+      assert.deepStrictEqual(result.gaugeFailures, [
+        {
+          instrumentName: "direct.instance",
+          code: "POLICY_BLOCKED",
+          message: 'Metric "direct.instance" dropped a label blocked by the data policy.',
+        },
+      ]);
       const telemetry = await Effect.runPromise(capture.telemetry);
-      assert.equal(telemetry.metrics.length, 0);
-      assert.equal(
-        await asyncErrorCode(async () => {
-          await facade.close();
-        }),
-        "EXPORT_FAILED",
-      );
+      assert.equal(telemetry.metrics.length, 1);
+      assert.notInclude(JSON.stringify(telemetry.metrics), "instance-1");
+      await facade.close();
     } finally {
       await runtime.dispose();
     }
@@ -1035,7 +1059,7 @@ describe("framework-neutral metrics", () => {
           return [{ value: 1 }];
         },
       );
-      counter.add(1, [{ key: "safe", value: true }]);
+      counter.add(1, [{ key: "safe.value", value: true }]);
       histogram.record(1.5);
       gauge.unregister();
       assert.deepEqual(await metrics.flush(), { gaugeFailures: [] });

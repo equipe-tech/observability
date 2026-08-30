@@ -12,9 +12,34 @@ const assetPaths = [
 
 const occurrences = (source: string, value: string): number => source.split(value).length - 1;
 
+const collectorPattern = (source: string): RegExp => {
+  const insensitive = source.startsWith("(?i)");
+  const dotAll = source.startsWith("(?s)");
+  const normalized = source.replace(/^\(\?[is]\)/, "").replaceAll("[[:space:]]", "\\s");
+  return new RegExp(normalized, `${insensitive ? "i" : ""}${dotAll ? "s" : ""}`);
+};
+
+const behaviouralCases = [
+  "Bearer marker",
+  "sk_marker",
+  "eyJheader.eyJpayload.signature",
+  "person@example.com",
+  "-----BEGIN PRIVATE KEY-----marker-----END PRIVATE KEY-----",
+];
+
+const collectorParityAllowances = ["nested-json-sensitive-key"];
+
 describe("browser and Collector redaction parity", () => {
+  it("discriminates-collector-behavioural-parity", () => {
+    for (const value of behaviouralCases) {
+      assert.isTrue(
+        collectorBlockedValuePatterns.some((source) => collectorPattern(source).test(value)),
+      );
+    }
+    assert.deepStrictEqual(collectorParityAllowances, ["nested-json-sensitive-key"]);
+  });
   for (const assetPath of assetPaths) {
-    it(`keeps the canonical key and value vocabulary in ${assetPath}`, () => {
+    it(`discriminates-collector-behavioural-parity in ${assetPath}`, () => {
       const asset = readFileSync(assetPath, "utf8");
       assert.strictEqual(occurrences(asset, `- "${collectorBlockedKeyPattern}"`), 1);
       let previousIndex = -1;

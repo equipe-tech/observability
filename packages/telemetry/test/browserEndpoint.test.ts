@@ -59,8 +59,9 @@ const postEvents = (baseUrl: string, body: string): Promise<Response> =>
   });
 
 describe("browser events endpoint", () => {
-  it("accepts a valid batch with 202 while the telemetry route stays excluded", async () => {
+  it("discriminates-real-boundary", async () => {
     const harness = await startApp(true);
+    const secret = crypto.randomUUID().replaceAll("-", "");
     const response = await postEvents(
       harness.baseUrl,
       JSON.stringify({
@@ -70,7 +71,10 @@ describe("browser events endpoint", () => {
             id: "evt-1",
             name: "checkout.completed",
             occurredAt: 1700000000000,
-            fields: { "cart.total": 42 },
+            fields: {
+              "cart.total": 42,
+              "http.authorization": `Bearer ${secret}`,
+            },
           },
           { id: "evt-2", name: "page.viewed", occurredAt: 1700000000500, fields: {} },
         ],
@@ -78,7 +82,7 @@ describe("browser events endpoint", () => {
     );
 
     assert.strictEqual(response.status, 202);
-    assert.deepStrictEqual(await response.json(), { accepted: 2 });
+    assert.deepStrictEqual(await response.json(), { accepted: 2, redacted: 1, dropped: 0 });
 
     const telemetry = await harness.close();
     const boundary = telemetry.spans.find((span) => span.name.includes("/_telemetry/events"));
@@ -89,6 +93,7 @@ describe("browser events endpoint", () => {
     );
     assert.isDefined(checkout);
     assert.strictEqual(attributeOrUndefined(checkout.attributes, "event.source"), "browser");
+    assert.notInclude(JSON.stringify(telemetry), secret);
   }, 30_000);
 
   it("rejects an invalid batch with the public contract and a safe correlation id", async () => {

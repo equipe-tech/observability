@@ -11,8 +11,9 @@ const attributeOrUndefined = (
   Option.getOrUndefined(Testing.attribute(attributes, key));
 
 describe("ingestBrowserEvents", () => {
-  it.live("re-emits parsed browser events as wide events with server-owned attributes", () =>
+  it.live("discriminates-ingest-passthrough", () =>
     Effect.gen(function* () {
+      const secret = crypto.randomUUID().replaceAll("-", "");
       const payload: unknown = {
         version: 1,
         events: [
@@ -25,6 +26,7 @@ describe("ingestBrowserEvents", () => {
               "cart.items": 3,
               "event.kind": "spoofed",
               "browser.spoof": "spoofed",
+              "http.authorization": `Bearer ${secret}`,
             },
           },
           {
@@ -38,7 +40,8 @@ describe("ingestBrowserEvents", () => {
 
       const { exit, telemetry } = yield* Testing.run(ingestBrowserEvents(payload));
 
-      assert.deepStrictEqual(exit, Exit.succeed({ accepted: 2 }));
+      assert.deepStrictEqual(exit, Exit.succeed({ accepted: 2, redacted: 1, dropped: 2 }));
+      assert.notInclude(JSON.stringify(telemetry.logs), secret);
       const checkout = telemetry.logs.find(
         (log) => attributeOrUndefined(log.attributes, "event.name") === "checkout.completed",
       );

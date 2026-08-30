@@ -1,5 +1,6 @@
 import type { EnvironmentAliasPolicy, ResourceIdentityField } from "./ResourceIdentity.ts";
 import { createStandaloneMetrics } from "./MetricsRuntime.ts";
+import type { DataPolicy } from "./policy/DataPolicy.ts";
 
 export type MetricAttributeValue = string | number | boolean;
 
@@ -44,7 +45,8 @@ export type GaugeCollectionFailureCode =
   | "CALLBACK_FAILED"
   | "INVALID_OBSERVATION"
   | "ATTRIBUTE_LIMIT_EXCEEDED"
-  | "SERIES_LIMIT_EXCEEDED";
+  | "SERIES_LIMIT_EXCEEDED"
+  | "POLICY_BLOCKED";
 
 export interface GaugeCollectionFailure {
   readonly instrumentName: string;
@@ -76,6 +78,7 @@ export interface MetricsOptions {
   readonly otlpEndpoint: string;
   readonly exportIntervalMilliseconds?: number;
   readonly flushTimeoutMilliseconds?: number;
+  readonly policy?: DataPolicy;
 }
 
 export type MetricsErrorCode =
@@ -86,6 +89,7 @@ export type MetricsErrorCode =
   | "LIMIT_EXCEEDED"
   | "EXPORT_FAILED"
   | "FLUSH_TIMED_OUT"
+  | "POLICY_BLOCKED"
   | "CLOSED";
 
 interface MetricsErrorOptions {
@@ -93,6 +97,7 @@ interface MetricsErrorOptions {
   readonly operation: string;
   readonly message: string;
   readonly instrumentName?: string;
+  readonly attributeKey?: string;
   readonly field?: ResourceIdentityField;
   readonly rule?: string;
   readonly retryable: boolean;
@@ -103,6 +108,7 @@ export class MetricsError extends Error {
   readonly code: MetricsErrorCode;
   readonly operation: string;
   readonly instrumentName?: string;
+  readonly attributeKey?: string;
   readonly field?: ResourceIdentityField;
   readonly rule?: string;
   readonly retryable: boolean;
@@ -115,6 +121,9 @@ export class MetricsError extends Error {
     this.operation = options.operation;
     if (options.instrumentName !== undefined) {
       this.instrumentName = options.instrumentName;
+    }
+    if (options.attributeKey !== undefined) {
+      this.attributeKey = options.attributeKey;
     }
     if (options.field !== undefined) {
       this.field = options.field;

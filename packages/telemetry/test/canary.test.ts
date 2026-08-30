@@ -379,7 +379,7 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
         ];
         for (const attributes of redactedAttributeSets) {
           for (const key of redactedAttributeKeys) {
-            assert.strictEqual(Option.getOrThrow(attributeValue(attributes, key)), "****");
+            assert.isTrue(Option.isNone(attributeValue(attributes, key)));
           }
         }
         assert.include(redactedBody, "[REDACTED]");

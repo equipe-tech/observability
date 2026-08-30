@@ -3,12 +3,28 @@ import type { Exit } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 import { OtlpExporter, OtlpResource, OtlpSerialization } from "effect/unstable/observability";
 import type { ResourceAttributes } from "../ResourceIdentity.ts";
+import { CurrentDataPolicy, type DataPolicy } from "../policy/DataPolicy.ts";
+import { sanitizeText, transformSignalFields } from "../policy/PolicyTransform.ts";
 
 const HttpStatusCode = Schema.Number.check(
   Schema.isInt(),
   Schema.isBetween({ minimum: 100, maximum: 599 }),
 );
 const decodeHttpStatusCode = Schema.decodeUnknownOption(HttpStatusCode);
+const SpanScalar = Schema.Union([
+  Schema.String,
+  Schema.Number.check(Schema.isFinite()),
+  Schema.Boolean,
+]);
+const decodeSpanScalar = Schema.decodeUnknownOption(SpanScalar);
+
+const sanitizeEntries = (
+  policy: DataPolicy,
+  fields: { readonly [key: string]: string | number | boolean },
+): Array<OtlpResource.KeyValue> =>
+  OtlpResource.entriesToAttributes(
+    Object.entries(transformSignalFields(policy, "span", fields).value),
+  );
 
 const statusCodeUnset = 0;
 const statusCodeOk = 1;
@@ -96,15 +112,23 @@ class ExportingSpan extends Tracer.NativeSpan {
   }
 }
 
-const makeEvents = (span: ExportingSpan): Array<OtlpEvent> =>
-  span.events.map(([name, startTime, attributes]) => ({
-    name,
-    timeUnixNano: String(startTime),
-    attributes: OtlpResource.entriesToAttributes(Object.entries(attributes)),
-    droppedAttributesCount: 0,
-  }));
+const makeEvents = (policy: DataPolicy, span: ExportingSpan): Array<OtlpEvent> =>
+  span.events.map(([name, startTime, attributes]) => {
+    const fields: { [key: string]: string | number | boolean } = {};
+    for (const [key, value] of Object.entries(attributes)) {
+      const decoded = decodeSpanScalar(value);
+      if (Option.isSome(decoded)) fields[key] = decoded.value;
+    }
+    return {
+      name: sanitizeText(policy, name),
+      timeUnixNano: String(startTime),
+      attributes: sanitizeEntries(policy, fields),
+      droppedAttributesCount: 0,
+    };
+  });
 
 const makeNonHttpStatus = (
+  policy: DataPolicy,
   span: ExportingSpan,
   attributes: Array<OtlpResource.KeyValue>,
   events: Array<OtlpEvent>,
@@ -135,15 +159,15 @@ const makeNonHttpStatus = (
       timeUnixNano: String(span.status.endTime),
       droppedAttributesCount: 0,
       attributes: OtlpResource.entriesToAttributes([
-        ["exception.type", error.name],
-        ["exception.message", error.message],
-        ["exception.stacktrace", error.stack ?? "No stack trace available"],
+        ["exception.type", sanitizeText(policy, error.name)],
+        ["exception.message", sanitizeText(policy, error.message)],
+        ["exception.stacktrace", sanitizeText(policy, error.stack ?? "No stack trace available")],
       ]),
     });
   }
   return errors.length === 0
     ? { code: statusCodeError }
-    : { code: statusCodeError, message: errors[0]?.message };
+    : { code: statusCodeError, message: sanitizeText(policy, errors[0]?.message ?? "Error") };
 };
 
 const makeHttpStatus = (span: ExportingSpan): OtlpStatus => {
@@ -158,18 +182,23 @@ const makeHttpStatus = (span: ExportingSpan): OtlpStatus => {
   );
 };
 
-const makeOtlpSpan = (span: ExportingSpan): Option.Option<OtlpSpan> => {
+const makeOtlpSpan = (policy: DataPolicy, span: ExportingSpan): Option.Option<OtlpSpan> => {
   if (span.status._tag !== "Ended") {
     return Option.none();
   }
-  const attributes = OtlpResource.entriesToAttributes(span.attributes.entries());
-  const events = makeEvents(span);
+  const spanFields: { [key: string]: string | number | boolean } = {};
+  for (const [key, value] of span.attributes) {
+    const decoded = decodeSpanScalar(value);
+    if (Option.isSome(decoded)) spanFields[key] = decoded.value;
+  }
+  const attributes = sanitizeEntries(policy, spanFields);
+  const events = makeEvents(policy, span);
   const isHttpServer = span.kind === "server" && span.attributes.has("http.request.method");
   return Option.some({
     traceId: span.traceId,
     spanId: span.spanId,
     parentSpanId: Option.getOrUndefined(Option.map(span.parent, (parent) => parent.spanId)),
-    name: span.name,
+    name: sanitizeText(policy, span.name),
     kind: spanKindCode(span.kind),
     startTimeUnixNano: String(span.status.startTime),
     endTimeUnixNano: String(span.status.endTime),
@@ -177,13 +206,22 @@ const makeOtlpSpan = (span: ExportingSpan): Option.Option<OtlpSpan> => {
     droppedAttributesCount: 0,
     events,
     droppedEventsCount: 0,
-    status: isHttpServer ? makeHttpStatus(span) : makeNonHttpStatus(span, attributes, events),
-    links: span.links.map((link) => ({
-      traceId: link.span.traceId,
-      spanId: link.span.spanId,
-      attributes: OtlpResource.entriesToAttributes(Object.entries(link.attributes)),
-      droppedAttributesCount: 0,
-    })),
+    status: isHttpServer
+      ? makeHttpStatus(span)
+      : makeNonHttpStatus(policy, span, attributes, events),
+    links: span.links.map((link) => {
+      const fields: { [key: string]: string | number | boolean } = {};
+      for (const [key, value] of Object.entries(link.attributes)) {
+        const decoded = decodeSpanScalar(value);
+        if (Option.isSome(decoded)) fields[key] = decoded.value;
+      }
+      return {
+        traceId: link.span.traceId,
+        spanId: link.span.spanId,
+        attributes: sanitizeEntries(policy, fields),
+        droppedAttributesCount: 0,
+      };
+    }),
     droppedLinksCount: 0,
   });
 };
@@ -202,6 +240,7 @@ const makeHttpServerOtlpTracer = Effect.fn("makeHttpServerOtlpTracer")(function*
   options: HttpServerOtlpTracerOptions,
 ) {
   const resource = yield* OtlpResource.fromConfig(options.resource);
+  const policy = yield* CurrentDataPolicy;
   const serialization = yield* OtlpSerialization.OtlpSerialization;
   const exporter = yield* OtlpExporter.make({
     label: "HttpServerOtlpTracer",
@@ -230,7 +269,7 @@ const makeHttpServerOtlpTracer = Effect.fn("makeHttpServerOtlpTracer")(function*
   return Tracer.make({
     span: (spanOptions) =>
       new ExportingSpan(spanOptions, (span) => {
-        const exported = makeOtlpSpan(span);
+        const exported = makeOtlpSpan(policy, span);
         if (Option.isSome(exported)) {
           exporter.push(exported.value);
         }

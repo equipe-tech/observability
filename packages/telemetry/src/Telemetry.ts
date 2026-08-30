@@ -1,18 +1,21 @@
 import { ConfigProvider, Duration, Effect, Layer } from "effect";
 import { FetchHttpClient, type HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { OtlpExporter, OtlpLogger, OtlpSerialization } from "effect/unstable/observability";
+import { OtlpExporter, OtlpSerialization } from "effect/unstable/observability";
 import type { InvalidResourceIdentity } from "./ResourceIdentity.ts";
 import type { DuplicateReleaseVariable } from "./profile/ObservabilityConfigError.ts";
+import { layerPolicyOtlpLogger } from "./PolicyOtlpLogger.ts";
 import { instanceResourceAttributes } from "./ResourceIdentity.ts";
 import type { EnvironmentVariables, InvalidTelemetryEnvironment } from "./TelemetryConfig.ts";
 import { telemetryConfigFromEnv, type TelemetryConfig } from "./TelemetryConfig.ts";
 import { layerMetricsRuntime } from "./MetricsRuntime.ts";
 import { layerHttpServerOtlpTracer } from "./nestjs/HttpServerOtlpTracer.ts";
+import { baseDataPolicy, CurrentDataPolicy, type DataPolicy } from "./policy/DataPolicy.ts";
 
 const packageResourceConfig = ConfigProvider.layer(ConfigProvider.fromUnknown({}));
 
 export type OtlpLayerOptions = {
   readonly shutdownTimeout?: Duration.Input | undefined;
+  readonly policy?: DataPolicy | undefined;
 };
 
 export const layerOtlp = (
@@ -28,9 +31,11 @@ export const layerOtlp = (
   };
   const metrics = layerMetricsRuntime(config, {
     shutdownTimeoutMilliseconds: Duration.toMillis(options.shutdownTimeout ?? "3 seconds"),
+    policy: options.policy ?? baseDataPolicy,
   });
   return Layer.mergeAll(
-    OtlpLogger.layer({
+    Layer.succeed(CurrentDataPolicy, options.policy ?? baseDataPolicy),
+    layerPolicyOtlpLogger({
       url: url("/v1/logs"),
       resource,
       shutdownTimeout: options.shutdownTimeout,
