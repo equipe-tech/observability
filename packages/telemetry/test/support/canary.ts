@@ -18,6 +18,7 @@ export const canarySensitiveValues = (runId: string) => {
   const userPasswordMarker = `userpasswordmarker${compactRunId}`;
   const phoneNumberMarker = `phonenumbermarker${compactRunId}`;
   const rawAuthorizationMarker = `rawauthorizationmarker${compactRunId}`;
+  const nestedAssignmentMarker = `nestedassignmentmarker${compactRunId}`;
   const authorization = `Bearer ${authorizationMarker}`;
   const rawAuthorization = `authorization: Bearer ${rawAuthorizationMarker} authorization: Bearer ${rawAuthorizationMarker}`;
   const password = `opaque-${passwordMarker}-value`;
@@ -28,6 +29,18 @@ export const canarySensitiveValues = (runId: string) => {
   const phoneNumber = `opaque-${phoneNumberMarker}-value`;
   const tokenizerValue = `tokenizercontrol${compactRunId}`;
   const documentationValue = `documentationcontrol${compactRunId}`;
+  const nestedAssignments = [
+    `https://api.x/login?password=${nestedAssignmentMarker}`,
+    `url=https://api.x/cb?token=${nestedAssignmentMarker}`,
+    `a=1&password=${nestedAssignmentMarker}&b=2`,
+    `note="token=${nestedAssignmentMarker}" safe=1`,
+    `data[password]=${nestedAssignmentMarker}`,
+    `authorization: Basic ${nestedAssignmentMarker} ${nestedAssignmentMarker}`,
+    `authorization: Digest username=${nestedAssignmentMarker}, response=${nestedAssignmentMarker}`,
+    `cookie: sid=${nestedAssignmentMarker}; csrf=${nestedAssignmentMarker}; theme=dark`,
+    `password: my ${nestedAssignmentMarker} pass phrase`,
+    `token =${nestedAssignmentMarker}`,
+  ];
   return {
     authorization,
     password,
@@ -46,10 +59,12 @@ export const canarySensitiveValues = (runId: string) => {
       userPasswordMarker,
       phoneNumberMarker,
       rawAuthorizationMarker,
+      nestedAssignmentMarker,
     ],
     tokenizerValue,
     documentationValue,
     preservedValues: [tokenizerValue, documentationValue],
+    nestedAssignments,
     serializedBody: JSON.stringify({
       authorization,
       password,
@@ -69,8 +84,12 @@ export const emitCanary = (
   runId: string,
 ): Effect.Effect<void, InvalidDataPolicy> => {
   const sensitive = canarySensitiveValues(runId);
+  const nestedAttributes = Object.fromEntries(
+    sensitive.nestedAssignments.map((value, index) => [`safe.nested_${index}`, value]),
+  );
   const sensitiveAttributes = {
     "canary.run_id": runId,
+    ...nestedAttributes,
     "http.authorization": sensitive.authorization,
     "user.password": sensitive.password,
     "auth.access_token": sensitive.accessToken,
@@ -86,7 +105,10 @@ export const emitCanary = (
       attributes: sensitiveAttributes,
     });
     yield* Effect.sleep("10 millis").pipe(Effect.withSpan("canary.child"));
-    yield* WideEvent.emit("canary.completed", { "canary.run_id": runId });
+    yield* WideEvent.emit("canary.completed", {
+      "canary.run_id": runId,
+      ...nestedAttributes,
+    });
     yield* Effect.logInfo(sensitive.rawAuthorization).pipe(
       Effect.annotateLogs({
         "canary.run_id": runId,
@@ -112,6 +134,7 @@ export const emitCanary = (
           fields: {
             "canary.run_id": runId,
             "safe.raw_header": sensitive.rawAuthorization,
+            ...nestedAttributes,
           },
         },
       ],

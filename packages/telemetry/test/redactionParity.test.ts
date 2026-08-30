@@ -17,7 +17,7 @@ const occurrences = (source: string, value: string): number => source.split(valu
 const collectorPattern = (source: string): RegExp => {
   const insensitive = source.startsWith("(?i)");
   const dotAll = source.startsWith("(?s)");
-  const normalized = source.replace(/^\(\?[is]\)/, "").replaceAll("[[:space:]]", "\\s");
+  const normalized = source.replace(/^\(\?[is]\)/, "").replaceAll("[:space:]", "\\s");
   return new RegExp(normalized, `${insensitive ? "i" : ""}${dotAll ? "s" : ""}`);
 };
 
@@ -67,7 +67,8 @@ describe("browser and Collector redaction parity", () => {
   for (const assetPath of assetPaths) {
     it(`keeps the canonical key and value vocabulary in ${assetPath}`, () => {
       const asset = readFileSync(assetPath, "utf8");
-      assert.strictEqual(occurrences(asset, `- "${collectorBlockedKeyPattern}"`), 1);
+      const yamlBlockedKeyPattern = collectorBlockedKeyPattern.replaceAll("\\", "\\\\");
+      assert.strictEqual(occurrences(asset, `- "${yamlBlockedKeyPattern}"`), 1);
       let previousIndex = -1;
       for (const pattern of collectorBlockedValuePatterns) {
         const blockedValue = `- "${pattern}"`;
@@ -84,8 +85,15 @@ describe("browser and Collector redaction parity", () => {
         transform.indexOf("trace_statements:"),
         transform.indexOf("log_statements:"),
       );
+      const metrics = transform.slice(
+        transform.indexOf("metric_statements:"),
+        transform.indexOf("log_statements:"),
+      );
       const logs = transform.slice(transform.indexOf("log_statements:"));
-      const vocabulary = collectorBlockedKeyPattern.replace("(?:[._-]|[A-Z0-9]|$)", "");
+      const vocabulary = collectorBlockedKeyPattern.slice(
+        0,
+        collectorBlockedKeyPattern.lastIndexOf("(?:"),
+      );
       assert.include(trace, vocabulary);
       assert.include(logs, vocabulary);
       assert.include(trace, "span.name");
@@ -94,6 +102,9 @@ describe("browser and Collector redaction parity", () => {
       assert.include(trace, 'replace_all_patterns(resource.attributes, "value"');
       assert.include(logs, 'replace_all_patterns(log.attributes, "value"');
       assert.include(logs, 'replace_all_patterns(resource.attributes, "value"');
+      assert.include(metrics, 'replace_all_patterns(datapoint.attributes, "value"');
+      assert.include(metrics, 'replace_all_patterns(resource.attributes, "value"');
+      assert.include(metrics, "   -   　");
       for (const pattern of collectorBlockedValuePatterns) {
         assert.include(trace, pattern);
         assert.include(logs, pattern);
@@ -106,7 +117,10 @@ describe("browser and Collector redaction parity", () => {
         asset,
         /logs:[\s\S]*?processors:[\s\S]*?transform\/redact, redaction\/sensitive[\s\S]*?metrics:/,
       );
-      assert.match(asset, /metrics:[\s\S]*?processors:.*redaction\/sensitive/);
+      assert.match(
+        asset,
+        /metrics:[\s\S]*?processors:[\s\S]*?transform\/redact,[\s\S]*?redaction\/sensitive/,
+      );
     });
   }
 });

@@ -23,10 +23,12 @@ export const baseBlockedKeys = [
   "document",
 ];
 
-export const collectorBlockedKeyPattern = `(?i:${baseBlockedKeys.join("|")})(?:[._-]|[A-Z0-9]|$)`;
+export const collectorBlockedKeyPattern = `(?i:${baseBlockedKeys.join("|")})(?:\\]|[._-]|[A-Z0-9]|$)`;
+
+const collectorWhitespace = "[[:space:]   -   　]";
 
 export const collectorBlockedValuePatterns = [
-  "(?i)Bearer[[:space:]]+[A-Za-z0-9._~+/=-]+",
+  `(?i)Bearer${collectorWhitespace}+[A-Za-z0-9._~+/=-]+`,
   "(?:sk|rk)[_-][A-Za-z0-9_*.-]{3,}",
   "eyJ[A-Za-z0-9_-]+[.]eyJ[A-Za-z0-9_-]+[.][A-Za-z0-9_-]+",
   "(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+[.][A-Z]{2,}",
@@ -44,7 +46,7 @@ export const baseBlockedValuePatterns = [
 const asciiCaseInsensitive = (source: string): string =>
   source.replace(/[A-Za-z]/g, (letter) => `[${letter.toLowerCase()}${letter.toUpperCase()}]`);
 const sensitiveTerms = baseBlockedKeys.map(asciiCaseInsensitive).join("|");
-export const baseBlockedKeyPatternSource = `(?:${sensitiveTerms})(?=[._-]|[A-Z0-9]|$)`;
+export const baseBlockedKeyPatternSource = `(?:${sensitiveTerms})(?=\\]|[._-]|[A-Z0-9]|$)`;
 const sensitiveKeyPattern = new RegExp(baseBlockedKeyPatternSource);
 
 export const isSensitiveFieldKey = (key: string): boolean => sensitiveKeyPattern.test(key);

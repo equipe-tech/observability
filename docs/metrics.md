@@ -72,7 +72,7 @@ Counters accept finite additions greater than or equal to zero. Histograms accep
 
 ## Attributes and cardinality
 
-Pass attributes as an array of `{ key, value }` items. Values are strings, finite numbers, or booleans. Keys use at least two lowercase dotted segments and contain at most 128 characters. Duplicate keys and the reserved identifiers `unit`, `time_unit`, `service.instance.id`, `trace.id`, `span.id`, `user.id`, and `session.id` are rejected. Instance, trace, span, user, and session identifiers never become metric labels. A measurement accepts at most 16 attributes. String values contain 1 to 64 characters, use the label grammar `[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}`, and cannot have identifier shapes such as UUID, trace ID, span ID, ULID, or a numeric identifier of at least seven digits.
+Pass attributes as an array of `{ key, value }` items. Values are strings, finite numbers, or booleans. Keys use at least two lowercase dotted segments and contain at most 128 characters. Duplicate keys and the reserved identifiers `unit`, `time_unit`, `service.instance.id`, `trace.id`, `span.id`, `user.id`, and `session.id` are rejected. Instance, trace, span, user, and session identifiers never become metric labels. A measurement accepts at most 16 attributes. String values contain 1 to 64 characters, use the label grammar `[A-Za-z0-9/][A-Za-z0-9._:/-]{0,63}`, and cannot have identifier shapes such as UUID, trace ID, span ID, ULID, or a numeric identifier of at least seven digits. A value is also rejected with the evidence-safe reason `blocked-value` when blocked-value or structured-assignment policy would transform it. Templated routes such as `/orders/:id` remain valid labels.
 
 The runtime enforces these lifetime limits:
 

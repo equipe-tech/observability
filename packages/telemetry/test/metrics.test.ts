@@ -3,7 +3,8 @@ import { Effect, ManagedRuntime, Metric, Option, Predicate, Schema } from "effec
 import { createServer, type Server } from "node:http";
 import { createMetrics, MetricsError, type MetricAttribute } from "../src/Metrics.ts";
 import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
-import { parseDataPolicy } from "../src/policy/DataPolicy.ts";
+import { baseDataPolicy, parseDataPolicy } from "../src/policy/DataPolicy.ts";
+import { metricLabelRejection } from "../src/policy/MetricLabelPolicy.ts";
 import * as Testing from "../src/testing/index.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 
@@ -169,6 +170,22 @@ const waitFor = async (condition: () => boolean, timeoutMilliseconds = 2_000): P
 };
 
 describe("framework-neutral metrics", () => {
+  it("rejects transformed label values while preserving bounded route templates", () => {
+    for (const value of [
+      "token:METRICLEAK42",
+      "password=METRICLEAK42",
+      "Bearer METRICLEAK42",
+      "data[password]:METRICLEAK42",
+    ]) {
+      assert.strictEqual(
+        metricLabelRejection(baseDataPolicy, "http.route", value),
+        "blocked-value",
+      );
+    }
+    assert.isUndefined(metricLabelRejection(baseDataPolicy, "http.route", "/orders/:id"));
+    assert.isUndefined(metricLabelRejection(baseDataPolicy, "network.zone", "internal"));
+  });
+
   it("applies the compiled application policy before metric state", async () => {
     const policy = await Effect.runPromise(
       parseDataPolicy({

@@ -182,6 +182,22 @@ describe("browser telemetry redaction policy", () => {
     assert.include(String(fields.json), "authorization: [REDACTED]");
   });
 
+  it("finds nested sensitive assignments without consuming safe outer assignments", () => {
+    const secret = marker();
+    const cases = [
+      [`https://api.x/login?password=${secret}`, "https://api.x/login?password=[REDACTED]"],
+      [`url=https://api.x/cb?token=${secret}`, "url=https://api.x/cb?token=[REDACTED]"],
+      [`a=1&password=${secret}&b=2`, "a=1&password=[REDACTED]&b=2"],
+      [`note="token=${secret}" safe=1`, 'note="token=[REDACTED]" safe=1'],
+      [`data[password]=${secret}`, "data[password]=[REDACTED]"],
+      [`token =${secret}`, "token =[REDACTED]"],
+    ] satisfies ReadonlyArray<readonly [string, string]>;
+    for (const [source, expected] of cases) {
+      assert.strictEqual(sanitizeEventName(source), expected);
+      assert.notInclude(sanitizeEventName(source), secret);
+    }
+  });
+
   it("redacts assignment suffixes for every sensitive credential form", () => {
     const secret = marker();
     const cases = [

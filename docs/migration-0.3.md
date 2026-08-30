@@ -53,6 +53,10 @@ A versão 0.3 exige nomes estáveis e pontuados para atributos de métricas. Tro
 
 Cada instrumento aceita no máximo 100 valores distintos por rótulo durante a vida do runtime. Reduza a cardinalidade antes da atualização. O valor 101 produz `MetricsError` com código `LIMIT_EXCEEDED`.
 
+## Atualizar atributos sensíveis do contrato
+
+A versão 0.3 mascara atributos classificados como `sensitive` com `****`, registra a transformação em `EmitReceipt.redactions` e grava o evento. Esse caso não retorna mais `OBS_EVENT_RESTRICTED_ATTRIBUTE`. Atributos `forbidden` continuam rejeitados antes do sink.
+
 ## Atualizar recibos de eventos
 
 O variante `recorded` de `EmitReceipt` agora exige `redactions`. O campo contém todos os registros de máscara, truncamento e descarte aplicados ao evento. Consumidores que constroem recibos manualmente precisam fornecer `redactions: []` quando nenhuma regra alterou o evento. Código que verifica ou serializa o recibo deve aceitar o novo campo obrigatório.

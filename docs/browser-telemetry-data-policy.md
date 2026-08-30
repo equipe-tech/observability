@@ -27,7 +27,9 @@ The following content becomes `[REDACTED]` within safe string values and event n
 - JSON Web Tokens
 - Email addresses
 - RSA, EC, OpenSSH, and generic private-key blocks
-- Sensitive `key=value` and `key:value` assignments, including quoted values
+- Sensitive `key=value` and `key:value` assignments anywhere in the text, including query strings, form data, bracketed keys such as `data[password]`, quoted values, Basic and Digest credentials, cookies, and values containing spaces
+
+The scanner searches for sensitive assignments instead of consuming each outer assignment as a unit. An ampersand, URL fragment marker, or matching quote ends a redacted value and preserves the remaining text. When no delimiter is unambiguous, sanitization replaces the rest of the bounded string. This intentional loss prevents a credential with spaces, a Digest field, or a cookie field from escaping through an uncertain boundary. JavaScript and Collector patterns treat ASCII whitespace and the common Unicode spaces U+00A0, U+1680, U+2000 through U+200A, U+202F, U+205F, and U+3000 as whitespace.
 
 Valid serialized JSON beginning with an object or array is parsed and sanitized iteratively. Values under sensitive property keys become `[REDACTED]`, credential-bearing keys disappear, credential patterns and structured sensitive assignments are replaced in string leaves, array order is retained, and compact valid JSON is emitted. Traversal is limited to 32 levels and 1,024 values. Inputs beyond either limit become `[REDACTED]`.
 
@@ -50,4 +52,4 @@ Oversized original keys are dropped. Oversized original string values and event 
 
 ## Collector parity
 
-The telemetry package owns the semantic key vocabulary and the five core credential patterns. A repository parity test checks both Collector assets against that vocabulary, processor coverage, and processor order. Browser JSON traversal is intentionally outside exact Collector parity because Collector OTTL does not expose the same recursive contract.
+The telemetry package owns the semantic key vocabulary and the five core credential patterns. A repository parity test checks both Collector assets against that vocabulary, processor coverage, and processor order. Traces, logs, and metrics run the same redaction transform before the sensitive-key processor. Metric resource attributes and datapoint attributes therefore receive the same structured-assignment redaction as log and trace attributes. Browser JSON traversal is intentionally outside exact Collector parity because Collector OTTL does not expose the same recursive contract.

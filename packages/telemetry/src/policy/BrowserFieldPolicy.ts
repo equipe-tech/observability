@@ -51,7 +51,30 @@ const sensitiveTextTermPattern = new RegExp(
 );
 
 const structuredAssignmentPattern =
-  /(?:"([A-Za-z0-9_.-]+)"|([A-Za-z0-9_.-]+))(\s*[=:]\s*)(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([^,;\s]+))/g;
+  /(?:"([A-Za-z0-9_.\-[\]]+)"|([A-Za-z0-9_.\-[\]]+))(\s*[=:]\s*)/g;
+
+const closingQuoteIndex = (value: string, start: number, quote: string): number => {
+  let escaped = false;
+  for (let index = start; index < value.length; index += 1) {
+    const character = value[index];
+    if (escaped) {
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (character === quote) {
+      return index;
+    }
+  }
+  return -1;
+};
+
+const safeValueEnd = (value: string, start: number): number => {
+  const ampersand = value.indexOf("&", start);
+  const fragment = value.indexOf("#", start);
+  if (ampersand === -1) return fragment === -1 ? value.length : fragment;
+  if (fragment === -1) return ampersand;
+  return Math.min(ampersand, fragment);
+};
 
 const replaceCoreValues = (value: string): string => {
   let sanitized = value;
@@ -82,27 +105,37 @@ export const replaceStructuredAssignments = (value: string): string => {
     const full = match[0];
     const quotedKey = match[1];
     const unquotedKey = match[2];
-    const separator = match[3];
     const key = Predicate.isString(quotedKey) ? quotedKey : unquotedKey;
-    if (!Predicate.isNumber(index) || !Predicate.isString(full) || !Predicate.isString(key)) {
+    if (
+      !Predicate.isNumber(index) ||
+      !Predicate.isString(full) ||
+      !Predicate.isString(key) ||
+      index < offset ||
+      !isSensitiveFieldKey(key)
+    ) {
       continue;
     }
-    sanitized += value.slice(offset, index);
-    if (!isSensitiveFieldKey(key) || !Predicate.isString(separator)) {
-      sanitized += full;
-      offset = index + full.length;
+    const valueStart = index + full.length;
+    const explicitQuote = value[valueStart];
+    const enclosingQuote = value[index - 1];
+    const quote =
+      explicitQuote === '"' || explicitQuote === "'"
+        ? explicitQuote
+        : enclosingQuote === '"' || enclosingQuote === "'"
+          ? enclosingQuote
+          : undefined;
+    const quotedValueStart = quote === explicitQuote ? valueStart + 1 : valueStart;
+    const quotedValueEnd =
+      quote === undefined ? -1 : closingQuoteIndex(value, quotedValueStart, quote);
+    sanitized += value.slice(offset, index) + full;
+    if (quotedValueEnd >= 0 && quote !== undefined) {
+      if (quote === explicitQuote) sanitized += quote;
+      sanitized += sensitiveTextReplacement + quote;
+      offset = quotedValueEnd + 1;
       continue;
     }
-    const renderedKey = Predicate.isString(quotedKey) ? `"${key}"` : key;
-    if (Predicate.isString(match[4])) {
-      sanitized += `${renderedKey}${separator}"${sensitiveTextReplacement}"`;
-    } else if (Predicate.isString(match[5])) {
-      sanitized += `${renderedKey}${separator}'${sensitiveTextReplacement}'`;
-    } else {
-      sanitized += `${renderedKey}${separator}${sensitiveTextReplacement}`;
-    }
-    offset = value.length;
-    break;
+    sanitized += sensitiveTextReplacement;
+    offset = safeValueEnd(value, valueStart);
   }
   return sanitized + value.slice(offset);
 };

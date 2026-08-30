@@ -152,8 +152,18 @@ describe("executable data policy discrimination", () => {
     assert.notInclude(JSON.stringify(failure), secret);
   });
 
-  it("rejects nested group repetition without rejecting useful repeated groups", async () => {
-    for (const blockedKey of ["(a+)+", "((a+))+", "(?:prefix((ab*)+))+suffix"]) {
+  it("accepts only the conservative regular expression grammar", async () => {
+    for (const blockedKey of [
+      "(a+)+",
+      "((a+))+",
+      "(?:prefix((ab*)+))+suffix",
+      "(a|aa)+$",
+      "a(?=b)",
+      "a\\1",
+      "a.b",
+      "a++",
+    ]) {
+      const started = performance.now();
       const failure = await Effect.runPromise(
         Effect.flip(
           parseDataPolicy({
@@ -164,9 +174,16 @@ describe("executable data policy discrimination", () => {
         ),
       );
       assert.strictEqual(failure.issues[0]?.code, "OBS_POLICY_UNSAFE_BLOCKED_KEY_PATTERN");
+      assert.isBelow(performance.now() - started, 100);
       assert.notInclude(JSON.stringify(failure), blockedKey);
     }
-    for (const blockedKey of ["(ab)+", "(?:authorization|cookie)+", "[a+]+"]) {
+    for (const blockedKey of [
+      "application[._]secret",
+      "provider_[A-Za-z0-9]+",
+      "literal\\.value",
+      "^prefix[0-9]{2,8}$",
+      "[a+]+",
+    ]) {
       const policy = await Effect.runPromise(
         parseDataPolicy({
           attributes: {},
@@ -236,6 +253,40 @@ describe("executable data policy discrimination", () => {
       sanitizeText(policy, `provider_${secret} provider_${secret}`),
       "[REDACTED] [REDACTED]",
     );
+  });
+
+  it("redacts every nested assignment fixture on every signal", async () => {
+    const policy = await compile();
+    const secret = marker();
+    const sources = [
+      `https://api.x/login?password=${secret}`,
+      `url=https://api.x/cb?token=${secret}`,
+      `a=1&password=${secret}&b=2`,
+      `note="token=${secret}" safe=1`,
+      `data[password]=${secret}`,
+      `authorization: Basic ${secret} ${secret}`,
+      `authorization: Digest username=${secret}, response=${secret}`,
+      `cookie: sid=${secret}; csrf=${secret}; theme=dark`,
+      `password: my ${secret} pass phrase`,
+      `token =${secret}`,
+    ];
+    const surfaces: ReadonlyArray<Exclude<PolicySurface, "metric">> = [
+      "event",
+      "log",
+      "span",
+      "browser-ingest",
+      "defect",
+      "resource",
+    ];
+    for (const source of sources) {
+      for (const surface of surfaces) {
+        const decision = transformSignalFields(policy, surface, { "request.detail": source });
+        assert.notInclude(JSON.stringify(decision.value), secret);
+      }
+      for (const surface of ["event", "log", "span", "defect"] as const) {
+        assert.notInclude(sanitizeText(policy, source, surface), secret);
+      }
+    }
   });
 
   it("redacts repeated structured assignments on every server signal", async () => {

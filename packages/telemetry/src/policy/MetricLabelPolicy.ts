@@ -1,10 +1,11 @@
 import { Predicate } from "effect";
 import { isValidAttributeName } from "../contract/EventName.ts";
 import type { MetricAttributeValue } from "../Metrics.ts";
+import { replaceStructuredAssignments } from "./BrowserFieldPolicy.ts";
 import type { DataPolicy } from "./DataPolicy.ts";
 import { isSensitiveFieldKey } from "./PolicyVocabulary.ts";
 
-const labelValuePattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$/;
+const labelValuePattern = /^[A-Za-z0-9/][A-Za-z0-9._:/-]{0,63}$/;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const tracePattern = /^[0-9a-f]{32}$/;
 const spanPattern = /^[0-9a-f]{16}$/;
@@ -24,7 +25,8 @@ export type MetricLabelRejection =
   | "attribute-name"
   | "classification"
   | "identifier-shape"
-  | "string-bound";
+  | "string-bound"
+  | "blocked-value";
 
 export const metricLabelRejection = (
   policy: DataPolicy,
@@ -53,6 +55,11 @@ export const metricLabelRejection = (
       : undefined;
   }
   if (Predicate.isBoolean(value)) return undefined;
+  for (const pattern of policy.blockedValuePatterns) {
+    pattern.lastIndex = 0;
+    if (pattern.test(value)) return "blocked-value";
+  }
+  if (replaceStructuredAssignments(value) !== value) return "blocked-value";
   if (!labelValuePattern.test(value)) return "string-bound";
   if (
     uuidPattern.test(value) ||
@@ -62,10 +69,6 @@ export const metricLabelRejection = (
     numericIdentifierPattern.test(value)
   ) {
     return "identifier-shape";
-  }
-  for (const pattern of policy.blockedValuePatterns) {
-    pattern.lastIndex = 0;
-    if (pattern.test(value)) return "classification";
   }
   return undefined;
 };

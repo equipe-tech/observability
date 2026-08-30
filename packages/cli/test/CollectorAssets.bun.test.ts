@@ -188,7 +188,12 @@ const expectCollectorContract = (config: string, production: boolean): void => {
     "transform/redact",
     "redaction/sensitive",
   ];
-  const metrics = ["memory_limiter", "transform/environment", "redaction/sensitive"];
+  const metrics = [
+    "memory_limiter",
+    "transform/environment",
+    "transform/redact",
+    "redaction/sensitive",
+  ];
   if (!production) {
     tracesAndLogs.push("batch");
     metrics.push("batch");
@@ -198,8 +203,8 @@ const expectCollectorContract = (config: string, production: boolean): void => {
   expect(pipelines.metrics.processors).toEqual(metrics);
 
   const redaction = redactionTransformBlock(config);
-  const bearer = redaction.indexOf("(?i)Bearer[[:space:]]+");
-  const assignment = redaction.indexOf("[=:][[:space:]]*");
+  const bearer = redaction.indexOf("(?i)Bearer[[:space:]");
+  const assignment = redaction.indexOf("[=:][[:space:]");
   expect(bearer).toBeGreaterThanOrEqual(0);
   expect(assignment).toBeGreaterThan(bearer);
 };

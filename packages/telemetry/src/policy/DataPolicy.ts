@@ -74,51 +74,97 @@ const invalid = (issues: ReadonlyArray<PolicyIssue>): InvalidDataPolicy =>
     issues,
   });
 
-const hasUnsafeNestedRepetition = (source: string): boolean => {
-  const groups: Array<boolean> = [];
-  let inCharacterClass = false;
-  let escaped = false;
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index];
-    if (escaped) {
-      escaped = false;
+const isAcceptedRegex = (source: string): boolean => {
+  let index = 0;
+  let canQuantify = false;
+  while (index < source.length) {
+    const character = source.charAt(index);
+    if (character === "^" && index === 0) {
+      canQuantify = false;
+      index += 1;
+      continue;
+    }
+    if (character === "$" && index === source.length - 1) {
+      canQuantify = false;
+      index += 1;
       continue;
     }
     if (character === "\\") {
-      escaped = true;
+      const escaped = source[index + 1];
+      if (escaped === undefined || /[A-Za-z0-9]/.test(escaped)) return false;
+      canQuantify = true;
+      index += 2;
       continue;
     }
     if (character === "[") {
-      inCharacterClass = true;
-      continue;
-    }
-    if (character === "]") {
-      inCharacterClass = false;
-      continue;
-    }
-    if (inCharacterClass) continue;
-    if (character === "(") {
-      groups.push(false);
-      continue;
-    }
-    const repetition =
-      character === "+" ||
-      character === "*" ||
-      (character === "{" && /\d/.test(source[index + 1] ?? ""));
-    if (character === ")") {
-      const containsRepetition = groups.pop() ?? false;
-      const next = source[index + 1] ?? "";
-      const repeatedGroup =
-        next === "+" || next === "*" || (next === "{" && /\d/.test(source[index + 2] ?? ""));
-      if (containsRepetition && repeatedGroup) return true;
-      if (groups.length > 0 && (containsRepetition || repeatedGroup)) {
-        groups[groups.length - 1] = true;
+      let classIndex = index + 1;
+      if (source[classIndex] === "^") classIndex += 1;
+      let classValues = 0;
+      let closed = false;
+      while (classIndex < source.length) {
+        const classCharacter = source[classIndex];
+        if (classCharacter === "\\") {
+          if (source[classIndex + 1] === undefined) return false;
+          classValues += 1;
+          classIndex += 2;
+          continue;
+        }
+        if (classCharacter === "]") {
+          closed = true;
+          classIndex += 1;
+          break;
+        }
+        if (classCharacter === "[") return false;
+        classValues += 1;
+        classIndex += 1;
       }
+      if (!closed || classValues === 0) return false;
+      canQuantify = true;
+      index = classIndex;
       continue;
     }
-    if (repetition && groups.length > 0) groups[groups.length - 1] = true;
+    if (character === "?" || character === "+" || character === "*") {
+      if (!canQuantify) return false;
+      canQuantify = false;
+      index += 1;
+      continue;
+    }
+    if (character === "{") {
+      if (!canQuantify) return false;
+      const quantifier = source.slice(index).match(/^\{\d+(?:,\d*)?\}/);
+      if (quantifier === null) return false;
+      const bounds = quantifier[0].slice(1, -1).split(",");
+      if (bounds.length === 2 && bounds[1] !== "" && Number(bounds[0]) > Number(bounds[1])) {
+        return false;
+      }
+      canQuantify = false;
+      index += quantifier[0].length;
+      continue;
+    }
+    if ("()|.^$}]".includes(character)) return false;
+    canQuantify = true;
+    index += 1;
   }
-  return false;
+  return source.length > 0;
+};
+
+const hasMalformedEscapeOrClass = (source: string): boolean => {
+  let escaped = false;
+  let inCharacterClass = false;
+  for (const character of source) {
+    if (escaped) {
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (character === "[") {
+      if (inCharacterClass) return true;
+      inCharacterClass = true;
+    } else if (character === "]") {
+      if (!inCharacterClass) return true;
+      inCharacterClass = false;
+    }
+  }
+  return escaped || inCharacterClass;
 };
 
 const compilePatterns = (
@@ -130,11 +176,14 @@ const compilePatterns = (
 ): Array<RegExp> => {
   const patterns: Array<RegExp> = [];
   for (const source of sources) {
-    if (hasUnsafeNestedRepetition(source)) {
+    if (!isAcceptedRegex(source)) {
+      const malformed = hasMalformedEscapeOrClass(source);
       issues.push(
         issue(
-          unsafeCode,
-          "A policy regular expression has nested repetition. Use a bounded linear-time pattern.",
+          malformed ? code : unsafeCode,
+          malformed
+            ? "A policy regular expression is malformed. Use a complete escaped literal or character class."
+            : "A policy regular expression uses unsupported syntax. Use literals, escaped literals, character classes, anchors, and direct quantifiers only.",
         ),
       );
       continue;
