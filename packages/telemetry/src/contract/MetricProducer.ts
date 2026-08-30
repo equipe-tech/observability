@@ -266,14 +266,16 @@ export const makeMetricProducer = <const Definition extends TelemetryContractInp
     return metrics.observableGauge(definition, () =>
       callback().map((observation) => {
         const attributes = parseContractAttributes(alias, definition, observation.attributes);
-        const commit = prepareContractMetricAttributes(
-          metrics,
-          alias,
-          definition.name,
-          attributes,
-          cardinalityLimits(definition),
+        return registerContractGaugeObservation(
+          { value: observation.value, attributes },
+          {
+            metrics,
+            metricAlias: alias,
+            metricName: definition.name,
+            attributes,
+            limits: cardinalityLimits(definition),
+          },
         );
-        return registerContractGaugeObservation({ value: observation.value, attributes }, commit);
       }),
     );
   },
