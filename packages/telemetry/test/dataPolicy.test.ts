@@ -176,6 +176,13 @@ describe("executable data policy discrimination", () => {
       "[a-z]+[a-z]+[a-z]+x",
       "[A-Za-z]+-[0-9]+",
       "[\\s\\S]*[\\s\\S]*x",
+      "ab?cd?",
+      "ab*cd{2,3}",
+      "ab+cd{2,}",
+      "ab{1,2}cd{3,4}",
+      "ab{65}",
+      "ab{65,}",
+      "ab{1,65}",
     ]) {
       const started = performance.now();
       const failure = await Effect.runPromise(
@@ -197,7 +204,8 @@ describe("executable data policy discrimination", () => {
       "literal\\.value",
       "^prefix[0-9]{2,8}$",
       "[a+]+",
-      "prefix_[A-Za-z]{1,32}_[0-9]{1,8}",
+      "prefix_[A-Za-z]{1,32}_[0-9]{8}",
+      "prefix[0-9]{2}suffix[A-Z]{4}",
     ]) {
       const policy = await Effect.runPromise(
         parseDataPolicy({

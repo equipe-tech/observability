@@ -51,6 +51,7 @@ const PolicyDocument = Schema.Struct({
 const decodePolicy = Schema.decodeUnknownEffect(PolicyDocument);
 const classifications = new Set(["public", "internal", "sensitive", "forbidden"]);
 const reservedNames = new Set(["event.name", "event.kind", "event.type", "event.severity"]);
+const maximumRegexRepetition = 64;
 
 const issue = (
   code: PolicyIssueCode,
@@ -77,7 +78,7 @@ const invalid = (issues: ReadonlyArray<PolicyIssue>): InvalidDataPolicy =>
 const isAcceptedRegex = (source: string): boolean => {
   let index = 0;
   let canQuantify = false;
-  let unboundedQuantifiers = 0;
+  let variableQuantifiers = 0;
   while (index < source.length) {
     const character = source.charAt(index);
     if (character === "^" && index === 0) {
@@ -126,8 +127,8 @@ const isAcceptedRegex = (source: string): boolean => {
     }
     if (character === "?" || character === "+" || character === "*") {
       if (!canQuantify) return false;
-      if (character === "+" || character === "*") unboundedQuantifiers += 1;
-      if (unboundedQuantifiers > 1) return false;
+      variableQuantifiers += 1;
+      if (variableQuantifiers > 1) return false;
       canQuantify = false;
       index += 1;
       continue;
@@ -136,14 +137,23 @@ const isAcceptedRegex = (source: string): boolean => {
       if (!canQuantify) return false;
       const quantifier = source.slice(index).match(/^\{\d+(?:,\d*)?\}/);
       if (quantifier === null) return false;
-      const bounds = quantifier[0].slice(1, -1).split(",");
-      if (bounds.length === 2 && bounds[1] !== "" && Number(bounds[0]) > Number(bounds[1])) {
+      const repetition = quantifier[0];
+      const separator = repetition.indexOf(",");
+      const minimum = Number(repetition.slice(1, separator === -1 ? -1 : separator));
+      const maximumText = separator === -1 ? undefined : repetition.slice(separator + 1, -1);
+      const maximum =
+        maximumText === undefined || maximumText === "" ? undefined : Number(maximumText);
+      if (
+        minimum > maximumRegexRepetition ||
+        (maximum !== undefined && maximum > maximumRegexRepetition)
+      ) {
         return false;
       }
-      if (bounds.length === 2 && bounds[1] === "") unboundedQuantifiers += 1;
-      if (unboundedQuantifiers > 1) return false;
+      if (maximum !== undefined && minimum > maximum) return false;
+      if (separator !== -1) variableQuantifiers += 1;
+      if (variableQuantifiers > 1) return false;
       canQuantify = false;
-      index += quantifier[0].length;
+      index += repetition.length;
       continue;
     }
     if ("()|.^$}]".includes(character)) return false;

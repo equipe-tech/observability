@@ -1,7 +1,10 @@
 import { assert, describe, it } from "vite-plus/test";
+import { Effect, Exit } from "effect";
 import { maxEventsPerBatch, maxFieldsPerEvent, maxFieldValueLength } from "../src/BrowserEvents.ts";
-import { baseDataPolicy } from "../src/policy/DataPolicy.ts";
+import { ingestBrowserEvents } from "../src/node/index.ts";
+import { baseDataPolicy, parseDataPolicy } from "../src/policy/DataPolicy.ts";
 import { sanitizeText, transformSignalFields } from "../src/policy/PolicyTransform.ts";
+import * as Testing from "../src/testing/index.ts";
 
 const elapsed = (run: () => void): number => {
   const start = performance.now();
@@ -34,19 +37,60 @@ describe("policy sanitizer performance", () => {
     }
   });
 
-  it("bounds maximum browser batches", () => {
+  it("rejects the bounded catastrophic report patterns without executing them", async () => {
+    const patterns = [
+      "[a-z]{0,200}[a-z]{0,200}[a-z]{0,200}x",
+      "[A-Za-z0-9]{0,64}[A-Za-z0-9]{0,64}[A-Za-z0-9]{0,64}[A-Za-z0-9]{0,64}x",
+    ];
+    for (const pattern of patterns) {
+      const started = performance.now();
+      const failure = await Effect.runPromise(
+        Effect.flip(
+          parseDataPolicy({ attributes: {}, blockedKeys: [], blockedValuePatterns: [pattern] }),
+        ),
+      );
+      assert.strictEqual(failure.issues[0]?.code, "OBS_POLICY_UNSAFE_BLOCKED_VALUE_PATTERN");
+      assert.isBelow(performance.now() - started, 100);
+      assert.notInclude(JSON.stringify(failure), pattern);
+    }
+  });
+
+  it("bounds maximum browser batches through real ingest", async () => {
+    const marker = crypto.randomUUID().replaceAll("-", "");
+    const suffix = `&password=${marker}`;
     const fields = Object.fromEntries(
       Array.from({ length: maxFieldsPerEvent }, (_, index) => [
-        `field.${index}`,
-        `${"a@".repeat(maxFieldValueLength / 2 - 8)}password=value`,
+        `field.f${index}`,
+        `${"a".repeat(maxFieldValueLength - suffix.length)}${suffix}`,
       ]),
     );
-    const timing = measure(() => {
-      for (let index = 0; index < maxEventsPerBatch; index += 1) {
-        transformSignalFields(baseDataPolicy, "browser-ingest", fields);
-      }
-    });
-    assert.isBelow(timing, 2_000);
+    assert.lengthOf(Object.keys(fields), maxFieldsPerEvent);
+    const events = Array.from({ length: maxEventsPerBatch }, (_, index) => ({
+      id: `evt-${index}`,
+      name: "batch.maximum",
+      occurredAt: 1,
+      fields,
+    }));
+    const started = performance.now();
+    const result = await Effect.runPromise(
+      Testing.run(ingestBrowserEvents({ version: 1, events })),
+    );
+    const timing = performance.now() - started;
+    assert.deepStrictEqual(
+      result.exit,
+      Exit.succeed({
+        accepted: maxEventsPerBatch,
+        redacted: maxEventsPerBatch * maxFieldsPerEvent,
+        dropped: 0,
+      }),
+    );
+    assert.lengthOf(result.telemetry.logs, maxEventsPerBatch);
+    for (const log of result.telemetry.logs) {
+      const admitted = [...log.attributes.keys()].filter((key) => key.startsWith("field.f"));
+      assert.lengthOf(admitted, maxFieldsPerEvent);
+    }
+    assert.notInclude(JSON.stringify(result.telemetry), marker);
+    assert.isBelow(timing, 5_000);
   });
 
   it("truncates before scanning every server text bound", () => {
