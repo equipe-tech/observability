@@ -60,6 +60,17 @@ describe("executable data policy discrimination", () => {
     );
   });
 
+  it("bounds metric labels before scanning email candidates", () => {
+    assert.strictEqual(
+      metricLabelRejection(baseDataPolicy, "worker.name", "person@example.com"),
+      "blocked-value",
+    );
+    assert.strictEqual(
+      metricLabelRejection(baseDataPolicy, "worker.name", `${"x".repeat(65)}person@example.com`),
+      "string-bound",
+    );
+  });
+
   it("keeps built-in sensitive classifications when extensions omit them", async () => {
     const policy = await Effect.runPromise(
       parseDataPolicy({
@@ -162,6 +173,9 @@ describe("executable data policy discrimination", () => {
       "a\\1",
       "a.b",
       "a++",
+      "[a-z]+[a-z]+[a-z]+x",
+      "[A-Za-z]+-[0-9]+",
+      "[\\s\\S]*[\\s\\S]*x",
     ]) {
       const started = performance.now();
       const failure = await Effect.runPromise(
@@ -183,6 +197,7 @@ describe("executable data policy discrimination", () => {
       "literal\\.value",
       "^prefix[0-9]{2,8}$",
       "[a+]+",
+      "prefix_[A-Za-z]{1,32}_[0-9]{1,8}",
     ]) {
       const policy = await Effect.runPromise(
         parseDataPolicy({
@@ -264,6 +279,13 @@ describe("executable data policy discrimination", () => {
       `a=1&password=${secret}&b=2`,
       `note="token=${secret}" safe=1`,
       `data[password]=${secret}`,
+      `data['password']='${secret}'`,
+      `data["password"]="${secret}"`,
+      "data[`password`]=`" + secret + "`",
+      `password[0]=${secret}`,
+      `{\\"password\\":\\"${secret}\\"}`,
+      `{'password': '${secret}'}`,
+      `{"password" => "${secret}"}`,
       `authorization: Basic ${secret} ${secret}`,
       `authorization: Digest username=${secret}, response=${secret}`,
       `cookie: sid=${secret}; csrf=${secret}; theme=dark`,

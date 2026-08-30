@@ -204,7 +204,7 @@ const expectCollectorContract = (config: string, production: boolean): void => {
 
   const redaction = redactionTransformBlock(config);
   const bearer = redaction.indexOf("(?i)Bearer[[:space:]");
-  const assignment = redaction.indexOf("[=:][[:space:]");
+  const assignment = redaction.indexOf("(?:=>|[=:])[[:space:]");
   expect(bearer).toBeGreaterThanOrEqual(0);
   expect(assignment).toBeGreaterThan(bearer);
 };

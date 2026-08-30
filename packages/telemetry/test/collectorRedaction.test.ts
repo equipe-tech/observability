@@ -1,5 +1,7 @@
 import { assert, describe, it } from "vite-plus/test";
 import { readFile } from "node:fs/promises";
+import { baseDataPolicy } from "../src/policy/DataPolicy.ts";
+import { sanitizeText } from "../src/policy/PolicyTransform.ts";
 
 const exportPath = process.env["OBSERVABILITY_EXPORT_PATH"];
 const collectorEnabled = process.env["OBSERVABILITY_E2E"] === "1" && exportPath !== undefined;
@@ -46,11 +48,21 @@ describe.runIf(collectorEnabled)("Collector redaction", () => {
       `a=1&password=${marker}&b=2`,
       `note="token=${marker}" safe=1`,
       `data[password]=${marker}`,
+      `data['password']='${marker}'`,
+      `data["password"]="${marker}"`,
+      "data[`password`]=`" + marker + "`",
+      `password[0]=${marker}`,
+      `{\\"password\\":\\"${marker}\\"}`,
+      `{'password': '${marker}'}`,
+      `{"password" => "${marker}"}`,
       `authorization: Basic ${marker} ${marker}`,
       `authorization: Digest username=${marker}, response=${marker}`,
       `cookie: sid=${marker}; csrf=${marker}; theme=dark`,
       `password: my ${marker} pass phrase`,
       `token =${marker}`,
+      `token =${marker}`,
+      `token =${marker}`,
+      `token﻿=${marker}`,
       `'password': '${marker}'`,
       `"password" = '${marker}'`,
       "`password`: `" + marker + "`",
@@ -62,10 +74,15 @@ describe.runIf(collectorEnabled)("Collector redaction", () => {
       `password=${marker}#safe:1`,
       `password=${marker}&token=${marker}`,
     ];
+    const combinedFixtures = fixtures.map((value) => sanitizeText(baseDataPolicy, value));
     const attributes = (prefix: string) => [
       { key: "test.run_id", value: { stringValue: runId } },
       ...fixtures.map((value, index) => ({
         key: `${prefix}.${index}`,
+        value: { stringValue: value },
+      })),
+      ...combinedFixtures.map((value, index) => ({
+        key: `${prefix}.combined.${index}`,
         value: { stringValue: value },
       })),
     ];

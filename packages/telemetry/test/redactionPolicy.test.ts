@@ -190,6 +190,11 @@ describe("browser telemetry redaction policy", () => {
       [`a=1&password=${secret}&b=2`, "a=1&password=[REDACTED]&b=2"],
       [`note="token=${secret}" safe=1`, 'note="token=[REDACTED]" safe=1'],
       [`data[password]=${secret}`, "data[password]=[REDACTED]"],
+      [`data['password']='${secret}'`, "data['password']='[REDACTED]'"],
+      [`data["password"]="${secret}"`, 'data["password"]="[REDACTED]"'],
+      ["data[`password`]=`" + secret + "`", "data[`password`]=`[REDACTED]`"],
+      [`password[0]=${secret}`, "password[0]=[REDACTED]"],
+      [`{\\"password\\":\\"${secret}\\"}`, sensitiveTextReplacement],
       [`token =${secret}`, "token =[REDACTED]"],
     ] satisfies ReadonlyArray<readonly [string, string]>;
     for (const [source, expected] of cases) {
@@ -203,6 +208,7 @@ describe("browser telemetry redaction policy", () => {
     const cases = [
       [`'password': '${secret}'`, `'password': '[REDACTED]'`],
       [`"password" = '${secret}'`, `"password" = '[REDACTED]'`],
+      [`"password" => '${secret}'`, `"password" => '[REDACTED]'`],
       ["`password`: `" + secret + "`", "`password`: `[REDACTED]`"],
       [`error sending 'token': "${secret}"`, `error sending 'token': "[REDACTED]"`],
       [`{'password': '${secret}'}`, "[REDACTED]"],

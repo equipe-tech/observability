@@ -17,8 +17,11 @@ const occurrences = (source: string, value: string): number => source.split(valu
 const collectorPattern = (source: string): RegExp => {
   const insensitive = source.startsWith("(?i)");
   const dotAll = source.startsWith("(?s)");
-  const normalized = source.replace(/^\(\?[is]\)/, "").replaceAll("[:space:]", "\\s");
-  return new RegExp(normalized, `${insensitive ? "i" : ""}${dotAll ? "s" : ""}`);
+  const normalized = source
+    .replace(/^\(\?[is]\)/, "")
+    .replaceAll("[:space:]", "\\s")
+    .replaceAll("\\\\x{", "\\u{");
+  return new RegExp(normalized, `${insensitive ? "i" : ""}${dotAll ? "s" : ""}u`);
 };
 
 const behaviouralCases = [
@@ -104,7 +107,7 @@ describe("browser and Collector redaction parity", () => {
       assert.include(logs, 'replace_all_patterns(resource.attributes, "value"');
       assert.include(metrics, 'replace_all_patterns(datapoint.attributes, "value"');
       assert.include(metrics, 'replace_all_patterns(resource.attributes, "value"');
-      assert.include(metrics, "   -   　");
+      assert.include(metrics, "   -   　\\\\x{2028}\\\\x{2029}\\\\x{feff}");
       for (const pattern of collectorBlockedValuePatterns) {
         assert.include(trace, pattern);
         assert.include(logs, pattern);

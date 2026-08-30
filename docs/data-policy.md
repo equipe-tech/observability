@@ -29,7 +29,7 @@ export const policy = definePolicy({
 
 `parseDataPolicy` compila a declaração. A compilação soma as regras da aplicação às regras básicas imutáveis. Uma aplicação não pode remover uma regra básica de chave ou valor. Expressões de valores bloqueados da aplicação usam as flags global e case-insensitive, portanto todas as ocorrências são substituídas.
 
-As expressões da aplicação usam uma gramática conservadora. Ela aceita literais, pontuação escapada, classes de caracteres, os anchors `^` e `$` e quantificadores diretos `?`, `*`, `+`, `{n}`, `{n,}` e `{n,m}`. A compilação rejeita grupos, alternância, lookarounds, backreferences, curingas sem escape, quantificadores encadeados e classes incompletas antes de construir um `RegExp`. Padrões como `(a|aa)+$` falham com um código `OBS_POLICY_UNSAFE_*` sem incluir o padrão no diagnóstico.
+As expressões da aplicação usam uma gramática conservadora. Ela aceita literais, pontuação escapada, classes de caracteres, os anchors `^` e `$` e quantificadores diretos `?`, `*`, `+`, `{n}`, `{n,}` e `{n,m}`. Cada expressão aceita no máximo um quantificador sem limite. A compilação rejeita grupos, alternância, lookarounds, backreferences, curingas sem escape, quantificadores encadeados, classes incompletas e múltiplos quantificadores sem limite antes de construir um `RegExp`. Padrões como `(a|aa)+$` e `[a-z]+[a-z]+x` falham com um código `OBS_POLICY_UNSAFE_*` sem incluir o padrão no diagnóstico.
 
 ## Classificações
 
@@ -62,7 +62,7 @@ Eventos do browser mantêm no máximo 32 campos e 1.024 caracteres por valor. Ev
 
 A rejeição de política das métricas usa `POLICY_BLOCKED`. Limites de cardinalidade e quantidade de campos usam `LIMIT_EXCEEDED`.
 
-O truncamento no servidor preserva o prefixo limitado. Decisões da política emitem `rule: "bounds"` com `action: "truncated"` ou `action: "dropped"`. O campo `dropped` conta cada campo removido pela política ou pelos limites.
+O truncamento no servidor preserva o prefixo limitado. O pacote limita cada texto antes de executar scanners ou expressões da aplicação. O trecho removido não entra em um scanner nem em um buffer de sinal. Decisões da política emitem `rule: "bounds"` com `action: "truncated"` ou `action: "dropped"`. O campo `dropped` conta cada campo removido pela política ou pelos limites.
 
 `layer`, `layerOtlp` e `layerFromEnv` aceitam `resourceAttributes`. A construção da layer combina atributos adicionais de recurso depois da classificação da política. Chaves canônicas ou da aplicação duplicadas interrompem a construção com `OBS_POLICY_DUPLICATE_RESOURCE_ATTRIBUTE`.
 

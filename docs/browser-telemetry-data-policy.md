@@ -27,9 +27,9 @@ The following content becomes `[REDACTED]` within safe string values and event n
 - JSON Web Tokens
 - Email addresses
 - RSA, EC, OpenSSH, and generic private-key blocks
-- Sensitive `key=value` and `key:value` assignments anywhere in the text, including query strings, Python and Ruby dictionary representations, bracketed keys such as `data[password]`, quoted keys and values using double quotes, single quotes, or backticks, Basic and Digest credentials, cookies, and values containing spaces
+- Sensitive `key=value`, `key:value`, and Ruby `key => value` assignments anywhere in the text, including query strings, Python and Ruby dictionary representations, indexed keys such as `password[0]`, bracketed keys such as `data[password]`, `data['password']`, `data["password"]`, and ``data[`password`]``, escaped JSON assignments, Basic and Digest credentials, cookies, and values containing spaces
 
-The scanner searches for sensitive assignments instead of consuming each outer assignment as a unit. An ampersand or URL fragment marker ends a redacted value only when the following text begins another quoted or unquoted key assignment. A matching value quote also ends the browser redaction. Otherwise sanitization replaces the rest of the bounded string. This intentional loss prevents an ampersand or fragment marker inside a credential, a credential with spaces, a Digest field, or a cookie field from escaping through an uncertain boundary. The Collector preserves unambiguous ampersand and fragment assignment tails, but its general OTTL fallback may also remove a closing quote or other suffix after the sensitive value. JavaScript and Collector patterns treat ASCII whitespace and the common Unicode spaces U+00A0, U+1680, U+2000 through U+200A, U+202F, U+205F, and U+3000 as whitespace.
+The scanner searches for sensitive assignments instead of consuming each outer assignment as a unit. An ampersand or URL fragment marker ends a redacted value only when the following text begins another quoted or unquoted key assignment. A matching value quote also ends the browser redaction. Otherwise sanitization replaces the rest of the bounded string. This intentional loss prevents an ampersand or fragment marker inside a credential, a credential with spaces, a Digest field, or a cookie field from escaping through an uncertain boundary. The Collector preserves unambiguous ampersand and fragment assignment tails, but its general OTTL fallback may also remove a closing quote or other suffix after the sensitive value. JavaScript and Collector patterns treat ASCII whitespace and the Unicode spaces U+00A0, U+1680, U+2000 through U+200A, U+2028, U+2029, U+202F, U+205F, U+3000, and U+FEFF as whitespace.
 
 Valid serialized JSON beginning with an object or array is parsed and sanitized iteratively. Values under sensitive property keys become `[REDACTED]`, credential-bearing keys disappear, credential patterns and structured sensitive assignments are replaced in string leaves, array order is retained, and compact valid JSON is emitted. Traversal is limited to 32 levels and 1,024 values. Inputs beyond either limit become `[REDACTED]`.
 
@@ -37,7 +37,7 @@ Malformed JSON-like text containing a sensitive term becomes `[REDACTED]`. Brows
 
 ## Bounds and collisions
 
-Sanitization inspects complete original input before applying output bounds.
+Browser producers enforce the original inspection bound before any scanner runs. Inputs beyond that bound become `[REDACTED]`. The bounded prefix never shares a buffer with removed text.
 
 | Data               | Original inspection bound |            Output bound |
 | ------------------ | ------------------------: | ----------------------: |

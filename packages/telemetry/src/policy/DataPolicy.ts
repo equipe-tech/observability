@@ -77,6 +77,7 @@ const invalid = (issues: ReadonlyArray<PolicyIssue>): InvalidDataPolicy =>
 const isAcceptedRegex = (source: string): boolean => {
   let index = 0;
   let canQuantify = false;
+  let unboundedQuantifiers = 0;
   while (index < source.length) {
     const character = source.charAt(index);
     if (character === "^" && index === 0) {
@@ -125,6 +126,8 @@ const isAcceptedRegex = (source: string): boolean => {
     }
     if (character === "?" || character === "+" || character === "*") {
       if (!canQuantify) return false;
+      if (character === "+" || character === "*") unboundedQuantifiers += 1;
+      if (unboundedQuantifiers > 1) return false;
       canQuantify = false;
       index += 1;
       continue;
@@ -137,6 +140,8 @@ const isAcceptedRegex = (source: string): boolean => {
       if (bounds.length === 2 && bounds[1] !== "" && Number(bounds[0]) > Number(bounds[1])) {
         return false;
       }
+      if (bounds.length === 2 && bounds[1] === "") unboundedQuantifiers += 1;
+      if (unboundedQuantifiers > 1) return false;
       canQuantify = false;
       index += quantifier[0].length;
       continue;

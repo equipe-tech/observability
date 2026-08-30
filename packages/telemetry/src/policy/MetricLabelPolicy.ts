@@ -3,8 +3,9 @@ import { isValidAttributeName } from "../contract/EventName.ts";
 import type { MetricAttributeValue } from "../Metrics.ts";
 import { replaceStructuredAssignments } from "./BrowserFieldPolicy.ts";
 import type { DataPolicy } from "./DataPolicy.ts";
-import { isSensitiveFieldKey } from "./PolicyVocabulary.ts";
+import { isSensitiveFieldKey, replaceEmailCandidates } from "./PolicyVocabulary.ts";
 
+const maximumMetricLabelTextLength = 64;
 const labelValuePattern = /^[A-Za-z0-9/][A-Za-z0-9._:/-]{0,63}$/;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const tracePattern = /^[0-9a-f]{32}$/;
@@ -55,6 +56,8 @@ export const metricLabelRejection = (
       : undefined;
   }
   if (Predicate.isBoolean(value)) return undefined;
+  if (value.length > maximumMetricLabelTextLength) return "string-bound";
+  if (replaceEmailCandidates(value) !== value) return "blocked-value";
   for (const pattern of policy.blockedValuePatterns) {
     pattern.lastIndex = 0;
     if (pattern.test(value)) return "blocked-value";

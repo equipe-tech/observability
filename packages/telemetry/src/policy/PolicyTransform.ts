@@ -2,10 +2,18 @@ import { Predicate } from "effect";
 import { maxFieldKeyLength } from "../BrowserEvents.ts";
 import { isValidAttributeName } from "../contract/EventName.ts";
 import type { AttributeValue } from "../contract/TelemetryEvent.ts";
-import { replaceStructuredText, sanitizeBrowserFields } from "./BrowserFieldPolicy.ts";
+import {
+  maxOriginalStringLength,
+  replaceStructuredText,
+  sanitizeBrowserFields,
+} from "./BrowserFieldPolicy.ts";
 import type { WideEventFields } from "../WideEvent.ts";
 import type { DataPolicy, PolicySurface } from "./DataPolicy.ts";
-import { sensitiveFieldReplacement, sensitiveTextReplacement } from "./PolicyVocabulary.ts";
+import {
+  replaceEmailCandidates,
+  sensitiveFieldReplacement,
+  sensitiveTextReplacement,
+} from "./PolicyVocabulary.ts";
 
 export type PolicyAction = "masked" | "truncated" | "dropped";
 export type PolicyRule =
@@ -47,7 +55,7 @@ const serverBounds: {
 const reservedPrefixes = ["event.", "browser."];
 
 const replaceBlockedValues = (policy: DataPolicy, value: string): string => {
-  let output = value;
+  let output = replaceEmailCandidates(value);
   for (const pattern of policy.blockedValuePatterns) {
     pattern.lastIndex = 0;
     output = output.replace(pattern, sensitiveTextReplacement);
@@ -60,12 +68,13 @@ const sanitizeBoundedText = (
   surface: Exclude<PolicySurface, "browser-ingest" | "metric">,
   value: string,
 ): { readonly value: string; readonly blocked: boolean; readonly truncated: boolean } => {
-  const sanitized = replaceBlockedValues(policy, value);
   const maximum = serverBounds[surface].maximumTextLength;
+  const bounded = value.slice(0, maximum);
+  const sanitized = replaceBlockedValues(policy, bounded);
   return {
     value: sanitized.slice(0, maximum),
-    blocked: sanitized !== value,
-    truncated: sanitized.length > maximum,
+    blocked: sanitized !== bounded,
+    truncated: value.length > maximum || sanitized.length > maximum,
   };
 };
 
@@ -98,9 +107,10 @@ const transformBrowserFields = (
       continue;
     }
     if (Predicate.isString(value)) {
-      const sanitized = replaceBlockedValues(policy, value);
-      admitted[key] = sanitized;
-      if (sanitized !== value) {
+      const bounded = value.slice(0, maxOriginalStringLength);
+      const sanitized = replaceBlockedValues(policy, bounded);
+      admitted[key] = value.length > maxOriginalStringLength ? sensitiveTextReplacement : sanitized;
+      if (sanitized !== bounded) {
         redactions.push({ rule: "blocked-value", action: "masked", surface: "browser-ingest" });
       }
     } else {

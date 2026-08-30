@@ -11,12 +11,13 @@ import {
   baseBlockedKeys,
   baseBlockedValuePatterns,
   isSensitiveFieldKey,
+  replaceEmailCandidates,
   sensitiveFieldReplacement,
   sensitiveTextReplacement,
 } from "./PolicyVocabulary.ts";
 
 const maxOriginalFieldKeyLength = 2_048;
-const maxOriginalStringLength = 16_384;
+export const maxOriginalStringLength = 16_384;
 const maxJsonDepth = 32;
 const maxJsonValues = 1_024;
 
@@ -50,14 +51,57 @@ const sensitiveTextTermPattern = new RegExp(
   `(?:${sensitiveTerms})(?=[._-]|[A-Z0-9]|[^A-Za-z0-9._-]|$)`,
 );
 
-const structuredAssignmentPattern =
-  /(?:(["'`])([A-Za-z0-9_.\-[\]]+)\1|([A-Za-z0-9_.\-[\]]+))(\s*[=:]\s*)/g;
-const nextAssignmentPattern = /^\s*(?:["'`]?[A-Za-z0-9_.\-[\]]+["'`]?)\s*[=:]/;
+const maximumAssignmentKeyLength = 256;
 
-const closingQuoteIndex = (value: string, start: number, quote: string): number => {
+interface AssignmentCandidate {
+  readonly key: string;
+  readonly start: number;
+  readonly valueStart: number;
+}
+
+const isAssignmentKeyCharacter = (character: string): boolean =>
+  /[A-Za-z0-9_.\-[\]"'`\\]/.test(character);
+
+const assignmentCandidateAt = (value: string, start: number): AssignmentCandidate | undefined => {
+  if (!isAssignmentKeyCharacter(value[start] ?? "")) return undefined;
+  let index = start;
+  while (
+    index < value.length &&
+    index - start <= maximumAssignmentKeyLength &&
+    isAssignmentKeyCharacter(value[index] ?? "")
+  ) {
+    index += 1;
+  }
+  if (index - start > maximumAssignmentKeyLength) return undefined;
+  const keyEnd = index;
+  const first = value[start];
+  const escapedFirst = first === "\\" ? value[start + 1] : first;
+  const closingKeyQuote = escapedFirst === '"' || escapedFirst === "'" || escapedFirst === "`";
+  if (closingKeyQuote) {
+    const closingLength = first === "\\" ? 2 : 1;
+    const closingStart = keyEnd - closingLength;
+    if (value.slice(closingStart, keyEnd) !== value.slice(start, start + closingLength)) {
+      return undefined;
+    }
+  }
+  while (index < value.length && /\s/.test(value[index] ?? "")) index += 1;
+  if (value[index] !== ":" && value[index] !== "=") return undefined;
+  if (value[index] === "=" && value[index + 1] === ">") index += 1;
+  index += 1;
+  while (index < value.length && /\s/.test(value[index] ?? "")) index += 1;
+  return { key: value.slice(start, keyEnd), start, valueStart: index };
+};
+
+const closingDelimiterIndex = (
+  value: string,
+  start: number,
+  quote: string,
+  escapedQuote: boolean,
+): number => {
   let escaped = false;
   for (let index = start; index < value.length; index += 1) {
     const character = value[index];
+    if (escapedQuote && character === "\\" && value[index + 1] === quote) return index;
     if (escaped) {
       escaped = false;
     } else if (character === "\\") {
@@ -72,18 +116,18 @@ const closingQuoteIndex = (value: string, start: number, quote: string): number 
 const safeValueEnd = (value: string, start: number): number => {
   for (let index = start; index < value.length; index += 1) {
     const character = value[index];
-    if (
-      (character === "&" || character === "#") &&
-      nextAssignmentPattern.test(value.slice(index + 1))
-    ) {
-      return index;
+    if (character !== "&" && character !== "#") continue;
+    let candidateStart = index + 1;
+    while (candidateStart < value.length && /\s/.test(value[candidateStart] ?? "")) {
+      candidateStart += 1;
     }
+    if (assignmentCandidateAt(value, candidateStart) !== undefined) return index;
   }
   return value.length;
 };
 
 const replaceCoreValues = (value: string): string => {
-  let sanitized = value;
+  let sanitized = replaceEmailCandidates(value);
   for (const pattern of baseBlockedValuePatterns) {
     pattern.lastIndex = 0;
     sanitized = sanitized.replace(pattern, sensitiveTextReplacement);
@@ -92,6 +136,7 @@ const replaceCoreValues = (value: string): string => {
 };
 
 const containsCoreValue = (value: string): boolean => {
+  if (replaceEmailCandidates(value) !== value) return true;
   for (const pattern of baseBlockedValuePatterns) {
     pattern.lastIndex = 0;
     if (pattern.test(value)) {
@@ -103,45 +148,50 @@ const containsCoreValue = (value: string): boolean => {
 };
 
 export const replaceStructuredAssignments = (value: string): string => {
-  structuredAssignmentPattern.lastIndex = 0;
   let sanitized = "";
   let offset = 0;
-  for (const match of value.matchAll(structuredAssignmentPattern)) {
-    const index = match.index;
-    const full = match[0];
-    const quotedKey = match[2];
-    const unquotedKey = match[3];
-    const key = Predicate.isString(quotedKey) ? quotedKey : unquotedKey;
-    if (
-      !Predicate.isNumber(index) ||
-      !Predicate.isString(full) ||
-      !Predicate.isString(key) ||
-      index < offset ||
-      !isSensitiveFieldKey(key)
-    ) {
+  let index = 0;
+  while (index < value.length) {
+    const previous = value[index - 1];
+    if (previous !== undefined && /[A-Za-z0-9_.-]/.test(previous)) {
+      index += 1;
       continue;
     }
-    const valueStart = index + full.length;
-    const explicitQuote = value[valueStart];
-    const enclosingQuote = value[index - 1];
-    const quote =
-      explicitQuote === '"' || explicitQuote === "'" || explicitQuote === "`"
-        ? explicitQuote
-        : enclosingQuote === '"' || enclosingQuote === "'" || enclosingQuote === "`"
-          ? enclosingQuote
-          : undefined;
-    const quotedValueStart = quote === explicitQuote ? valueStart + 1 : valueStart;
-    const quotedValueEnd =
-      quote === undefined ? -1 : closingQuoteIndex(value, quotedValueStart, quote);
-    sanitized += value.slice(offset, index) + full;
-    if (quotedValueEnd >= 0 && quote !== undefined) {
-      if (quote === explicitQuote) sanitized += quote;
-      sanitized += sensitiveTextReplacement + quote;
-      offset = quotedValueEnd + 1;
+    const candidate = assignmentCandidateAt(value, index);
+    if (candidate === undefined || !isSensitiveFieldKey(candidate.key)) {
+      index += 1;
       continue;
     }
+    const explicitQuote = value[candidate.valueStart];
+    const escapedQuote =
+      explicitQuote === "\\" &&
+      (value[candidate.valueStart + 1] === '"' ||
+        value[candidate.valueStart + 1] === "'" ||
+        value[candidate.valueStart + 1] === "`");
+    const quote = escapedQuote ? value[candidate.valueStart + 1] : explicitQuote;
+    const hasExplicitQuote = quote === '"' || quote === "'" || quote === "`";
+    const enclosingQuote = value[candidate.start - 1];
+    const activeQuote = hasExplicitQuote
+      ? quote
+      : enclosingQuote === '"' || enclosingQuote === "'" || enclosingQuote === "`"
+        ? enclosingQuote
+        : undefined;
+    const openingLength = escapedQuote ? 2 : hasExplicitQuote ? 1 : 0;
+    const contentStart = candidate.valueStart + openingLength;
+    const closingIndex =
+      activeQuote === undefined
+        ? -1
+        : closingDelimiterIndex(value, contentStart, activeQuote, escapedQuote);
+    sanitized += value.slice(offset, candidate.valueStart + openingLength);
     sanitized += sensitiveTextReplacement;
-    offset = safeValueEnd(value, valueStart);
+    if (closingIndex >= 0 && activeQuote !== undefined) {
+      const closingLength = escapedQuote ? 2 : 1;
+      sanitized += value.slice(closingIndex, closingIndex + closingLength);
+      offset = closingIndex + closingLength;
+    } else {
+      offset = safeValueEnd(value, candidate.valueStart);
+    }
+    index = offset;
   }
   return sanitized + value.slice(offset);
 };
