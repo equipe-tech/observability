@@ -223,9 +223,13 @@ describe("axiom query support", () => {
         ],
       });
       const stub = yield* Effect.promise(() => startStubAxiom([], metricsResponse));
-      const metric = yield* findMetric(stub.env, "test-run-1", "e2e").pipe(
-        Effect.ensuring(Effect.sync(() => stub.server.close())),
-      );
+      const metric = yield* findMetric(
+        stub.env,
+        "test-run-1",
+        "e2e",
+        "observability-canary",
+        "0.1.0",
+      ).pipe(Effect.ensuring(Effect.sync(() => stub.server.close())));
 
       assert.isTrue(Option.isSome(metric));
       assert.include(Option.getOrThrow(metric).content, "tokenizer-control");
@@ -233,10 +237,12 @@ describe("axiom query support", () => {
       assert.isDefined(query);
       assert.strictEqual(query.path, "/v1/query/_mpl?format=metrics-v2");
       assert.include(query.query, "`e2e-metrics`:`canary.operations`");
-      assert.include(
-        query.query,
-        '`canary.run_id` == "test-run-1" and `deployment.environment.name` == "e2e" and `deployment.environment` == "e2e"',
-      );
+      assert.include(query.query, '`canary.run_id` == "test-run-1"');
+      assert.include(query.query, '`service.namespace` == "equipe-tech"');
+      assert.include(query.query, '`service.name` == "observability-canary"');
+      assert.include(query.query, '`service.version` == "0.1.0"');
+      assert.include(query.query, '`deployment.environment.name` == "e2e"');
+      assert.include(query.query, '`deployment.environment` == "e2e"');
     }),
   );
 });

@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Metric, Option } from "effect";
+import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
 import * as Testing from "../src/testing/index.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 import * as WideEvent from "../src/WideEvent.ts";
@@ -26,6 +27,12 @@ describe("Testing.run", () => {
         description: "Testing load",
         attributes: { "testing.run_id": runId, unit: "%" },
       });
+      const identity = yield* parseResourceIdentity({
+        serviceName: "testing-service",
+        serviceVersion: "9.9.9",
+        environment: "test",
+        instance: Option.some("testing-instance"),
+      });
       const { exit, telemetry } = yield* Testing.run(
         Effect.gen(function* () {
           yield* Effect.sleep("5 millis").pipe(Effect.withSpan("testing.child"));
@@ -37,9 +44,7 @@ describe("Testing.run", () => {
         }).pipe(Effect.withSpan("testing.operation")),
         {
           config: new TelemetryConfig({
-            serviceName: "testing-service",
-            serviceVersion: "9.9.9",
-            environment: "test",
+            identity,
             otlpEndpoint: new URL("http://telemetry.invalid"),
           }),
         },
@@ -54,6 +59,10 @@ describe("Testing.run", () => {
       assert.strictEqual(child.traceId, root.traceId);
       assert.deepStrictEqual(child.parentSpanId, Option.some(root.spanId));
       assert.strictEqual(
+        attributeOrUndefined(root.resourceAttributes, "service.namespace"),
+        "equipe-tech",
+      );
+      assert.strictEqual(
         attributeOrUndefined(root.resourceAttributes, "service.name"),
         "testing-service",
       );
@@ -61,6 +70,10 @@ describe("Testing.run", () => {
       assert.strictEqual(
         attributeOrUndefined(root.resourceAttributes, "deployment.environment.name"),
         "test",
+      );
+      assert.strictEqual(
+        attributeOrUndefined(root.resourceAttributes, "service.instance.id"),
+        "testing-instance",
       );
 
       const log = telemetry.logs.find(
@@ -71,6 +84,10 @@ describe("Testing.run", () => {
       assert.deepStrictEqual(log.traceId, Option.some(root.traceId));
       assert.strictEqual(attributeOrUndefined(log.attributes, "event.kind"), "wide");
       assert.strictEqual(attributeOrUndefined(log.attributes, "testing.run_id"), runId);
+      assert.strictEqual(
+        attributeOrUndefined(log.resourceAttributes, "service.instance.id"),
+        "testing-instance",
+      );
 
       const metric = telemetry.metrics.find((candidate) => candidate.name === "testing.operations");
       assert.isDefined(metric);
@@ -79,6 +96,19 @@ describe("Testing.run", () => {
       );
       assert.isDefined(point);
       assert.deepStrictEqual(point.value, Option.some(1));
+      assert.strictEqual(
+        attributeOrUndefined(metric.resourceAttributes, "service.namespace"),
+        "equipe-tech",
+      );
+      assert.isUndefined(attributeOrUndefined(metric.resourceAttributes, "service.instance.id"));
+      for (const capturedMetric of telemetry.metrics) {
+        assert.isUndefined(
+          attributeOrUndefined(capturedMetric.resourceAttributes, "service.instance.id"),
+        );
+        for (const capturedPoint of capturedMetric.points) {
+          assert.isUndefined(attributeOrUndefined(capturedPoint.attributes, "service.instance.id"));
+        }
+      }
       assert.strictEqual(metric.kind, "sum");
       if (metric.kind === "sum") {
         assert.isFalse(metric.isMonotonic);

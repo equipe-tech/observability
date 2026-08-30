@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Metric, Predicate, Schema } from "effect";
+import { Context, Effect, Layer, Metric, Option, Predicate, Result, Schema } from "effect";
 import { HttpBody, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { OtlpExporter } from "effect/unstable/observability";
 import type {
@@ -18,6 +18,12 @@ import type {
   ObservableGaugeRegistration,
 } from "./Metrics.ts";
 import { MetricsError } from "./Metrics.ts";
+import type { EnvironmentAliasPolicy, ResourceIdentity } from "./ResourceIdentity.ts";
+import {
+  EnvironmentAliasPolicy as EnvironmentAliasPolicySchema,
+  parseResourceIdentity,
+  serviceResourceAttributes,
+} from "./ResourceIdentity.ts";
 import type { TelemetryConfig } from "./TelemetryConfig.ts";
 
 const instrumentNamePattern = /^[A-Za-z][A-Za-z0-9_.\-/]{0,254}$/;
@@ -65,6 +71,7 @@ const MetricsOptionsInput = Schema.Struct({
   serviceName: Schema.String,
   serviceVersion: Schema.String,
   environment: Schema.String,
+  deploymentEnvironmentAlias: EnvironmentAliasPolicySchema.pipe(Schema.optionalKey),
   otlpEndpoint: Schema.String,
   exportIntervalMilliseconds: Schema.Number.pipe(Schema.optionalKey),
   flushTimeoutMilliseconds: Schema.Number.pipe(Schema.optionalKey),
@@ -78,9 +85,8 @@ const decodeMetricsOptions = Schema.decodeUnknownSync(MetricsOptionsInput);
 
 interface NormalizedOptions {
   readonly enabled: boolean;
-  readonly serviceName: string;
-  readonly serviceVersion: string;
-  readonly environment: string;
+  readonly identity: ResourceIdentity;
+  readonly environmentAlias: EnvironmentAliasPolicy;
   readonly metricsEndpoint: string;
   readonly exportIntervalMilliseconds: number;
   readonly flushTimeoutMilliseconds: number;
@@ -273,19 +279,29 @@ const parseOptions = (input: MetricsOptions): NormalizedOptions => {
       cause,
     );
   }
-  if (
-    options.serviceName.length === 0 ||
-    options.serviceVersion.length === 0 ||
-    options.environment.length === 0
-  ) {
-    throw metricError(
-      "INVALID_CONFIGURATION",
-      "createMetrics",
-      "Metrics configuration is invalid. Service name, version, and environment must be nonempty.",
-      undefined,
-      false,
-    );
+  const parsedIdentity = Effect.runSync(
+    Effect.result(
+      parseResourceIdentity({
+        serviceName: options.serviceName,
+        serviceVersion: options.serviceVersion,
+        environment: options.environment,
+        instance: Option.none(),
+      }),
+    ),
+  );
+  if (Result.isFailure(parsedIdentity)) {
+    const failure = parsedIdentity.failure;
+    throw new MetricsError({
+      code: "INVALID_CONFIGURATION",
+      operation: "createMetrics",
+      message: failure.message,
+      field: failure.field,
+      rule: failure.rule,
+      retryable: false,
+      cause: failure,
+    });
   }
+  const identity: ResourceIdentity = parsedIdentity.success;
   let endpoint: URL;
   try {
     endpoint = new URL(options.otlpEndpoint);
@@ -337,14 +353,14 @@ const parseOptions = (input: MetricsOptions): NormalizedOptions => {
     options.serviceName,
     options.serviceVersion,
     options.environment,
+    options.deploymentEnvironmentAlias ?? "omitted",
     exportIntervalMilliseconds,
     flushTimeoutMilliseconds,
   ]);
   return {
     enabled,
-    serviceName: options.serviceName,
-    serviceVersion: options.serviceVersion,
-    environment: options.environment,
+    identity,
+    environmentAlias: options.deploymentEnvironmentAlias ?? "omitted",
     metricsEndpoint: endpoint.toString(),
     exportIntervalMilliseconds,
     flushTimeoutMilliseconds,
@@ -475,6 +491,7 @@ const parseAttributes = (
       !instrumentNamePattern.test(attribute.key) ||
       attribute.key === "unit" ||
       attribute.key === "time_unit" ||
+      attribute.key === "service.instance.id" ||
       keys.has(attribute.key) ||
       numberIsInvalid ||
       stringIsInvalid
@@ -521,12 +538,22 @@ const attributesToOtlp = (
 
 const directAttributesToOtlp = (
   attributes: Metric.Metric.AttributeSet | undefined,
+  instrumentName: string,
 ): ReadonlyArray<OtlpKeyValue> => {
   if (attributes === undefined) {
     return [];
   }
   const values: Array<OtlpKeyValue> = [];
   for (const [key, value] of Object.entries(attributes)) {
+    if (key === "service.instance.id") {
+      throw metricError(
+        "EXPORT_FAILED",
+        "flush",
+        `Metric "${instrumentName}" cannot use service.instance.id as a datapoint attribute. Remove the reserved key before retrying.`,
+        instrumentName,
+        false,
+      );
+    }
     if (key !== "unit" && key !== "time_unit") {
       values.push({ key, value: { stringValue: value } });
     }
@@ -1059,19 +1086,14 @@ class MetricsRuntimeState {
         resourceMetrics: [
           {
             resource: {
-              attributes: [
-                { key: "service.name", value: { stringValue: this.options.serviceName } },
-                { key: "service.version", value: { stringValue: this.options.serviceVersion } },
-                {
-                  key: "deployment.environment.name",
-                  value: { stringValue: this.options.environment },
-                },
-              ],
+              attributes: Object.entries(
+                serviceResourceAttributes(this.options.identity, this.options.environmentAlias),
+              ).map(([key, value]) => ({ key, value: { stringValue: value } })),
               droppedAttributesCount: 0,
             },
             scopeMetrics: [
               {
-                scope: { name: this.options.serviceName },
+                scope: { name: this.options.identity.serviceName },
                 metrics,
               },
             ],
@@ -1101,7 +1123,7 @@ class MetricsRuntimeState {
         false,
       );
     }
-    const attributes = directAttributesToOtlp(snapshot.attributes);
+    const attributes = directAttributesToOtlp(snapshot.attributes, snapshot.id);
     const previous = metrics.find((metric) => metric.name === snapshot.id);
     names.set(snapshot.id, { kind: snapshot.type, definition: definitionIdentity });
     if (snapshot.type === "Counter") {
@@ -1862,9 +1884,10 @@ const makeMetricsRuntime = Effect.fn("makeMetricsRuntime")(function* (
   const client = yield* HttpClient.HttpClient;
   const flusher = yield* OtlpExporter.Flusher;
   const parsed = parseOptions({
-    serviceName: config.serviceName,
-    serviceVersion: config.serviceVersion,
-    environment: config.environment,
+    serviceName: config.identity.serviceName,
+    serviceVersion: config.identity.serviceVersion,
+    environment: config.identity.environment,
+    deploymentEnvironmentAlias: config.environmentAlias,
     otlpEndpoint: config.otlpEndpoint.toString(),
     flushTimeoutMilliseconds: options.shutdownTimeoutMilliseconds,
   });

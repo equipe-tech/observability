@@ -111,6 +111,16 @@ Canários usam `mandatory: true` na definição. Um resultado `cancelled` contin
 | correlação de requisição | `request.id`                                                     |
 | correlação de execução   | `run.id`                                                         |
 
+## Correlação tipada
+
+`CorrelationContext` usa `TraceLinkage` para representar dois estados. `Untraced` não contém IDs de trace. `Traced` sempre contém `traceId` e `spanId`, portanto um vínculo parcial não compila. IDs de trace usam 32 caracteres hexadecimais minúsculos e IDs de span usam 16. Valores compostos apenas por zeros são inválidos.
+
+`requestId` e `runId` aceitam de 1 a 128 caracteres sem caracteres de controle. Quando `emit` omite `correlation`, o produtor herda o `CurrentCorrelation` ambiente. Esse comportamento mantém eventos emitidos dentro de uma requisição no mesmo contexto.
+
+`withBackgroundCorrelation` é a fronteira explícita para trabalho em segundo plano. Ele exige um contexto e cria um novo trace raiz quando o contexto é `Untraced`. Assim, um job não herda IDs de uma requisição ambiente. Um contexto `Traced` cria um span filho do vínculo externo e mantém `traceId` e `spanId` nos campos nativos OTLP.
+
+Use `generateRunId("job", nome)` para jobs e `generateRunId("canary", nome)` para canários. O helper normaliza o nome para minúsculas, limita o resultado a 128 caracteres e adiciona tempo e entropia. Jobs recebem o prefixo `job-`. Canários recebem `test-`.
+
 ## Erros
 
 Falhas de compilação retornam `InvalidTelemetryContract` com código `OBS_CONTRACT_INVALID` e uma lista `ReadonlyArray<ContractIssue>`. A lista agrega todos os problemas encontrados. Cada item usa um código fechado `OBS_CONTRACT_*` e inclui contexto público seguro.

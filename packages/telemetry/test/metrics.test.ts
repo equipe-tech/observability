@@ -2,6 +2,7 @@ import { assert, describe, it } from "vite-plus/test";
 import { Effect, ManagedRuntime, Metric, Option, Predicate, Schema } from "effect";
 import { createServer, type Server } from "node:http";
 import { createMetrics, MetricsError, type MetricAttribute } from "../src/Metrics.ts";
+import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
 import * as Testing from "../src/testing/index.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 
@@ -167,6 +168,44 @@ const waitFor = async (condition: () => boolean, timeoutMilliseconds = 2_000): P
 };
 
 describe("framework-neutral metrics", () => {
+  it("uses canonical service resource identity and rejects the reserved instance datapoint key", async () => {
+    const collector = await startCollector();
+    try {
+      const metrics = await createMetrics({
+        ...options(collector.endpoint),
+        deploymentEnvironmentAlias: "emitted",
+      });
+      const counter = metrics.counter({
+        name: "identity.total",
+        description: "Identity total",
+        unit: "1",
+      });
+      assert.equal(
+        errorCode(() => counter.add(1, [{ key: "service.instance.id", value: "instance-1" }])),
+        "INVALID_MEASUREMENT",
+      );
+      counter.add(1, [{ key: "run.id", value: "job-1" }]);
+      await metrics.flush();
+      const payload = collector.requests[0];
+      assert.isDefined(payload);
+      const resourceKeys =
+        payload.resourceMetrics[0]?.resource.attributes.map((attribute) => attribute.key) ?? [];
+      assert.include(resourceKeys, "service.namespace");
+      assert.include(resourceKeys, "service.name");
+      assert.include(resourceKeys, "service.version");
+      assert.include(resourceKeys, "deployment.environment.name");
+      assert.include(resourceKeys, "deployment.environment");
+      assert.notInclude(resourceKeys, "service.instance.id");
+      const pointKeys = metricNamed(payload, "identity.total")?.sum?.dataPoints[0]?.attributes.map(
+        (attribute) => attribute.key,
+      );
+      assert.deepEqual(pointKeys, ["run.id"]);
+      await metrics.close();
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
   it("rejects a non-HTTP OTLP endpoint with stable public configuration fields", async () => {
     const collector = await startCollector();
     try {
@@ -197,6 +236,53 @@ describe("framework-neutral metrics", () => {
       await closeServer(collector.server);
     }
   });
+
+  for (const fixture of [
+    {
+      field: "service.name",
+      options: { serviceName: "Metrics_Test" },
+      rule: "lowercase letters, numbers, and hyphens with at most 63 characters",
+    },
+    {
+      field: "service.version",
+      options: { serviceVersion: "latest" },
+      rule: "SemVer 2.0.0 or a 7 to 64 character lowercase hexadecimal immutable release identifier",
+    },
+    {
+      field: "deployment.environment.name",
+      options: { environment: "Production" },
+      rule: "lowercase letters, numbers, and hyphens with at most 32 characters",
+    },
+  ] satisfies ReadonlyArray<{
+    readonly field: string;
+    readonly options: {
+      readonly serviceName?: string;
+      readonly serviceVersion?: string;
+      readonly environment?: string;
+    };
+    readonly rule: string;
+  }>) {
+    it(`reports the invalid createMetrics identity field ${fixture.field}`, async () => {
+      let failure: MetricsError | undefined;
+      try {
+        await createMetrics({
+          ...options("http://collector.invalid"),
+          ...fixture.options,
+        });
+      } catch (cause) {
+        if (cause instanceof MetricsError) {
+          failure = cause;
+        }
+      }
+      assert.isDefined(failure);
+      assert.equal(failure.code, "INVALID_CONFIGURATION");
+      assert.equal(failure.operation, "createMetrics");
+      assert.equal(failure.field, fixture.field);
+      assert.equal(failure.rule, fixture.rule);
+      assert.include(failure.message, fixture.rule);
+      assert.isFalse(failure.retryable);
+    });
+  }
 
   it("isolates a non-finite gauge observation and recovers on the next collection", async () => {
     const collector = await startCollector();
@@ -706,15 +792,19 @@ describe("framework-neutral metrics", () => {
 
   it("exports facade and direct Effect metrics through the later layer capture transport", async () => {
     const config = new TelemetryConfig({
-      serviceName: "mixed-metrics-test",
-      serviceVersion: "1.0.0",
-      environment: "test",
+      identity: Effect.runSync(
+        parseResourceIdentity({
+          serviceName: "mixed-metrics-test",
+          serviceVersion: "1.0.0",
+          environment: "test",
+        }),
+      ),
       otlpEndpoint: new URL("http://mixed-metrics.invalid"),
     });
     const facade = await createMetrics({
-      serviceName: config.serviceName,
-      serviceVersion: config.serviceVersion,
-      environment: config.environment,
+      serviceName: config.identity.serviceName,
+      serviceVersion: config.identity.serviceVersion,
+      environment: config.identity.environment,
       otlpEndpoint: config.otlpEndpoint.toString(),
     });
     const capture = await Effect.runPromise(Testing.makeCapture({ config }));
@@ -747,17 +837,72 @@ describe("framework-neutral metrics", () => {
     }
   });
 
+  it("rejects service.instance.id on a direct Effect metric datapoint", async () => {
+    const config = new TelemetryConfig({
+      identity: Effect.runSync(
+        parseResourceIdentity({
+          serviceName: "direct-instance-test",
+          serviceVersion: "1.0.0",
+          environment: "test",
+        }),
+      ),
+      otlpEndpoint: new URL("http://direct-instance.invalid"),
+    });
+    const facade = await createMetrics({
+      serviceName: config.identity.serviceName,
+      serviceVersion: config.identity.serviceVersion,
+      environment: config.identity.environment,
+      otlpEndpoint: config.otlpEndpoint.toString(),
+    });
+    const capture = await Effect.runPromise(Testing.makeCapture({ config }));
+    const runtime = ManagedRuntime.make(capture.layer);
+    try {
+      const direct = Metric.counter("direct.instance", {
+        description: "Direct instance counter",
+        attributes: { "service.instance.id": "instance-1" },
+      });
+      await runtime.runPromise(Metric.update(direct, 1));
+      let failure: MetricsError | undefined;
+      try {
+        await facade.flush();
+      } catch (cause) {
+        if (cause instanceof MetricsError) {
+          failure = cause;
+        }
+      }
+      assert.isDefined(failure);
+      assert.equal(failure.code, "EXPORT_FAILED");
+      assert.equal(failure.operation, "flush");
+      assert.equal(failure.instrumentName, "direct.instance");
+      assert.isFalse(failure.retryable);
+      const telemetry = await Effect.runPromise(capture.telemetry);
+      assert.equal(telemetry.metrics.length, 0);
+      assert.equal(
+        await asyncErrorCode(async () => {
+          await facade.close();
+        }),
+        "EXPORT_FAILED",
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
   it("rejects facade and direct Effect name conflicts before sending OTLP", async () => {
     const config = new TelemetryConfig({
-      serviceName: "mixed-conflict-test",
-      serviceVersion: "1.0.0",
-      environment: "test",
+      identity: Effect.runSync(
+        parseResourceIdentity({
+          serviceName: "mixed-conflict-test",
+          serviceVersion: "1.0.0",
+          environment: "test",
+        }),
+      ),
       otlpEndpoint: new URL("http://mixed-conflict.invalid"),
     });
     const facade = await createMetrics({
-      serviceName: config.serviceName,
-      serviceVersion: config.serviceVersion,
-      environment: config.environment,
+      serviceName: config.identity.serviceName,
+      serviceVersion: config.identity.serviceVersion,
+      environment: config.identity.environment,
       otlpEndpoint: config.otlpEndpoint.toString(),
     });
     const capture = await Effect.runPromise(Testing.makeCapture({ config }));

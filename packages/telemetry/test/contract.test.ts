@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Option } from "effect";
+import { CorrelationContext } from "../src/Correlation.ts";
 import {
   defineEventDefinitions,
   defineTelemetryContract,
@@ -1049,7 +1050,7 @@ describe("contract event producer", () => {
         .emit("BrowserError", {
           error: { type: "TypeError", message: "failed", retryable: false },
           attributes: { "error.origin": "browser" },
-          correlation: Option.none(),
+          correlation: CorrelationContext.make({}),
         })
         .pipe(Effect.provide(sink.layer));
       assert.strictEqual(receipt.decision, "recorded");

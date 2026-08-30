@@ -407,7 +407,7 @@ try {
         "node",
         "--input-type=module",
         "--eval",
-        "const [root, metrics, node, browser, client, testing] = await Promise.all([import('@equipe-tech/observability'), import('@equipe-tech/observability/metrics'), import('@equipe-tech/observability/node'), import('@equipe-tech/observability/browser'), import('@equipe-tech/observability/browser/client'), import('@equipe-tech/observability/testing')]); if (!root.Telemetry || !metrics.createMetrics || !node.runMain || !browser.BrowserTelemetry || !client.createBrowserTelemetryClient || !testing.run) process.exit(1);",
+        "const [root, metrics, node, browser, client, testing] = await Promise.all([import('@equipe-tech/observability'), import('@equipe-tech/observability/metrics'), import('@equipe-tech/observability/node'), import('@equipe-tech/observability/browser'), import('@equipe-tech/observability/browser/client'), import('@equipe-tech/observability/testing')]); if (!root.Telemetry || !root.ServiceName || !root.EnvironmentName || !root.CorrelationContext || root.Correlation || !metrics.createMetrics || !node.runMain || !browser.BrowserTelemetry || !client.createBrowserTelemetryClient || !testing.run) process.exit(1);",
       ],
       nodeConsumer,
     ),
@@ -441,7 +441,7 @@ try {
   );
   await writeFile(
     join(consumer, "index.ts"),
-    "import { TelemetryConfig } from '@equipe-tech/observability';\nimport { layer } from '@equipe-tech/observability/node';\nimport { BrowserTelemetry } from '@equipe-tech/observability/browser';\nimport { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client';\nimport { run } from '@equipe-tech/observability/testing';\nconst config = new TelemetryConfig({ serviceName: 'test', serviceVersion: '1.0.0', environment: 'test', otlpEndpoint: new URL('http://localhost:4318') });\nvoid config;\nvoid layer;\nvoid BrowserTelemetry;\nvoid createBrowserTelemetryClient;\nvoid run;\n",
+    "import { Effect } from 'effect';\nimport { parseResourceIdentity, TelemetryConfig } from '@equipe-tech/observability';\nimport { layer } from '@equipe-tech/observability/node';\nimport { BrowserTelemetry } from '@equipe-tech/observability/browser';\nimport { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client';\nimport { run } from '@equipe-tech/observability/testing';\nconst identity = await Effect.runPromise(parseResourceIdentity({ serviceName: 'test', serviceVersion: '1.0.0', environment: 'test' }));\nconst invalid = await Effect.runPromise(Effect.flip(parseResourceIdentity({ serviceName: 'Invalid', serviceVersion: '1.0.0', environment: 'test' })));\nif (invalid.code !== 'OBS_RESOURCE_IDENTITY_INVALID') throw new Error('Invalid packed identity did not return the public error code.');\nconst config = new TelemetryConfig({ identity, otlpEndpoint: new URL('http://localhost:4318') });\nvoid config;\nvoid layer;\nvoid BrowserTelemetry;\nvoid createBrowserTelemetryClient;\nvoid run;\n",
   );
   await writeFile(
     join(consumer, "metrics-consumer.ts"),

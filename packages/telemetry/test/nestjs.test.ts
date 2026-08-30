@@ -11,15 +11,17 @@ import {
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { ExpressAdapter } from "@nestjs/platform-express";
-import { Context, Effect, Exit, ManagedRuntime, Option, Schema, Tracer } from "effect";
+import { Context, Effect, Exit, Layer, ManagedRuntime, Option, Schema, Tracer } from "effect";
 import { OtlpExporter } from "effect/unstable/observability";
 import type { AddressInfo } from "node:net";
 import { Observable } from "rxjs";
 import { assert, describe, it } from "vite-plus/test";
 import { inspectHttpServerRequest } from "../src/nestjs/HttpRoutePolicy.ts";
 import {
+  requestCorrelation,
   TelemetryInterceptor,
   TelemetryRequestTracker,
+  withRequestCorrelation,
   withRequestSpan,
 } from "../src/nestjs/index.ts";
 import * as Testing from "../src/testing/index.ts";
@@ -84,12 +86,13 @@ describe("nestjs TelemetryInterceptor", () => {
       unavailable(): never {
         throw new ServiceUnavailableException("private outage text");
       }
-      effectful(request: WeakKey): Promise<{ readonly ok: boolean }> {
+      effectful(request: WeakKey): Promise<{ readonly ok: boolean; readonly requestId: string }> {
+        const correlation = Option.getOrThrow(requestCorrelation(request));
         return runtime.runPromise(
-          Effect.succeed({ ok: true }).pipe(
-            Effect.withSpan("nest.child"),
-            withRequestSpan(request),
-          ),
+          Effect.succeed({
+            ok: true,
+            requestId: Option.getOrThrow(correlation.requestId),
+          }).pipe(Effect.withSpan("nest.child"), withRequestCorrelation(request)),
         );
       }
       slow(): Observable<never> {
@@ -226,6 +229,12 @@ describe("nestjs TelemetryInterceptor", () => {
 
       const effectful = await fetch(`${baseUrl}/demo/effectful`);
       assert.strictEqual(effectful.status, 200);
+      const effectfulBody = await effectful.json();
+      const EffectfulResponse = Schema.Struct({ ok: Schema.Boolean, requestId: Schema.String });
+      const decodedEffectful = Schema.decodeUnknownSync(EffectfulResponse)(effectfulBody);
+      assert.isTrue(decodedEffectful.ok);
+      assert.isAbove(decodedEffectful.requestId.length, 0);
+      assert.isAtMost(decodedEffectful.requestId.length, 128);
 
       for (const excludedPath of ["/health", "/_telemetry/events", "/ready"]) {
         const excluded = await fetch(`${baseUrl}${excludedPath}`);
@@ -424,6 +433,44 @@ describe("nestjs TelemetryInterceptor", () => {
     assert.notInclude(defectSpan.eventNames, "exception");
     assert.strictEqual(findSpan(telemetry, "GET /informational").statusCode, 0);
   }, 30_000);
+
+  it("falls back to untraced request handling when a custom tracer throws on span end", async () => {
+    class ThrowingEndSpan extends Tracer.NativeSpan {
+      override end(_endTime: bigint, _exit: Exit.Exit<unknown, unknown>): void {
+        throw new Error("non-conforming tracer end");
+      }
+    }
+    const tracer = Tracer.make({ span: (options) => new ThrowingEndSpan(options) });
+    const runtime = ManagedRuntime.make(Layer.succeed(Tracer.Tracer, tracer));
+
+    class DemoController {
+      ping(): { readonly ok: boolean } {
+        return { ok: true };
+      }
+    }
+    Controller("custom-tracer")(DemoController);
+    Get("ping")(
+      DemoController.prototype,
+      "ping",
+      methodDescriptor(DemoController.prototype, "ping"),
+    );
+
+    class AppModule {}
+    Module({ controllers: [DemoController] })(AppModule);
+    const app = await NestFactory.create(AppModule, { logger: false });
+    app.useGlobalInterceptors(new TelemetryInterceptor(runtime));
+    await app.listen(0, "127.0.0.1");
+    const baseUrl = applicationBaseUrl(app.getHttpServer().address());
+
+    try {
+      const response = await fetch(`${baseUrl}/custom-tracer/ping`);
+      assert.strictEqual(response.status, 200);
+      assert.deepStrictEqual(await response.json(), { ok: true });
+    } finally {
+      await app.close();
+      await runtime.dispose();
+    }
+  });
 
   it("uses framework-resolved proxy values only after explicit opt-in", async () => {
     const capture = await Effect.runPromise(Testing.makeCapture());
