@@ -8,6 +8,7 @@ import {
   registerOfficialAdapter,
   type AdapterOutcome,
   type AdapterRegistration,
+  type LifecycleCleanupResult,
   type LifecycleOutcome,
   type LifecycleReport,
   type RuntimeDisposalOutcome,
@@ -61,6 +62,11 @@ const invalidAdapter = (
 
 type AdapterValidationOptions = { readonly allowTesting: boolean };
 
+const reservedAdapterNames = new Set<string>(["core-traces", "core-metrics"]);
+const cleanupReserveMillis = 1_000;
+const runtimeDisposalReserveMillis = 500;
+const deadlineSafetyMillis = 50;
+
 export const validateAdapterRegistrationKinds = (
   registrations: ReadonlyArray<AdapterRegistration>,
   options: AdapterValidationOptions,
@@ -99,6 +105,14 @@ export const validateAdapterRegistrations = Effect.fn("validateAdapterRegistrati
   const capabilities = new Set<AdapterCapability>();
   for (const registration of registrations) {
     const adapter = registration.adapter;
+    if (reservedAdapterNames.has(adapter.name)) {
+      return yield* Effect.fail(
+        invalidAdapter(
+          "OBS_OBSERVABILITY_ADAPTER_UNSUPPORTED",
+          `Adapter name "${adapter.name}" is reserved for the built-in lifecycle registry. Choose another adapter name.`,
+        ),
+      );
+    }
     if (names.has(adapter.name)) {
       return yield* Effect.fail(
         invalidAdapter(
@@ -226,15 +240,34 @@ const runParticipant = Effect.fn("runObservabilityParticipant")(function* (
   };
 });
 
+const runForcedClose = Effect.fn("runForcedObservabilityClose")(function* (
+  entry: StartedAdapter,
+  budgetMillis: number,
+): Effect.fn.Return<LifecycleCleanupResult, never> {
+  const startedAt = yield* Clock.currentTimeMillis;
+  const result = yield* entry.handle.close.pipe(
+    Effect.exit,
+    Effect.timeoutOption(Math.max(0, budgetMillis)),
+  );
+  const durationMillis = (yield* Clock.currentTimeMillis) - startedAt;
+  if (Option.isNone(result)) {
+    return { kind: "deadline-exceeded", budgetMillis };
+  }
+  if (result.value._tag === "Failure") {
+    return { kind: "failed", error: adapterFailure("close", result.value.cause) };
+  }
+  return { kind: "completed", durationMillis };
+});
+
 const runRuntimeDisposal = Effect.fn("runRuntimeDisposal")(function* (
   disposeRuntime: Effect.Effect<void>,
   budgetMillis: number,
 ): Effect.fn.Return<RuntimeDisposalOutcome, never> {
-  if (budgetMillis <= 0) {
-    return { participant: "runtime-disposal", result: { kind: "deadline-exceeded", budgetMillis } };
-  }
   const startedAt = yield* Clock.currentTimeMillis;
-  const result = yield* disposeRuntime.pipe(Effect.exit, Effect.timeoutOption(budgetMillis));
+  const result = yield* disposeRuntime.pipe(
+    Effect.exit,
+    Effect.timeoutOption(Math.max(0, budgetMillis)),
+  );
   const durationMillis = (yield* Clock.currentTimeMillis) - startedAt;
   if (Option.isNone(result)) {
     return { participant: "runtime-disposal", result: { kind: "deadline-exceeded", budgetMillis } };
@@ -280,19 +313,52 @@ export const createLifecycleRegistry = (
     operation: "flush" | "close",
   ): Effect.fn.Return<LifecycleReport, never> {
     const startedAt = yield* Clock.currentTimeMillis;
-    const deadline = startedAt + profile.shutdownDeadlineMillis;
+    const operationalDeadlineMillis = Math.max(
+      0,
+      profile.shutdownDeadlineMillis - deadlineSafetyMillis,
+    );
+    const deadline = startedAt + operationalDeadlineMillis;
+    const cleanupReserve =
+      operation === "close" ? Math.min(cleanupReserveMillis, operationalDeadlineMillis) : 0;
+    const runtimeReserve = Math.min(runtimeDisposalReserveMillis, cleanupReserve);
+    const gracefulDeadline = deadline - cleanupReserve;
     const outcomes: Array<LifecycleOutcome> = [];
+    const forcedCleanup: Array<{ readonly outcomeIndex: number; readonly entry: StartedAdapter }> =
+      [];
     for (const stage of profile.stages) {
       const now = yield* Clock.currentTimeMillis;
-      const totalRemaining = Math.max(0, deadline - now);
+      const totalRemaining = Math.max(0, gracefulDeadline - now);
       const stageBudget = profile.stageDeadlineMillis.get(stage) ?? totalRemaining;
       const stageDeadline = now + Math.min(totalRemaining, stageBudget);
       for (const participant of ordered(profile, participants, stage)) {
         const remaining = Math.max(0, stageDeadline - (yield* Clock.currentTimeMillis));
-        outcomes.push(yield* runParticipant(participant, operation, remaining));
+        const outcome = yield* runParticipant(participant, operation, remaining);
+        const outcomeIndex = outcomes.push(outcome) - 1;
+        if (operation === "close" && outcome.result.kind === "deadline-exceeded") {
+          forcedCleanup.push({ outcomeIndex, entry: participant });
+        }
       }
     }
     if (operation === "close") {
+      const forcedDeadline = deadline - runtimeReserve;
+      const forcedBudget = Math.max(0, forcedDeadline - (yield* Clock.currentTimeMillis));
+      const cleanupResults = yield* Effect.forEach(
+        forcedCleanup,
+        (candidate) => runForcedClose(candidate.entry, forcedBudget),
+        { concurrency: "unbounded" },
+      );
+      for (let index = 0; index < forcedCleanup.length; index += 1) {
+        const candidate = forcedCleanup[index];
+        const cleanupResult = cleanupResults[index];
+        if (candidate === undefined || cleanupResult === undefined) continue;
+        const outcome = outcomes[candidate.outcomeIndex];
+        if (outcome?.participant === "adapter" && outcome.result.kind === "deadline-exceeded") {
+          outcomes[candidate.outcomeIndex] = {
+            ...outcome,
+            result: { ...outcome.result, forcedCleanup: cleanupResult },
+          };
+        }
+      }
       const remaining = Math.max(0, deadline - (yield* Clock.currentTimeMillis));
       outcomes.push(yield* runRuntimeDisposal(disposeRuntime, remaining));
     }

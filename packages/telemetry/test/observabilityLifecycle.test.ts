@@ -1,4 +1,4 @@
-import { Effect, Fiber } from "effect";
+import { Effect, Fiber, Layer, ManagedRuntime } from "effect";
 import { TestClock } from "effect/testing";
 import { OtlpExporter } from "effect/unstable/observability";
 import { describe, expect, it } from "vite-plus/test";
@@ -23,6 +23,7 @@ import {
 } from "../src/profile/LifecycleRegistry.ts";
 import { workerProfile } from "../src/profile/ObservabilityProfile.ts";
 import {
+  acquireRuntimeFlusher,
   createNodeObservability,
   createNodeObservabilityFromConfig,
   createTestingNodeObservabilityFromConfig,
@@ -163,6 +164,22 @@ describe("observability lifecycle", () => {
       ["core-metrics", "metrics"],
     ]);
 
+    for (const reservedName of ["core-traces", "core-metrics"]) {
+      const reserved = registerTestingAdapter(recordingAdapter(reservedName, "events", calls));
+      const reservedError = await Effect.runPromise(
+        Effect.flip(
+          validateAdapterRegistrations(parsed.profile, "test", [reserved], {
+            allowTesting: true,
+          }),
+        ),
+      );
+      expect(reservedError).toMatchObject({
+        code: "OBS_OBSERVABILITY_ADAPTER_UNSUPPORTED",
+        field: "adapters",
+      });
+      expect(reservedError.message).toContain("reserved");
+    }
+
     const events = registerTestingAdapter(recordingAdapter("events", "events", calls));
     const duplicate = await Effect.runPromise(
       Effect.flip(
@@ -215,6 +232,30 @@ describe("observability lifecycle", () => {
       ),
     );
     expect(calls.filter((call) => call === "close:events")).toHaveLength(1);
+  });
+
+  it("disposes the runtime when flusher acquisition fails", async () => {
+    let disposed = false;
+    const runtime = ManagedRuntime.make(
+      Layer.effect(
+        OtlpExporter.Flusher,
+        Effect.acquireRelease(
+          Effect.succeed(
+            OtlpExporter.Flusher.of({ flush: Effect.void, register: () => Effect.void }),
+          ),
+          () =>
+            Effect.sync(() => {
+              disposed = true;
+            }),
+        ),
+      ).pipe(Layer.tap(() => Effect.die("flusher acquisition failed"))),
+    );
+    const error = await Effect.runPromise(Effect.flip(acquireRuntimeFlusher(runtime)));
+    expect(error).toMatchObject({
+      code: "OBS_OBSERVABILITY_STARTUP_FAILED",
+      adapter: { _tag: "None" },
+    });
+    expect(disposed).toBe(true);
   });
 
   it("validates official registrations and runs their lifecycle through the root factory", async () => {
@@ -448,23 +489,42 @@ describe("observability lifecycle", () => {
       Effect.gen(function* () {
         const fiber = yield* Effect.forkChild(registry.run("close"));
         yield* TestClock.adjust("3 seconds");
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("1450 millis");
         return yield* Fiber.join(fiber);
       }).pipe(Effect.provide(TestClock.layer())),
     );
-    expect(report.durationMillis).toBe(3_000);
+    expect(report.durationMillis).toBe(4_450);
     expect(
       report.outcomes.find(
         (outcome) => outcome.participant === "adapter" && outcome.adapter === "core-metrics",
       )?.result,
-    ).toEqual({ kind: "deadline-exceeded", budgetMillis: 3_000 });
+    ).toEqual({
+      kind: "deadline-exceeded",
+      budgetMillis: 3_000,
+      forcedCleanup: { kind: "deadline-exceeded", budgetMillis: 1_450 },
+    });
   });
 
-  it("reports every participant as deadline-exceeded after absolute budget exhaustion", async () => {
-    const events = registerTestingAdapter(recordingAdapter("events", "events", []));
-    const defects = registerTestingAdapter(recordingAdapter("defects", "defects", []));
+  it("forces every pending close and reserves runtime disposal inside the deadline", async () => {
+    const calls: Array<string> = [];
+    const events = registerTestingAdapter(recordingAdapter("events", "events", calls));
+    const defects = registerTestingAdapter(recordingAdapter("defects", "defects", calls));
+    const hangingClose = Effect.gen(function* () {
+      calls.push("close:events");
+      return yield* Effect.never;
+    });
     const started: ReadonlyArray<StartedAdapter> = [
-      { registration: events, handle: { flush: Effect.void, close: Effect.never } },
-      { registration: defects, handle: { flush: Effect.void, close: Effect.void } },
+      { registration: events, handle: { flush: Effect.void, close: hangingClose } },
+      {
+        registration: defects,
+        handle: {
+          flush: Effect.void,
+          close: Effect.sync(() => {
+            calls.push("close:defects");
+          }),
+        },
+      },
     ];
     const flusher = OtlpExporter.Flusher.of({
       flush: Effect.void,
@@ -485,34 +545,52 @@ describe("observability lifecycle", () => {
         adapter: AdapterName.make("events"),
         capability: "events",
         stage: "server",
-        result: { kind: "deadline-exceeded", budgetMillis: 5_000 },
+        result: {
+          kind: "deadline-exceeded",
+          budgetMillis: 3_950,
+          forcedCleanup: { kind: "deadline-exceeded", budgetMillis: 500 },
+        },
       },
       {
         participant: "adapter",
         adapter: AdapterName.make("core-traces"),
         capability: "traces",
         stage: "server",
-        result: { kind: "deadline-exceeded", budgetMillis: 0 },
+        result: {
+          kind: "deadline-exceeded",
+          budgetMillis: 0,
+          forcedCleanup: { kind: "completed", durationMillis: 0 },
+        },
       },
       {
         participant: "adapter",
         adapter: AdapterName.make("defects"),
         capability: "defects",
         stage: "server",
-        result: { kind: "deadline-exceeded", budgetMillis: 0 },
+        result: {
+          kind: "deadline-exceeded",
+          budgetMillis: 0,
+          forcedCleanup: { kind: "completed", durationMillis: 0 },
+        },
       },
       {
         participant: "adapter",
         adapter: AdapterName.make("core-metrics"),
         capability: "metrics",
         stage: "metrics",
-        result: { kind: "deadline-exceeded", budgetMillis: 0 },
+        result: {
+          kind: "deadline-exceeded",
+          budgetMillis: 0,
+          forcedCleanup: { kind: "completed", durationMillis: 0 },
+        },
       },
       {
         participant: "runtime-disposal",
-        result: { kind: "deadline-exceeded", budgetMillis: 0 },
+        result: { kind: "completed", durationMillis: 0 },
       },
     ]);
+    expect(calls).toEqual(["close:events", "close:events", "close:defects"]);
+    expect(report.durationMillis).toBeLessThanOrEqual(5_000);
   });
 
   it("rolls back started adapters in exact reverse order", async () => {

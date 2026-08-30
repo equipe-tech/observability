@@ -56,12 +56,18 @@ export class InvalidTelemetryEnvironment extends Schema.TaggedError<InvalidTelem
 
 const TelemetryEnvironment = Schema.Struct({
   OTEL_SERVICE_NAME: Schema.NonEmptyString,
-  OTEL_SERVICE_VERSION: Schema.NonEmptyString.pipe(Schema.optionalKey),
-  OTEL_DEPLOYMENT_ENVIRONMENT: Schema.NonEmptyString.pipe(Schema.optionalKey),
+  OTEL_SERVICE_VERSION: Schema.Union([Schema.NonEmptyString, Schema.Undefined]).pipe(
+    Schema.optionalKey,
+  ),
+  OTEL_DEPLOYMENT_ENVIRONMENT: Schema.Union([Schema.NonEmptyString, Schema.Undefined]).pipe(
+    Schema.optionalKey,
+  ),
   OTEL_SERVICE_INSTANCE_ID: Schema.Union([Schema.String, Schema.Undefined]).pipe(
     Schema.optionalKey,
   ),
-  OTEL_EXPORTER_OTLP_ENDPOINT: OtlpEndpoint.pipe(Schema.optionalKey),
+  OTEL_EXPORTER_OTLP_ENDPOINT: Schema.Union([OtlpEndpoint, Schema.Undefined]).pipe(
+    Schema.optionalKey,
+  ),
 });
 
 export type EnvironmentVariables = {

@@ -134,10 +134,19 @@ export const isTestingAdapterRegistration = (
 ): registration is TestingAdapterRegistration =>
   registration.kind === "testing" && testingRegistrations.has(registration);
 
-export type LifecycleOutcomeResult =
+export type LifecycleCleanupResult =
   | { readonly kind: "completed"; readonly durationMillis: number }
   | { readonly kind: "failed"; readonly error: AdapterFailure }
   | { readonly kind: "deadline-exceeded"; readonly budgetMillis: number };
+
+export type LifecycleOutcomeResult =
+  | { readonly kind: "completed"; readonly durationMillis: number }
+  | { readonly kind: "failed"; readonly error: AdapterFailure }
+  | {
+      readonly kind: "deadline-exceeded";
+      readonly budgetMillis: number;
+      readonly forcedCleanup?: LifecycleCleanupResult | undefined;
+    };
 
 export type AdapterOutcome = {
   readonly participant: "adapter";

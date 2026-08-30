@@ -50,7 +50,7 @@ O SDK remove essa opção na primeira versão minor depois que as duas condiçõ
 
 ## O ambiente local não usa contas externas
 
-O ambiente local usa `http://localhost:4318` como endpoint padrão. Endpoints em `localhost`, `127.0.0.0/8` e `::1` recebem os padrões `OTEL_SERVICE_VERSION=0.0.0` e `OTEL_DEPLOYMENT_ENVIRONMENT=development`. Endpoints não loopback exigem as duas variáveis.
+O ambiente local usa `http://localhost:4318` como endpoint padrão. Endpoints em `localhost`, `127.0.0.0/8` e `::1` permitem os padrões `OTEL_SERVICE_VERSION=0.0.0` e `OTEL_DEPLOYMENT_ENVIRONMENT=development`. Essa permissão depende somente da classificação do endpoint. Um sidecar de produção acessado por loopback deve definir as duas variáveis explicitamente. Endpoints não loopback exigem as duas variáveis.
 
 `OTEL_SERVICE_VERSION` é a única identidade de release. `SENTRY_RELEASE` e `OTEL_SERVICE_RELEASE` não podem definir outra identidade.
 

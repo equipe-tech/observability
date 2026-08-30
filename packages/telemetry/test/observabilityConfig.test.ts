@@ -41,6 +41,55 @@ describe("node observability configuration", () => {
     }
   });
 
+  it("treats explicitly undefined optional variables like absent local values", async () => {
+    const config = await Effect.runPromise(
+      fromEnv("worker", {
+        OTEL_SERVICE_NAME: "jobs",
+        OTEL_SERVICE_VERSION: undefined,
+        OTEL_DEPLOYMENT_ENVIRONMENT: undefined,
+        OTEL_EXPORTER_OTLP_ENDPOINT: undefined,
+        OTEL_SERVICE_INSTANCE_ID: undefined,
+      }),
+    );
+    expect(config.enabled).toBe(true);
+    if (config.enabled) {
+      expect(config.identity.serviceVersion).toBe("0.0.0");
+      expect(config.identity.environment).toBe("development");
+      expect(config.telemetry.otlpEndpoint.toString()).toBe("http://localhost:4318/");
+    }
+  });
+
+  it("reports typed fields for explicitly undefined remote identity", async () => {
+    const fixtures: ReadonlyArray<{
+      readonly field: "OTEL_SERVICE_VERSION" | "OTEL_DEPLOYMENT_ENVIRONMENT";
+      readonly value: { readonly [name: string]: string | undefined };
+    }> = [
+      { field: "OTEL_SERVICE_VERSION", value: { OTEL_SERVICE_VERSION: undefined } },
+      {
+        field: "OTEL_DEPLOYMENT_ENVIRONMENT",
+        value: { OTEL_DEPLOYMENT_ENVIRONMENT: undefined },
+      },
+    ];
+    for (const fixture of fixtures) {
+      const error = await Effect.runPromise(
+        Effect.flip(
+          fromEnv("worker", {
+            OTEL_SERVICE_NAME: "jobs",
+            OTEL_SERVICE_VERSION: "1.4.0",
+            OTEL_DEPLOYMENT_ENVIRONMENT: "production",
+            OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example.com",
+            ...fixture.value,
+          }),
+        ),
+      );
+      expect(error).toMatchObject({
+        _tag: "InvalidObservabilityConfig",
+        code: "OBS_OBSERVABILITY_CONFIG_INVALID",
+        field: fixture.field,
+      });
+    }
+  });
+
   it("reports the exact field and code for each invalid environment value", async () => {
     const fixtures: ReadonlyArray<{
       readonly field:

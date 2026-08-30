@@ -134,6 +134,39 @@ class LiveNodeObservability implements NodeObservabilityEnabled {
 
 type NodeObservabilityFactoryOptions = { readonly allowTesting: boolean };
 
+export const acquireRuntimeFlusher = Effect.fn("acquireRuntimeFlusher")(function* (
+  runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, never>,
+): Effect.fn.Return<OtlpExporter.Flusher["Service"], ObservabilityLifecycleError> {
+  const acquisition = yield* Effect.tryPromise({
+    try: () => runtime.runPromise(OtlpExporter.Flusher),
+    catch: (cause) =>
+      new ObservabilityLifecycleError({
+        code: "OBS_OBSERVABILITY_STARTUP_FAILED",
+        message:
+          "The built-in OpenTelemetry runtime failed to start. Verify the endpoint configuration.",
+        adapter: Option.none(),
+        cause,
+      }),
+  }).pipe(Effect.exit);
+  if (acquisition._tag === "Failure") {
+    yield* runtime.disposeEffect.pipe(Effect.catchCause(() => Effect.void));
+    return yield* Effect.fail(
+      Option.getOrElse(
+        Cause.findErrorOption(acquisition.cause),
+        () =>
+          new ObservabilityLifecycleError({
+            code: "OBS_OBSERVABILITY_STARTUP_FAILED",
+            message:
+              "The built-in OpenTelemetry runtime failed to start. Verify the endpoint configuration.",
+            adapter: Option.none(),
+            cause: acquisition.cause,
+          }),
+      ),
+    );
+  }
+  return acquisition.value;
+});
+
 const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(function* (
   config: NodeObservabilityConfig,
   registrations: ReadonlyArray<AdapterRegistration>,
@@ -150,19 +183,9 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
     options,
   );
   const runtime = ManagedRuntime.make(
-    Telemetry.layer(config.telemetry, { shutdownTimeout: Duration.millis(5_000) }),
+    Telemetry.layer(config.telemetry, { shutdownTimeout: Duration.millis(400) }),
   );
-  const flusher = yield* Effect.tryPromise({
-    try: () => runtime.runPromise(OtlpExporter.Flusher),
-    catch: (cause) =>
-      new ObservabilityLifecycleError({
-        code: "OBS_OBSERVABILITY_STARTUP_FAILED",
-        message:
-          "The built-in OpenTelemetry runtime failed to start. Verify the endpoint configuration.",
-        adapter: Option.none(),
-        cause,
-      }),
-  });
+  const flusher = yield* acquireRuntimeFlusher(runtime);
   const context = {
     profile: config.profile,
     identity: config.identity,
