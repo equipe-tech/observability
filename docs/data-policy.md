@@ -29,6 +29,8 @@ export const policy = definePolicy({
 
 `parseDataPolicy` compila a declaração. A compilação soma as regras da aplicação às regras básicas imutáveis. Uma aplicação não pode remover uma regra básica de chave ou valor. Expressões de valores bloqueados da aplicação usam as flags global e case-insensitive, portanto todas as ocorrências são substituídas.
 
+As expressões da aplicação usam uma gramática conservadora. Ela aceita literais, pontuação escapada, classes de caracteres, os anchors `^` e `$` e quantificadores diretos `?`, `*`, `+`, `{n}`, `{n,}` e `{n,m}`. A compilação rejeita grupos, alternância, lookarounds, backreferences, curingas sem escape, quantificadores encadeados e classes incompletas antes de construir um `RegExp`. Padrões como `(a|aa)+$` falham com um código `OBS_POLICY_UNSAFE_*` sem incluir o padrão no diagnóstico.
+
 ## Classificações
 
 A política aceita estas classificações:
