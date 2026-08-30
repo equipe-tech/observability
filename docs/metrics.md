@@ -79,7 +79,7 @@ const producer = makeMetricProducer(contract, observability.metrics);
 producer.counter("OrdersCreated").add(1, { "order.channel": "web" });
 ```
 
-The producer checks contract shape and allowed values, then probes declared cardinality. The existing metrics facade applies data policy and runtime limits. The producer commits declared cardinality only after the facade accepts the record. A rejected record does not consume declared cardinality. The shared runtime owns the declared cardinality catalog, so producers and facade leases with equal options share it. Enabled Node observability handles expose the pool-matched facade through `metrics`. Disabled handles expose the same validation path without exports.
+The producer checks contract shape and allowed values, then probes declared cardinality. The existing metrics facade applies data policy and runtime limits. The producer commits declared cardinality only after the facade accepts the record. A rejected record does not consume declared cardinality. The shared runtime owns the declared cardinality catalog, so producers and facade leases with equal options share it. Enabled Node observability handles expose the pool-matched facade through `metrics`. Disabled handles run contract validation but export nothing. Their facade uses the disabled policy defaults rather than the enabled handle's configured evlog policy.
 
 `InvalidMetricMeasurement` reports stable `OBS_METRIC_*` codes for unknown aliases, kind mismatches, missing or undeclared attributes, closed-set violations, invalid values, and declared cardinality overflow. Gauge callback failures use `CONTRACT_REJECTED` and expose the evidence-safe code through `contractReason`.
 

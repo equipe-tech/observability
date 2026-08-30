@@ -218,6 +218,7 @@ const counterHandle = (
         metrics,
         alias,
         definition.name,
+        definition,
         attributes,
         cardinalityLimits(definition),
       );
@@ -240,6 +241,7 @@ const histogramHandle = (
         metrics,
         alias,
         definition.name,
+        definition,
         attributes,
         cardinalityLimits(definition),
       );
@@ -272,6 +274,7 @@ export const makeMetricProducer = <const Definition extends TelemetryContractInp
             metrics,
             metricAlias: alias,
             metricName: definition.name,
+            definitionIdentity: definition,
             attributes,
             limits: cardinalityLimits(definition),
           },

@@ -89,6 +89,12 @@ type ContractCardinalityLimit = {
   readonly maximumCardinality: number;
 };
 
+type ContractMetricDefinitionIdentity = {
+  readonly alias: string;
+  readonly name: string;
+  readonly kind: "counter" | "histogram" | "observable_gauge";
+};
+
 type ContractMetricAttribute = {
   readonly key: string;
   readonly value: MetricAttributeValue;
@@ -98,6 +104,7 @@ type ContractGaugeObservation = {
   readonly metrics: Metrics;
   readonly metricAlias: string;
   readonly metricName: string;
+  readonly definitionIdentity: ContractMetricDefinitionIdentity;
   readonly attributes: ReadonlyArray<ContractMetricAttribute>;
   readonly limits: ReadonlyArray<ContractCardinalityLimit>;
 };
@@ -664,7 +671,10 @@ class MetricsRuntimeState {
   readonly runtimeLifetimeSeries = new Set<string>();
   readonly lifetimeSeriesByInstrument = new Map<string, Set<string>>();
   readonly lifetimeValuesByInstrumentKey = new Map<string, Set<string>>();
-  readonly contractValuesByInstrumentKey = new Map<string, Set<string>>();
+  readonly contractValuesByDefinition = new Map<
+    ContractMetricDefinitionIdentity,
+    Map<string, Set<string>>
+  >();
   readonly lifetimeInstrumentNames = new Set<string>();
   private readonly leases = new Set<number>();
   private readonly transports = new Map<number, MetricsTransportBinding>();
@@ -1991,27 +2001,35 @@ class DisabledMetrics implements Metrics {
 }
 
 type MetricContractState = {
-  readonly values: Map<string, Set<string>>;
+  readonly values: Map<ContractMetricDefinitionIdentity, Map<string, Set<string>>>;
 };
 
 const metricContractStates = new WeakMap<Metrics, MetricContractState>();
 
 class MetricContractTransaction {
-  private readonly valuesByLedger = new Map<Map<string, Set<string>>, Map<string, Set<string>>>();
+  private readonly valuesByLedger = new Map<
+    Map<ContractMetricDefinitionIdentity, Map<string, Set<string>>>,
+    Map<ContractMetricDefinitionIdentity, Map<string, Set<string>>>
+  >();
 
   prepare(contract: ContractGaugeObservation): void {
     const state = metricContractStates.get(contract.metrics);
     if (state === undefined) {
       throw unsupportedMetricsFacade(contract.metricAlias, contract.metricName);
     }
-    let stagedValues = this.valuesByLedger.get(state.values);
+    let stagedByDefinition = this.valuesByLedger.get(state.values);
+    if (stagedByDefinition === undefined) {
+      stagedByDefinition = new Map();
+      this.valuesByLedger.set(state.values, stagedByDefinition);
+    }
+    let stagedValues = stagedByDefinition.get(contract.definitionIdentity);
     if (stagedValues === undefined) {
       stagedValues = new Map();
-      this.valuesByLedger.set(state.values, stagedValues);
+      stagedByDefinition.set(contract.definitionIdentity, stagedValues);
     }
     prepareContractValues(
       stagedValues,
-      state.values,
+      state.values.get(contract.definitionIdentity),
       contract.metricAlias,
       contract.metricName,
       contract.attributes,
@@ -2020,14 +2038,21 @@ class MetricContractTransaction {
   }
 
   commit(): void {
-    for (const [ledger, stagedValues] of this.valuesByLedger) {
-      for (const [catalogKey, values] of stagedValues) {
-        let committedValues = ledger.get(catalogKey);
-        if (committedValues === undefined) {
-          committedValues = new Set();
-          ledger.set(catalogKey, committedValues);
+    for (const [ledger, stagedByDefinition] of this.valuesByLedger) {
+      for (const [definitionIdentity, stagedValues] of stagedByDefinition) {
+        let committedByAttribute = ledger.get(definitionIdentity);
+        if (committedByAttribute === undefined) {
+          committedByAttribute = new Map();
+          ledger.set(definitionIdentity, committedByAttribute);
         }
-        for (const identity of values) committedValues.add(identity);
+        for (const [attributeName, values] of stagedValues) {
+          let committedValues = committedByAttribute.get(attributeName);
+          if (committedValues === undefined) {
+            committedValues = new Set();
+            committedByAttribute.set(attributeName, committedValues);
+          }
+          for (const identity of values) committedValues.add(identity);
+        }
       }
     }
   }
@@ -2047,7 +2072,7 @@ const unsupportedMetricsFacade = (
 
 const prepareContractValues = (
   stagedValues: Map<string, Set<string>>,
-  committedValues: Map<string, Set<string>>,
+  committedValues: Map<string, Set<string>> | undefined,
   metricAlias: string,
   metricName: string,
   attributes: ReadonlyArray<ContractMetricAttribute>,
@@ -2056,11 +2081,10 @@ const prepareContractValues = (
   for (const limit of limits) {
     const attribute = attributes.find((candidate) => candidate.key === limit.attributeName);
     if (attribute === undefined) continue;
-    const catalogKey = `${metricName}\u0000${limit.attributeName}`;
-    let values = stagedValues.get(catalogKey);
+    let values = stagedValues.get(limit.attributeName);
     if (values === undefined) {
-      values = new Set(committedValues.get(catalogKey));
-      stagedValues.set(catalogKey, values);
+      values = new Set(committedValues?.get(limit.attributeName));
+      stagedValues.set(limit.attributeName, values);
     }
     const identity = metricScalarIdentity(attribute.value);
     if (!values.has(identity) && values.size >= limit.maximumCardinality) {
@@ -2081,11 +2105,19 @@ export const prepareContractMetricAttributes = (
   metrics: Metrics,
   metricAlias: string,
   metricName: string,
+  definitionIdentity: ContractMetricDefinitionIdentity,
   attributes: ReadonlyArray<ContractMetricAttribute>,
   limits: ReadonlyArray<ContractCardinalityLimit>,
 ): (() => void) => {
   const transaction = new MetricContractTransaction();
-  transaction.prepare({ metrics, metricAlias, metricName, attributes, limits });
+  transaction.prepare({
+    metrics,
+    metricAlias,
+    metricName,
+    definitionIdentity,
+    attributes,
+    limits,
+  });
   return () => transaction.commit();
 };
 
@@ -2114,7 +2146,7 @@ export const createStandaloneMetrics = async (optionsInput: MetricsOptions): Pro
   });
   const metrics = new ActiveMetrics(lease, options.flushTimeoutMilliseconds);
   metricContractStates.set(metrics, {
-    values: lease.state.contractValuesByInstrumentKey,
+    values: lease.state.contractValuesByDefinition,
   });
   return metrics;
 };

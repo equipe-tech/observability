@@ -1351,6 +1351,148 @@ describe("framework-neutral metrics", () => {
     }
   });
 
+  it("isolates same-name metric contracts in both producer orders", async () => {
+    const collector = await startCollector();
+    try {
+      const largerContract = await Effect.runPromise(
+        defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            Shared: {
+              name: "contract.shared_total",
+              description: "Shared total",
+              unit: "1",
+              kind: "counter",
+              attributes: {
+                "contract.value": {
+                  classification: "public",
+                  allowedValues: ["alpha", "beta"],
+                  maximumCardinality: 2,
+                },
+              },
+            },
+          },
+          auditActions: {},
+        }),
+      );
+      const smallerContract = await Effect.runPromise(
+        defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            Shared: {
+              name: "contract.shared_total",
+              description: "Shared total",
+              unit: "1",
+              kind: "counter",
+              attributes: {
+                "contract.value": {
+                  classification: "public",
+                  allowedValues: ["gamma"],
+                  maximumCardinality: 1,
+                },
+              },
+            },
+          },
+          auditActions: {},
+        }),
+      );
+
+      for (const smallerFirst of [false, true]) {
+        const facade = await createMetrics(options(collector.endpoint));
+        const larger = makeMetricProducer(largerContract, facade).counter("Shared");
+        const smaller = makeMetricProducer(smallerContract, facade).counter("Shared");
+        if (smallerFirst) {
+          smaller.add(1, { "contract.value": "gamma" });
+          larger.add(1, { "contract.value": "alpha" });
+        } else {
+          larger.add(1, { "contract.value": "alpha" });
+          smaller.add(1, { "contract.value": "gamma" });
+        }
+        larger.add(1, { "contract.value": "beta" });
+        smaller.add(1, { "contract.value": "gamma" });
+        assert.deepStrictEqual(await facade.flush(), { gaugeFailures: [] });
+        await facade.close();
+      }
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
+  it("isolates concurrent same-name gauge collection across contracts", async () => {
+    const collector = await startCollector();
+    try {
+      const firstContract = await Effect.runPromise(
+        defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            Shared: {
+              name: "contract.shared_depth",
+              description: "Shared depth",
+              unit: "1",
+              kind: "observable_gauge",
+              attributes: {
+                "contract.value": {
+                  classification: "internal",
+                  allowedValues: ["alpha"],
+                  maximumCardinality: 1,
+                },
+              },
+            },
+          },
+          auditActions: {},
+        }),
+      );
+      const secondContract = await Effect.runPromise(
+        defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            Shared: {
+              name: "contract.shared_depth",
+              description: "Shared depth",
+              unit: "1",
+              kind: "observable_gauge",
+              attributes: {
+                "contract.value": {
+                  classification: "internal",
+                  allowedValues: ["beta"],
+                  maximumCardinality: 1,
+                },
+              },
+            },
+          },
+          auditActions: {},
+        }),
+      );
+      const firstFacade = await createMetrics(options(collector.endpoint));
+      const secondFacade = await createMetrics(options(collector.endpoint));
+      makeMetricProducer(firstContract, firstFacade).observableGauge("Shared", () => [
+        { value: 1, attributes: { "contract.value": "alpha" } },
+      ]);
+      makeMetricProducer(secondContract, secondFacade).observableGauge("Shared", () => [
+        { value: 2, attributes: { "contract.value": "beta" } },
+      ]);
+
+      assert.deepStrictEqual(await Promise.all([firstFacade.flush(), secondFacade.flush()]), [
+        { gaugeFailures: [] },
+        { gaugeFailures: [] },
+      ]);
+      const payload = collector.requests.at(-1);
+      assert.isDefined(payload);
+      assert.strictEqual(
+        metricNamed(payload, "contract.shared_depth")?.gauge?.dataPoints.length,
+        2,
+      );
+      await firstFacade.close();
+      await secondFacade.close();
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
   it("rejects a same-callback gauge cardinality overflow and rolls back the batch", async () => {
     const collector = await startCollector();
     try {

@@ -53,16 +53,7 @@ export const metricDefinitionFixtures = {
 
 type MetricDefinitionIssueCode = Extract<
   ContractIssueCode,
-  | "OBS_CONTRACT_INVALID_METRIC_NAME"
-  | "OBS_CONTRACT_DUPLICATE_METRIC_NAME"
-  | "OBS_CONTRACT_INVALID_METRIC_KIND"
-  | "OBS_CONTRACT_INVALID_METRIC_DESCRIPTION"
-  | "OBS_CONTRACT_INVALID_METRIC_UNIT"
-  | "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES"
-  | "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_NAME"
-  | "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_DEFINITION"
-  | "OBS_CONTRACT_INVALID_METRIC_CARDINALITY"
-  | "OBS_CONTRACT_INVALID_METRIC_ALLOWED_VALUES"
+  `OBS_CONTRACT_${string}METRIC${string}`
 >;
 
 export type InvalidMetricDefinitionFixture = {
@@ -70,7 +61,15 @@ export type InvalidMetricDefinitionFixture = {
   readonly metricsDocument: string;
 };
 
-export const invalidMetricDefinitionFixtures: ReadonlyArray<InvalidMetricDefinitionFixture> = [
+const exhaustiveMetricDefinitionFixtures = <
+  Fixtures extends ReadonlyArray<InvalidMetricDefinitionFixture>,
+>(
+  fixtures: Exclude<MetricDefinitionIssueCode, Fixtures[number]["issue"]> extends never
+    ? Fixtures
+    : never,
+): Fixtures => fixtures;
+
+export const invalidMetricDefinitionFixtures = exhaustiveMetricDefinitionFixtures([
   {
     issue: "OBS_CONTRACT_INVALID_METRIC_NAME",
     metricsDocument: `{"Metric":{"name":"invalid","description":"Fixture","unit":"1","kind":"counter","attributes":{}}}`,
@@ -111,7 +110,7 @@ export const invalidMetricDefinitionFixtures: ReadonlyArray<InvalidMetricDefinit
     issue: "OBS_CONTRACT_INVALID_METRIC_ALLOWED_VALUES",
     metricsDocument: `{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"1","kind":"counter","attributes":{"fixture.label":{"classification":"public","maximumCardinality":1,"allowedValues":[]}}}}`,
   },
-];
+]);
 
 export type CollectingTelemetryEventSink = {
   readonly layer: Layer.Layer<TelemetryEventSink>;
