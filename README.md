@@ -128,6 +128,7 @@ A CLI autentica com Axiom e Sentry, cria recursos isolados por ambiente e salva 
 
 Consulte estes documentos:
 
+- [Perfis oficiais de observabilidade](docs/profiles.md)
 - [Ambientes isolam dados sem acoplar a aplicação](docs/environment-management.md)
 - [Configurar um projeto com ambientes remotos](docs/setup-project-environments.md)
 - [Referência da CLI](docs/cli-reference.md)

@@ -80,10 +80,11 @@ O comando lista os ambientes salvos no arquivo local de credenciais. A lista nã
 ```text
 observability env export \
   --name <project> \
-  --environment <name>
+  --environment <name> \
+  --release <version>
 ```
 
-O comando sempre imprime `OTEL_SERVICE_NAME` e `OTEL_DEPLOYMENT_ENVIRONMENT`.
+O comando sempre imprime `OTEL_SERVICE_NAME`, `OTEL_SERVICE_VERSION` e `OTEL_DEPLOYMENT_ENVIRONMENT`. `--release` aceita SemVer 2.0.0 ou um identificador hexadecimal minúsculo de 7 a 64 caracteres. Um valor inválido retorna `OBS_CLI_REMOTE_INVALID_RELEASE`.
 
 Um ambiente Axiom também imprime:
 
@@ -146,6 +147,7 @@ O nome do token Axiom segue este formato:
 | `OBS_CLI_REMOTE_INVALID_RESPONSE`              | A resposta do provider não passa no parse.                                  |
 | `OBS_CLI_REMOTE_INVALID_PROJECT`               | O nome do projeto é inválido.                                               |
 | `OBS_CLI_REMOTE_INVALID_ENVIRONMENT`           | O ambiente ou o nome derivado de um dataset é inválido.                     |
+| `OBS_CLI_REMOTE_INVALID_RELEASE`               | A release não segue a gramática canônica de `service.version`.              |
 | `OBS_CLI_REMOTE_ROTATION_NOT_SELECTED`         | Uma rotação inclui um ambiente sem Axiom.                                   |
 | `OBS_CLI_REMOTE_TOKEN_UNAVAILABLE`             | O token existe no Axiom, mas a CLI não possui o valor secreto.              |
 | `OBS_CLI_REMOTE_PARTIAL_FAILURE`               | Um ambiente falha após a CLI salvar ambientes anteriores.                   |

@@ -24,6 +24,7 @@ export { makeEventProducer, TelemetryEventSink } from "./contract/EventProducer.
 export type { TelemetryContract, TelemetryContractInput } from "./contract/TelemetryContract.ts";
 export type { TelemetryEvent } from "./contract/TelemetryEvent.ts";
 export * as Telemetry from "./Telemetry.ts";
+export * from "./profile/index.ts";
 export {
   EnvironmentAliasPolicy,
   EnvironmentName,

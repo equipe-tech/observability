@@ -277,7 +277,7 @@ const provision = Command.make(
       );
     }
     yield* Console.log(
-      `Run observability env export --name ${projectName} --environment <environment> to print deploy variables.`,
+      `Run observability env export --name ${projectName} --environment <environment> --release <version> to print deploy variables.`,
     );
   }),
 ).pipe(
@@ -327,13 +327,21 @@ const environmentExportEnvironment = Flag.string("environment").pipe(
   Flag.withAlias("e"),
   Flag.withDescription("Nome do ambiente"),
 );
+const environmentExportRelease = Flag.string("release").pipe(
+  Flag.withAlias("r"),
+  Flag.withDescription("Versão SemVer ou identificador imutável da release"),
+);
 
 const environmentExport = Command.make(
   "export",
-  { name: environmentExportName, environment: environmentExportEnvironment },
-  Effect.fn(function* ({ environment, name }) {
+  {
+    name: environmentExportName,
+    environment: environmentExportEnvironment,
+    release: environmentExportRelease,
+  },
+  Effect.fn(function* ({ environment, name, release }) {
     const remote = yield* RemoteEnvironment;
-    yield* Console.log(yield* remote.export(name, environment));
+    yield* Console.log(yield* remote.export(name, environment, release));
   }),
 ).pipe(Command.withDescription("Imprime variáveis de deploy no formato dotenv"));
 

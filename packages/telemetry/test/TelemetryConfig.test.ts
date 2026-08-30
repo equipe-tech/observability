@@ -41,6 +41,41 @@ describe("telemetryConfigFromEnv", () => {
     );
   }
 
+  it.effect("applies local defaults to explicitly undefined optional variables", () =>
+    Effect.gen(function* () {
+      const config = yield* telemetryConfigFromEnv({
+        OTEL_SERVICE_NAME: "checkout-api",
+        OTEL_SERVICE_VERSION: undefined,
+        OTEL_DEPLOYMENT_ENVIRONMENT: undefined,
+        OTEL_EXPORTER_OTLP_ENDPOINT: undefined,
+        OTEL_SERVICE_INSTANCE_ID: undefined,
+      });
+      assert.strictEqual(config.identity.serviceVersion, "0.0.0");
+      assert.strictEqual(config.identity.environment, "development");
+      assert.strictEqual(config.otlpEndpoint.toString(), "http://localhost:4318/");
+      assert.deepStrictEqual(config.identity.instance, Option.none());
+    }),
+  );
+
+  it.effect("returns a typed error for explicitly undefined remote identity", () =>
+    Effect.gen(function* () {
+      for (const environment of [
+        {
+          ...validEnvironment,
+          OTEL_SERVICE_VERSION: undefined,
+        },
+        {
+          ...validEnvironment,
+          OTEL_DEPLOYMENT_ENVIRONMENT: undefined,
+        },
+      ]) {
+        const error = yield* Effect.flip(telemetryConfigFromEnv(environment));
+        assert.strictEqual(error._tag, "InvalidTelemetryEnvironment");
+        assert.strictEqual(error.code, "OBS_TELEMETRY_INVALID_ENVIRONMENT");
+      }
+    }),
+  );
+
   it.effect("applies defaults when only the service name is set", () =>
     Effect.gen(function* () {
       const config = yield* telemetryConfigFromEnv({
@@ -51,6 +86,48 @@ describe("telemetryConfigFromEnv", () => {
       assert.strictEqual(config.otlpEndpoint.toString(), "http://localhost:4318/");
     }),
   );
+
+  for (const endpoint of [
+    "http://localhost:4318",
+    "http://localhost.:4318",
+    "http://127.0.0.0:4318",
+    "http://127.0.0.1:4318",
+    "http://127.255.255.255:4318",
+    "http://127.1:4318",
+    "http://[::1]:4318",
+    "http://[::ffff:127.0.0.1]:4318",
+  ]) {
+    it.effect(`applies local identity defaults for ${endpoint}`, () =>
+      Effect.gen(function* () {
+        const config = yield* telemetryConfigFromEnv({
+          OTEL_SERVICE_NAME: "checkout-api",
+          OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+        });
+        assert.strictEqual(config.identity.serviceVersion, "0.0.0");
+        assert.strictEqual(config.identity.environment, "development");
+      }),
+    );
+  }
+
+  for (const endpoint of [
+    "http://127.example.com:4318",
+    "http://127.0.0.1.example.com:4318",
+    "http://localhost.example.com:4318",
+    "http://localhost..:4318",
+  ]) {
+    it.effect(`requires explicit identity for the DNS endpoint ${endpoint}`, () =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(
+          telemetryConfigFromEnv({
+            OTEL_SERVICE_NAME: "checkout-api",
+            OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+          }),
+        );
+        assert.strictEqual(error._tag, "InvalidTelemetryEnvironment");
+        assert.strictEqual(error.code, "OBS_TELEMETRY_INVALID_ENVIRONMENT");
+      }),
+    );
+  }
 
   it.effect("decodes the optional service instance", () =>
     Effect.gen(function* () {
