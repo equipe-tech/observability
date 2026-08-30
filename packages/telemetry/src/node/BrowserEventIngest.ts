@@ -42,10 +42,8 @@ export const ingestBrowserEventBatch = Effect.fn("ingestBrowserEventBatch")(func
   let dropped = 0;
   for (const event of batch.events) {
     const decision = transformSignalFields(policy, "browser-ingest", event.fields);
-    dropped += Object.keys(event.fields).length - Object.keys(decision.value).length;
-    for (const [key, value] of Object.entries(decision.value)) {
-      if (event.fields[key] !== value) redacted += 1;
-    }
+    dropped += decision.dropped;
+    redacted += decision.redactions.filter((redaction) => redaction.action !== "dropped").length;
     yield* WideEvent.emit(event.name, {
       ...decision.value,
       "event.source": "browser",

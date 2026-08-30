@@ -2,6 +2,7 @@ import { Effect, Metric } from "effect";
 import { generateRunId, type RunId, Telemetry } from "../../src/index.ts";
 import { ingestBrowserEvents } from "../../src/node/index.ts";
 import type { TelemetryConfig } from "../../src/TelemetryConfig.ts";
+import type { InvalidDataPolicy } from "../../src/policy/DataPolicyError.ts";
 import * as WideEvent from "../../src/WideEvent.ts";
 
 export const canaryRunId = (): Effect.Effect<RunId> =>
@@ -59,7 +60,10 @@ export const canarySensitiveValues = (runId: string) => {
   };
 };
 
-export const emitCanary = (config: TelemetryConfig, runId: string): Effect.Effect<void> => {
+export const emitCanary = (
+  config: TelemetryConfig,
+  runId: string,
+): Effect.Effect<void, InvalidDataPolicy> => {
   const sensitive = canarySensitiveValues(runId);
   const sensitiveAttributes = {
     "canary.run_id": runId,

@@ -99,6 +99,133 @@ describe("Telemetry.layer", () => {
     }),
   );
 
+  it.live("applies the application policy to every captured span field", () =>
+    Effect.gen(function* () {
+      const marker = crypto.randomUUID().replaceAll("-", "");
+      const raw = `provider_${marker}`;
+      const policy = yield* parseDataPolicy({
+        attributes: {
+          "customer.tier": {
+            classification: "sensitive",
+            required: false,
+            metricLabel: false,
+          },
+          "payment.card": {
+            classification: "forbidden",
+            required: false,
+            metricLabel: false,
+          },
+        },
+        blockedKeys: ["application[.]secret"],
+        blockedValuePatterns: ["provider_[A-Za-z0-9]+"],
+      });
+      const result = yield* Testing.run(
+        Effect.gen(function* () {
+          const span = yield* Effect.currentSpan;
+          yield* Effect.annotateCurrentSpan({
+            "probe.value": raw,
+            "customer.tier": "gold",
+            "payment.card": marker,
+            "application.secret": marker,
+          });
+          span.event(`event.${raw}`, 1n, {
+            "probe.value": raw,
+            "customer.tier": "gold",
+            "payment.card": marker,
+          });
+          span.addLinks([
+            {
+              span,
+              attributes: {
+                "probe.value": raw,
+                "customer.tier": "gold",
+                "payment.card": marker,
+              },
+            },
+          ]);
+          return yield* Effect.fail(new Error(`exception.${raw}`));
+        }).pipe(Effect.withSpan(`span.${raw}`)),
+        { policy },
+      );
+      assert.notInclude(JSON.stringify(result.telemetry), marker);
+      const span = result.telemetry.spans[0];
+      assert.isDefined(span);
+      assert.strictEqual(span.name, "span.[REDACTED]");
+      assert.strictEqual(
+        Option.getOrUndefined(Testing.attribute(span.attributes, "probe.value")),
+        "[REDACTED]",
+      );
+      assert.strictEqual(
+        Option.getOrUndefined(Testing.attribute(span.attributes, "customer.tier")),
+        "****",
+      );
+      assert.isFalse(span.attributes.has("payment.card"));
+      assert.strictEqual(span.attributes.get("application.secret"), "****");
+      const event = span.events.find((candidate) => candidate.name.startsWith("event."));
+      assert.isDefined(event);
+      assert.strictEqual(event.name, "event.[REDACTED]");
+      assert.strictEqual(event.attributes.get("customer.tier"), "****");
+      assert.isFalse(event.attributes.has("payment.card"));
+      const link = span.links[0];
+      assert.isDefined(link);
+      assert.strictEqual(link.attributes.get("probe.value"), "[REDACTED]");
+      assert.strictEqual(link.attributes.get("customer.tier"), "****");
+      assert.isFalse(link.attributes.has("payment.card"));
+      const exception = span.events.find((candidate) => candidate.name === "exception");
+      assert.isDefined(exception);
+      assert.strictEqual(exception.attributes.get("exception.message"), "exception.[REDACTED]");
+      assert.include(
+        Option.getOrElse(span.statusMessage, () => ""),
+        "exception.[REDACTED]",
+      );
+    }),
+  );
+
+  it.live("publishes exact span drop counts and bounds events and links", () =>
+    Effect.gen(function* () {
+      const result = yield* Testing.run(
+        Effect.gen(function* () {
+          const span = yield* Effect.currentSpan;
+          yield* Effect.annotateCurrentSpan(
+            Object.fromEntries(
+              Array.from({ length: 200 }, (_, index) => [`field.value${index}`, index]),
+            ),
+          );
+          for (let index = 0; index < 200; index += 1) {
+            span.event(`event.${index}`, BigInt(index), {
+              ...Object.fromEntries(
+                Array.from({ length: 200 }, (_, field) => [`field.value${field}`, field]),
+              ),
+              "unsupported.value": { index },
+            });
+            span.addLinks([
+              {
+                span,
+                attributes: Object.fromEntries(
+                  Array.from({ length: 200 }, (_, field) => [`field.value${field}`, field]),
+                ),
+              },
+            ]);
+          }
+        }).pipe(Effect.withSpan("bounded.span")),
+      );
+      const span = result.telemetry.spans.find((candidate) => candidate.name === "bounded.span");
+      assert.isDefined(span);
+      assert.strictEqual(span.attributes.size, 128);
+      assert.strictEqual(span.droppedAttributesCount, 72);
+      assert.lengthOf(span.events, 128);
+      assert.strictEqual(span.droppedEventsCount, 72);
+      assert.strictEqual(span.events[0]?.name, "event.0");
+      assert.strictEqual(span.events[127]?.name, "event.127");
+      assert.strictEqual(span.events[0]?.attributes.size, 128);
+      assert.strictEqual(span.events[0]?.droppedAttributesCount, 73);
+      assert.lengthOf(span.links, 128);
+      assert.strictEqual(span.droppedLinksCount, 72);
+      assert.strictEqual(span.links[0]?.attributes.size, 128);
+      assert.strictEqual(span.links[0]?.droppedAttributesCount, 72);
+    }),
+  );
+
   it.live("publishes the exact dropped attribute count", () =>
     Effect.gen(function* () {
       const annotations = {
@@ -253,8 +380,12 @@ describe("Telemetry.layer", () => {
       ).pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(exit));
       if (Exit.isFailure(exit)) {
-        assert.isTrue(Cause.hasDies(exit.cause));
-        assert.include(JSON.stringify(exit.cause), "OBS_POLICY_DUPLICATE_RESOURCE_ATTRIBUTE");
+        const failure = Cause.findErrorOption(exit.cause);
+        assert.isTrue(Option.isSome(failure));
+        assert.include(
+          JSON.stringify(Option.getOrUndefined(failure)),
+          "OBS_POLICY_DUPLICATE_RESOURCE_ATTRIBUTE",
+        );
       }
     }),
   );

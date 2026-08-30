@@ -52,7 +52,9 @@ Browser ingestion does not reject a valid batch because one field violates the p
 
 ## Signal bounds
 
-Browser events keep at most 32 fields and 1,024 characters per value. Server events keep 128 fields and 16,384 characters per value. Logs and spans keep 128 fields and 32,768 characters per value. Defect context keeps 128 fields, while defect text and stack traces keep 65,536 characters. Resources keep 128 attributes and 8,192 characters per value. Metrics keep 16 labels and 256 characters per string label.
+Browser events keep at most 32 fields and 1,024 characters per value. Server events keep 128 fields and 16,384 characters per value. Logs and spans keep 128 fields and 32,768 characters per value. A span keeps the earliest 128 events and earliest 128 links. OTLP reports exact dropped attribute, event, and link counts after policy and bounds. Defect context and the complete defect tag map each keep 128 fields, while defect text and stack traces keep 65,536 characters. Resources keep 128 attributes and 8,192 characters per value. Metrics keep 16 labels and 64 characters per string label. Metric keys require dotted names. The reserved identifiers `unit`, `time_unit`, `service.instance.id`, `trace.id`, `span.id`, `user.id`, and `session.id` are forbidden. Each label accepts at most 100 distinct values per instrument lifetime.
+
+Metric policy rejection uses `POLICY_BLOCKED`. Cardinality and field-count bounds use `LIMIT_EXCEEDED`.
 
 Server truncation preserves the bounded prefix. Policy decisions emit `rule: "bounds"` with `action: "truncated"` or `action: "dropped"`. `dropped` counts every field removed by policy or bounds.
 

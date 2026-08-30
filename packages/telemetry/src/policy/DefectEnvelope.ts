@@ -1,4 +1,4 @@
-import { Option, Predicate } from "effect";
+import { Option } from "effect";
 import type { CorrelationContext } from "../Correlation.ts";
 import type { AttributeValue } from "../contract/TelemetryEvent.ts";
 import type { DataPolicy } from "./DataPolicy.ts";
@@ -23,16 +23,13 @@ export const sanitizeDefectEnvelope = (
   const contextDecision = transformSignalFields(policy, "defect", contextInput);
   const context = new Map<string, AttributeValue>();
   for (const [key, value] of Object.entries(contextDecision.value)) context.set(key, value);
+  const tagsInput: { [key: string]: string } = {};
+  for (const [key, value] of envelope.tags) tagsInput[key] = value;
+  const tagsDecision = transformSignalFields(policy, "defect", tagsInput);
   const tags = new Map<string, string>();
-  const redactions = [...contextDecision.redactions];
-  let dropped = contextDecision.dropped;
-  for (const [key, value] of envelope.tags) {
-    const transformed = transformSignalFields(policy, "defect", { [key]: value });
-    redactions.push(...transformed.redactions);
-    dropped += transformed.dropped;
-    const kept = transformed.value[key];
-    if (Predicate.isString(kept)) tags.set(key, kept);
-  }
+  for (const [key, value] of Object.entries(tagsDecision.value)) tags.set(key, String(value));
+  const redactions = [...contextDecision.redactions, ...tagsDecision.redactions];
+  const dropped = contextDecision.dropped + tagsDecision.dropped;
   if (
     redactions.some(
       (redaction) => redaction.rule === "classification" && redaction.action === "dropped",

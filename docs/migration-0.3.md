@@ -38,7 +38,9 @@ A mesma regra vale para `OTEL_SERVICE_VERSION` quando a configuração vem de `t
 
 ## Usar nomes pontuados em atributos de métricas
 
-A versão 0.3 exige nomes estáveis e pontuados para atributos de métricas. Troque chaves de segmento único, como `region`, por nomes de domínio, como `deployment.region`. A API rejeita uma chave sem ponto com `MetricsError` e código `POLICY_BLOCKED`.
+A versão 0.3 exige nomes estáveis e pontuados para atributos de métricas. Troque chaves de segmento único, como `region`, por nomes de domínio, como `deployment.region`. Remova os identificadores reservados `unit`, `time_unit`, `service.instance.id`, `trace.id`, `span.id`, `user.id` e `session.id`. Strings de rótulo agora aceitam no máximo 64 caracteres e não aceitam formatos de identificador. A API rejeita essas violações com `MetricsError` e código `POLICY_BLOCKED`.
+
+Cada instrumento aceita no máximo 100 valores distintos por rótulo durante a vida do runtime. Reduza a cardinalidade antes da atualização. O valor 101 produz `MetricsError` com código `LIMIT_EXCEEDED`.
 
 ## Renomear projetos incompatíveis com a CLI
 

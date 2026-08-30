@@ -10,6 +10,7 @@ import { telemetryConfigFromEnv, type TelemetryConfig } from "./TelemetryConfig.
 import { layerMetricsRuntime } from "./MetricsRuntime.ts";
 import { layerHttpServerOtlpTracer } from "./nestjs/HttpServerOtlpTracer.ts";
 import { baseDataPolicy, CurrentDataPolicy, type DataPolicy } from "./policy/DataPolicy.ts";
+import type { InvalidDataPolicy } from "./policy/DataPolicyError.ts";
 import {
   parseResourceAttributes,
   type ResourceAttribute,
@@ -26,12 +27,12 @@ export type OtlpLayerOptions = {
 export const layerOtlp = (
   config: TelemetryConfig,
   options: OtlpLayerOptions = {},
-): Layer.Layer<OtlpExporter.Flusher, never, HttpClient.HttpClient> => {
+): Layer.Layer<OtlpExporter.Flusher, InvalidDataPolicy, HttpClient.HttpClient> => {
   const policy = options.policy ?? baseDataPolicy;
   const canonical = instanceResourceAttributes(config.identity, config.environmentAlias);
   return Layer.unwrap(
     Effect.map(
-      Effect.orDie(parseResourceAttributes(policy, canonical, options.resourceAttributes ?? [])),
+      parseResourceAttributes(policy, canonical, options.resourceAttributes ?? []),
       (parsed) => {
         const base = HttpClientRequest.get(config.otlpEndpoint.toString());
         const url = (path: string): string => HttpClientRequest.appendUrl(base, path).url;
@@ -55,6 +56,7 @@ export const layerOtlp = (
           metrics,
           layerHttpServerOtlpTracer({
             url: url("/v1/traces"),
+            policy,
             resource,
             shutdownTimeout: options.shutdownTimeout,
           }),
@@ -67,7 +69,7 @@ export const layerOtlp = (
 export const layer = (
   config: TelemetryConfig,
   options: OtlpLayerOptions = {},
-): Layer.Layer<OtlpExporter.Flusher> =>
+): Layer.Layer<OtlpExporter.Flusher, InvalidDataPolicy> =>
   layerOtlp(config, options).pipe(Layer.provide(FetchHttpClient.layer));
 
 export const layerFromEnv = (
@@ -75,5 +77,8 @@ export const layerFromEnv = (
   options: OtlpLayerOptions = {},
 ): Layer.Layer<
   OtlpExporter.Flusher,
-  InvalidTelemetryEnvironment | InvalidResourceIdentity | DuplicateReleaseVariable
+  | InvalidTelemetryEnvironment
+  | InvalidResourceIdentity
+  | DuplicateReleaseVariable
+  | InvalidDataPolicy
 > => Layer.unwrap(Effect.map(telemetryConfigFromEnv(env), (config) => layer(config, options)));

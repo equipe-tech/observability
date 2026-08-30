@@ -44,7 +44,7 @@ export type ObservabilityAdapterContext = {
   readonly contract: ContractRegistry;
   readonly policy: DataPolicy;
   readonly sentry: SentryConfig;
-  readonly runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, never>;
+  readonly runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, InvalidObservabilityConfig>;
 };
 
 export type ObservabilityAdapterHandle = {

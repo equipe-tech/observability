@@ -5,6 +5,7 @@ import { parseResourceIdentity } from "../ResourceIdentity.ts";
 import { layerOtlp } from "../Telemetry.ts";
 import { TelemetryConfig } from "../TelemetryConfig.ts";
 import type { DataPolicy } from "../policy/DataPolicy.ts";
+import type { InvalidDataPolicy } from "../policy/DataPolicyError.ts";
 import type { ResourceAttribute } from "../policy/ResourceAttributePolicy.ts";
 
 export * from "./contract.ts";
@@ -18,6 +19,18 @@ export type CapturedAttributeValue = string | number | boolean;
 
 export type CapturedAttributes = ReadonlyMap<string, CapturedAttributeValue>;
 
+export type CapturedSpanEvent = {
+  readonly name: string;
+  readonly attributes: CapturedAttributes;
+  readonly droppedAttributesCount: number;
+};
+
+export type CapturedSpanLink = {
+  readonly spanId: string;
+  readonly attributes: CapturedAttributes;
+  readonly droppedAttributesCount: number;
+};
+
 export type CapturedSpan = {
   readonly traceId: string;
   readonly spanId: string;
@@ -27,6 +40,11 @@ export type CapturedSpan = {
   readonly statusCode: number;
   readonly statusMessage: Option.Option<string>;
   readonly attributes: CapturedAttributes;
+  readonly droppedAttributesCount: number;
+  readonly events: ReadonlyArray<CapturedSpanEvent>;
+  readonly droppedEventsCount: number;
+  readonly links: ReadonlyArray<CapturedSpanLink>;
+  readonly droppedLinksCount: number;
   readonly eventNames: ReadonlyArray<string>;
   readonly linkedSpanIds: ReadonlyArray<string>;
   readonly resourceAttributes: CapturedAttributes;
@@ -123,12 +141,23 @@ const ExportedSpan = Schema.Struct({
     message: Schema.String.pipe(Schema.optionalKey),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({ code: 0 }))),
   attributes: Attributes,
-  events: Schema.Array(Schema.Struct({ name: Schema.String })).pipe(
-    Schema.withDecodingDefault(Effect.succeed([])),
-  ),
-  links: Schema.Array(Schema.Struct({ spanId: Schema.String })).pipe(
-    Schema.withDecodingDefault(Effect.succeed([])),
-  ),
+  droppedAttributesCount: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  events: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      attributes: Attributes,
+      droppedAttributesCount: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+    }),
+  ).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  droppedEventsCount: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  links: Schema.Array(
+    Schema.Struct({
+      spanId: Schema.String,
+      attributes: Attributes,
+      droppedAttributesCount: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+    }),
+  ).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  droppedLinksCount: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 });
 
 const SpanExport = Schema.Struct({
@@ -292,6 +321,19 @@ const decodeCapturedTelemetry = Effect.fn("decodeCapturedTelemetry")(function* (
               statusCode: span.status.code,
               statusMessage: Option.fromNullishOr(span.status.message),
               attributes: toAttributes(span.attributes),
+              droppedAttributesCount: span.droppedAttributesCount,
+              events: span.events.map((event) => ({
+                name: event.name,
+                attributes: toAttributes(event.attributes),
+                droppedAttributesCount: event.droppedAttributesCount,
+              })),
+              droppedEventsCount: span.droppedEventsCount,
+              links: span.links.map((link) => ({
+                spanId: link.spanId,
+                attributes: toAttributes(link.attributes),
+                droppedAttributesCount: link.droppedAttributesCount,
+              })),
+              droppedLinksCount: span.droppedLinksCount,
               eventNames: span.events.map((event) => event.name),
               linkedSpanIds: span.links.map((link) => link.spanId),
               resourceAttributes,
@@ -404,7 +446,7 @@ export type RunOptions = {
 };
 
 export type TelemetryCapture = {
-  readonly layer: Layer.Layer<OtlpExporter.Flusher>;
+  readonly layer: Layer.Layer<OtlpExporter.Flusher, InvalidDataPolicy>;
   readonly telemetry: Effect.Effect<CapturedTelemetry>;
 };
 
@@ -423,7 +465,7 @@ export const makeCapture = Effect.fn("makeCapture")(function* (
 export const run = <A, E, R>(
   program: Effect.Effect<A, E, R>,
   options?: RunOptions,
-): Effect.Effect<TelemetryRun<A, E>, never, R> =>
+): Effect.Effect<TelemetryRun<A, E | InvalidDataPolicy>, never, R> =>
   Effect.gen(function* () {
     const capture = yield* makeCapture(options);
     const exit = yield* program.pipe(Effect.provide(capture.layer), Effect.exit);

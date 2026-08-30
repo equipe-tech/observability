@@ -15,16 +15,6 @@ import {
   sensitiveTextReplacement,
 } from "./PolicyVocabulary.ts";
 
-export {
-  baseBlockedKeys,
-  baseBlockedValuePatterns,
-  collectorBlockedKeyPattern,
-  collectorBlockedValuePatterns,
-  isSensitiveFieldKey,
-  sensitiveFieldReplacement,
-  sensitiveTextReplacement,
-} from "./PolicyVocabulary.ts";
-
 const maxOriginalFieldKeyLength = 2_048;
 const maxOriginalStringLength = 16_384;
 const maxJsonDepth = 32;

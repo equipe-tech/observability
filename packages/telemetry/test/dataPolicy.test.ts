@@ -346,6 +346,27 @@ describe("executable data policy discrimination", () => {
     });
   });
 
+  it("bounds two hundred defect tags as one map", async () => {
+    const tags = new Map(
+      Array.from({ length: 200 }, (_, index) => [`tag.field${index}`, String(index)]),
+    );
+    const envelope = sanitizeDefectEnvelope(await compile(), {
+      errorType: "UnexpectedDefect",
+      errorMessage: "failure",
+      stack: Option.none(),
+      fingerprint: [],
+      tags,
+      context: new Map(),
+      correlation: new CorrelationContext({}),
+    });
+    const value = Option.getOrThrow(envelope.value);
+    assert.strictEqual(value.tags.size, 128);
+    assert.strictEqual(envelope.dropped, 72);
+    assert.strictEqual(value.tags.get("tag.field0"), "0");
+    assert.strictEqual(value.tags.get("tag.field127"), "127");
+    assert.isFalse(value.tags.has("tag.field128"));
+  });
+
   it("preserves bounded defect stacks", async () => {
     const stack = `Error: failure\n${"at function (file.ts:1:1)\n".repeat(3_000)}`;
     const envelope = sanitizeDefectEnvelope(await compile(), {

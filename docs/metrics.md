@@ -70,11 +70,12 @@ Counters accept finite additions greater than or equal to zero. Histograms accep
 
 ## Attributes and cardinality
 
-Pass attributes as an array of `{ key, value }` items. Values are strings, finite numbers, or booleans. Duplicate keys, `unit`, `time_unit`, and `service.instance.id` are rejected. Instance identity belongs only to log and trace resources, never metric resources or datapoints. A measurement accepts at most 16 attributes. Attribute keys contain at most 128 characters. String values contain at most 256 characters and no control characters.
+Pass attributes as an array of `{ key, value }` items. Values are strings, finite numbers, or booleans. Keys use at least two lowercase dotted segments and contain at most 128 characters. Duplicate keys and the reserved identifiers `unit`, `time_unit`, `service.instance.id`, `trace.id`, `span.id`, `user.id`, and `session.id` are rejected. Instance, trace, span, user, and session identifiers never become metric labels. A measurement accepts at most 16 attributes. String values contain 1 to 64 characters, use the label grammar `[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}`, and cannot have identifier shapes such as UUID, trace ID, span ID, ULID, or a numeric identifier of at least seven digits.
 
 The runtime enforces these lifetime limits:
 
 - 100 facade instrument names per runtime lifetime
+- 100 distinct values per label per instrument lifetime
 - 1,000 series identities per instrument
 - 10,000 series identities per runtime
 - 16 callbacks per observable gauge
@@ -91,6 +92,9 @@ Synchronous validation and registration failures throw `MetricsError` with one o
 - `INVALID_MEASUREMENT`
 - `INSTRUMENT_CONFLICT`
 - `LIMIT_EXCEEDED`
+- `POLICY_BLOCKED`
 - `CLOSED`
+
+`POLICY_BLOCKED` reports a dotted-key, reserved-identifier, classification, blocked-value, string-bound, or identifier-shape rejection without returning the rejected key or value. `LIMIT_EXCEEDED` reports the 16-label measurement bound or a lifetime cardinality bound, including the 100-values-per-label-per-instrument limit.
 
 `flush` and the final export from `close` reject with `EXPORT_FAILED` or `FLUSH_TIMED_OUT`. Transport failures and timeouts are retryable on an open lifecycle. Definition and name-conflict export failures are not retryable until the conflicting instrument is renamed or aligned. A direct Effect Metric datapoint carrying `service.instance.id` also fails with non-retryable `EXPORT_FAILED`; remove the reserved key before another export. `close` releases the runtime lease even when its final export rejects.

@@ -155,9 +155,10 @@ describe("Testing.run", () => {
       });
       assert.isTrue(Exit.isFailure(result.exit));
       if (Exit.isFailure(result.exit)) {
-        assert.isTrue(Cause.hasDies(result.exit.cause));
+        const failure = Cause.findErrorOption(result.exit.cause);
+        assert.isTrue(Option.isSome(failure));
         assert.include(
-          JSON.stringify(result.exit.cause),
+          JSON.stringify(Option.getOrUndefined(failure)),
           "OBS_POLICY_DUPLICATE_RESOURCE_ATTRIBUTE",
         );
       }
@@ -172,9 +173,10 @@ describe("Testing.run", () => {
       const result = yield* Testing.run(Effect.void, { resourceAttributes });
       assert.isTrue(Exit.isFailure(result.exit));
       if (Exit.isFailure(result.exit)) {
-        assert.isTrue(Cause.hasDies(result.exit.cause));
+        const failure = Cause.findErrorOption(result.exit.cause);
+        assert.isTrue(Option.isSome(failure));
         assert.include(
-          JSON.stringify(result.exit.cause),
+          JSON.stringify(Option.getOrUndefined(failure)),
           "OBS_POLICY_DUPLICATE_RESOURCE_ATTRIBUTE",
         );
       }

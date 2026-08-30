@@ -22,6 +22,7 @@ import {
 } from "./TelemetryEvent.ts";
 import { CurrentDataPolicy, type DataPolicy } from "../policy/DataPolicy.ts";
 import { transformSignalFields } from "../policy/PolicyTransform.ts";
+import { sensitiveFieldReplacement } from "../policy/PolicyVocabulary.ts";
 import type { PolicyRedaction } from "../policy/PolicyTransform.ts";
 import { InvalidTelemetryEvent } from "./TelemetryContractError.ts";
 
@@ -203,7 +204,8 @@ const parseAttributes = (
         { eventName: definition.name, attributeName },
       );
     }
-    parsed[attributeName] = attribute.classification === "sensitive" ? "****" : value;
+    parsed[attributeName] =
+      attribute.classification === "sensitive" ? sensitiveFieldReplacement : value;
   }
   const decision = transformSignalFields(policy, "event", parsed);
   return { attributes: decision.value, redactions: decision.redactions };
