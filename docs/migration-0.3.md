@@ -91,6 +91,12 @@ Ambientes com Collector remoto também precisam definir `OTEL_DEPLOYMENT_ENVIRON
 
 Remova `SENTRY_RELEASE` e `OTEL_SERVICE_RELEASE`. Um valor não vazio em qualquer uma delas falha com `OBS_TELEMETRY_DUPLICATE_RELEASE_VARIABLE`. O adapter Sentry usa `OTEL_SERVICE_VERSION`.
 
+## Migrar produção de métricas para o contrato
+
+Declare cada métrica no campo `metrics` de `defineTelemetryContract`. Troque nomes, unidades, limites e listas de atributos passados diretamente a `metrics.counter`, `metrics.histogram` ou `metrics.observableGauge` por aliases do contrato. Obtenha o facade por `observability.metrics` e crie o produtor com `makeMetricProducer(contract, observability.metrics)`.
+
+O produtor exige todos os atributos declarados e rejeita atributos extras. Listas `allowedValues` estreitam o tipo aceito pelo chamador. `maximumCardinality` aplica um limite de 1 a 100 antes dos limites gerais do runtime. `createMetrics` continua compatível para adapters e integrações de baixo nível, mas código de aplicação deve usar o produtor ligado ao contrato.
+
 ## Compatibilidade de release
 
 Esta migração documenta a quebra intencional da linha 0.3. O OBS-57 adicionará a verificação automatizada de compatibilidade e o bloqueio de versionamento.

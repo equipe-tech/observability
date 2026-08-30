@@ -18,7 +18,9 @@ import {
 } from "../src/contract/index.ts";
 import {
   contractIssueFixtures,
+  invalidMetricDefinitionFixtures,
   makeCollectingTelemetryEventSink,
+  metricDefinitionFixtures,
   organizationEventFixtures,
   telemetryEventErrorFixtures,
   withFixedSampling,
@@ -90,6 +92,16 @@ describe("defineTelemetryContract", () => {
       "OBS_CONTRACT_INVALID_SAMPLING_RATE",
       "OBS_CONTRACT_INVALID_AUDIT_ACTION",
       "OBS_CONTRACT_DUPLICATE_AUDIT_ACTION",
+      "OBS_CONTRACT_INVALID_METRIC_NAME",
+      "OBS_CONTRACT_DUPLICATE_METRIC_NAME",
+      "OBS_CONTRACT_INVALID_METRIC_KIND",
+      "OBS_CONTRACT_INVALID_METRIC_UNIT",
+      "OBS_CONTRACT_INVALID_METRIC_DESCRIPTION",
+      "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES",
+      "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_NAME",
+      "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_DEFINITION",
+      "OBS_CONTRACT_INVALID_METRIC_ALLOWED_VALUES",
+      "OBS_CONTRACT_INVALID_METRIC_CARDINALITY",
     ]);
   });
 
@@ -104,6 +116,204 @@ describe("defineTelemetryContract", () => {
         "account",
       );
       assert.deepStrictEqual(contract.metrics, {});
+      assert.strictEqual(contract.metricByAlias.size, 0);
+      assert.strictEqual(contract.metricByName.size, 0);
+    }),
+  );
+
+  it.effect("compiles typed metric definitions and canonical indexes", () =>
+    Effect.gen(function* () {
+      const contract = yield* defineTelemetryContract({
+        version: 1,
+        events: {},
+        metrics: {
+          OrdersCreated: {
+            name: "orders.created",
+            description: "Created orders",
+            unit: "1",
+            kind: "counter",
+            attributes: {
+              "order.channel": {
+                classification: "public",
+                allowedValues: ["web", "mobile"],
+                maximumCardinality: 2,
+              },
+            },
+          },
+          OrderDuration: {
+            name: "orders.duration",
+            description: "Order duration",
+            unit: "ms",
+            kind: "histogram",
+            boundaries: [10, 25, 50],
+            attributes: {},
+          },
+          QueueDepth: {
+            name: "orders.queue_depth",
+            description: "Queue depth",
+            unit: "1",
+            kind: "observable_gauge",
+            attributes: {},
+          },
+        },
+        auditActions: {},
+      });
+      assert.strictEqual(contract.metricByAlias.get("OrdersCreated")?.name, "orders.created");
+      assert.strictEqual(contract.metricByName.get("orders.duration")?.kind, "histogram");
+      assert.deepStrictEqual(
+        contract.metricByName.get("orders.duration")?.boundaries,
+        [10, 25, 50],
+      );
+    }),
+  );
+
+  it.effect("accepts every public metric definition fixture", () =>
+    Effect.gen(function* () {
+      const contract = yield* defineTelemetryContract({
+        version: 1,
+        events: {},
+        metrics: metricDefinitionFixtures,
+        auditActions: {},
+      });
+      assert.sameMembers(Array.from(contract.metricByAlias.keys()), [
+        "Counter",
+        "Histogram",
+        "ObservableGauge",
+      ]);
+    }),
+  );
+
+  it.effect("rejects every public invalid metric definition fixture", () =>
+    Effect.gen(function* () {
+      for (const fixture of invalidMetricDefinitionFixtures) {
+        const error = yield* defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: JSON.parse(fixture.metricsDocument),
+          auditActions: {},
+        }).pipe(Effect.flip);
+        assert.include(issueCodes(error), fixture.issue);
+      }
+    }),
+  );
+
+  it.effect("rejects every invalid histogram boundary form and non-histogram boundaries", () =>
+    Effect.gen(function* () {
+      const histogramCases = [
+        [],
+        Array.from({ length: 51 }, (_, index) => index),
+        [1, Number.NaN],
+        [2, 1],
+        [1, 1],
+      ];
+      for (const boundaries of histogramCases) {
+        const error = yield* defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            Metric: {
+              name: "fixture.metric",
+              description: "Fixture",
+              unit: "1",
+              kind: "histogram",
+              boundaries,
+              attributes: {},
+            },
+          },
+          auditActions: {},
+        }).pipe(Effect.flip);
+        assert.include(issueCodes(error), "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES");
+      }
+      for (const kind of ["counter", "observable_gauge"]) {
+        const error = yield* defineTelemetryContract(
+          JSON.parse(
+            `{"version":1,"events":{},"metrics":{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"1","kind":"${kind}","boundaries":[1],"attributes":{}}},"auditActions":{}}`,
+          ),
+        ).pipe(Effect.flip);
+        assert.include(issueCodes(error), "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES");
+      }
+    }),
+  );
+
+  it.effect("rejects metric definitions with more than sixteen attributes", () =>
+    Effect.gen(function* () {
+      const attributes = JSON.parse(
+        JSON.stringify(
+          Object.fromEntries(
+            Array.from({ length: 17 }, (_, index) => [
+              `fixture.label_${index}`,
+              { classification: "public", maximumCardinality: 1 },
+            ]),
+          ),
+        ),
+      );
+      const error = yield* defineTelemetryContract({
+        version: 1,
+        events: {},
+        metrics: {
+          Metric: {
+            name: "fixture.metric",
+            description: "Fixture",
+            unit: "1",
+            kind: "counter",
+            attributes,
+          },
+        },
+        auditActions: {},
+      }).pipe(Effect.flip);
+      assert.include(issueCodes(error), "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_DEFINITION");
+    }),
+  );
+
+  it.effect("aggregates metric definition issues in stable declaration order", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        defineTelemetryContract(
+          JSON.parse(`{
+            "version": 1,
+            "events": {},
+            "metrics": {
+              "First": {
+                "name": "orders.created.production",
+                "description": "",
+                "unit": "invalid unit",
+                "kind": "counter",
+                "boundaries": [2, 1],
+                "attributes": {
+                  "channel": {
+                    "classification": "sensitive",
+                    "maximumCardinality": 0,
+                    "allowedValues": []
+                  }
+                }
+              },
+              "Second": {
+                "name": "orders.created.production",
+                "description": "Duplicate",
+                "unit": "1",
+                "kind": "invalid",
+                "attributes": {}
+              }
+            },
+            "auditActions": {}
+          }`),
+        ),
+      );
+      assert.deepStrictEqual(issueCodes(error), [
+        "OBS_CONTRACT_INVALID_METRIC_NAME",
+        "OBS_CONTRACT_INVALID_METRIC_DESCRIPTION",
+        "OBS_CONTRACT_INVALID_METRIC_UNIT",
+        "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES",
+        "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_NAME",
+        "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_DEFINITION",
+        "OBS_CONTRACT_INVALID_METRIC_CARDINALITY",
+        "OBS_CONTRACT_INVALID_METRIC_ALLOWED_VALUES",
+        "OBS_CONTRACT_INVALID_METRIC_NAME",
+        "OBS_CONTRACT_DUPLICATE_METRIC_NAME",
+        "OBS_CONTRACT_INVALID_METRIC_KIND",
+      ]);
+      assert.strictEqual(error.issues[0]?.metricAlias, "First");
+      assert.strictEqual(error.issues[0]?.metricName, "orders.created.production");
     }),
   );
 
@@ -488,7 +698,7 @@ describe("defineTelemetryContract", () => {
             }
           }
         },
-        "metrics": { "FutureMetric": { "opaque": true } },
+        "metrics": {},
         "auditActions": {
           "BadAction": { "action": "BAD", "resourceType": "", "allowedOutcomes": ["unknown"] }
         }

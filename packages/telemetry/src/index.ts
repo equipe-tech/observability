@@ -27,6 +27,17 @@ export type {
   EmitReceipt,
 } from "./contract/EventProducer.ts";
 export { makeEventProducer, TelemetryEventSink } from "./contract/EventProducer.ts";
+export { makeMetricProducer } from "./contract/MetricProducer.ts";
+export type {
+  ContractCounter,
+  ContractGaugeObservation,
+  ContractHistogram,
+  MetricAttributesOf,
+  MetricAttributeValueOf,
+  MetricProducer,
+} from "./contract/MetricProducer.ts";
+export { InvalidMetricMeasurement } from "./contract/MetricContractError.ts";
+export type { MetricMeasurementErrorCode } from "./contract/MetricContractError.ts";
 export type { TelemetryContract, TelemetryContractInput } from "./contract/TelemetryContract.ts";
 export type { EventAttributes, TelemetryEvent } from "./contract/TelemetryEvent.ts";
 export * as Telemetry from "./Telemetry.ts";

@@ -7,6 +7,7 @@ import {
   type TelemetryContract,
   type TelemetryContractInput,
 } from "../contract/index.ts";
+import type { MetricDefinitionsInput } from "../contract/MetricDefinition.ts";
 import { ContractIssueCode, TelemetryEventErrorCode } from "../contract/TelemetryContractError.ts";
 import type { TelemetryEvent } from "../contract/TelemetryEvent.ts";
 import { organizationEvents } from "../contract/OrganizationEvents.ts";
@@ -24,6 +25,92 @@ export const organizationEventFixtures: ReadonlyArray<OrganizationEventFixture> 
 export const contractIssueFixtures = ContractIssueCode.literals;
 
 export const telemetryEventErrorFixtures = TelemetryEventErrorCode.literals;
+
+export const metricDefinitionFixtures = {
+  Counter: {
+    name: "fixture.counter",
+    description: "Counter fixture",
+    unit: "1",
+    kind: "counter",
+    attributes: {},
+  },
+  Histogram: {
+    name: "fixture.histogram",
+    description: "Histogram fixture",
+    unit: "ms",
+    kind: "histogram",
+    boundaries: [1, 10],
+    attributes: {},
+  },
+  ObservableGauge: {
+    name: "fixture.gauge",
+    description: "Observable gauge fixture",
+    unit: "1",
+    kind: "observable_gauge",
+    attributes: {},
+  },
+} satisfies MetricDefinitionsInput;
+
+type MetricDefinitionIssueCode = Extract<
+  ContractIssueCode,
+  `OBS_CONTRACT_${string}METRIC${string}`
+>;
+
+export type InvalidMetricDefinitionFixture = {
+  readonly issue: MetricDefinitionIssueCode;
+  readonly metricsDocument: string;
+};
+
+const exhaustiveMetricDefinitionFixtures = <
+  Fixtures extends ReadonlyArray<InvalidMetricDefinitionFixture>,
+>(
+  fixtures: Exclude<MetricDefinitionIssueCode, Fixtures[number]["issue"]> extends never
+    ? Fixtures
+    : never,
+): Fixtures => fixtures;
+
+export const invalidMetricDefinitionFixtures = exhaustiveMetricDefinitionFixtures([
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_NAME",
+    metricsDocument: `{"Metric":{"name":"invalid","description":"Fixture","unit":"1","kind":"counter","attributes":{}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_DUPLICATE_METRIC_NAME",
+    metricsDocument: `{"First":{"name":"fixture.duplicate","description":"Fixture","unit":"1","kind":"counter","attributes":{}},"Second":{"name":"fixture.duplicate","description":"Fixture","unit":"1","kind":"counter","attributes":{}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_KIND",
+    metricsDocument: `{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"1","kind":"summary","attributes":{}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_DESCRIPTION",
+    metricsDocument: `{"Metric":{"name":"fixture.metric","description":"","unit":"1","kind":"counter","attributes":{}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_UNIT",
+    metricsDocument: `{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"bad unit","kind":"counter","attributes":{}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES",
+    metricsDocument: `{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"ms","kind":"histogram","boundaries":[],"attributes":{}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_NAME",
+    metricsDocument: `{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"1","kind":"counter","attributes":{"Invalid":{"classification":"public","maximumCardinality":1}}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_DEFINITION",
+    metricsDocument: `{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"1","kind":"counter","attributes":{"fixture.label":{"classification":"sensitive","maximumCardinality":1}}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_CARDINALITY",
+    metricsDocument: `{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"1","kind":"counter","attributes":{"fixture.label":{"classification":"public","maximumCardinality":0}}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_ALLOWED_VALUES",
+    metricsDocument: `{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"1","kind":"counter","attributes":{"fixture.label":{"classification":"public","maximumCardinality":1,"allowedValues":[]}}}}`,
+  },
+]);
 
 export type CollectingTelemetryEventSink = {
   readonly layer: Layer.Layer<TelemetryEventSink>;

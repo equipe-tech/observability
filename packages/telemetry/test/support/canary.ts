@@ -1,5 +1,7 @@
-import { Effect, Metric } from "effect";
-import { generateRunId, type RunId, Telemetry } from "../../src/index.ts";
+import { Effect } from "effect";
+import { defineTelemetryContract, generateRunId, type RunId, Telemetry } from "../../src/index.ts";
+import * as Observability from "../../src/index.ts";
+import { createMetrics, MetricsError } from "../../src/Metrics.ts";
 import { ingestBrowserEvents } from "../../src/node/index.ts";
 import type { TelemetryConfig } from "../../src/TelemetryConfig.ts";
 import type { InvalidDataPolicy } from "../../src/policy/DataPolicyError.ts";
@@ -8,6 +10,42 @@ import { layerWideEvent } from "../../src/effect/WideEventSink.ts";
 
 export const canaryRunId = (): Effect.Effect<RunId> =>
   generateRunId("canary", process.env["USER"] ?? "ci");
+
+const canaryContract = await Effect.runPromise(
+  defineTelemetryContract({
+    version: 1,
+    events: {},
+    metrics: {
+      CanaryOperations: {
+        name: "canary.operations",
+        description: "Completed observability canary operations",
+        unit: "1",
+        kind: "counter",
+        attributes: {
+          "canary.run_id": {
+            classification: "internal",
+            maximumCardinality: 100,
+          },
+        },
+      },
+      CanaryMetricRedactionProbe: {
+        name: "canary.redaction_probe",
+        description: "Rejected sensitive metric labels",
+        unit: "1",
+        kind: "counter",
+        attributes: {
+          "canary.run_id": { classification: "internal", maximumCardinality: 100 },
+          "canary.probe_a": { classification: "internal", maximumCardinality: 100 },
+          "canary.probe_b": { classification: "internal", maximumCardinality: 100 },
+          "canary.probe_c": { classification: "internal", maximumCardinality: 100 },
+          "canary.probe_d": { classification: "internal", maximumCardinality: 100 },
+          "canary.probe_e": { classification: "internal", maximumCardinality: 100 },
+        },
+      },
+    },
+    auditActions: {},
+  }),
+);
 
 export const canarySensitiveValues = (runId: string) => {
   const compactRunId = runId.replaceAll("-", "");
@@ -112,9 +150,21 @@ export const emitCanary = (
     "safe.raw_header": sensitive.rawAuthorization,
   };
   return Effect.gen(function* () {
-    const operationCounter = Metric.counter("canary.operations", {
-      attributes: sensitiveAttributes,
-    });
+    const metrics = yield* Effect.acquireRelease(
+      Effect.promise(() =>
+        createMetrics({
+          serviceName: config.identity.serviceName,
+          serviceVersion: config.identity.serviceVersion,
+          environment: config.identity.environment,
+          deploymentEnvironmentAlias: config.environmentAlias,
+          otlpEndpoint: config.otlpEndpoint.toString(),
+        }),
+      ),
+      (facade) => Effect.promise(() => facade.close()).pipe(Effect.orDie),
+    );
+    const metricProducer = Observability.makeMetricProducer(canaryContract, metrics);
+    const operationCounter = metricProducer.counter("CanaryOperations");
+    const redactionProbe = metricProducer.counter("CanaryMetricRedactionProbe");
     yield* Effect.sleep("10 millis").pipe(Effect.withSpan("canary.child"));
     yield* WideEvent.emit("canary.completed", {
       "canary.run_id": runId,
@@ -150,8 +200,24 @@ export const emitCanary = (
         },
       ],
     }).pipe(Effect.provide(layerWideEvent), Effect.orDie);
-    yield* Metric.update(operationCounter, 1);
+    yield* Effect.sync(() => {
+      try {
+        redactionProbe.add(1, {
+          "canary.run_id": runId,
+          "canary.probe_a": sensitive.authorization,
+          "canary.probe_b": sensitive.password,
+          "canary.probe_c": sensitive.accessToken,
+          "canary.probe_d": sensitive.email,
+          "canary.probe_e": sensitive.phoneNumber,
+        });
+        throw new Error("Expected sensitive metric labels to be rejected.");
+      } catch (cause) {
+        if (!(cause instanceof MetricsError) || cause.code !== "POLICY_BLOCKED") throw cause;
+      }
+    });
+    operationCounter.add(1, { "canary.run_id": runId });
   }).pipe(
+    Effect.scoped,
     Effect.withSpan("canary.operation", { attributes: sensitiveAttributes }),
     Effect.provide(Telemetry.layer(config)),
   );

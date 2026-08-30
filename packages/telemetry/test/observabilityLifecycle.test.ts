@@ -41,6 +41,8 @@ const contract: ContractRegistry = {
   eventByName: new Map<EventName, CompiledEventDefinition>(),
   auditActionByAlias: new Map<string, CompiledAuditActionDefinition>(),
   auditActionByName: new Map<string, CompiledAuditActionDefinition>(),
+  metricByAlias: new Map(),
+  metricByName: new Map(),
 };
 const policy = { attributes: {}, blockedKeys: [], blockedValuePatterns: [] };
 const testEventLayer = Layer.succeed(
