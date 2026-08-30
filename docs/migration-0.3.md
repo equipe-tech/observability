@@ -95,6 +95,12 @@ Esta migração documenta a quebra intencional da linha 0.3. O OBS-57 adicionar�
 import { WideEvent, layerWideEvent } from "@equipe-tech/observability/effect";
 ```
 
+O tipo público `WideEventFields` foi removido. Substitua-o por `EventAttributes`, exportado pela raiz do núcleo:
+
+```ts
+import type { EventAttributes } from "@equipe-tech/observability";
+```
+
 O caminho `@equipe-tech/observability/nestjs` foi removido. Instale `@equipe-tech/observability-nestjs@0.3.x` e importe a integração pela raiz do pacote:
 
 ```ts

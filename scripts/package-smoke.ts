@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { declarationReferenceViolations } from "./declaration-references.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const cleanupTestIndex = process.argv.indexOf("--signal-cleanup-test");
@@ -40,11 +41,6 @@ const PackedManifest = Schema.Struct({
   peerDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 const decodePackedManifest = Schema.decodeUnknownSync(PackedManifest);
-
-const dependencyName = (specifier: string): string => {
-  const parts = specifier.split("/");
-  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : (parts[0] ?? specifier);
-};
 
 const run = (command: Array<string>, cwd: string, env = process.env): Promise<CommandResult> => {
   const child = Bun.spawn(command, {
@@ -492,19 +488,15 @@ try {
       ) {
         throw new Error(`The core declaration ${declaration} exposes a framework dependency.`);
       }
-      const externalSpecifiers = source.matchAll(/(?:from\s+|import\()["']([^"']+)["']/g);
-      for (const match of externalSpecifiers) {
-        const specifier = match[1];
-        if (
-          specifier !== undefined &&
-          !specifier.startsWith(".") &&
-          !specifier.startsWith("node:") &&
-          !declared.has(dependencyName(specifier))
-        ) {
+      for (const violation of declarationReferenceViolations(source, declared)) {
+        if (violation.kind === "source-path") {
           throw new Error(
-            `The declaration ${declaration} imports undeclared dependency ${specifier}.`,
+            `The declaration ${declaration} exposes source path reference ${violation.specifier}.`,
           );
         }
+        throw new Error(
+          `The declaration ${declaration} imports undeclared dependency ${violation.specifier}.`,
+        );
       }
     }
   }

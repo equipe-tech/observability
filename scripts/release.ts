@@ -2,11 +2,13 @@ import { Schema } from "effect";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse } from "yuku-parser";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const versionPattern = /^(\d+)\.(\d+)\.(\d+)(?:-(?:alpha|beta|rc)\.\d+)?$/;
 const Manifest = Schema.Struct({ name: Schema.NonEmptyString, version: Schema.NonEmptyString });
 const decodeManifest = Schema.decodeUnknownSync(Manifest);
+const isString = Schema.is(Schema.String);
 
 type WorkspacePackage = {
   readonly manifestPath: string;
@@ -15,7 +17,8 @@ type WorkspacePackage = {
   readonly version: string;
 };
 
-const usage = (): never => {
+const usage = (error?: string): never => {
+  if (error !== undefined) console.error(error);
   console.error(
     "Usage: bun scripts/release.ts <patch|minor|major|x.y.z[-alpha.N|-beta.N|-rc.N]> --package <slug> [--dry-run]",
   );
@@ -51,6 +54,36 @@ const bumpVersion = (current: string, request: string): string => {
   return request;
 };
 
+const updateManifestVersion = (content: string, current: string, next: string): string => {
+  const program = parse(`(${content})`, { lang: "js" }).program;
+  const statement = program.body[0];
+  if (statement?.type !== "ExpressionStatement") {
+    throw new Error("The package manifest must contain one JSON object.");
+  }
+  const expression = statement.expression;
+  const manifest =
+    expression.type === "ParenthesizedExpression" ? expression.expression : expression;
+  if (manifest.type !== "ObjectExpression") {
+    throw new Error("The package manifest must contain one JSON object.");
+  }
+  for (const property of manifest.properties) {
+    if (
+      property.type === "Property" &&
+      !property.computed &&
+      property.key.type === "Literal" &&
+      property.key.value === "version" &&
+      property.value.type === "Literal" &&
+      isString(property.value.value) &&
+      property.value.value === current
+    ) {
+      const start = property.value.start - 1;
+      const end = property.value.end - 1;
+      return `${content.slice(0, start)}${JSON.stringify(next)}${content.slice(end)}`;
+    }
+  }
+  throw new Error("The package manifest version field could not be updated structurally.");
+};
+
 const workspacePackages = async (): Promise<ReadonlyArray<WorkspacePackage>> => {
   const packages: Array<WorkspacePackage> = [];
   const manifests = new Bun.Glob("packages/*/package.json");
@@ -71,7 +104,10 @@ const request = process.argv[2];
 const packageFlag = process.argv.indexOf("--package");
 const requestedSlug = packageFlag === -1 ? undefined : process.argv[packageFlag + 1];
 const releaseRequest = request ?? usage();
-const releaseSlug = requestedSlug ?? usage();
+const releaseSlug =
+  requestedSlug === undefined || requestedSlug.startsWith("--")
+    ? usage("The --package option requires a package slug.")
+    : requestedSlug;
 const dryRun = process.argv.includes("--dry-run");
 const selected = (await workspacePackages()).find((entry) => entry.slug === releaseSlug);
 if (selected === undefined) {
@@ -99,10 +135,7 @@ if (dryRun) process.exit(0);
 
 const absolute = join(root, selected.manifestPath);
 const content = await readFile(absolute, "utf8");
-const updated = content.replace(`"version": "${selected.version}"`, `"version": "${next}"`);
-if (updated === content) {
-  throw new Error(`The version field was not updated in ${selected.manifestPath}.`);
-}
+const updated = updateManifestVersion(content, selected.version, next);
 await writeFile(absolute, updated);
 await run(["bun", "install"]);
 await run(["git", "add", selected.manifestPath, "bun.lock"]);

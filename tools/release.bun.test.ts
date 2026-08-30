@@ -102,6 +102,17 @@ test("selects a package by slug", async () => {
   });
 });
 
+test("rejects a missing package slug without treating dry-run as the value", async () => {
+  await withReleaseRepository(async ({ runRelease }) => {
+    const result = await runRelease(["patch", "--package", "--dry-run"]);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("The --package option requires a package slug.");
+    expect(result.stderr).toContain("Usage: bun scripts/release.ts");
+    expect(result.stderr).not.toContain("Unknown release package --dry-run.");
+  });
+});
+
 test("rejects an unknown package slug", async () => {
   await withReleaseRepository(async ({ runRelease }) => {
     const result = await runRelease(["patch", "--package", "unknown", "--dry-run"]);
@@ -137,6 +148,22 @@ test("dry-run leaves repository state unchanged", async () => {
     expect(await runGit(root, ["tag", "--list"])).toBe("");
     expect(await readFile(join(root, "packages", "alpha", "package.json"), "utf8")).toBe(alpha);
     expect(await readFile(join(root, "packages", "beta", "package.json"), "utf8")).toBe(beta);
+  });
+});
+
+test("updates the parsed version field and preserves manifest formatting", async () => {
+  await withReleaseRepository(async ({ root, runRelease }) => {
+    const alphaPath = join(root, "packages", "alpha", "package.json");
+    const before =
+      '{\n\t"description": "1.2.3",\n\t"name": "@equipe-tech/alpha",\n\t"version":"1.2.3",\n\t"metadata": { "version": "1.2.3" }\n}\n\n';
+    const after =
+      '{\n\t"description": "1.2.3",\n\t"name": "@equipe-tech/alpha",\n\t"version":"1.2.4",\n\t"metadata": { "version": "1.2.3" }\n}\n\n';
+    await writeFile(alphaPath, before);
+    await runGit(root, ["add", "packages/alpha/package.json"]);
+    await runGit(root, ["commit", "--quiet", "-m", "test: custom manifest formatting"]);
+    const result = await runRelease(["patch", "--package", "alpha"]);
+    expect(result.exitCode).toBe(0);
+    expect(await readFile(alphaPath, "utf8")).toBe(after);
   });
 });
 

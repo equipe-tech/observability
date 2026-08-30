@@ -1,10 +1,11 @@
 import { Schema } from "effect";
 import { readFile } from "node:fs/promises";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parse } from "yuku-parser";
+import { parse, walk } from "yuku-parser";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+const isString = Schema.is(Schema.String);
 
 const DependencyMap = Schema.Record(Schema.String, Schema.String);
 const PackageManifest = Schema.Struct({
@@ -137,7 +138,7 @@ const evaluateSpecifier = (
   return [{ rule: `boundary/${role}-forbidden-${kind}`, file, specifier }];
 };
 
-const staticImports = (source: string): ReadonlyArray<string> => {
+const importSpecifiers = (source: string): ReadonlyArray<string> => {
   const program = parse(source, { lang: "ts" }).program;
   const specifiers: Array<string> = [];
   for (const statement of program.body) {
@@ -157,7 +158,34 @@ const staticImports = (source: string): ReadonlyArray<string> => {
       specifiers.push(statement.moduleReference.expression.value);
     }
   }
+  walk(program, {
+    ImportExpression: (expression) => {
+      if (expression.source.type === "Literal" && isString(expression.source.value)) {
+        specifiers.push(expression.source.value);
+      }
+    },
+  });
   return specifiers;
+};
+
+const sourcePathViolation = (
+  projectRoot: string,
+  packageDirectory: string,
+  file: string,
+  specifier: string,
+): BoundaryViolation | undefined => {
+  if (isAbsolute(specifier) || win32.isAbsolute(specifier)) {
+    return { rule: "boundary/absolute-file-import", file, specifier };
+  }
+  if (!specifier.startsWith(".")) return undefined;
+  const target = relative(projectRoot, resolve(dirname(join(projectRoot, file)), specifier))
+    .split(sep)
+    .join("/");
+  const packageSource = relative(projectRoot, packageDirectory).split(sep).join("/");
+  if (target.startsWith("packages/") && !target.startsWith(`${packageSource}/`)) {
+    return { rule: "boundary/cross-package-source-import", file, specifier };
+  }
+  return undefined;
 };
 
 const packageDirectories = async (projectRoot: string): Promise<ReadonlyArray<string>> => {
@@ -190,8 +218,13 @@ export const checkPackageBoundaries = async (
       const absolute = join(directory, sourcePath);
       const file = relative(projectRoot, absolute).split(sep).join("/");
       const source = await readFile(absolute, "utf8");
-      for (const specifier of staticImports(source)) {
+      for (const specifier of importSpecifiers(source)) {
         violations.push(...evaluateSpecifier(sourceRole(file), file, specifier));
+        const pathViolation = sourcePathViolation(projectRoot, directory, file, specifier);
+        if (pathViolation !== undefined) {
+          violations.push(pathViolation);
+          continue;
+        }
         const dependency = packageNameForSpecifier(specifier);
         if (
           !specifier.startsWith(".") &&

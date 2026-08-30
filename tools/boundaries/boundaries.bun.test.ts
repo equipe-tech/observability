@@ -46,9 +46,7 @@ const mutateOwnedPath = async (ownedPath: string): Promise<ReadonlyArray<string>
 describe("package boundaries", () => {
   it("runs every role policy through type-only imports in fixture projects", async () => {
     const violations = await checkPackageBoundaries(join(projects, "violations"));
-    const policyRules = ruleNames(violations).filter(
-      (rule) => rule !== "boundary/undeclared-dependency",
-    );
+    const policyRules = ruleNames(violations).filter((rule) => rule.includes("-forbidden-"));
     assert.deepEqual(policyRules, [
       "boundary/bootstrap-forbidden-framework",
       "boundary/bootstrap-forbidden-provider",
@@ -112,6 +110,116 @@ describe("package boundaries", () => {
       await rm(temporary, { recursive: true, force: true });
     }
   });
+
+  it("rejects dynamic, cross-package source, and absolute fixture imports", async () => {
+    const temporary = await mkdtemp(join(tmpdir(), "boundaries-path-fixtures-"));
+    try {
+      await cp(join(projects, "violations"), temporary, { recursive: true });
+      for (const fixture of [
+        {
+          source: "dynamic-import.txt",
+          target: join("packages", "telemetry", "src", "contract", "dynamic.ts"),
+        },
+        {
+          source: "cross-package-import.txt",
+          target: join("packages", "nestjs", "src", "cross-package.ts"),
+        },
+        {
+          source: "absolute-import.txt",
+          target: join("packages", "telemetry", "src", "absolute.ts"),
+        },
+      ]) {
+        await cp(
+          join(import.meta.dirname, "fixtures", fixture.source),
+          join(temporary, fixture.target),
+        );
+      }
+      const violations = await checkPackageBoundaries(temporary);
+      assert.equal(
+        violations.some(
+          (violation) =>
+            violation.file.endsWith("contract/dynamic.ts") &&
+            violation.rule === "boundary/domain-forbidden-metric-api",
+        ),
+        true,
+      );
+      assert.equal(
+        violations.some(
+          (violation) =>
+            violation.file.endsWith("cross-package.ts") &&
+            violation.rule === "boundary/cross-package-source-import",
+        ),
+        true,
+      );
+      assert.equal(
+        violations.some(
+          (violation) =>
+            violation.file.endsWith("absolute.ts") &&
+            violation.rule === "boundary/absolute-file-import",
+        ),
+        true,
+      );
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
+  for (const mutation of [
+    {
+      name: "static",
+      source: 'import "@sentry/node";\n',
+      rule: "boundary/core-forbidden-provider",
+    },
+    {
+      name: "type-only",
+      source: 'import type {} from "@sentry/node";\n',
+      rule: "boundary/core-forbidden-provider",
+    },
+    {
+      name: "export",
+      source: 'export type {} from "@sentry/node";\n',
+      rule: "boundary/core-forbidden-provider",
+    },
+    {
+      name: "import-equals",
+      source: 'import Provider = require("@sentry/node");\nvoid Provider;\n',
+      rule: "boundary/core-forbidden-provider",
+    },
+    {
+      name: "dynamic",
+      source: 'export const load = () => import("@sentry/node");\n',
+      rule: "boundary/core-forbidden-provider",
+    },
+    {
+      name: "relative cross-package",
+      source: 'export type {} from "../../nestjs/src/TelemetryModule.ts";\n',
+      rule: "boundary/cross-package-source-import",
+    },
+    {
+      name: "absolute",
+      source: 'import "/tmp/observability-boundary.ts";\n',
+      rule: "boundary/absolute-file-import",
+    },
+  ]) {
+    it(`keeps ${mutation.name} import parsing load-bearing`, async () => {
+      const temporary = await mkdtemp(join(tmpdir(), "boundaries-import-mutation-"));
+      try {
+        await cp(join(projects, "allowed"), temporary, { recursive: true });
+        await writeFile(
+          join(temporary, "packages", "telemetry", "src", "mutation.ts"),
+          mutation.source,
+        );
+        assert.equal(
+          (await checkPackageBoundaries(temporary)).some(
+            (violation) => violation.rule === mutation.rule,
+          ),
+          true,
+        );
+      } finally {
+        await rm(temporary, { recursive: true, force: true });
+      }
+    });
+  }
 
   it("makes the core fallback load-bearing", async () => {
     const violations = await checkPackageBoundaries(join(projects, "violations"));
