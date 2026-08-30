@@ -1,7 +1,5 @@
 export type ProfileName = "nestjs-api" | "worker" | "react-web" | "cli" | "library";
 
-export type ProfileRuntime = "node-global" | "browser-global" | "none";
-
 export type AdapterCapability = "events" | "traces" | "metrics" | "defects" | "browser-ingest";
 
 export type ExternalAdapterCapability = "events" | "defects" | "browser-ingest";

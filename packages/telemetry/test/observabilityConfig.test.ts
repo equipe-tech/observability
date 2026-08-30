@@ -41,8 +41,13 @@ describe("node observability configuration", () => {
     }
   });
 
-  it("classifies IPv4 and IPv6 loopback endpoints as local", async () => {
-    for (const endpoint of ["http://127.0.0.1:4318", "http://[::1]:4318"]) {
+  it("classifies container loopback spellings as local", async () => {
+    for (const endpoint of [
+      "http://127.0.0.1:4318",
+      "http://[::1]:4318",
+      "http://localhost.:4318",
+      "http://[::ffff:127.0.0.1]:4318",
+    ]) {
       const config = await Effect.runPromise(
         fromEnv("worker", {
           OTEL_SERVICE_NAME: "jobs",

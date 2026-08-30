@@ -82,6 +82,8 @@ const recordingAdapter = (
   },
 });
 
+const lifecycleOperations: ReadonlyArray<"flush" | "close"> = ["flush", "close"];
+
 const enabled = (handle: Awaited<ReturnType<typeof createNodeObservabilityFromConfig>>) => {
   expect(handle.enabled).toBe(true);
   if (!handle.enabled) {
@@ -220,7 +222,13 @@ describe("observability lifecycle", () => {
     await handle.dispose();
     await handle[Symbol.asyncDispose]();
     expect(calls.filter((call) => call === "close:events")).toHaveLength(1);
-    await expect(handle.flush()).rejects.toBeDefined();
+    await expect(handle.flush()).rejects.toMatchObject({
+      _tag: "ObservabilityLifecycleError",
+      code: "OBS_OBSERVABILITY_CLOSED",
+      message: "Observability is closed. Create a new runtime before flushing again.",
+      adapter: { _tag: "None" },
+      cause: "flush after close",
+    });
   });
 
   it("shares concurrent flush operations but permits a later flush", async () => {
@@ -239,6 +247,77 @@ describe("observability lifecycle", () => {
     expect(calls.filter((call) => call === "flush:events")).toHaveLength(2);
     await handle.close();
   });
+
+  it("waits for an in-flight flush before close starts", async () => {
+    const calls: Array<string> = [];
+    let releaseFlush: (() => void) | undefined;
+    const flushGate = new Promise<void>((resolve) => {
+      releaseFlush = resolve;
+    });
+    const parsed = await Effect.runPromise(config());
+    const registration = registerTestingAdapter({
+      name: AdapterName.make("events"),
+      capability: "events",
+      stage: "server",
+      start: () =>
+        Effect.succeed({
+          flush: Effect.promise(() => {
+            calls.push("flush:events");
+            return flushGate;
+          }),
+          close: Effect.sync(() => {
+            calls.push("close:events");
+          }),
+        }),
+    });
+    const handle = enabled(await createTestingNodeObservabilityFromConfig(parsed, [registration]));
+    const flushing = handle.flush();
+    await Promise.resolve();
+    const closing = handle.close();
+    await Promise.resolve();
+    expect(calls).toEqual(["flush:events"]);
+    if (releaseFlush === undefined) throw new Error("Expected the flush gate to be installed.");
+    releaseFlush();
+    const [flushReport, closeReport] = await Promise.all([flushing, closing]);
+    expect(flushReport.operation).toBe("flush");
+    expect(closeReport.operation).toBe("close");
+    expect(calls).toEqual(["flush:events", "close:events"]);
+  });
+
+  for (const operation of lifecycleOperations) {
+    it(`preserves the adapter failure for ${operation}`, async () => {
+      const failure = new AdapterFailure({
+        code: "OBS_OBSERVABILITY_ADAPTER_FAILED",
+        message: `events ${operation} failed`,
+        cause: `${operation} transport`,
+      });
+      const registration = registerTestingAdapter(recordingAdapter("events", "events", []));
+      const started: StartedAdapter = {
+        registration,
+        handle: {
+          flush: operation === "flush" ? Effect.fail(failure) : Effect.void,
+          close: operation === "close" ? Effect.fail(failure) : Effect.void,
+        },
+      };
+      const flusher = OtlpExporter.Flusher.of({
+        flush: Effect.void,
+        register: () => Effect.void,
+      });
+      const report = await Effect.runPromise(
+        createLifecycleRegistry(workerProfile, [started], flusher, Effect.void).run(operation),
+      );
+      expect(report.outcomes[0]).toEqual({
+        participant: "adapter",
+        adapter: AdapterName.make("events"),
+        capability: "events",
+        stage: "server",
+        result: { kind: "failed", error: failure },
+      });
+      expect(
+        report.outcomes[0]?.result.kind === "failed" ? report.outcomes[0].result.error : undefined,
+      ).toBe(failure);
+    });
+  }
 
   it("caps metrics at three seconds inside the five-second absolute deadline", async () => {
     const calls: Array<string> = [];
@@ -274,17 +353,18 @@ describe("observability lifecycle", () => {
     ).toEqual({ kind: "deadline-exceeded", budgetMillis: 3_000 });
   });
 
-  it("reports deadline-exceeded disposal when the absolute budget is exhausted", async () => {
-    const registration = registerTestingAdapter(recordingAdapter("events", "events", []));
-    const started: StartedAdapter = {
-      registration,
-      handle: { flush: Effect.void, close: Effect.never },
-    };
+  it("reports every participant as deadline-exceeded after absolute budget exhaustion", async () => {
+    const events = registerTestingAdapter(recordingAdapter("events", "events", []));
+    const defects = registerTestingAdapter(recordingAdapter("defects", "defects", []));
+    const started: ReadonlyArray<StartedAdapter> = [
+      { registration: events, handle: { flush: Effect.void, close: Effect.never } },
+      { registration: defects, handle: { flush: Effect.void, close: Effect.void } },
+    ];
     const flusher = OtlpExporter.Flusher.of({
       flush: Effect.void,
       register: () => Effect.void,
     });
-    const registry = createLifecycleRegistry(workerProfile, [started], flusher, Effect.void);
+    const registry = createLifecycleRegistry(workerProfile, started, flusher, Effect.void);
     const report = await Effect.runPromise(
       Effect.gen(function* () {
         const fiber = yield* Effect.forkChild(registry.run("close"));
@@ -293,10 +373,40 @@ describe("observability lifecycle", () => {
       }).pipe(Effect.provide(TestClock.layer())),
     );
     expect(report.degraded).toBe(true);
-    expect(report.outcomes.at(-1)).toEqual({
-      participant: "runtime-disposal",
-      result: { kind: "deadline-exceeded", budgetMillis: 0 },
-    });
+    expect(report.outcomes).toEqual([
+      {
+        participant: "adapter",
+        adapter: AdapterName.make("events"),
+        capability: "events",
+        stage: "server",
+        result: { kind: "deadline-exceeded", budgetMillis: 5_000 },
+      },
+      {
+        participant: "adapter",
+        adapter: AdapterName.make("core-traces"),
+        capability: "traces",
+        stage: "server",
+        result: { kind: "deadline-exceeded", budgetMillis: 0 },
+      },
+      {
+        participant: "adapter",
+        adapter: AdapterName.make("defects"),
+        capability: "defects",
+        stage: "server",
+        result: { kind: "deadline-exceeded", budgetMillis: 0 },
+      },
+      {
+        participant: "adapter",
+        adapter: AdapterName.make("core-metrics"),
+        capability: "metrics",
+        stage: "metrics",
+        result: { kind: "deadline-exceeded", budgetMillis: 0 },
+      },
+      {
+        participant: "runtime-disposal",
+        result: { kind: "deadline-exceeded", budgetMillis: 0 },
+      },
+    ]);
   });
 
   it("rolls back started adapters in exact reverse order", async () => {
@@ -307,7 +417,17 @@ describe("observability lifecycle", () => {
         registerTestingAdapter(recordingAdapter("events", "events", calls)),
         registerTestingAdapter(recordingAdapter("defects", "defects", calls, true)),
       ]),
-    ).rejects.toBeDefined();
+    ).rejects.toMatchObject({
+      _tag: "ObservabilityLifecycleError",
+      code: "OBS_OBSERVABILITY_STARTUP_FAILED",
+      adapter: { value: AdapterName.make("defects") },
+      cause: {
+        _tag: "AdapterFailure",
+        code: "OBS_OBSERVABILITY_ADAPTER_FAILED",
+        message: "defects failed",
+        cause: "defects",
+      },
+    });
     expect(calls).toEqual(["start:events", "start:defects", "close:events"]);
   });
 });

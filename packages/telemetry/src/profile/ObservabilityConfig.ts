@@ -15,6 +15,7 @@ import {
 import {
   deploymentScopeFromEndpoint,
   rejectSecondReleaseVariables,
+  resolveEnvironmentPolicy,
   type DeploymentScope,
 } from "./EnvironmentPolicy.ts";
 import {
@@ -79,9 +80,7 @@ const ProfileEnvironment = Schema.Struct({
   OTEL_SERVICE_VERSION: Schema.NonEmptyString.pipe(Schema.optionalKey),
   OTEL_DEPLOYMENT_ENVIRONMENT: Schema.NonEmptyString.pipe(Schema.optionalKey),
   OTEL_SERVICE_INSTANCE_ID: Schema.String.pipe(Schema.optionalKey),
-  OTEL_EXPORTER_OTLP_ENDPOINT: OtlpEndpoint.pipe(
-    Schema.withDecodingDefault(Effect.succeed("http://localhost:4318")),
-  ),
+  OTEL_EXPORTER_OTLP_ENDPOINT: OtlpEndpoint.pipe(Schema.optionalKey),
   SENTRY_DSN: Schema.URLFromString.pipe(Schema.optionalKey),
 });
 
@@ -207,19 +206,22 @@ export const nodeObservabilityConfigFromEnv = Effect.fn("nodeObservabilityConfig
         ),
       ),
     );
-    const deployment = deploymentScopeFromEndpoint(variables.OTEL_EXPORTER_OTLP_ENDPOINT);
-    const version =
-      variables.OTEL_SERVICE_VERSION ?? (deployment === "local" ? "0.0.0" : undefined);
-    if (version === undefined) {
-      return yield* invalid(
-        "OTEL_SERVICE_VERSION",
-        "A remote OTLP endpoint requires OTEL_SERVICE_VERSION. Set it to the deployed release.",
-        "an explicit release identity for a remote endpoint",
-      );
-    }
-    const environment =
-      variables.OTEL_DEPLOYMENT_ENVIRONMENT ?? (deployment === "local" ? "development" : undefined);
-    if (environment === undefined) {
+    const resolution = resolveEnvironmentPolicy({
+      endpoint: variables.OTEL_EXPORTER_OTLP_ENDPOINT,
+      serviceVersion: variables.OTEL_SERVICE_VERSION,
+      environment: variables.OTEL_DEPLOYMENT_ENVIRONMENT,
+    });
+    if (resolution.kind === "missing-remote-identity") {
+      if (
+        resolution.missing === "service-version" ||
+        resolution.missing === "service-version-and-environment"
+      ) {
+        return yield* invalid(
+          "OTEL_SERVICE_VERSION",
+          "A remote OTLP endpoint requires OTEL_SERVICE_VERSION. Set it to the deployed release.",
+          "an explicit release identity for a remote endpoint",
+        );
+      }
       return yield* invalid(
         "OTEL_DEPLOYMENT_ENVIRONMENT",
         "A remote OTLP endpoint requires OTEL_DEPLOYMENT_ENVIRONMENT. Set it to the deployed environment.",
@@ -228,8 +230,8 @@ export const nodeObservabilityConfigFromEnv = Effect.fn("nodeObservabilityConfig
     }
     const identity = yield* parseResourceIdentity({
       serviceName: variables.OTEL_SERVICE_NAME,
-      serviceVersion: version,
-      environment,
+      serviceVersion: resolution.serviceVersion,
+      environment: resolution.environment,
       instance:
         variables.OTEL_SERVICE_INSTANCE_ID === ""
           ? Option.none()
@@ -247,16 +249,16 @@ export const nodeObservabilityConfigFromEnv = Effect.fn("nodeObservabilityConfig
       ),
     );
     const policy = yield* parseDataPolicy(input.policy);
-    const sentry = yield* sentryFor(profile, environment, variables.SENTRY_DSN);
+    const sentry = yield* sentryFor(profile, resolution.environment, variables.SENTRY_DSN);
     return {
       enabled: true,
       profile,
-      deployment,
+      deployment: resolution.deployment,
       identity,
       telemetry: new TelemetryConfig({
         identity,
         environmentAlias: input.environmentAlias,
-        otlpEndpoint: variables.OTEL_EXPORTER_OTLP_ENDPOINT,
+        otlpEndpoint: resolution.endpoint,
       }),
       evlog: { contract: input.contract, policy },
       sentry,

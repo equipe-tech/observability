@@ -20,7 +20,7 @@ OTLP, traces e métricas pertencem ao núcleo. Aplicações registram adapters o
 
 `parseNodeObservabilityConfig` analisa valores explícitos. `nodeObservabilityConfigFromEnv` analisa ambiente. As duas entradas permanecem separadas e não aplicam precedência entre fontes.
 
-Um endpoint em `localhost`, `127.0.0.0/8` ou `::1` define escopo local. Somente nesse escopo o parser usa `0.0.0` e `development`. Qualquer outro endpoint exige `OTEL_SERVICE_VERSION` e `OTEL_DEPLOYMENT_ENVIRONMENT`.
+Um endpoint em `localhost`, `localhost.`, `127.0.0.0/8`, `::1` ou no equivalente IPv4-mapped de `127.0.0.0/8` define escopo local. Somente nesse escopo o parser usa `0.0.0` e `development`. Qualquer outro endpoint exige `OTEL_SERVICE_VERSION` e `OTEL_DEPLOYMENT_ENVIRONMENT`.
 
 `OTEL_SERVICE_VERSION` é a identidade canônica da release. Um valor não vazio em `SENTRY_RELEASE` ou `OTEL_SERVICE_RELEASE` encerra o bootstrap.
 
@@ -32,7 +32,7 @@ O runtime inicia adapters na ordem de capacidades declarada pelo perfil. Uma fal
 
 O encerramento de Node tem um prazo absoluto de 5 segundos. Cada perfil define a ordem das capacidades. O descarte do runtime é o último resultado explícito do relatório. Quando não resta orçamento, o resultado é `deadline-exceeded` e o relatório fica degradado. Métricas recebem no máximo 3 segundos e nunca ultrapassam o tempo restante do prazo absoluto. Adapters dentro de uma etapa executam em sequência.
 
-`flush`, `close` e `dispose` compartilham operações concorrentes. `close` e `dispose` devolvem o mesmo relatório final depois da primeira chamada.
+Chamadas concorrentes da mesma operação compartilham o relatório. `close` espera um `flush` já iniciado terminar antes de começar. `close` e `dispose` devolvem o mesmo relatório final depois da primeira chamada.
 
 `DataPolicy` declara atributos e bloqueios. A aplicação pode acrescentar regras, mas não remove a base. A aplicação da política aos sinais pertence ao OBS-47.
 

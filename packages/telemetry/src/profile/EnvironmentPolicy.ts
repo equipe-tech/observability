@@ -4,12 +4,54 @@ import { DuplicateReleaseVariable, secondReleaseVariables } from "./Observabilit
 
 export type DeploymentScope = "local" | "remote";
 
-export const deploymentScopeFromEndpoint = (endpoint: URL): DeploymentScope =>
-  endpoint.hostname === "localhost" ||
-  endpoint.hostname === "[::1]" ||
-  endpoint.hostname.startsWith("127.")
+type EnvironmentPolicyResolution =
+  | {
+      readonly kind: "resolved";
+      readonly endpoint: URL;
+      readonly deployment: DeploymentScope;
+      readonly serviceVersion: string;
+      readonly environment: string;
+    }
+  | {
+      readonly kind: "missing-remote-identity";
+      readonly endpoint: URL;
+      readonly deployment: "remote";
+      readonly missing: "service-version" | "environment" | "service-version-and-environment";
+    };
+
+const defaultOtlpEndpoint = "http://localhost:4318";
+
+export const deploymentScopeFromEndpoint = (endpoint: URL): DeploymentScope => {
+  const hostname = endpoint.hostname;
+  return hostname === "localhost" ||
+    hostname === "localhost." ||
+    hostname === "[::1]" ||
+    hostname.startsWith("127.") ||
+    /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(hostname)
     ? "local"
     : "remote";
+};
+
+export const resolveEnvironmentPolicy = (input: {
+  readonly endpoint?: URL | undefined;
+  readonly serviceVersion?: string | undefined;
+  readonly environment?: string | undefined;
+}): EnvironmentPolicyResolution => {
+  const endpoint = input.endpoint ?? new URL(defaultOtlpEndpoint);
+  const deployment = deploymentScopeFromEndpoint(endpoint);
+  const serviceVersion = input.serviceVersion ?? (deployment === "local" ? "0.0.0" : undefined);
+  const environment = input.environment ?? (deployment === "local" ? "development" : undefined);
+  if (serviceVersion !== undefined && environment !== undefined) {
+    return { kind: "resolved", endpoint, deployment, serviceVersion, environment };
+  }
+  const missing =
+    serviceVersion === undefined && environment === undefined
+      ? "service-version-and-environment"
+      : serviceVersion === undefined
+        ? "service-version"
+        : "environment";
+  return { kind: "missing-remote-identity", endpoint, deployment: "remote", missing };
+};
 
 export const rejectSecondReleaseVariables = (
   env: EnvironmentVariables,

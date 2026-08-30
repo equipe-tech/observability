@@ -1,4 +1,4 @@
-import { Context, Duration, Effect, Layer, ManagedRuntime, Option } from "effect";
+import { Cause, Context, Duration, Effect, Layer, ManagedRuntime, Option } from "effect";
 import { OtlpExporter } from "effect/unstable/observability";
 import * as Telemetry from "../Telemetry.ts";
 import {
@@ -106,7 +106,9 @@ class LiveNodeObservability implements NodeObservabilityEnabled {
       return this.#closePromise;
     }
     this.#closed = true;
-    this.#closePromise = Effect.runPromise(this.runLifecycle("close"));
+    const close = () => Effect.runPromise(this.runLifecycle("close"));
+    const pendingFlush = this.#flushPromise;
+    this.#closePromise = pendingFlush === undefined ? close() : pendingFlush.then(close, close);
     return this.#closePromise;
   }
 
@@ -177,7 +179,7 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
         code: "OBS_OBSERVABILITY_STARTUP_FAILED",
         message: `Observability adapter "${registration.adapter.name}" failed during startup. Fix its local configuration before retrying.`,
         adapter: Option.some(registration.adapter.name),
-        cause: result.cause,
+        cause: Option.getOrElse(Cause.findErrorOption(result.cause), () => result.cause),
       });
     }
     started.push({ registration, handle: result.value });

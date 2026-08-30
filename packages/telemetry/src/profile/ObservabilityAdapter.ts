@@ -1,4 +1,4 @@
-import { Effect, ManagedRuntime, Schema } from "effect";
+import { Effect, ManagedRuntime, Option, Schema } from "effect";
 import type { OtlpExporter } from "effect/unstable/observability";
 import type {
   CompiledAuditActionDefinition,
@@ -9,6 +9,7 @@ import type { ResourceIdentity } from "../ResourceIdentity.ts";
 import type { TelemetryConfig } from "../TelemetryConfig.ts";
 import type { DataPolicy } from "./DataPolicy.ts";
 import type { SentryConfig } from "./ObservabilityConfig.ts";
+import { InvalidObservabilityConfig } from "./ObservabilityConfigError.ts";
 import type {
   AdapterCapability,
   LifecycleStage,
@@ -79,12 +80,32 @@ export type TestingAdapterRegistration = {
 
 export type AdapterRegistration = OfficialAdapterRegistration | TestingAdapterRegistration;
 
+const AdapterRegistrationPayload = Schema.Struct({
+  name: AdapterName,
+  capability: Schema.Literals(["events", "traces", "metrics", "defects", "browser-ingest"]),
+  stage: Schema.Literals(["server", "metrics", "browser"]),
+});
+
+const parseAdapterRegistrationPayload = (adapter: ObservabilityAdapter): ObservabilityAdapter => {
+  const decoded = Schema.decodeUnknownOption(AdapterRegistrationPayload)(adapter);
+  if (Option.isNone(decoded)) {
+    throw new InvalidObservabilityConfig({
+      code: "OBS_OBSERVABILITY_ADAPTER_UNSUPPORTED",
+      field: "adapters",
+      message:
+        "The adapter payload is invalid. Use a valid adapter name, capability, and lifecycle stage.",
+      rule: "a schema-valid adapter payload",
+    });
+  }
+  return Object.freeze(adapter);
+};
+
 export const registerOfficialAdapter = (
   adapter: ObservabilityAdapter,
 ): OfficialAdapterRegistration => {
   const registration: OfficialAdapterRegistration = {
     kind: "official",
-    adapter,
+    adapter: parseAdapterRegistrationPayload(adapter),
     [officialRegistrationBrand]: true,
   };
   officialRegistrations.add(registration);
@@ -96,7 +117,7 @@ export const registerTestingAdapter = (
 ): TestingAdapterRegistration => {
   const registration: TestingAdapterRegistration = {
     kind: "testing",
-    adapter,
+    adapter: parseAdapterRegistrationPayload(adapter),
     [testingRegistrationBrand]: true,
   };
   testingRegistrations.add(registration);
@@ -116,8 +137,7 @@ export const isTestingAdapterRegistration = (
 export type LifecycleOutcomeResult =
   | { readonly kind: "completed"; readonly durationMillis: number }
   | { readonly kind: "failed"; readonly error: AdapterFailure }
-  | { readonly kind: "deadline-exceeded"; readonly budgetMillis: number }
-  | { readonly kind: "skipped"; readonly reason: "deadline-exhausted" };
+  | { readonly kind: "deadline-exceeded"; readonly budgetMillis: number };
 
 export type AdapterOutcome = {
   readonly participant: "adapter";

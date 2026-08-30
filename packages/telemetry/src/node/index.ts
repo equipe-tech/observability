@@ -16,4 +16,9 @@ export {
   type NodeObservabilityDisabled,
   type NodeObservabilityEnabled,
 } from "./Observability.ts";
+export { ObservabilityLifecycleError } from "../profile/LifecycleRegistry.ts";
+export type {
+  AdapterRegistration,
+  OfficialAdapterRegistration,
+} from "../profile/ObservabilityAdapter.ts";
 export { layer, runMain, type RunMainOptions } from "./Runtime.ts";

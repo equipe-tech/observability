@@ -1,4 +1,4 @@
-import { Clock, Effect, Option, Schema } from "effect";
+import { Cause, Clock, Effect, Option, Schema } from "effect";
 import type { OtlpExporter } from "effect/unstable/observability";
 import {
   AdapterFailure,
@@ -59,7 +59,7 @@ const invalidAdapter = (
     rule: "one supported registration for each required external capability",
   });
 
-export type AdapterValidationOptions = { readonly allowTesting: boolean };
+type AdapterValidationOptions = { readonly allowTesting: boolean };
 
 export const validateAdapterRegistrationKinds = (
   registrations: ReadonlyArray<AdapterRegistration>,
@@ -146,14 +146,26 @@ export const validateAdapterRegistrations = Effect.fn("validateAdapterRegistrati
   }
 });
 
-const adapterFailure = (operation: "flush" | "close", cause: unknown): AdapterFailure =>
-  cause instanceof AdapterFailure
-    ? cause
-    : new AdapterFailure({
+const adapterFailure = (
+  operation: "flush" | "close",
+  cause: Cause.Cause<AdapterFailure>,
+): AdapterFailure =>
+  Option.getOrElse(
+    Cause.findErrorOption(cause),
+    () =>
+      new AdapterFailure({
         code: "OBS_OBSERVABILITY_ADAPTER_FAILED",
-        message: `Observability adapter ${operation} failed. Inspect the typed cause and retry only when the adapter permits it.`,
+        message: `Observability adapter ${operation} failed without a typed failure. Fix the adapter implementation before retrying.`,
         cause,
-      });
+      }),
+  );
+
+const runtimeFailure = (cause: Cause.Cause<never>): AdapterFailure =>
+  new AdapterFailure({
+    code: "OBS_OBSERVABILITY_ADAPTER_FAILED",
+    message: "Observability runtime disposal failed. Inspect the defect before retrying.",
+    cause,
+  });
 
 const ordered = (
   profile: ObservabilityProfile,
@@ -180,7 +192,7 @@ const runParticipant = Effect.fn("runObservabilityParticipant")(function* (
       adapter: adapter.name,
       capability: adapter.capability,
       stage: adapter.stage,
-      result: { kind: "skipped", reason: "deadline-exhausted" },
+      result: { kind: "deadline-exceeded", budgetMillis: 0 },
     };
   }
   const startedAt = yield* Clock.currentTimeMillis;
@@ -230,7 +242,7 @@ const runRuntimeDisposal = Effect.fn("runRuntimeDisposal")(function* (
   if (result.value._tag === "Failure") {
     return {
       participant: "runtime-disposal",
-      result: { kind: "failed", error: adapterFailure("close", result.value.cause) },
+      result: { kind: "failed", error: runtimeFailure(result.value.cause) },
     };
   }
   return { participant: "runtime-disposal", result: { kind: "completed", durationMillis } };

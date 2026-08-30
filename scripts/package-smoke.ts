@@ -407,7 +407,7 @@ try {
         "node",
         "--input-type=module",
         "--eval",
-        "const [root, metrics, node, browser, client, testing] = await Promise.all([import('@equipe-tech/observability'), import('@equipe-tech/observability/metrics'), import('@equipe-tech/observability/node'), import('@equipe-tech/observability/browser'), import('@equipe-tech/observability/browser/client'), import('@equipe-tech/observability/testing')]); if (!root.Telemetry || !root.ServiceName || !root.EnvironmentName || !root.CorrelationContext || root.Correlation || root.registerTestingAdapter || !root.registerOfficialAdapter || !metrics.createMetrics || !node.runMain || !browser.BrowserTelemetry || !client.createBrowserTelemetryClient || !testing.run || !testing.registerTestingAdapter) process.exit(1);",
+        "const [root, metrics, node, browser, client, testing] = await Promise.all([import('@equipe-tech/observability'), import('@equipe-tech/observability/metrics'), import('@equipe-tech/observability/node'), import('@equipe-tech/observability/browser'), import('@equipe-tech/observability/browser/client'), import('@equipe-tech/observability/testing')]); if (!root.Telemetry || !root.ServiceName || !root.EnvironmentName || !root.CorrelationContext || root.Correlation || root.registerTestingAdapter || !root.registerOfficialAdapter || !root.ObservabilityLifecycleError || node.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || !metrics.createMetrics || !node.runMain || !browser.BrowserTelemetry || !client.createBrowserTelemetryClient || !testing.run || !testing.registerTestingAdapter) process.exit(1);",
       ],
       nodeConsumer,
     ),

@@ -52,6 +52,24 @@ describe("telemetryConfigFromEnv", () => {
     }),
   );
 
+  for (const endpoint of [
+    "http://localhost.:4318",
+    "http://127.0.0.1:4318",
+    "http://[::1]:4318",
+    "http://[::ffff:127.0.0.1]:4318",
+  ]) {
+    it.effect(`applies local identity defaults for ${endpoint}`, () =>
+      Effect.gen(function* () {
+        const config = yield* telemetryConfigFromEnv({
+          OTEL_SERVICE_NAME: "checkout-api",
+          OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+        });
+        assert.strictEqual(config.identity.serviceVersion, "0.0.0");
+        assert.strictEqual(config.identity.environment, "development");
+      }),
+    );
+  }
+
   it.effect("decodes the optional service instance", () =>
     Effect.gen(function* () {
       const config = yield* telemetryConfigFromEnv({

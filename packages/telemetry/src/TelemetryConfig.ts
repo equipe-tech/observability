@@ -7,8 +7,8 @@ import {
 } from "./ResourceIdentity.ts";
 import type { DuplicateReleaseVariable } from "./profile/ObservabilityConfigError.ts";
 import {
-  deploymentScopeFromEndpoint,
   rejectSecondReleaseVariables,
+  resolveEnvironmentPolicy,
 } from "./profile/EnvironmentPolicy.ts";
 
 export const OtlpEndpoint = Schema.URLFromString.check(
@@ -61,9 +61,7 @@ const TelemetryEnvironment = Schema.Struct({
   OTEL_SERVICE_INSTANCE_ID: Schema.Union([Schema.String, Schema.Undefined]).pipe(
     Schema.optionalKey,
   ),
-  OTEL_EXPORTER_OTLP_ENDPOINT: OtlpEndpoint.pipe(
-    Schema.withDecodingDefault(Effect.succeed("http://localhost:4318")),
-  ),
+  OTEL_EXPORTER_OTLP_ENDPOINT: OtlpEndpoint.pipe(Schema.optionalKey),
 });
 
 export type EnvironmentVariables = {
@@ -90,21 +88,23 @@ export const telemetryConfigFromEnv = Effect.fn("telemetryConfigFromEnv")(functi
         }),
     ),
   );
-  const local = deploymentScopeFromEndpoint(variables.OTEL_EXPORTER_OTLP_ENDPOINT) === "local";
-  const serviceVersion = variables.OTEL_SERVICE_VERSION ?? (local ? "0.0.0" : undefined);
-  const environment = variables.OTEL_DEPLOYMENT_ENVIRONMENT ?? (local ? "development" : undefined);
-  if (serviceVersion === undefined || environment === undefined) {
+  const resolution = resolveEnvironmentPolicy({
+    endpoint: variables.OTEL_EXPORTER_OTLP_ENDPOINT,
+    serviceVersion: variables.OTEL_SERVICE_VERSION,
+    environment: variables.OTEL_DEPLOYMENT_ENVIRONMENT,
+  });
+  if (resolution.kind === "missing-remote-identity") {
     return yield* new InvalidTelemetryEnvironment({
       code: "OBS_TELEMETRY_INVALID_ENVIRONMENT",
       message:
         "A remote OTLP endpoint requires OTEL_SERVICE_VERSION and OTEL_DEPLOYMENT_ENVIRONMENT. Set both canonical identity variables.",
-      cause: "remote identity is incomplete",
+      cause: resolution.missing,
     });
   }
   const identity = yield* parseResourceIdentity({
     serviceName: variables.OTEL_SERVICE_NAME,
-    serviceVersion,
-    environment,
+    serviceVersion: resolution.serviceVersion,
+    environment: resolution.environment,
     instance:
       variables.OTEL_SERVICE_INSTANCE_ID === ""
         ? Option.none()
@@ -112,6 +112,6 @@ export const telemetryConfigFromEnv = Effect.fn("telemetryConfigFromEnv")(functi
   });
   return new TelemetryConfig({
     identity,
-    otlpEndpoint: variables.OTEL_EXPORTER_OTLP_ENDPOINT,
+    otlpEndpoint: resolution.endpoint,
   });
 });
