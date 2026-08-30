@@ -35,7 +35,10 @@ const events = registerTestingAdapter({
       eventLayer: Option.some(
         Layer.succeed(
           TelemetryEventSink,
-          TelemetryEventSink.of({ record: () => Effect.void, recordBrowser: () => Effect.void }),
+          TelemetryEventSink.of({
+            record: () => Effect.void,
+            recordBrowserBatch: () => Effect.void,
+          }),
         ),
       ),
       degraded: () => false,

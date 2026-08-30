@@ -66,6 +66,7 @@ export type EvlogAdapterOptions = {
   readonly transportTimeoutMillis?: number;
   readonly transportRetries?: number;
   readonly installGlobalLogger?: boolean;
+  readonly requestEventName?: string;
   readonly stdout?: EvlogOutput;
 };
 
@@ -86,6 +87,7 @@ type ResolvedOptions = {
   readonly transportTimeoutMillis: number;
   readonly transportRetries: number;
   readonly installGlobalLogger: boolean;
+  readonly requestEventName: Option.Option<string>;
   readonly stdout: EvlogOutput;
 };
 
@@ -114,11 +116,7 @@ const adapterErrors = defineErrorCatalog("OBS_EVLOG", {
   },
   LOGGER_CONFLICT: {
     status: 500,
-    message: "Another evlog logger owns the process-global logger.",
-  },
-  CONTRACT_EVENT: {
-    status: 500,
-    message: "A contract defect event was recorded.",
+    message: "Another observability evlog adapter owns the process-global logger.",
   },
 });
 
@@ -135,6 +133,7 @@ const AdapterOptionsDocument = Schema.Struct({
   transportTimeoutMillis: Schema.optional(positiveInteger),
   transportRetries: Schema.optional(nonNegativeInteger),
   installGlobalLogger: Schema.optional(Schema.Boolean),
+  requestEventName: Schema.optional(Schema.NonEmptyString),
   stdout: Schema.optional(
     Schema.Struct({
       write: Schema.instanceOf(Function),
@@ -143,6 +142,7 @@ const AdapterOptionsDocument = Schema.Struct({
 });
 const decodeOptions = Schema.decodeUnknownOption(AdapterOptionsDocument);
 const decodeString = Schema.decodeUnknownOption(Schema.String);
+const decodeNumber = Schema.decodeUnknownOption(Schema.Number.check(Schema.isFinite()));
 const decodeScalar = Schema.decodeUnknownOption(
   Schema.Union([Schema.String, Schema.Number.check(Schema.isFinite()), Schema.Boolean]),
 );
@@ -159,6 +159,10 @@ const globalEnvelopeFields = new Set([
   "region",
   "duration",
   "durationMs",
+  "method",
+  "path",
+  "status",
+  "requestId",
   "audit",
   "event.name",
   "traceId",
@@ -181,6 +185,7 @@ const optionNames = new Set([
   "transportTimeoutMillis",
   "transportRetries",
   "installGlobalLogger",
+  "requestEventName",
   "stdout",
 ]);
 
@@ -214,6 +219,7 @@ const resolveOptions = (
       transportTimeoutMillis: options.transportTimeoutMillis ?? 5_000,
       transportRetries: options.transportRetries ?? 2,
       installGlobalLogger: options.installGlobalLogger ?? true,
+      requestEventName: Option.fromNullishOr(options.requestEventName),
       stdout: options.stdout ?? defaultOutput,
     };
     if (resolved.batchSize > resolved.maximumBufferedEvents) {
@@ -312,17 +318,15 @@ const fieldsForContractEvent = (
       fields["event.duration_ms"] = event.durationMs;
       break;
     case "defect": {
-      const catalogError = adapterErrors.CONTRACT_EVENT({
+      const structured = createError({
+        code: event.error.type,
         message: event.error.message,
         status: event.error.retryable ? 503 : 500,
       });
-      const structured = createError({
-        code: adapterErrors.CONTRACT_EVENT.code,
-        message: catalogError.message,
-        status: catalogError.status,
-      });
-      fields["error.type"] = event.error.type;
+      fields["error.type"] = structured.code ?? structured.name;
+      fields["error.name"] = structured.name;
       fields["error.message"] = structured.message;
+      fields["error.status"] = structured.status;
       fields["error.retryable"] = event.error.retryable;
       break;
     }
@@ -386,7 +390,10 @@ const safeAdapterFailure = (message: string, cause: EvlogAdapterError): AdapterF
     cause,
   });
 
-const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
+export const makeEvlogAdapter = (
+  options: EvlogAdapterOptions,
+  initializeLogger: typeof initLogger = initLogger,
+): EvlogAdapter => {
   const dropState = emptyDropState();
   const loggerOwner = Symbol("evlog-adapter");
   let pendingBytes = 0;
@@ -408,6 +415,22 @@ const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
             ),
           ),
         );
+        if (Option.isSome(resolvedOptions.requestEventName)) {
+          const configuredRequestName = resolvedOptions.requestEventName.value;
+          const requestName = context.contract.eventNames.find(
+            (candidate) => candidate === configuredRequestName,
+          );
+          const requestDefinition =
+            requestName === undefined ? undefined : context.contract.eventByName.get(requestName);
+          if (requestDefinition?.kind !== "request") {
+            return yield* safeAdapterFailure(
+              "The evlog request event name is invalid. Configure a declared request event name.",
+              invalidOptions(
+                "The evlog requestEventName must identify a declared contract event with kind request.",
+              ),
+            );
+          }
+        }
         if (started) {
           return yield* safeAdapterFailure(
             "The evlog adapter instance is already started. Create one adapter instance per runtime.",
@@ -420,10 +443,11 @@ const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
         }
         if (resolvedOptions.installGlobalLogger && globalLoggerOwner !== undefined) {
           return yield* safeAdapterFailure(
-            "Another evlog logger already owns the process-global logger.",
+            "Another observability evlog adapter already owns the process-global logger.",
             new EvlogAdapterError({
               code: "OBS_EVLOG_LOGGER_CONFLICT",
-              message: "Another evlog logger already owns the process-global logger.",
+              message:
+                "Another observability evlog adapter already owns the process-global logger.",
               cause: adapterErrors.LOGGER_CONFLICT(),
             }),
           );
@@ -539,7 +563,7 @@ const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
             );
           });
 
-        const admitBrowser = (event: BrowserTelemetryEvent) =>
+        const projectBrowser = (event: BrowserTelemetryEvent) =>
           Effect.gen(function* () {
             if (
               !Number.isFinite(event.occurredAt) ||
@@ -573,20 +597,31 @@ const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
               ...event.attributes,
             };
             const decision = transformSignalFields(context.policy, "event", projected);
-            const admittedFields = {
-              ...decision.value,
-              "event.policy_dropped_attributes":
-                event.admission.policyDroppedAttributes + decision.dropped,
-            };
-            offer(
-              admittedRecord(
-                wideEventFor(context, timestamp, validation.defaultSeverity, admittedFields),
-              ),
+            return admittedRecord(
+              wideEventFor(context, timestamp, validation.defaultSeverity, {
+                ...decision.value,
+                "event.policy_dropped_attributes":
+                  event.admission.policyDroppedAttributes + decision.dropped,
+              }),
             );
           });
 
+        const admitBrowserBatch = (events: ReadonlyArray<BrowserTelemetryEvent>) =>
+          Effect.gen(function* () {
+            const records = yield* Effect.forEach(events, projectBrowser);
+            for (const record of records) offer(record);
+          });
+
         const admitGlobal = (drainContext: DrainContext): void => {
-          const rawName = decodeString(drainContext.event["event.name"]);
+          let rawName = decodeString(drainContext.event["event.name"]);
+          if (
+            Option.isNone(rawName) &&
+            Option.isSome(resolvedOptions.requestEventName) &&
+            drainContext.request !== undefined
+          ) {
+            drainContext.event["event.name"] = resolvedOptions.requestEventName.value;
+            rawName = resolvedOptions.requestEventName;
+          }
           if (Option.isNone(rawName)) {
             incrementReason(dropState, "contract-rejected");
             return;
@@ -635,6 +670,18 @@ const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
             "event.policy_dropped_attributes": decision.dropped,
             ...decision.value,
           };
+          if (definition.kind === "request") {
+            const method = decodeString(drainContext.request?.method);
+            const path = decodeString(drainContext.request?.path);
+            const requestId = decodeString(drainContext.request?.requestId);
+            const status = decodeNumber(drainContext.event.status);
+            const duration = decodeNumber(drainContext.event.duration);
+            if (Option.isSome(method)) fields["http.request.method"] = method.value;
+            if (Option.isSome(path)) fields["http.route"] = path.value;
+            if (Option.isSome(requestId)) fields["request.id"] = requestId.value;
+            if (Option.isSome(status)) fields["http.response.status_code"] = status.value;
+            if (Option.isSome(duration)) fields["event.duration_ms"] = duration.value;
+          }
           offer(
             admittedRecord(
               wideEventFor(
@@ -666,17 +713,30 @@ const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
 
         if (resolvedOptions.installGlobalLogger) {
           globalLoggerOwner = loggerOwner;
-          initLogger({
-            silent: true,
-            pretty: false,
-            redact: false,
-            env: {
-              service: context.identity.serviceName,
-              environment: context.identity.environment,
-              version: context.identity.serviceVersion,
-            },
-            drain: globalDrain,
-          });
+          try {
+            initializeLogger({
+              silent: true,
+              pretty: false,
+              redact: false,
+              env: {
+                service: context.identity.serviceName,
+                environment: context.identity.environment,
+                version: context.identity.serviceVersion,
+              },
+              drain: globalDrain,
+            });
+          } catch (cause) {
+            globalLoggerOwner = undefined;
+            started = false;
+            return yield* safeAdapterFailure(
+              "The evlog process-global logger could not be initialized.",
+              new EvlogAdapterError({
+                code: "OBS_EVLOG_ADAPTER_CONFIG_INVALID",
+                message: "The evlog process-global logger initialization failed.",
+                cause,
+              }),
+            );
+          }
         }
 
         const eventLayer = Layer.succeed(
@@ -689,7 +749,7 @@ const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
                 }
                 return admitContract(event, admission);
               }),
-            recordBrowser: admitBrowser,
+            recordBrowserBatch: admitBrowserBatch,
           }),
         );
 
@@ -702,10 +762,10 @@ const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
             (activePipeline?.flush() ?? Promise.resolve())
               .then(() => activePipeline?.settled() ?? Promise.resolve())
               .then(() => {
-                if (globalLoggerOwner === loggerOwner) {
-                  initLogger({ enabled: false });
-                  globalLoggerOwner = undefined;
-                }
+                if (globalLoggerOwner !== loggerOwner) return;
+                if (!detached && !probeLogger()) detached = true;
+                if (!detached) initializeLogger({ enabled: false });
+                globalLoggerOwner = undefined;
               });
           closePromise = pending;
           return pending;

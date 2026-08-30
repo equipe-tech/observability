@@ -7,6 +7,7 @@ import {
   InvalidTelemetryEvent,
   isValidEventName,
   makeEventProducer,
+  maxOtlpUnixTimestampMillis,
   organizationContractVersion,
   organizationEvents,
   telemetryContractDefinition,
@@ -407,11 +408,17 @@ describe("defineTelemetryContract", () => {
         "event.outcome",
         "event.timestamp",
         "event.duration_ms",
+        "event.source",
+        "event.policy_dropped_attributes",
+        "browser.event.id",
+        "browser.event.occurred_at",
         "http.request.method",
         "http.route",
         "http.response.status_code",
         "error.type",
+        "error.name",
         "error.message",
+        "error.status",
         "error.retryable",
         "audit.action",
         "audit.actor.kind",
@@ -949,6 +956,39 @@ describe("contract event producer", () => {
         assert.isNotEmpty(error.eventName);
       }
       assert.lengthOf(yield* sink.events, 0);
+    }),
+  );
+
+  it.effect("enforces the OTLP fixed64 timestamp boundary before recording", () =>
+    Effect.gen(function* () {
+      const contract = yield* compileApplicationContract;
+      const sink = yield* makeCollectingTelemetryEventSink();
+      const producer = makeEventProducer(contract);
+      const accepted = yield* producer
+        .emit("CanaryCompleted", {
+          outcome: "success",
+          timestamp: new Date(maxOtlpUnixTimestampMillis).toISOString(),
+          attributes: {},
+        })
+        .pipe(Effect.provide(sink.layer));
+      assert.strictEqual(accepted.decision, "recorded");
+      for (const timestamp of [
+        new Date(maxOtlpUnixTimestampMillis + 1).toISOString(),
+        "3000-01-01T00:00:00Z",
+        "9999-01-01T00:00:00Z",
+        "+275760-09-13T00:00:00.000Z",
+        Number.POSITIVE_INFINITY,
+        Number.NaN,
+      ]) {
+        const payload = JSON.parse('{"outcome":"success","attributes":{}}');
+        payload.timestamp = timestamp;
+        const failure = yield* producer
+          .emit("CanaryCompleted", payload)
+          .pipe(Effect.provide(sink.layer), Effect.flip);
+        assert.strictEqual(failure.code, "OBS_EVENT_INVALID_FIELD");
+        assert.strictEqual(failure.attributeName, "event.timestamp");
+      }
+      assert.lengthOf(yield* sink.events, 1);
     }),
   );
 

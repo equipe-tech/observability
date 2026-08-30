@@ -50,6 +50,8 @@ export const AuditContext = Schema.Struct({
 });
 export type AuditContext = typeof AuditContext.Type;
 
+export const maxOtlpUnixTimestampMillis = 18_446_744_073_709;
+
 const rfc3339UtcPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?Z$/;
 
 const isLeapYear = (year: number): boolean =>
@@ -81,12 +83,15 @@ const isValidTimestamp = (timestamp: string): boolean => {
     hour <= 23 &&
     minute <= 59 &&
     second <= 59 &&
-    Option.isSome(DateTime.make(timestamp))
+    Option.isSome(DateTime.make(timestamp)) &&
+    Date.parse(timestamp) <= maxOtlpUnixTimestampMillis
   );
 };
 
 export const EventTimestamp = Schema.String.check(
-  Schema.makeFilter(isValidTimestamp, { expected: "an RFC 3339 UTC timestamp" }),
+  Schema.makeFilter(isValidTimestamp, {
+    expected: `an RFC 3339 UTC timestamp at or before ${new Date(maxOtlpUnixTimestampMillis).toISOString()}`,
+  }),
 ).pipe(Schema.brand("EventTimestamp"));
 export type EventTimestamp = typeof EventTimestamp.Type;
 

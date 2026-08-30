@@ -9,6 +9,7 @@ import {
   createBrowserTelemetryClient,
   maxEventNameLength,
   maxEventsPerBatch,
+  maxBrowserEventOccurredAt,
   maxFieldKeyLength,
   maxFieldsPerEvent,
   maxFieldValueLength,
@@ -17,6 +18,7 @@ import {
   Contract,
   parseNodeObservabilityConfig,
   TelemetryEventSink,
+  type BrowserTelemetryEvent,
 } from "@equipe-tech/observability";
 import { createNodeObservabilityFromConfig } from "@equipe-tech/observability/node";
 import { evlogAdapter } from "@equipe-tech/observability-evlog";
@@ -74,16 +76,19 @@ const contractAdmissionLayer = Layer.succeed(
   TelemetryEventSink,
   TelemetryEventSink.of({
     record: () => Effect.void,
-    recordBrowser: (event) => {
-      const validation = Contract.validateContractEvent(
-        browserContract,
-        event.name,
-        event.attributes,
-      );
-      return validation instanceof Contract.InvalidTelemetryEvent
-        ? Effect.fail(validation)
-        : Effect.void;
-    },
+    recordBrowserBatch: (events) =>
+      Effect.gen(function* () {
+        for (const event of events) {
+          const validation = Contract.validateContractEvent(
+            browserContract,
+            event.name,
+            event.attributes,
+          );
+          if (validation instanceof Contract.InvalidTelemetryEvent) {
+            return yield* validation;
+          }
+        }
+      }),
   }),
 );
 
@@ -337,6 +342,78 @@ describe("browser events endpoint", () => {
     await harness.close();
   }, 30_000);
 
+  it("admits browser batches atomically and emits valid events once", async () => {
+    const offered: Array<BrowserTelemetryEvent> = [];
+    const atomicLayer = Layer.succeed(
+      TelemetryEventSink,
+      TelemetryEventSink.of({
+        record: () => Effect.void,
+        recordBrowserBatch: (events) =>
+          Effect.gen(function* () {
+            for (const event of events) {
+              const validation = Contract.validateContractEvent(
+                browserContract,
+                event.name,
+                event.attributes,
+              );
+              if (validation instanceof Contract.InvalidTelemetryEvent) return yield* validation;
+            }
+            offered.push(...events);
+          }),
+      }),
+    );
+    const harness = await startApp(true, atomicLayer);
+    const rejected = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({
+        version: 1,
+        events: [
+          {
+            id: "valid-before-invalid",
+            name: "checkout.completed",
+            occurredAt: 1,
+            fields: { "cart.total": 1 },
+          },
+          {
+            id: "invalid",
+            name: "checkout.completed",
+            occurredAt: 1,
+            fields: {},
+          },
+        ],
+      }),
+    );
+    assert.strictEqual(rejected.status, 400);
+    assert.lengthOf(offered, 0);
+
+    const accepted = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({
+        version: 1,
+        events: [
+          {
+            id: "valid-one",
+            name: "checkout.completed",
+            occurredAt: 1,
+            fields: { "cart.total": 1 },
+          },
+          {
+            id: "valid-two",
+            name: "checkout.completed",
+            occurredAt: 2,
+            fields: { "cart.total": 2 },
+          },
+        ],
+      }),
+    );
+    assert.strictEqual(accepted.status, 202);
+    assert.deepStrictEqual(
+      offered.map((event) => event.id),
+      ["valid-one", "valid-two"],
+    );
+    await harness.close();
+  }, 30_000);
+
   it("returns evidence-safe 400 responses through the real evlog adapter", async () => {
     const harness = await startRealAdapterApp();
     const cases = [
@@ -346,7 +423,7 @@ describe("browser events endpoint", () => {
           {
             id: "evt",
             name: "checkout.completed",
-            occurredAt: 8_640_000_000_000_001,
+            occurredAt: 32_503_680_000_000,
             fields: { "cart.total": 1 },
           },
         ],
@@ -354,16 +431,49 @@ describe("browser events endpoint", () => {
       JSON.stringify({
         version: 1,
         events: [
-          { id: "evt", name: "checkout.completed", occurredAt: 1e300, fields: { "cart.total": 1 } },
+          {
+            id: "evt",
+            name: "checkout.completed",
+            occurredAt: 253_370_764_800_000,
+            fields: { "cart.total": 1 },
+          },
         ],
       }),
       JSON.stringify({
         version: 1,
         events: [
-          { id: "evt", name: "checkout.completed", occurredAt: -1, fields: { "cart.total": 1 } },
+          {
+            id: "evt",
+            name: "checkout.completed",
+            occurredAt: maxBrowserEventOccurredAt + 1,
+            fields: { "cart.total": 1 },
+          },
+        ],
+      }),
+      JSON.stringify({
+        version: 1,
+        events: [
+          {
+            id: "evt",
+            name: "checkout.completed",
+            occurredAt: 8_640_000_000_000_000,
+            fields: { "cart.total": 1 },
+          },
+        ],
+      }),
+      JSON.stringify({
+        version: 1,
+        events: [
+          {
+            id: "evt",
+            name: "checkout.completed",
+            occurredAt: -1,
+            fields: { "cart.total": 1 },
+          },
         ],
       }),
       '{"version":1,"events":[{"id":"evt","name":"checkout.completed","occurredAt":NaN,"fields":{"cart.total":1}}]}',
+      '{"version":1,"events":[{"id":"evt","name":"checkout.completed","occurredAt":Infinity,"fields":{"cart.total":1}}]}',
       JSON.stringify({
         version: 1,
         events: [{ id: "evt", name: "checkout.completed", occurredAt: 1, fields: {} }],
@@ -385,7 +495,7 @@ describe("browser events endpoint", () => {
           {
             id: "evt",
             name: "checkout.completed",
-            occurredAt: 8_640_000_000_000_000,
+            occurredAt: maxBrowserEventOccurredAt,
             fields: { "cart.total": 1 },
           },
         ],

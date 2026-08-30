@@ -46,7 +46,7 @@ Um nome de evento tem de duas a quatro partes separadas por pontos e no máximo 
 
 Nomes de atributos usam pelo menos duas partes minúsculas separadas por pontos e têm no máximo 128 caracteres. Valores de atributos são strings, números finitos ou booleanos.
 
-O contrato reserva os campos canônicos exatos `event.name`, `event.kind`, `event.type`, `event.severity`, `event.outcome`, `event.timestamp`, `event.duration_ms`, `http.request.method`, `http.route`, `http.response.status_code`, `error.type`, `error.message`, `error.retryable`, `audit.action`, `audit.actor.kind`, `audit.actor.id`, `audit.resource.type`, `audit.resource.id`, `request.id` e `run.id`. Outros campos nesses namespaces continuam disponíveis para atributos da aplicação.
+O contrato reserva os campos canônicos exatos `event.name`, `event.kind`, `event.type`, `event.severity`, `event.outcome`, `event.timestamp`, `event.duration_ms`, `event.source`, `event.policy_dropped_attributes`, `browser.event.id`, `browser.event.occurred_at`, `http.request.method`, `http.route`, `http.response.status_code`, `error.type`, `error.name`, `error.message`, `error.status`, `error.retryable`, `audit.action`, `audit.actor.kind`, `audit.actor.id`, `audit.resource.type`, `audit.resource.id`, `request.id` e `run.id`. Outros campos nesses namespaces continuam disponíveis para atributos da aplicação.
 
 A classificação não escolhe destino ou provedor. O produtor mascara atributos `sensitive` com `****` e rejeita atributos `forbidden` antes do sink. A política compilada também remove chaves proibidas, mascara valores bloqueados e aplica os limites de cada sinal antes da exportação.
 
@@ -62,7 +62,7 @@ A união `TelemetryEvent` tem cinco variantes.
 - `defect` exige contexto de erro. O resultado é sempre `failure`.
 - `audit` exige `outcome` e contexto de auditoria. A ação precisa existir em `auditActions`; o tipo de recurso e o resultado precisam corresponder à definição.
 
-Timestamps representam datas reais em RFC 3339 UTC e terminam em `Z`. Durações são números finitos maiores ou iguais a zero. `EventSeverity` e `EventOutcome` são uniões fechadas independentes. O compilador do contrato valida a severidade padrão. Severidade não escolhe destino ou provedor.
+Timestamps representam datas reais em RFC 3339 UTC, terminam em `Z` e não ultrapassam `2554-07-21T23:34:33.709Z`. Esse limite corresponde ao maior milissegundo que o encoder pode converter para o `fixed64` de nanossegundos do OTLP. Durações são números finitos maiores ou iguais a zero. `EventSeverity` e `EventOutcome` são uniões fechadas independentes. O compilador do contrato valida a severidade padrão. Severidade não escolhe destino ou provedor.
 
 ## Amostragem
 
@@ -148,4 +148,4 @@ Falhas de emissão retornam `InvalidTelemetryEvent`. O produtor executa todas as
 
 ## Testes de consumidores
 
-`@equipe-tech/observability/testing` exporta os tipos derivados do contrato, a lista de eventos da organização, os códigos de fixture e um sink coletor. `withFixedSampling` fornece o serviço `Random.Random` com um valor determinístico para um programa Effect. `Testing.run` continua sendo o caminho em memória para provar a exportação OTLP real sem mock de módulo.
+`@equipe-tech/observability/testing` exporta os tipos derivados do contrato, a lista de eventos da organização, os códigos de fixture e um sink coletor. O sink expõe `events` para eventos de servidor e `browserEvents` para eventos de browser já transformados, incluindo `admission.policyDroppedAttributes`. `withFixedSampling` fornece o serviço `Random.Random` com um valor determinístico para um programa Effect. `Testing.run` continua sendo o caminho em memória para provar a exportação OTLP real sem mock de módulo.

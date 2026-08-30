@@ -46,8 +46,8 @@ export class TelemetryEventSink extends Context.Service<
       event: TelemetryEvent,
       admission: EventAdmissionMetadata,
     ) => Effect.Effect<void, InvalidTelemetryEvent>;
-    readonly recordBrowser: (
-      event: BrowserTelemetryEvent,
+    readonly recordBrowserBatch: (
+      events: ReadonlyArray<BrowserTelemetryEvent>,
     ) => Effect.Effect<void, InvalidTelemetryEvent>;
   }
 >()("@equipe-tech/observability/TelemetryEventSink") {}

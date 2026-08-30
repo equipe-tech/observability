@@ -1,4 +1,4 @@
-import { Layer, Option } from "effect";
+import { Effect, Layer, Option } from "effect";
 import { TelemetryEventSink } from "../contract/EventProducer.ts";
 import type {
   AttributeValue,
@@ -63,13 +63,18 @@ export const layerWideEvent: Layer.Layer<TelemetryEventSink> = Layer.succeed(
         ...fieldsForEvent(event),
         "event.policy_dropped_attributes": admission.policyDroppedAttributes,
       }),
-    recordBrowser: (event) =>
-      WideEvent.emit(event.name, {
-        ...event.attributes,
-        "event.source": "browser",
-        "browser.event.id": event.id,
-        "browser.event.occurred_at": event.occurredAt,
-        "event.policy_dropped_attributes": event.admission.policyDroppedAttributes,
-      }),
+    recordBrowserBatch: (events) =>
+      Effect.forEach(
+        events,
+        (event) =>
+          WideEvent.emit(event.name, {
+            ...event.attributes,
+            "event.source": "browser",
+            "browser.event.id": event.id,
+            "browser.event.occurred_at": event.occurredAt,
+            "event.policy_dropped_attributes": event.admission.policyDroppedAttributes,
+          }),
+        { discard: true },
+      ),
   }),
 );

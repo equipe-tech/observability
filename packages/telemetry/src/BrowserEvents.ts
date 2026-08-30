@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { maxOtlpUnixTimestampMillis } from "./contract/TelemetryEvent.ts";
 
 export const browserRequestByteBudget = 90_000;
 export const maxEventsPerBatch = 64;
@@ -7,7 +8,7 @@ export const maxFieldKeyLength = 128;
 export const maxFieldValueLength = 1024;
 export const maxEventNameLength = 128;
 export const maxEventIdLength = 64;
-export const maxBrowserEventOccurredAt = 8_640_000_000_000_000;
+export const maxBrowserEventOccurredAt = maxOtlpUnixTimestampMillis;
 
 const BoundedFieldValue = Schema.Union([
   Schema.String.check(Schema.isMaxLength(maxFieldValueLength)),

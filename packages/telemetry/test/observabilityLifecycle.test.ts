@@ -45,7 +45,7 @@ const contract: ContractRegistry = {
 const policy = { attributes: {}, blockedKeys: [], blockedValuePatterns: [] };
 const testEventLayer = Layer.succeed(
   TelemetryEventSink,
-  TelemetryEventSink.of({ record: () => Effect.void, recordBrowser: () => Effect.void }),
+  TelemetryEventSink.of({ record: () => Effect.void, recordBrowserBatch: () => Effect.void }),
 );
 
 const config = (environment = "test") =>

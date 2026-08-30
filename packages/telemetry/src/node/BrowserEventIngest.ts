@@ -41,19 +41,20 @@ export const ingestBrowserEventBatch = Effect.fn("ingestBrowserEventBatch")(func
   const sink = yield* TelemetryEventSink;
   let redacted = 0;
   let dropped = 0;
-  for (const event of batch.events) {
+  const events = batch.events.map((event) => {
     const decision = transformSignalFields(policy, "browser-ingest", event.fields);
     dropped += decision.dropped;
     redacted += decision.redactions.filter((redaction) => redaction.action !== "dropped").length;
-    yield* sink.recordBrowser({
+    return {
       id: event.id,
       name: event.name,
       occurredAt: event.occurredAt,
       attributes: decision.value,
       admission: { policyDroppedAttributes: decision.dropped },
-    });
-  }
-  return { accepted: batch.events.length, redacted, dropped };
+    };
+  });
+  yield* sink.recordBrowserBatch(events);
+  return { accepted: events.length, redacted, dropped };
 });
 
 export const ingestBrowserEvents = flow(

@@ -29,6 +29,7 @@ export {
   browserRequestByteBudget,
   maxEventNameLength,
   maxEventsPerBatch,
+  maxBrowserEventOccurredAt,
   maxFieldKeyLength,
   maxFieldsPerEvent,
   maxFieldValueLength,
