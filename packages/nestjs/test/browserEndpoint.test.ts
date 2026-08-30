@@ -12,6 +12,7 @@ import {
   maxFieldsPerEvent,
   maxFieldValueLength,
 } from "@equipe-tech/observability/browser";
+import { layerWideEvent } from "@equipe-tech/observability/effect";
 import * as Testing from "@equipe-tech/observability/testing";
 import { createBrowserEventsController, TelemetryInterceptor } from "../src/index.ts";
 
@@ -41,7 +42,9 @@ const startApp = async (withInterceptor: boolean): Promise<Harness> => {
   const runtime = ManagedRuntime.make(capture.layer);
 
   class AppModule {}
-  Module({ controllers: [createBrowserEventsController(runtime)] })(AppModule);
+  Module({
+    controllers: [createBrowserEventsController(runtime, { eventLayer: layerWideEvent })],
+  })(AppModule);
 
   const app = await NestFactory.create(AppModule, { logger: false });
   if (withInterceptor) {

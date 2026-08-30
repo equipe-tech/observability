@@ -4,6 +4,7 @@ import { ingestBrowserEvents } from "../../src/node/index.ts";
 import type { TelemetryConfig } from "../../src/TelemetryConfig.ts";
 import type { InvalidDataPolicy } from "../../src/policy/DataPolicyError.ts";
 import * as WideEvent from "../../src/effect/WideEvent.ts";
+import { layerWideEvent } from "../../src/effect/WideEventSink.ts";
 
 export const canaryRunId = (): Effect.Effect<RunId> =>
   generateRunId("canary", process.env["USER"] ?? "ci");
@@ -148,7 +149,7 @@ export const emitCanary = (
           },
         },
       ],
-    }).pipe(Effect.orDie);
+    }).pipe(Effect.provide(layerWideEvent), Effect.orDie);
     yield* Metric.update(operationCounter, 1);
   }).pipe(
     Effect.withSpan("canary.operation", { attributes: sensitiveAttributes }),

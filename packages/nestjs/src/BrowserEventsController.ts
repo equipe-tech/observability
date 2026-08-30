@@ -1,6 +1,7 @@
 import { Controller, HttpCode, HttpException, Post, Req } from "@nestjs/common";
-import { Cause, Exit, Option, Schema } from "effect";
+import { Cause, Effect, Exit, Layer, Option, Schema } from "effect";
 import type { ManagedRuntime } from "effect";
+import { TelemetryEventSink } from "@equipe-tech/observability";
 import {
   ingestBrowserEvents,
   InvalidBrowserEventBatch,
@@ -38,12 +39,13 @@ const correlationId = (request: RequestReference): string =>
   );
 
 export type BrowserEventsControllerOptions = {
+  readonly eventLayer: Layer.Layer<TelemetryEventSink>;
   readonly path?: string;
 };
 
 export const createBrowserEventsController = <RuntimeError>(
   runtime: ManagedRuntime.ManagedRuntime<never, RuntimeError>,
-  options?: BrowserEventsControllerOptions,
+  options: BrowserEventsControllerOptions,
 ) => {
   class BrowserEventsController {
     async events(request: RequestReference): Promise<BrowserEventIngestReceipt> {
@@ -52,7 +54,10 @@ export const createBrowserEventsController = <RuntimeError>(
         Option.getOrUndefined,
       );
       const exit = await runtime.runPromiseExit(
-        ingestBrowserEvents(body).pipe(withRequestSpan(request)),
+        ingestBrowserEvents(body).pipe(
+          withRequestSpan(request),
+          Effect.provide(options.eventLayer),
+        ),
       );
       if (Exit.isSuccess(exit)) {
         return exit.value;
@@ -81,7 +86,7 @@ export const createBrowserEventsController = <RuntimeError>(
     });
   }
   Controller()(BrowserEventsController);
-  Post(options?.path ?? defaultBrowserEventsPath)(prototype, "events", descriptor);
+  Post(options.path ?? defaultBrowserEventsPath)(prototype, "events", descriptor);
   HttpCode(202)(prototype, "events", descriptor);
   Req()(prototype, "events", 0);
   return BrowserEventsController;

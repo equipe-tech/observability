@@ -111,8 +111,14 @@ import {
 } from "@equipe-tech/observability-nestjs";
 ```
 
-O núcleo mantém `./metrics`, `./node`, `./browser`, `./browser/client` e `./testing`. `effect@4.0.0-rc.111` passa a ser peer obrigatório do núcleo e do pacote NestJS. O consumidor deve instalar uma única cópia.
+O núcleo mantém `./metrics`, `./node`, `./browser`, `./browser/client` e `./testing`. `effect@4.0.0-rc.111` passa a ser peer obrigatório do núcleo e dos pacotes de integração. O consumidor deve instalar uma única cópia.
+
+## Instalar o adapter oficial de eventos
+
+Instale `@equipe-tech/observability-evlog@0.3.x` e registre `evlogAdapter().registration` em `createNodeObservability`. Forneça `observability.eventLayer` ao `EventProducer.emit`. O adapter depende diretamente de `evlog@2.27.1`; a aplicação não monta fila, retry ou transporte.
+
+O ingest HTTP do browser agora exige a mesma layer. Passe `{ eventLayer: observability.eventLayer }` para `createBrowserEventsController`. Remova a composição manual de `EvlogModule` para o fluxo de eventos de contrato.
 
 ## Usar releases independentes
 
-Os pacotes não compartilham versão. O núcleo e o pacote NestJS começam em `0.3.0`. A CLI permanece em `0.2.1`. Tags usam `<slug>@<semver>`, por exemplo `observability@0.3.0`, `observability-nestjs@0.3.0` e `observability-cli@0.2.1`.
+Os pacotes não compartilham versão. O núcleo, o adapter evlog e o pacote NestJS começam em `0.3.0`. A CLI permanece em `0.2.1`. Tags usam `<slug>@<semver>`, por exemplo `observability@0.3.0`, `observability-evlog@0.3.0`, `observability-nestjs@0.3.0` e `observability-cli@0.2.1`.

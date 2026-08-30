@@ -35,7 +35,10 @@ export const makeCollectingTelemetryEventSink = Effect.fn("makeCollectingTelemet
     const record = (event: TelemetryEvent): Effect.Effect<void> =>
       Ref.update(store, (events) => [...events, event]);
     return {
-      layer: Layer.succeed(TelemetryEventSink, TelemetryEventSink.of({ record })),
+      layer: Layer.succeed(
+        TelemetryEventSink,
+        TelemetryEventSink.of({ record, recordBrowser: () => Effect.void }),
+      ),
       events: Ref.get(store),
     };
   },

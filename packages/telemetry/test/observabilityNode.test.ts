@@ -1,4 +1,4 @@
-import { Effect, Metric, Predicate } from "effect";
+import { Effect, Layer, Metric, Predicate } from "effect";
 import { createServer } from "node:http";
 import { describe, expect, it } from "vite-plus/test";
 import type { EventName } from "../src/contract/EventName.ts";
@@ -13,6 +13,7 @@ import {
 } from "../src/profile/ObservabilityAdapter.ts";
 import { parseNodeObservabilityConfig } from "../src/profile/ObservabilityConfig.ts";
 import { createTestingNodeObservabilityFromConfig } from "../src/node/Observability.ts";
+import { TelemetryEventSink } from "../src/contract/EventProducer.ts";
 
 const contract: ContractRegistry = {
   version: 1,
@@ -27,7 +28,15 @@ const events = registerTestingAdapter({
   name: AdapterName.make("events"),
   capability: "events",
   stage: "server",
-  start: () => Effect.succeed({ flush: Effect.void, close: Effect.void }),
+  start: () =>
+    Effect.succeed({
+      flush: Effect.void,
+      close: Effect.void,
+      eventLayer: Layer.succeed(
+        TelemetryEventSink,
+        TelemetryEventSink.of({ record: () => Effect.void, recordBrowser: () => Effect.void }),
+      ),
+    }),
 });
 
 const config = (endpoint: URL) =>

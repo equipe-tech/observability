@@ -1,0 +1,40 @@
+{
+  "name": "@equipe-tech/observability-evlog",
+  "version": "0.3.0",
+  "description": "Adapter oficial evlog da plataforma de observabilidade da Equipe Tech",
+  "homepage": "https://github.com/equipe-tech/observability#readme",
+  "bugs": {
+    "url": "https://github.com/equipe-tech/observability/issues"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/equipe-tech/observability.git",
+    "directory": "packages/evlog"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "bun ../../scripts/build-packages.ts",
+    "prepack": "bun run build"
+  },
+  "dependencies": {
+    "evlog": "2.27.1"
+  },
+  "devDependencies": {
+    "@equipe-tech/observability": "workspace:*",
+    "effect": "4.0.0-rc.111"
+  },
+  "peerDependencies": {
+    "@equipe-tech/observability": "0.3.x",
+    "effect": "4.0.0-rc.111"
+  }
+}

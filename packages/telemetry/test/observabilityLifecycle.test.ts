@@ -17,6 +17,7 @@ import {
   type StartedAdapter,
 } from "../src/profile/ObservabilityAdapter.ts";
 import { parseNodeObservabilityConfig } from "../src/profile/ObservabilityConfig.ts";
+import { TelemetryEventSink } from "../src/contract/EventProducer.ts";
 import {
   createLifecycleRegistry,
   validateAdapterRegistrations,
@@ -42,6 +43,10 @@ const contract: ContractRegistry = {
   auditActionByName: new Map<string, CompiledAuditActionDefinition>(),
 };
 const policy = { attributes: {}, blockedKeys: [], blockedValuePatterns: [] };
+const testEventLayer = Layer.succeed(
+  TelemetryEventSink,
+  TelemetryEventSink.of({ record: () => Effect.void, recordBrowser: () => Effect.void }),
+);
 
 const config = (environment = "test") =>
   parseNodeObservabilityConfig({
@@ -77,6 +82,7 @@ const recordingAdapter = (
       );
     }
     return Effect.succeed({
+      eventLayer: testEventLayer,
       flush: Effect.sync(() => {
         calls.push(`flush:${name}`);
       }),
@@ -189,6 +195,19 @@ describe("observability lifecycle", () => {
       ),
     );
     expect(duplicate.code).toBe("OBS_OBSERVABILITY_ADAPTER_DUPLICATE");
+
+    const differentlyNamedDuplicate = registerTestingAdapter(
+      recordingAdapter("other-events", "events", calls),
+    );
+    const capabilityDuplicate = await Effect.runPromise(
+      Effect.flip(
+        validateAdapterRegistrations(parsed.profile, "test", [events, differentlyNamedDuplicate], {
+          allowTesting: true,
+        }),
+      ),
+    );
+    expect(capabilityDuplicate.code).toBe("OBS_OBSERVABILITY_ADAPTER_DUPLICATE");
+    expect(capabilityDuplicate.message).toContain('Capability "events"');
   });
 
   it("runs the public create and Effect entrypoints", async () => {
@@ -422,6 +441,7 @@ describe("observability lifecycle", () => {
       stage: "server",
       start: () =>
         Effect.succeed({
+          eventLayer: testEventLayer,
           flush: Effect.promise(() => {
             calls.push("flush:events");
             return flushGate;

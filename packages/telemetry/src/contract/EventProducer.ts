@@ -26,9 +26,22 @@ import { sensitiveFieldReplacement } from "../policy/PolicyVocabulary.ts";
 import type { PolicyRedaction } from "../policy/PolicyTransform.ts";
 import { InvalidTelemetryEvent } from "./TelemetryContractError.ts";
 
+export type BrowserTelemetryEvent = {
+  readonly id: string;
+  readonly name: string;
+  readonly occurredAt: number;
+  readonly attributes: EventAttributes;
+  readonly policyDroppedAttributes: number;
+};
+
 export class TelemetryEventSink extends Context.Service<
   TelemetryEventSink,
-  { readonly record: (event: TelemetryEvent) => Effect.Effect<void> }
+  {
+    readonly record: (event: TelemetryEvent) => Effect.Effect<void, InvalidTelemetryEvent>;
+    readonly recordBrowser: (
+      event: BrowserTelemetryEvent,
+    ) => Effect.Effect<void, InvalidTelemetryEvent>;
+  }
 >()("@equipe-tech/observability/TelemetryEventSink") {}
 
 type RequiredAttributeNames<Attributes extends AttributeDefinitionsInput> = {

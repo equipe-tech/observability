@@ -59,5 +59,13 @@ export const layerWideEvent: Layer.Layer<TelemetryEventSink> = Layer.succeed(
   TelemetryEventSink,
   TelemetryEventSink.of({
     record: (event) => WideEvent.emit(event.name, fieldsForEvent(event)),
+    recordBrowser: (event) =>
+      WideEvent.emit(event.name, {
+        ...event.attributes,
+        "event.source": "browser",
+        "browser.event.id": event.id,
+        "browser.event.occurred_at": event.occurredAt,
+        "event.policy_dropped_attributes": event.policyDroppedAttributes,
+      }),
   }),
 );

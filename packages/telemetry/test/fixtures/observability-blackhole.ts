@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import type { EventName } from "../../src/contract/EventName.ts";
 import type {
   CompiledAuditActionDefinition,
@@ -10,6 +10,7 @@ import {
   type ContractRegistry,
 } from "../../src/profile/ObservabilityAdapter.ts";
 import { createNodeObservability } from "../../src/node/Observability.ts";
+import { TelemetryEventSink } from "../../src/contract/EventProducer.ts";
 
 const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 if (endpoint === undefined) throw new Error("Missing blackhole endpoint.");
@@ -27,7 +28,15 @@ const events = registerOfficialAdapter({
   name: AdapterName.make("blackhole-events"),
   capability: "events",
   stage: "server",
-  start: () => Effect.succeed({ flush: Effect.void, close: Effect.void }),
+  start: () =>
+    Effect.succeed({
+      flush: Effect.void,
+      close: Effect.void,
+      eventLayer: Layer.succeed(
+        TelemetryEventSink,
+        TelemetryEventSink.of({ record: () => Effect.void, recordBrowser: () => Effect.void }),
+      ),
+    }),
 });
 
 const handle = await createNodeObservability({

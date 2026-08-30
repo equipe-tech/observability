@@ -1,8 +1,8 @@
 import { Effect, flow, Schema } from "effect";
 import { BrowserEventBatch } from "../BrowserEvents.ts";
+import { TelemetryEventSink } from "../contract/EventProducer.ts";
 import { CurrentDataPolicy } from "../policy/DataPolicy.ts";
 import { transformSignalFields } from "../policy/PolicyTransform.ts";
-import * as WideEvent from "../effect/WideEvent.ts";
 
 export class InvalidBrowserEventBatch extends Schema.TaggedError<InvalidBrowserEventBatch>()(
   "InvalidBrowserEventBatch",
@@ -36,19 +36,21 @@ export type BrowserEventIngestReceipt = {
 
 export const ingestBrowserEventBatch = Effect.fn("ingestBrowserEventBatch")(function* (
   batch: BrowserEventBatch,
-): Effect.fn.Return<BrowserEventIngestReceipt, never> {
+) {
   const policy = yield* CurrentDataPolicy;
+  const sink = yield* TelemetryEventSink;
   let redacted = 0;
   let dropped = 0;
   for (const event of batch.events) {
     const decision = transformSignalFields(policy, "browser-ingest", event.fields);
     dropped += decision.dropped;
     redacted += decision.redactions.filter((redaction) => redaction.action !== "dropped").length;
-    yield* WideEvent.emit(event.name, {
-      ...decision.value,
-      "event.source": "browser",
-      "browser.event.id": event.id,
-      "browser.event.occurred_at": event.occurredAt,
+    yield* sink.recordBrowser({
+      id: event.id,
+      name: event.name,
+      occurredAt: event.occurredAt,
+      attributes: decision.value,
+      policyDroppedAttributes: decision.dropped,
     });
   }
   return { accepted: batch.events.length, redacted, dropped };
