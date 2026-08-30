@@ -42,9 +42,12 @@ jobs:
           done
           [[ -n "$manifest" ]] || { echo "Unknown package $SLUG."; exit 1; }
           [[ "$(jq -r .version "$manifest")" == "$VERSION" ]] || { echo "Version $VERSION does not match $manifest."; exit 1; }
-          tag="$SLUG@$VERSION"
           bun scripts/release.ts "$VERSION" --package "$SLUG" --dry-run
-          test -s "docs/releases/${tag}.md"
-          test -s "docs/releases/${tag}.sha256"
+          bun run build
+          output="$RUNNER_TEMP/release-candidate"
+          bun scripts/release-candidate.ts --package "$SLUG" --version "$VERSION" --output "$output"
+          test -s "$output/$SLUG@$VERSION.md"
+          test -s "$output/$SLUG@$VERSION.sha256"
+          (cd "$output" && sha256sum --check "$SLUG@$VERSION.sha256")
           bun run test:package
-          npm view "$(jq -r .name "$manifest")" version dist-tags versions --json || true
+          bun scripts/npm-publication-state.ts "$(jq -r .name "$manifest")" "$VERSION"

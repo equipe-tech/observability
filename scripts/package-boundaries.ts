@@ -1,17 +1,17 @@
 import { Schema } from "effect";
 import { readFile } from "node:fs/promises";
-import { basename, dirname, join, relative, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
 const DependencyMap = Schema.Record(Schema.String, Schema.String);
-const PackageManifest = Schema.Struct({
+export const PackageManifest = Schema.Struct({
   name: Schema.NonEmptyString,
   dependencies: Schema.optional(DependencyMap),
   peerDependencies: Schema.optional(DependencyMap),
 });
-const decodePackageManifest = Schema.decodeUnknownSync(PackageManifest);
+export const decodePackageManifest = Schema.decodeUnknownSync(PackageManifest);
 
 export type BoundaryRole = "core" | "adapter" | "bootstrap" | "domain";
 export type BoundaryViolation = {
@@ -20,11 +20,58 @@ export type BoundaryViolation = {
   readonly specifier: string;
 };
 
-const packageNameForSpecifier = (specifier: string): string => {
-  const parts = specifier.split("/");
-  if (specifier.startsWith("@")) {
-    return parts.slice(0, 2).join("/");
+type PathOwnership = {
+  readonly role: BoundaryRole;
+  readonly matches: (file: string) => boolean;
+};
+
+const exactPaths = new Set([
+  "packages/cli/src/main.ts",
+  "packages/nestjs/src/TelemetryModule.ts",
+  "packages/telemetry/src/node/Observability.ts",
+]);
+
+const adapterPaths = new Set([
+  "packages/cli/src/ProviderApis.ts",
+  "packages/telemetry/src/MetricsRuntime.ts",
+  "packages/telemetry/src/PolicyOtlpLogger.ts",
+  "packages/telemetry/src/Telemetry.ts",
+  "packages/telemetry/src/profile/LifecycleRegistry.ts",
+  "packages/telemetry/src/profile/ObservabilityAdapter.ts",
+]);
+
+const ownership: ReadonlyArray<PathOwnership> = [
+  { role: "bootstrap", matches: (file) => exactPaths.has(file) },
+  {
+    role: "adapter",
+    matches: (file) =>
+      adapterPaths.has(file) ||
+      file.startsWith("packages/nestjs/src/") ||
+      file.startsWith("packages/telemetry/src/browser/") ||
+      file.startsWith("packages/telemetry/src/node/") ||
+      file.startsWith("packages/telemetry/src/testing/") ||
+      file.startsWith("packages/telemetry/src/trace/"),
+  },
+  {
+    role: "domain",
+    matches: (file) =>
+      file.startsWith("packages/cli/src/") ||
+      file.startsWith("packages/telemetry/src/contract/") ||
+      file.startsWith("packages/telemetry/src/policy/") ||
+      file.startsWith("packages/telemetry/src/profile/"),
+  },
+];
+
+export const sourceRole = (file: string): BoundaryRole => {
+  for (const owner of ownership) {
+    if (owner.matches(file)) return owner.role;
   }
+  return "core";
+};
+
+export const packageNameForSpecifier = (specifier: string): string => {
+  const parts = specifier.split("/");
+  if (specifier.startsWith("@")) return parts.slice(0, 2).join("/");
   return parts[0] ?? specifier;
 };
 
@@ -77,11 +124,11 @@ export const evaluateSpecifier = (
   return violations;
 };
 
-const packageDirectories = async (): Promise<ReadonlyArray<string>> => {
+const packageDirectories = async (projectRoot: string): Promise<ReadonlyArray<string>> => {
   const directories: Array<string> = [];
   const manifests = new Bun.Glob("packages/*/package.json");
-  for await (const manifest of manifests.scan({ cwd: root })) {
-    directories.push(dirname(join(root, manifest)));
+  for await (const manifest of manifests.scan({ cwd: projectRoot })) {
+    directories.push(dirname(join(projectRoot, manifest)));
   }
   return directories.toSorted();
 };
@@ -92,12 +139,11 @@ const declaredDependencies = (manifest: typeof PackageManifest.Type): Set<string
     ...Object.keys(manifest.peerDependencies ?? {}),
   ]);
 
-const sourceRole = (directory: string): BoundaryRole =>
-  basename(directory) === "telemetry" ? "core" : "adapter";
-
-export const checkPackageBoundaries = async (): Promise<ReadonlyArray<BoundaryViolation>> => {
+export const checkPackageBoundaries = async (
+  projectRoot: string = root,
+): Promise<ReadonlyArray<BoundaryViolation>> => {
   const violations: Array<BoundaryViolation> = [];
-  for (const directory of await packageDirectories()) {
+  for (const directory of await packageDirectories(projectRoot)) {
     const manifestValue: unknown = JSON.parse(
       await readFile(join(directory, "package.json"), "utf8"),
     );
@@ -106,19 +152,20 @@ export const checkPackageBoundaries = async (): Promise<ReadonlyArray<BoundaryVi
     const sources = new Bun.Glob("src/**/*.ts");
     for await (const sourcePath of sources.scan({ cwd: directory })) {
       const absolute = join(directory, sourcePath);
+      const file = relative(projectRoot, absolute).split(sep).join("/");
       const source = await readFile(absolute, "utf8");
       const imported = new Bun.Transpiler({ loader: "ts" }).scanImports(
         source.replace(/^#!.*\n/, ""),
       );
       for (const importedFile of imported) {
         const specifier = importedFile.path;
-        const file = relative(root, absolute).split(sep).join("/");
-        violations.push(...evaluateSpecifier(sourceRole(directory), file, specifier));
+        violations.push(...evaluateSpecifier(sourceRole(file), file, specifier));
+        const dependency = packageNameForSpecifier(specifier);
         if (
           !specifier.startsWith(".") &&
           !specifier.startsWith("node:") &&
-          packageNameForSpecifier(specifier) !== manifest.name &&
-          !declared.has(packageNameForSpecifier(specifier))
+          dependency !== manifest.name &&
+          !declared.has(dependency)
         ) {
           violations.push({ rule: "boundary/undeclared-dependency", file, specifier });
         }

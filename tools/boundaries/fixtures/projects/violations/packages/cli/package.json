@@ -1,0 +1,6 @@
+{
+  "name": "@equipe-tech/observability-cli",
+  "dependencies": {
+    "effect": "1.0.0"
+  }
+}

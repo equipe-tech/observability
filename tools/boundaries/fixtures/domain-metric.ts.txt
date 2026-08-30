@@ -1,1 +1,0 @@
-import { createMetrics } from "@equipe-tech/observability/metrics";

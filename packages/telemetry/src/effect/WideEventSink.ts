@@ -1,14 +1,18 @@
 import { Layer, Option } from "effect";
 import { TelemetryEventSink } from "../contract/EventProducer.ts";
-import type { AttributeValue, TelemetryEvent } from "../contract/TelemetryEvent.ts";
+import type {
+  AttributeValue,
+  EventAttributes,
+  TelemetryEvent,
+} from "../contract/TelemetryEvent.ts";
 import * as WideEvent from "./WideEvent.ts";
 
-type MutableWideEventFields = {
+type MutableEventAttributes = {
   [attribute: string]: AttributeValue;
 };
 
-const fieldsForEvent = (event: TelemetryEvent): WideEvent.WideEventFields => {
-  const fields: MutableWideEventFields = {
+const fieldsForEvent = (event: TelemetryEvent): EventAttributes => {
+  const fields: MutableEventAttributes = {
     "event.type": event.kind,
     "event.severity": event.severity,
     "event.outcome": event.outcome,

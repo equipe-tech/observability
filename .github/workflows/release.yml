@@ -27,10 +27,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
-      slug: ${{ steps.meta.outputs.slug }}
-      version: ${{ steps.meta.outputs.version }}
-      directory: ${{ steps.meta.outputs.directory }}
-      package_name: ${{ steps.meta.outputs.package_name }}
       archive: ${{ steps.meta.outputs.archive }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
       npm_tag: ${{ steps.meta.outputs.npm_tag }}
@@ -68,14 +64,8 @@ jobs:
           [[ -n "$manifest" ]] || { echo "The tag selects unknown package $slug."; exit 1; }
           manifest_version="$(jq -r .version "$manifest")"
           [[ "$manifest_version" == "$version" ]] || { echo "The tag $tag does not match $manifest ($manifest_version)."; exit 1; }
-          directory="$(dirname "$manifest")"
-          package_name="$(jq -r .name "$manifest")"
           archive="equipe-tech-${slug}-${version}.tgz"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "slug=$slug" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "directory=$directory" >> "$GITHUB_OUTPUT"
-          echo "package_name=$package_name" >> "$GITHUB_OUTPUT"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
           if [[ "$version" == *-* ]]; then
             suffix="${version#*-}"
@@ -110,23 +100,15 @@ jobs:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       - run: bun run build
-      - name: Pack the selected package three times
+      - name: Build the isolated release candidate
         env:
-          DIRECTORY: ${{ needs.tag-check.outputs.directory }}
-          ARCHIVE: ${{ needs.tag-check.outputs.archive }}
           TAG: ${{ needs.tag-check.outputs.tag }}
         run: |
           set -euo pipefail
-          rm -rf .release-pack dist-release
-          for pack_set in pack-1 pack-2 pack-3; do
-            mkdir -p ".release-pack/$pack_set"
-            (cd "$DIRECTORY" && bun pm pack --ignore-scripts --quiet --filename "$GITHUB_WORKSPACE/.release-pack/$pack_set/$ARCHIVE")
-          done
-          cmp ".release-pack/pack-1/$ARCHIVE" ".release-pack/pack-2/$ARCHIVE"
-          cmp ".release-pack/pack-1/$ARCHIVE" ".release-pack/pack-3/$ARCHIVE"
-          sha256sum --check "docs/releases/${TAG}.sha256"
-          mkdir dist-release
-          cp ".release-pack/pack-1/$ARCHIVE" dist-release/
+          slug="${TAG%@*}"
+          version="${TAG#*@}"
+          bun scripts/release-candidate.ts --package "$slug" --version "$version" --output dist-release
+          (cd dist-release && sha256sum --check "${TAG}.sha256")
       - name: Generate release notes
         env:
           TAG: ${{ needs.tag-check.outputs.tag }}
@@ -137,12 +119,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.tag-check.outputs.tag }}
           PRERELEASE: ${{ needs.tag-check.outputs.prerelease }}
+          ARCHIVE: ${{ needs.tag-check.outputs.archive }}
         run: |
           set -euo pipefail
-          args=(release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file release-notes.md --verify-tag)
-          if [[ "$PRERELEASE" == "true" ]]; then args+=(--prerelease); fi
-          gh "${args[@]}"
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" dist-release/*
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            args=(release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file release-notes.md --verify-tag)
+            if [[ "$PRERELEASE" == "true" ]]; then args+=(--prerelease); fi
+            gh "${args[@]}"
+          fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "dist-release/$ARCHIVE" --clobber
       - name: Verify the exact release asset
         env:
           GH_TOKEN: ${{ github.token }}
@@ -150,7 +135,7 @@ jobs:
           ARCHIVE: ${{ needs.tag-check.outputs.archive }}
         run: gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qx "$ARCHIVE"
       - if: always()
-        run: rm -rf .release-pack dist-release release-notes.md
+        run: rm -rf dist-release release-notes.md
 
   publish-npm:
     if: github.event_name == 'workflow_dispatch'
@@ -164,29 +149,46 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.tag-check.outputs.tag }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: "https://registry.npmjs.org"
-      - name: Download the selected package archive
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - name: Download and verify the selected package archive
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.tag-check.outputs.tag }}
           ARCHIVE: ${{ needs.tag-check.outputs.archive }}
         run: |
+          set -euo pipefail
+          slug="${TAG%@*}"
+          version="${TAG#*@}"
+          bun scripts/release-candidate.ts --package "$slug" --version "$version" --output .release-candidate
           mkdir dist-release
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ARCHIVE" --dir dist-release
+          (cd .release-candidate && sha256sum --check "${TAG}.sha256")
+          cmp ".release-candidate/$ARCHIVE" "dist-release/$ARCHIVE"
       - name: Publish the selected package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           ARCHIVE: ${{ needs.tag-check.outputs.archive }}
           NPM_TAG: ${{ needs.tag-check.outputs.npm_tag }}
+          TAG: ${{ needs.tag-check.outputs.tag }}
         run: |
           set -euo pipefail
+          slug="${TAG%@*}"
+          version="${TAG#*@}"
+          package_name="@equipe-tech/$slug"
+          state="$(bun scripts/npm-publication-state.ts "$package_name" "$version")"
+          if [[ "$state" == "published" ]]; then exit 0; fi
           [[ -n "$NODE_AUTH_TOKEN" ]] || { echo "NPM_TOKEN is required for publication."; exit 1; }
           [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]] || { echo "GitHub OIDC request URL is unavailable."; exit 1; }
           [[ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]] || { echo "GitHub OIDC request token is unavailable."; exit 1; }
           npm whoami --registry https://registry.npmjs.org
           npm publish "dist-release/$ARCHIVE" --access public --tag "$NPM_TAG" --provenance
       - if: always()
-        run: rm -rf dist-release
+        run: rm -rf .release-candidate dist-release

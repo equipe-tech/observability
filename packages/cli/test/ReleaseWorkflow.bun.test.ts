@@ -30,6 +30,10 @@ describe("release workflow publication gate", () => {
     expect(workflow).toContain('archive="equipe-tech-${slug}-${version}.tgz"');
     expect(workflow).toContain('npm publish "dist-release/$ARCHIVE"');
     expect(workflow).not.toContain("packages/telemetry/package.json packages/cli/package.json");
+    expect(workflow).not.toContain("steps.meta.outputs.slug");
+    expect(workflow).not.toContain("steps.meta.outputs.version");
+    expect(workflow).not.toContain("steps.meta.outputs.package_name");
+    expect(workflow).not.toContain("steps.meta.outputs.directory");
   });
 
   test("checks out and validates the exact existing tag commit", () => {
@@ -40,5 +44,18 @@ describe("release workflow publication gate", () => {
     expect(workflow).toContain('tag_commit="$(git rev-list -n 1 "$tag")"');
     expect(workflow).toContain('head_commit="$(git rev-parse HEAD)"');
     expect(workflow).toContain('[[ "$head_commit" == "$tag_commit" ]]');
+  });
+
+  test("rebuilds and verifies the archive before publication", () => {
+    expect(workflow.match(/bun scripts\/release-candidate\.ts/g)).toHaveLength(2);
+    expect(workflow.match(/sha256sum --check/g)).toHaveLength(2);
+    expect(workflow).toContain('cmp ".release-candidate/$ARCHIVE" "dist-release/$ARCHIVE"');
+  });
+
+  test("converges when release and npm publication already exist", () => {
+    expect(workflow).toContain('if ! gh release view "$TAG"');
+    expect(workflow).toContain("--clobber");
+    expect(workflow).toContain('state="$(bun scripts/npm-publication-state.ts');
+    expect(workflow).toContain('if [[ "$state" == "published" ]]; then exit 0; fi');
   });
 });

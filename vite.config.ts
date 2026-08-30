@@ -8,8 +8,20 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: "@equipe-tech/observability/browser/client",
+        replacement: `${root}packages/telemetry/src/browser/client.ts`,
+      },
+      {
         find: "@equipe-tech/observability/browser",
         replacement: `${root}packages/telemetry/src/browser/index.ts`,
+      },
+      {
+        find: "@equipe-tech/observability/effect",
+        replacement: `${root}packages/telemetry/src/effect/index.ts`,
+      },
+      {
+        find: "@equipe-tech/observability/metrics",
+        replacement: `${root}packages/telemetry/src/Metrics.ts`,
       },
       {
         find: "@equipe-tech/observability/testing",
@@ -18,6 +30,10 @@ export default defineConfig({
       {
         find: "@equipe-tech/observability/node",
         replacement: `${root}packages/telemetry/src/node/index.ts`,
+      },
+      {
+        find: "@equipe-tech/observability-nestjs",
+        replacement: `${root}packages/nestjs/src/index.ts`,
       },
       {
         find: "@equipe-tech/observability",

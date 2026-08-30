@@ -7,7 +7,7 @@ import {
   sensitiveFieldReplacement,
   sensitiveTextReplacement,
 } from "../src/RedactionPolicy.ts";
-import type { WideEventFields } from "../src/effect/WideEvent.ts";
+import type { EventAttributes } from "../src/contract/TelemetryEvent.ts";
 
 const SanitizedJson = Schema.fromJsonString(
   Schema.Struct({
@@ -30,8 +30,8 @@ interface RuntimeNode {
   child?: RuntimeNode;
 }
 
-const runtimeFields = (): WideEventFields => {
-  const fields: WideEventFields = { valid: "kept" };
+const runtimeFields = (): EventAttributes => {
+  const fields: EventAttributes = { valid: "kept" };
   const cyclic: RuntimeNode = {};
   cyclic.self = cyclic;
   let deep: RuntimeNode = {};

@@ -5,9 +5,7 @@ import { CurrentDataPolicy } from "../policy/DataPolicy.ts";
 import { transformSignalFields } from "../policy/PolicyTransform.ts";
 import { effectDroppedAttributesKey } from "../policy/PolicyVocabulary.ts";
 
-export type WideEventFields = EventAttributes;
-
-export const emit = (name: string, fields: WideEventFields): Effect.Effect<void> =>
+export const emit = (name: string, fields: EventAttributes): Effect.Effect<void> =>
   Effect.flatMap(CurrentDataPolicy, (policy) => {
     const applicationFields = { ...fields };
     delete applicationFields["event.name"];

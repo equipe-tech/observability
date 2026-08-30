@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import { readFile, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -9,7 +9,6 @@ const Manifest = Schema.Struct({ name: Schema.NonEmptyString, version: Schema.No
 const decodeManifest = Schema.decodeUnknownSync(Manifest);
 
 type WorkspacePackage = {
-  readonly directory: string;
   readonly manifestPath: string;
   readonly name: string;
   readonly slug: string;
@@ -59,7 +58,6 @@ const workspacePackages = async (): Promise<ReadonlyArray<WorkspacePackage>> => 
     const value: unknown = JSON.parse(await readFile(join(root, manifestPath), "utf8"));
     const manifest = decodeManifest(value);
     packages.push({
-      directory: basename(dirname(manifestPath)),
       manifestPath,
       name: manifest.name,
       slug: manifest.name.replace("@equipe-tech/", ""),
