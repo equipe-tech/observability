@@ -35,7 +35,7 @@ export const metricLabelRejection = (
     return "attribute-name";
   }
   const definition = policy.attributes.get(key);
-  const classification = policy.classify(key, "metric");
+  const classification = policy.classify(key);
   if (
     definition !== undefined &&
     (!definition.metricLabel ||
@@ -47,7 +47,12 @@ export const metricLabelRejection = (
   if (classification === "sensitive" || classification === "forbidden") {
     return "classification";
   }
-  if (!Predicate.isString(value)) return undefined;
+  if (Predicate.isNumber(value)) {
+    return Number.isInteger(value) && numericIdentifierPattern.test(String(Math.abs(value)))
+      ? "identifier-shape"
+      : undefined;
+  }
+  if (Predicate.isBoolean(value)) return undefined;
   if (!labelValuePattern.test(value)) return "unsupported-value";
   if (
     uuidPattern.test(value) ||

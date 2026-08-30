@@ -1,6 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Console, Effect, Exit, Option } from "effect";
+import { Cause, Console, Effect, Exit, Layer, Logger, Option, References } from "effect";
+import type * as LogLevel from "effect/LogLevel";
 import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
+import { logLevelSeverityNumber } from "../src/PolicyOtlpLogger.ts";
 import { layer } from "../src/Telemetry.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 import * as Testing from "../src/testing/index.ts";
@@ -18,6 +20,19 @@ const unavailableCollector = new TelemetryConfig({
 });
 
 describe("Telemetry.layer", () => {
+  it("maps every Effect log level to the pinned OTLP severity", () => {
+    const levels = [
+      "All",
+      "Trace",
+      "Debug",
+      "Info",
+      "Warn",
+      "Error",
+      "Fatal",
+      "None",
+    ] satisfies ReadonlyArray<LogLevel.LogLevel>;
+    assert.deepStrictEqual(levels.map(logLevelSeverityNumber), [0, 1, 5, 9, 13, 17, 21, 0]);
+  });
   it.live("discriminates-effect-log-record-shape", () =>
     Effect.gen(function* () {
       const result = yield* Testing.run(
@@ -84,11 +99,31 @@ describe("Telemetry.layer", () => {
     }),
   );
 
+  it.live("publishes the exact dropped attribute count", () =>
+    Effect.gen(function* () {
+      const annotations = {
+        ...Object.fromEntries(
+          Array.from({ length: 130 }, (_, index) => [`field.value${index}`, index]),
+        ),
+        "unsupported.value": { nested: true },
+      };
+      const result = yield* Testing.run(
+        Effect.logInfo("drop-count").pipe(Effect.annotateLogs(annotations)),
+      );
+      const log = result.telemetry.logs.find((candidate) =>
+        Option.contains(candidate.body, "drop-count"),
+      );
+      assert.isDefined(log);
+      assert.strictEqual(log.droppedAttributesCount, 3);
+      assert.lengthOf(log.attributes, 129);
+    }),
+  );
+
   it.live("sanitizes direct Effect logs before OTLP buffering", () =>
     Effect.gen(function* () {
       const secret = crypto.randomUUID().replaceAll("-", "");
       const result = yield* Testing.run(
-        Effect.logInfo(`Bearer ${secret}`).pipe(
+        Effect.logInfo(`Bearer ${secret} Bearer ${secret}`).pipe(
           Effect.annotateLogs({ "http.authorization": secret }),
         ),
       );
@@ -99,6 +134,75 @@ describe("Telemetry.layer", () => {
         Option.getOrUndefined(Testing.attribute(log.attributes, "http.authorization")),
         "****",
       );
+    }),
+  );
+
+  it.live("delegates only sanitized records to an existing logger", () =>
+    Effect.gen(function* () {
+      const secret = crypto.randomUUID().replaceAll("-", "");
+      const records: Array<string> = [];
+      const existing = Logger.make((entry) => {
+        records.push(
+          JSON.stringify([entry.message, entry.fiber.getRef(References.CurrentLogAnnotations)]),
+        );
+      });
+      const policy = yield* parseDataPolicy({
+        attributes: {},
+        blockedKeys: [],
+        blockedValuePatterns: ["provider_[A-Za-z0-9]+"],
+      });
+      const capture = yield* Testing.makeCapture({ policy });
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const context = yield* Layer.build(capture.layer).pipe(
+            Effect.provide(Logger.layer([existing], { mergeWithExisting: true })),
+          );
+          yield* Effect.logInfo(`provider_${secret} provider_${secret}`).pipe(
+            Effect.annotateLogs({ "http.authorization": secret }),
+            Effect.provide(context),
+          );
+        }),
+      );
+      assert.notInclude(JSON.stringify(records), secret);
+      assert.include(JSON.stringify(records), "[REDACTED]");
+      assert.include(JSON.stringify(records), "****");
+    }),
+  );
+
+  it.live("preserves log spans and bounded Cause output", () =>
+    Effect.gen(function* () {
+      const result = yield* Testing.run(
+        Effect.logInfo("bounded-cause", Cause.fail(`Error: ${"x".repeat(40_000)}`)).pipe(
+          Effect.withLogSpan("database"),
+        ),
+      );
+      const log = result.telemetry.logs.find((candidate) =>
+        Option.contains(candidate.body, "bounded-cause"),
+      );
+      assert.isDefined(log);
+      assert.isTrue(Option.isSome(Testing.attribute(log.attributes, "logSpan.database")));
+      const renderedCause = String(
+        Option.getOrUndefined(Testing.attribute(log.attributes, "log.error")),
+      );
+      assert.strictEqual(renderedCause.length, 32_768);
+      assert.include(renderedCause, "Error:");
+    }),
+  );
+
+  it.live("rejects duplicate resource attributes through layer construction", () =>
+    Effect.gen(function* () {
+      const exit = yield* Effect.scoped(
+        Layer.build(
+          layer(unavailableCollector, {
+            resourceAttributes: [{ key: "service.name", value: "duplicate" }],
+          }),
+        ),
+      ).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(exit));
+      if (Exit.isFailure(exit)) {
+        assert.isTrue(Cause.hasDies(exit.cause));
+        assert.include(JSON.stringify(exit.cause), "OBS_POLICY_DUPLICATE_RESOURCE_ATTRIBUTE");
+      }
     }),
   );
 

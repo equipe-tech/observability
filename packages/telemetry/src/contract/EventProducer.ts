@@ -21,7 +21,7 @@ import {
   type TelemetryEvent,
 } from "./TelemetryEvent.ts";
 import { CurrentDataPolicy, type DataPolicy } from "../policy/DataPolicy.ts";
-import { sanitizeSignalFields } from "../policy/SignalPolicy.ts";
+import { transformSignalFields } from "../policy/PolicyTransform.ts";
 import type { PolicyRedaction } from "../policy/PolicyTransform.ts";
 import { InvalidTelemetryEvent } from "./TelemetryContractError.ts";
 
@@ -209,7 +209,7 @@ const parseAttributes = (
       redactions.push({ rule: "classification", action: "masked", surface: "event" });
       continue;
     }
-    const decision = sanitizeSignalFields(policy, "event", { [attributeName]: value });
+    const decision = transformSignalFields(policy, "event", { [attributeName]: value });
     const sanitized = decision.value[attributeName];
     if (sanitized === undefined) {
       return eventError(

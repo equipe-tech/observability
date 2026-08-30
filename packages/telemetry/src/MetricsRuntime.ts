@@ -26,7 +26,7 @@ import {
 } from "./ResourceIdentity.ts";
 import type { TelemetryConfig } from "./TelemetryConfig.ts";
 import { baseDataPolicy, type DataPolicy } from "./policy/DataPolicy.ts";
-import { metricLabelRejection } from "./policy/MetricLabelPolicy.ts";
+import { metricLabelRejection, type MetricLabelRejection } from "./policy/MetricLabelPolicy.ts";
 
 const instrumentNamePattern = /^[A-Za-z][A-Za-z0-9_.\-/]{0,254}$/;
 const unitPattern = /^(?:1|%|[A-Za-z][A-Za-z0-9]*(?:[./*^][A-Za-z0-9]+)*)$/;
@@ -256,6 +256,7 @@ const metricError = (
   retryable: boolean,
   cause?: unknown,
   attributeKey?: string,
+  policyReason?: MetricLabelRejection,
 ): MetricsError => {
   const options: {
     code: MetricsError["code"];
@@ -264,9 +265,11 @@ const metricError = (
     retryable: boolean;
     cause?: unknown;
     attributeKey?: string;
+    policyReason?: MetricLabelRejection;
   } = { code, operation, message, retryable };
   if (cause !== undefined) options.cause = cause;
   if (attributeKey !== undefined) options.attributeKey = attributeKey;
+  if (policyReason !== undefined) options.policyReason = policyReason;
   if (instrumentName === undefined) {
     return new MetricsError(options);
   }
@@ -530,7 +533,8 @@ const parseAttributes = (
         instrumentName,
         false,
         undefined,
-        attribute.key,
+        undefined,
+        rejection,
       );
     }
     keys.add(attribute.key);
@@ -580,11 +584,22 @@ const directAttributesToOtlp = (
   const failures: Array<GaugeCollectionFailure> = [];
   for (const [key, value] of Object.entries(attributes)) {
     if (key === "unit" || key === "time_unit") continue;
-    if (metricLabelRejection(policy, key, value) !== undefined) {
+    if (key === "service.instance.id") {
+      throw metricError(
+        "EXPORT_FAILED",
+        "flush",
+        `Metric "${instrumentName}" cannot use service.instance.id as a datapoint attribute. Remove the reserved key before retrying.`,
+        instrumentName,
+        false,
+      );
+    }
+    const rejection = metricLabelRejection(policy, key, value);
+    if (rejection !== undefined) {
       failures.push({
         instrumentName,
         code: "POLICY_BLOCKED",
         message: `Metric "${instrumentName}" dropped a label blocked by the data policy.`,
+        policyReason: rejection,
       });
       continue;
     }

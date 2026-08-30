@@ -190,10 +190,15 @@ describe("framework-neutral metrics", () => {
       description: "Policy counter",
       unit: "1",
     });
-    assert.equal(
-      errorCode(() => counter.add(1, [{ key: "customer.tier", value: "gold" }])),
-      "POLICY_BLOCKED",
-    );
+    let failure: MetricsError | undefined;
+    try {
+      counter.add(1, [{ key: "customer.tier", value: "gold" }]);
+    } catch (cause) {
+      if (cause instanceof MetricsError) failure = cause;
+    }
+    assert.strictEqual(failure?.code, "POLICY_BLOCKED");
+    assert.strictEqual(failure?.policyReason, "classification");
+    assert.isUndefined(failure?.attributeKey);
     await metrics.close();
   });
 
@@ -870,7 +875,7 @@ describe("framework-neutral metrics", () => {
     }
   });
 
-  it("drops service.instance.id on a direct Effect metric datapoint", async () => {
+  it("hard rejects service.instance.id on a direct Effect metric datapoint", async () => {
     const config = new TelemetryConfig({
       identity: Effect.runSync(
         parseResourceIdentity({
@@ -895,17 +900,57 @@ describe("framework-neutral metrics", () => {
         attributes: { "service.instance.id": "instance-1" },
       });
       await runtime.runPromise(Metric.update(direct, 1));
+      let failure: MetricsError | undefined;
+      try {
+        await facade.flush();
+      } catch (cause) {
+        if (cause instanceof MetricsError) failure = cause;
+      }
+      assert.strictEqual(failure?.code, "EXPORT_FAILED");
+      const telemetry = await Effect.runPromise(capture.telemetry);
+      assert.notInclude(JSON.stringify(telemetry.metrics), "instance-1");
+      await facade.close().catch(() => undefined);
+    } finally {
+      await runtime.dispose().catch(() => undefined);
+    }
+  });
+
+  it("surfaces evidence-safe policy reasons for direct metric failures", async () => {
+    const config = new TelemetryConfig({
+      identity: Effect.runSync(
+        parseResourceIdentity({
+          serviceName: "direct-policy-test",
+          serviceVersion: "1.0.0",
+          environment: "test",
+        }),
+      ),
+      otlpEndpoint: new URL("http://direct-policy.invalid"),
+    });
+    const facade = await createMetrics({
+      serviceName: config.identity.serviceName,
+      serviceVersion: config.identity.serviceVersion,
+      environment: config.identity.environment,
+      otlpEndpoint: config.otlpEndpoint.toString(),
+    });
+    const capture = await Effect.runPromise(Testing.makeCapture({ config }));
+    const runtime = ManagedRuntime.make(capture.layer);
+    try {
+      const direct = Metric.counter("direct.policy", {
+        description: "Direct policy counter",
+        attributes: { "http.authorization": "hidden" },
+      });
+      await runtime.runPromise(Metric.update(direct, 1));
       const result = await facade.flush();
       assert.deepStrictEqual(result.gaugeFailures, [
         {
-          instrumentName: "direct.instance",
+          instrumentName: "direct.policy",
           code: "POLICY_BLOCKED",
-          message: 'Metric "direct.instance" dropped a label blocked by the data policy.',
+          message: 'Metric "direct.policy" dropped a label blocked by the data policy.',
+          policyReason: "attribute-name",
         },
       ]);
-      const telemetry = await Effect.runPromise(capture.telemetry);
-      assert.equal(telemetry.metrics.length, 1);
-      assert.notInclude(JSON.stringify(telemetry.metrics), "instance-1");
+      assert.notInclude(JSON.stringify(result), "http.authorization");
+      assert.notInclude(JSON.stringify(result), "hidden");
       await facade.close();
     } finally {
       await runtime.dispose();

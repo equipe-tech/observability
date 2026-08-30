@@ -1,26 +1,25 @@
-import { Effect, Predicate } from "effect";
+import { Effect } from "effect";
 import { isValidAttributeName } from "../contract/EventName.ts";
-import type { AttributeValue } from "../contract/TelemetryEvent.ts";
+import type { ResourceAttributes } from "../ResourceIdentity.ts";
 import type { DataPolicy } from "./DataPolicy.ts";
 import { InvalidDataPolicy } from "./DataPolicyError.ts";
 
 export type ResourceAttribute = {
   readonly key: string;
-  readonly value: AttributeValue;
+  readonly value: string;
 };
 
 export const parseResourceAttributes = Effect.fn("parseResourceAttributes")(function* (
   policy: DataPolicy,
-  attributes: ReadonlyArray<ResourceAttribute>,
-): Effect.fn.Return<ReadonlyMap<string, AttributeValue>, InvalidDataPolicy> {
-  const parsed = new Map<string, AttributeValue>();
-  for (const attribute of attributes) {
+  canonical: ResourceAttributes,
+  additions: ReadonlyArray<ResourceAttribute>,
+): Effect.fn.Return<ReadonlyMap<string, string>, InvalidDataPolicy> {
+  const parsed = new Map<string, string>(Object.entries(canonical));
+  for (const attribute of additions) {
     if (
       !isValidAttributeName(attribute.key) ||
       parsed.has(attribute.key) ||
-      attribute.key === "service.name" ||
-      attribute.key === "service.version" ||
-      policy.classify(attribute.key, "resource") === "forbidden"
+      policy.classify(attribute.key) === "forbidden"
     ) {
       return yield* new InvalidDataPolicy({
         code: "OBS_POLICY_INVALID",
@@ -35,12 +34,10 @@ export const parseResourceAttributes = Effect.fn("parseResourceAttributes")(func
         ],
       });
     }
-    const value =
-      policy.classify(attribute.key, "resource") === "sensitive" &&
-      Predicate.isString(attribute.value)
-        ? "****"
-        : attribute.value;
-    parsed.set(attribute.key, value);
+    parsed.set(
+      attribute.key,
+      policy.classify(attribute.key) === "sensitive" ? "****" : attribute.value,
+    );
   }
   return parsed;
 });

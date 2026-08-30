@@ -6,18 +6,13 @@ import type { WideEventFields } from "../WideEvent.ts";
 import type { DataPolicy, PolicySurface } from "./DataPolicy.ts";
 import { sensitiveFieldReplacement, sensitiveTextReplacement } from "./PolicyVocabulary.ts";
 
-export type PolicyAction = "kept" | "masked" | "replaced" | "truncated" | "dropped";
+export type PolicyAction = "masked" | "truncated" | "dropped";
 export type PolicyRule =
+  | "attribute-name"
   | "blocked-key"
   | "blocked-value"
-  | "structured-assignment"
   | "classification"
-  | "attribute-name"
-  | "reserved-name"
-  | "bounds"
-  | "unsupported-value"
-  | "cardinality"
-  | "identifier-shape";
+  | "bounds";
 
 export type PolicyRedaction = {
   readonly rule: PolicyRule;
@@ -33,9 +28,25 @@ export type PolicyDecision<A> = {
 
 type MutableFields = { [key: string]: AttributeValue };
 
+type SignalBounds = {
+  readonly maximumFields: number;
+  readonly maximumTextLength: number;
+};
+
+const serverBounds: {
+  readonly [surface in Exclude<PolicySurface, "browser-ingest">]: SignalBounds;
+} = {
+  event: { maximumFields: 128, maximumTextLength: 16_384 },
+  log: { maximumFields: 128, maximumTextLength: 32_768 },
+  span: { maximumFields: 128, maximumTextLength: 32_768 },
+  metric: { maximumFields: 16, maximumTextLength: 256 },
+  defect: { maximumFields: 128, maximumTextLength: 65_536 },
+  resource: { maximumFields: 128, maximumTextLength: 8_192 },
+};
+
 const reservedPrefixes = ["event.", "browser."];
 
-const customValue = (policy: DataPolicy, value: string): string => {
+const replaceBlockedValues = (policy: DataPolicy, value: string): string => {
   let output = value;
   for (const pattern of policy.blockedValuePatterns) {
     pattern.lastIndex = 0;
@@ -44,45 +55,124 @@ const customValue = (policy: DataPolicy, value: string): string => {
   return output;
 };
 
+const sanitizeBoundedText = (
+  policy: DataPolicy,
+  surface: Exclude<PolicySurface, "browser-ingest">,
+  value: string,
+): { readonly value: string; readonly blocked: boolean; readonly truncated: boolean } => {
+  const sanitized = replaceBlockedValues(policy, value);
+  const maximum = serverBounds[surface].maximumTextLength;
+  return {
+    value: sanitized.slice(0, maximum),
+    blocked: sanitized !== value,
+    truncated: sanitized.length > maximum,
+  };
+};
+
+const transformBrowserFields = (
+  policy: DataPolicy,
+  fields: WideEventFields,
+): PolicyDecision<WideEventFields> => {
+  const admitted: MutableFields = {};
+  const redactions: Array<PolicyRedaction> = [];
+  for (const [key, value] of Object.entries(fields)) {
+    if (!isValidAttributeName(key) || reservedPrefixes.some((prefix) => key.startsWith(prefix))) {
+      redactions.push({ rule: "attribute-name", action: "dropped", surface: "browser-ingest" });
+      continue;
+    }
+    const classification = policy.classify(key);
+    if (classification === "forbidden") {
+      redactions.push({ rule: "classification", action: "dropped", surface: "browser-ingest" });
+      continue;
+    }
+    if (classification === "sensitive") {
+      admitted[key] = sensitiveFieldReplacement;
+      redactions.push({
+        rule: policy.attributes.has(key) ? "classification" : "blocked-key",
+        action: "masked",
+        surface: "browser-ingest",
+      });
+      continue;
+    }
+    if (Predicate.isString(value)) {
+      const sanitized = replaceBlockedValues(policy, value);
+      admitted[key] = sanitized;
+      if (sanitized !== value) {
+        redactions.push({ rule: "blocked-value", action: "masked", surface: "browser-ingest" });
+      }
+    } else {
+      admitted[key] = value;
+    }
+  }
+  const value = sanitizeBrowserFields(admitted);
+  const dropped = Object.keys(fields).length - Object.keys(value).length;
+  const boundedDrops = dropped - redactions.filter((entry) => entry.action === "dropped").length;
+  for (let index = 0; index < boundedDrops; index += 1) {
+    redactions.push({ rule: "bounds", action: "dropped", surface: "browser-ingest" });
+  }
+  for (const [key, original] of Object.entries(admitted)) {
+    const sanitized = value[key];
+    if (
+      Predicate.isString(original) &&
+      Predicate.isString(sanitized) &&
+      sanitized.length < original.length
+    ) {
+      redactions.push({ rule: "bounds", action: "truncated", surface: "browser-ingest" });
+    }
+  }
+  return { value, redactions, dropped };
+};
+
 export const transformSignalFields = (
   policy: DataPolicy,
   surface: PolicySurface,
   fields: WideEventFields,
 ): PolicyDecision<WideEventFields> => {
+  if (surface === "browser-ingest") return transformBrowserFields(policy, fields);
   const admitted: MutableFields = {};
   const redactions: Array<PolicyRedaction> = [];
+  const maximumFields = serverBounds[surface].maximumFields;
   let dropped = 0;
   for (const [key, value] of Object.entries(fields)) {
-    if (
-      !isValidAttributeName(key) ||
-      (surface === "browser-ingest" && reservedPrefixes.some((prefix) => key.startsWith(prefix)))
-    ) {
+    if (!isValidAttributeName(key)) {
       dropped += 1;
+      redactions.push({ rule: "attribute-name", action: "dropped", surface });
       continue;
     }
-    const classification = policy.classify(key, surface);
+    if (Object.keys(admitted).length >= maximumFields) {
+      dropped += 1;
+      redactions.push({ rule: "bounds", action: "dropped", surface });
+      continue;
+    }
+    const classification = policy.classify(key);
     if (classification === "forbidden") {
       dropped += 1;
-      if (policy.attributes.has(key)) {
-        redactions.push({ rule: "classification", action: "dropped", surface });
-      }
+      redactions.push({ rule: "classification", action: "dropped", surface });
       continue;
     }
     if (classification === "sensitive") {
       admitted[key] = sensitiveFieldReplacement;
-      if (policy.attributes.has(key)) {
-        redactions.push({ rule: "classification", action: "masked", surface });
-      }
+      redactions.push({
+        rule: policy.attributes.has(key) ? "classification" : "blocked-key",
+        action: "masked",
+        surface,
+      });
       continue;
     }
-    admitted[key] = Predicate.isString(value) ? customValue(policy, value) : value;
+    if (!Predicate.isString(value)) {
+      admitted[key] = value;
+      continue;
+    }
+    const sanitized = sanitizeBoundedText(policy, surface, value);
+    admitted[key] = sanitized.value;
+    if (sanitized.blocked) redactions.push({ rule: "blocked-value", action: "masked", surface });
+    if (sanitized.truncated) redactions.push({ rule: "bounds", action: "truncated", surface });
   }
-  const sanitized = sanitizeBrowserFields(admitted);
-  return { value: sanitized, redactions, dropped };
+  return { value: admitted, redactions, dropped };
 };
 
-export const sanitizeText = (policy: DataPolicy, value: string): string => {
-  const result = sanitizeBrowserFields({ "policy.value": value })["policy.value"];
-  if (!Predicate.isString(result)) return sensitiveTextReplacement;
-  return customValue(policy, result);
-};
+export const sanitizeText = (
+  policy: DataPolicy,
+  value: string,
+  surface: Exclude<PolicySurface, "browser-ingest" | "metric" | "resource"> = "log",
+): string => sanitizeBoundedText(policy, surface, value).value;

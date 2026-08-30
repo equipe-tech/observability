@@ -31,7 +31,7 @@ export interface DataPolicy {
   readonly attributes: ReadonlyMap<string, AttributeDefinition>;
   readonly blockedKeys: ReadonlyArray<RegExp>;
   readonly blockedValuePatterns: ReadonlyArray<RegExp>;
-  readonly classify: (key: string, surface: PolicySurface) => AttributeClassification;
+  readonly classify: (key: string) => AttributeClassification;
 }
 
 const AttributeDocument = Schema.Struct({
@@ -79,6 +79,8 @@ const unsafePattern = /\([^)]*[+*][^)]*\)(?:[+*]|\{\d)/;
 const compilePatterns = (
   sources: ReadonlyArray<string>,
   code: "OBS_POLICY_INVALID_BLOCKED_KEY" | "OBS_POLICY_INVALID_BLOCKED_VALUE_PATTERN",
+  unsafeCode: "OBS_POLICY_UNSAFE_BLOCKED_KEY_PATTERN" | "OBS_POLICY_UNSAFE_BLOCKED_VALUE_PATTERN",
+  global: boolean,
   issues: Array<PolicyIssue>,
 ): Array<RegExp> => {
   const patterns: Array<RegExp> = [];
@@ -86,14 +88,14 @@ const compilePatterns = (
     if (unsafePattern.test(source)) {
       issues.push(
         issue(
-          "OBS_POLICY_UNSAFE_BLOCKED_VALUE_PATTERN",
+          unsafeCode,
           "A policy regular expression has nested repetition. Use a bounded linear-time pattern.",
         ),
       );
       continue;
     }
     try {
-      patterns.push(new RegExp(source, "i"));
+      patterns.push(new RegExp(source, global ? "gi" : "i"));
     } catch {
       issues.push(
         issue(
@@ -204,11 +206,15 @@ export const parseDataPolicy = Effect.fn("parseDataPolicy")(function* (
   const applicationKeyPatterns = compilePatterns(
     parsed.blockedKeys,
     "OBS_POLICY_INVALID_BLOCKED_KEY",
+    "OBS_POLICY_UNSAFE_BLOCKED_KEY_PATTERN",
+    false,
     issues,
   );
   const applicationValuePatterns = compilePatterns(
     parsed.blockedValuePatterns,
     "OBS_POLICY_INVALID_BLOCKED_VALUE_PATTERN",
+    "OBS_POLICY_UNSAFE_BLOCKED_VALUE_PATTERN",
+    true,
     issues,
   );
   if (issues.length > 0) return yield* invalid(issues);

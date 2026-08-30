@@ -1,8 +1,12 @@
 import { assert, describe, it } from "vite-plus/test";
 import { Effect, Option } from "effect";
-import { readFileSync } from "node:fs";
 import { CorrelationContext } from "../src/Correlation.ts";
-import { baseDataPolicy, definePolicy, parseDataPolicy } from "../src/policy/DataPolicy.ts";
+import {
+  baseDataPolicy,
+  definePolicy,
+  parseDataPolicy,
+  type PolicySurface,
+} from "../src/policy/DataPolicy.ts";
 import { sanitizeDefectEnvelope } from "../src/policy/DefectEnvelope.ts";
 import { metricLabelRejection } from "../src/policy/MetricLabelPolicy.ts";
 import { sanitizeText, transformSignalFields } from "../src/policy/PolicyTransform.ts";
@@ -70,7 +74,7 @@ describe("executable data policy discrimination", () => {
         blockedValuePatterns: [],
       }),
     );
-    assert.strictEqual(policy.classify("http.authorization", "log"), "sensitive");
+    assert.strictEqual(policy.classify("http.authorization"), "sensitive");
   });
 
   it("discriminates-contract-loosening", async () => {
@@ -148,13 +152,35 @@ describe("executable data policy discrimination", () => {
     assert.notInclude(JSON.stringify(failure), secret);
   });
 
+  it("uses a blocked-key-specific unsafe pattern code", async () => {
+    const failure = await Effect.runPromise(
+      Effect.flip(
+        parseDataPolicy({
+          attributes: {},
+          blockedKeys: ["(a+)+"],
+          blockedValuePatterns: [],
+        }),
+      ),
+    );
+    assert.strictEqual(failure.issues[0]?.code, "OBS_POLICY_UNSAFE_BLOCKED_KEY_PATTERN");
+  });
+
   it("discriminates-cause-leak", async () => {
     const secret = marker();
     assert.notInclude(sanitizeText(await compile(), `Error: Bearer ${secret}`), secret);
   });
 
-  it("discriminates-fail-open", async () => {
-    assert.strictEqual(sanitizeText(await compile(), "x".repeat(16_385)), "[REDACTED]");
+  it("truncates server text without replacing useful output", async () => {
+    const policy = await compile();
+    const decision = transformSignalFields(policy, "log", {
+      "request.detail": "x".repeat(40_000),
+    });
+    assert.strictEqual(String(decision.value["request.detail"]).length, 32_768);
+    assert.deepInclude(decision.redactions, {
+      rule: "bounds",
+      action: "truncated",
+      surface: "log",
+    });
   });
 
   it("discriminates-correlation-survival", async () => {
@@ -175,17 +201,76 @@ describe("executable data policy discrimination", () => {
     }
   });
 
-  it("discriminates-unguarded-push", () => {
-    const files = [
-      "packages/telemetry/src/PolicyOtlpLogger.ts",
-      "packages/telemetry/src/nestjs/HttpServerOtlpTracer.ts",
+  it("sanitizes repeated application secrets before any signal buffer", async () => {
+    const policy = await compile();
+    const secret = marker();
+    const surfaces: ReadonlyArray<PolicySurface> = [
+      "event",
+      "log",
+      "span",
+      "metric",
+      "browser-ingest",
+      "defect",
+      "resource",
     ];
-    const pushes = files.flatMap((path) =>
-      readFileSync(path, "utf8")
-        .split("\n")
-        .filter((line) => line.includes("exporter.push")),
+    for (const surface of surfaces) {
+      const decision = transformSignalFields(policy, surface, {
+        "request.detail": `provider_${secret} provider_${secret}`,
+      });
+      assert.notInclude(JSON.stringify(decision.value), secret);
+      assert.strictEqual(decision.redactions[0]?.rule, "blocked-value");
+    }
+    assert.strictEqual(
+      sanitizeText(policy, `provider_${secret} provider_${secret}`),
+      "[REDACTED] [REDACTED]",
     );
-    assert.lengthOf(pushes, 2);
+  });
+
+  it("counts browser policy and bounds drops exactly", async () => {
+    const fields = Object.fromEntries(
+      Array.from({ length: 40 }, (_, index) => [`field.value${index}`, String(index)]),
+    );
+    fields["payment.card"] = "4111111111111111";
+    const decision = transformSignalFields(await compile(), "browser-ingest", fields);
+    assert.strictEqual(decision.dropped, 9);
+    assert.strictEqual(Object.keys(decision.value).length, 32);
+  });
+
+  it("emits every public policy rule and action", async () => {
+    const policy = await compile();
+    const fields = Object.fromEntries(
+      Array.from({ length: 130 }, (_, index) => [`field.value${index}`, index]),
+    );
+    const decisions = [
+      transformSignalFields(policy, "event", { "Bad Key": "value" }),
+      transformSignalFields(policy, "event", { "application.secret": "value" }),
+      transformSignalFields(policy, "event", { "request.detail": "provider_SECRET" }),
+      transformSignalFields(policy, "event", { "customer.email": "person@example.com" }),
+      transformSignalFields(policy, "event", { "request.detail": "x".repeat(20_000) }),
+      transformSignalFields(policy, "event", fields),
+    ];
+    const rules = new Set(
+      decisions.flatMap((decision) => decision.redactions.map((entry) => entry.rule)),
+    );
+    const actions = new Set(
+      decisions.flatMap((decision) => decision.redactions.map((entry) => entry.action)),
+    );
+    assert.deepStrictEqual([...rules].sort(), [
+      "attribute-name",
+      "blocked-key",
+      "blocked-value",
+      "bounds",
+      "classification",
+    ]);
+    assert.deepStrictEqual([...actions].sort(), ["dropped", "masked", "truncated"]);
+  });
+
+  it("rejects numeric identifier labels but keeps stable numeric labels", () => {
+    assert.strictEqual(
+      metricLabelRejection(baseDataPolicy, "worker.name", 987654321012),
+      "identifier-shape",
+    );
+    assert.isUndefined(metricLabelRejection(baseDataPolicy, "http.status_code", 200));
   });
 
   it("discriminates-series-identity-after-policy", () => {
@@ -196,6 +281,35 @@ describe("executable data policy discrimination", () => {
   it("discriminates-masked-metric-label", () => {
     assert.isDefined(metricLabelRejection(baseDataPolicy, "safe.label", "****"));
     assert.isDefined(metricLabelRejection(baseDataPolicy, "safe.label", "[REDACTED]"));
+  });
+
+  it("returns none for a forbidden defect envelope", async () => {
+    const envelope = sanitizeDefectEnvelope(await compile(), {
+      errorType: "UnexpectedDefect",
+      errorMessage: "failure",
+      stack: Option.none(),
+      fingerprint: [],
+      tags: new Map(),
+      context: new Map([["payment.card", "4111111111111111"]]),
+      correlation: new CorrelationContext({}),
+    });
+    assert.isTrue(Option.isNone(envelope.value));
+  });
+
+  it("preserves bounded defect stacks", async () => {
+    const stack = `Error: failure\n${"at function (file.ts:1:1)\n".repeat(3_000)}`;
+    const envelope = sanitizeDefectEnvelope(await compile(), {
+      errorType: "UnexpectedDefect",
+      errorMessage: "failure",
+      stack: Option.some(stack),
+      fingerprint: [],
+      tags: new Map(),
+      context: new Map(),
+      correlation: new CorrelationContext({}),
+    });
+    const sanitized = Option.getOrThrow(Option.getOrThrow(envelope.value).stack);
+    assert.strictEqual(sanitized.length, 65_536);
+    assert.include(sanitized, "Error: failure");
   });
 
   it("sanitizes the destination-neutral defect envelope", async () => {

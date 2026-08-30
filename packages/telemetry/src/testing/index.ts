@@ -35,6 +35,7 @@ export type CapturedLog = {
   readonly traceId: Option.Option<string>;
   readonly spanId: Option.Option<string>;
   readonly severityText: Option.Option<string>;
+  readonly droppedAttributesCount: number;
   readonly body: Option.Option<string>;
   readonly attributes: CapturedAttributes;
   readonly resourceAttributes: CapturedAttributes;
@@ -142,6 +143,7 @@ const ExportedLogRecord = Schema.Struct({
   traceId: Schema.String.pipe(Schema.optionalKey),
   spanId: Schema.String.pipe(Schema.optionalKey),
   severityText: Schema.String.pipe(Schema.optionalKey),
+  droppedAttributesCount: Schema.Number,
   body: Schema.Struct({ stringValue: Schema.String.pipe(Schema.optionalKey) }).pipe(
     Schema.optionalKey,
   ),
@@ -306,6 +308,7 @@ const decodeCapturedTelemetry = Effect.fn("decodeCapturedTelemetry")(function* (
               traceId: Option.fromNullishOr(log.traceId),
               spanId: Option.fromNullishOr(log.spanId),
               severityText: Option.fromNullishOr(log.severityText),
+              droppedAttributesCount: log.droppedAttributesCount,
               body: Option.fromNullishOr(log.body?.stringValue),
               attributes: toAttributes(log.attributes),
               resourceAttributes,

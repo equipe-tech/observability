@@ -1,6 +1,7 @@
 import type { EnvironmentAliasPolicy, ResourceIdentityField } from "./ResourceIdentity.ts";
 import { createStandaloneMetrics } from "./MetricsRuntime.ts";
 import type { DataPolicy } from "./policy/DataPolicy.ts";
+import type { MetricLabelRejection } from "./policy/MetricLabelPolicy.ts";
 
 export type MetricAttributeValue = string | number | boolean;
 
@@ -52,6 +53,7 @@ export interface GaugeCollectionFailure {
   readonly instrumentName: string;
   readonly code: GaugeCollectionFailureCode;
   readonly message: string;
+  readonly policyReason?: MetricLabelRejection;
 }
 
 export interface FlushResult {
@@ -98,6 +100,7 @@ interface MetricsErrorOptions {
   readonly message: string;
   readonly instrumentName?: string;
   readonly attributeKey?: string;
+  readonly policyReason?: MetricLabelRejection;
   readonly field?: ResourceIdentityField;
   readonly rule?: string;
   readonly retryable: boolean;
@@ -109,6 +112,7 @@ export class MetricsError extends Error {
   readonly operation: string;
   readonly instrumentName?: string;
   readonly attributeKey?: string;
+  readonly policyReason?: MetricLabelRejection;
   readonly field?: ResourceIdentityField;
   readonly rule?: string;
   readonly retryable: boolean;
@@ -124,6 +128,9 @@ export class MetricsError extends Error {
     }
     if (options.attributeKey !== undefined) {
       this.attributeKey = options.attributeKey;
+    }
+    if (options.policyReason !== undefined) {
+      this.policyReason = options.policyReason;
     }
     if (options.field !== undefined) {
       this.field = options.field;

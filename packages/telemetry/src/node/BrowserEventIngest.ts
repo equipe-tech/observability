@@ -1,7 +1,7 @@
 import { Effect, flow, Schema } from "effect";
 import { BrowserEventBatch } from "../BrowserEvents.ts";
 import { CurrentDataPolicy } from "../policy/DataPolicy.ts";
-import { sanitizeSignalFields } from "../policy/SignalPolicy.ts";
+import { transformSignalFields } from "../policy/PolicyTransform.ts";
 import * as WideEvent from "../WideEvent.ts";
 
 export class InvalidBrowserEventBatch extends Schema.TaggedError<InvalidBrowserEventBatch>()(
@@ -41,7 +41,7 @@ export const ingestBrowserEventBatch = Effect.fn("ingestBrowserEventBatch")(func
   let redacted = 0;
   let dropped = 0;
   for (const event of batch.events) {
-    const decision = sanitizeSignalFields(policy, "browser-ingest", event.fields);
+    const decision = transformSignalFields(policy, "browser-ingest", event.fields);
     dropped += Object.keys(event.fields).length - Object.keys(decision.value).length;
     for (const [key, value] of Object.entries(decision.value)) {
       if (event.fields[key] !== value) redacted += 1;

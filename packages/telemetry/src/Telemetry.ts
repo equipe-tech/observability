@@ -10,43 +10,57 @@ import { telemetryConfigFromEnv, type TelemetryConfig } from "./TelemetryConfig.
 import { layerMetricsRuntime } from "./MetricsRuntime.ts";
 import { layerHttpServerOtlpTracer } from "./nestjs/HttpServerOtlpTracer.ts";
 import { baseDataPolicy, CurrentDataPolicy, type DataPolicy } from "./policy/DataPolicy.ts";
+import {
+  parseResourceAttributes,
+  type ResourceAttribute,
+} from "./policy/ResourceAttributePolicy.ts";
 
 const packageResourceConfig = ConfigProvider.layer(ConfigProvider.fromUnknown({}));
 
 export type OtlpLayerOptions = {
   readonly shutdownTimeout?: Duration.Input | undefined;
   readonly policy?: DataPolicy | undefined;
+  readonly resourceAttributes?: ReadonlyArray<ResourceAttribute> | undefined;
 };
 
 export const layerOtlp = (
   config: TelemetryConfig,
   options: OtlpLayerOptions = {},
 ): Layer.Layer<OtlpExporter.Flusher, never, HttpClient.HttpClient> => {
-  const base = HttpClientRequest.get(config.otlpEndpoint.toString());
-  const url = (path: string): string => HttpClientRequest.appendUrl(base, path).url;
-  const resource = {
-    serviceName: config.identity.serviceName,
-    serviceVersion: config.identity.serviceVersion,
-    attributes: instanceResourceAttributes(config.identity, config.environmentAlias),
-  };
-  const metrics = layerMetricsRuntime(config, {
-    shutdownTimeoutMilliseconds: Duration.toMillis(options.shutdownTimeout ?? "3 seconds"),
-    policy: options.policy ?? baseDataPolicy,
-  });
-  return Layer.mergeAll(
-    Layer.succeed(CurrentDataPolicy, options.policy ?? baseDataPolicy),
-    layerPolicyOtlpLogger({
-      url: url("/v1/logs"),
-      resource,
-      shutdownTimeout: options.shutdownTimeout,
-    }),
-    metrics,
-    layerHttpServerOtlpTracer({
-      url: url("/v1/traces"),
-      resource,
-      shutdownTimeout: options.shutdownTimeout,
-    }),
-  ).pipe(Layer.provide(OtlpSerialization.layerJson), Layer.provide(packageResourceConfig));
+  const policy = options.policy ?? baseDataPolicy;
+  const canonical = instanceResourceAttributes(config.identity, config.environmentAlias);
+  return Layer.unwrap(
+    Effect.map(
+      Effect.orDie(parseResourceAttributes(policy, canonical, options.resourceAttributes ?? [])),
+      (parsed) => {
+        const base = HttpClientRequest.get(config.otlpEndpoint.toString());
+        const url = (path: string): string => HttpClientRequest.appendUrl(base, path).url;
+        const resource = {
+          serviceName: config.identity.serviceName,
+          serviceVersion: config.identity.serviceVersion,
+          attributes: Object.fromEntries(parsed),
+        };
+        const metrics = layerMetricsRuntime(config, {
+          shutdownTimeoutMilliseconds: Duration.toMillis(options.shutdownTimeout ?? "3 seconds"),
+          policy,
+        });
+        return Layer.mergeAll(
+          Layer.succeed(CurrentDataPolicy, policy),
+          layerPolicyOtlpLogger({
+            url: url("/v1/logs"),
+            resource,
+            shutdownTimeout: options.shutdownTimeout,
+          }),
+          metrics,
+          layerHttpServerOtlpTracer({
+            url: url("/v1/traces"),
+            resource,
+            shutdownTimeout: options.shutdownTimeout,
+          }),
+        ).pipe(Layer.provide(OtlpSerialization.layerJson), Layer.provide(packageResourceConfig));
+      },
+    ),
+  );
 };
 
 export const layer = (

@@ -24,23 +24,24 @@ export const sanitizeDefectEnvelope = (
   const context = new Map<string, AttributeValue>();
   for (const [key, value] of Object.entries(contextDecision.value)) context.set(key, value);
   const tags = new Map<string, string>();
+  const redactions = [...contextDecision.redactions];
+  let dropped = contextDecision.dropped;
   for (const [key, value] of envelope.tags) {
     const transformed = transformSignalFields(policy, "defect", { [key]: value });
+    redactions.push(...transformed.redactions);
+    dropped += transformed.dropped;
     const kept = transformed.value[key];
     if (Predicate.isString(kept)) tags.set(key, kept);
   }
+  if (dropped > 0) return { value: Option.none(), redactions, dropped };
   const value = {
     ...envelope,
     errorType: envelope.errorType,
-    errorMessage: sanitizeText(policy, envelope.errorMessage),
-    stack: Option.map(envelope.stack, (stack) => sanitizeText(policy, stack)),
-    fingerprint: envelope.fingerprint.map((part) => sanitizeText(policy, part)),
+    errorMessage: sanitizeText(policy, envelope.errorMessage, "defect"),
+    stack: Option.map(envelope.stack, (stack) => sanitizeText(policy, stack, "defect")),
+    fingerprint: envelope.fingerprint.map((part) => sanitizeText(policy, part, "defect")),
     tags,
     context,
   } satisfies DefectEnvelope;
-  return {
-    value: Option.some(value),
-    redactions: contextDecision.redactions,
-    dropped: contextDecision.dropped,
-  };
+  return { value: Option.some(value), redactions, dropped };
 };

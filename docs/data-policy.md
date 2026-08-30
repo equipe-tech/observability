@@ -27,7 +27,7 @@ export const policy = definePolicy({
 });
 ```
 
-`parseDataPolicy` compiles the declaration. Compilation adds the application rules to the immutable base rules. An application cannot remove a base key or value rule.
+`parseDataPolicy` compiles the declaration. Compilation adds the application rules to the immutable base rules. An application cannot remove a base key or value rule. Application blocked-value expressions always compile with global and case-insensitive flags, so every match is replaced.
 
 ## Classifications
 
@@ -38,7 +38,7 @@ The policy supports these classifications:
 - `sensitive` masks a log, event, span, defect, or resource value as `****`.
 - `forbidden` rejects a declared producer value or drops an untrusted value.
 
-Metric labels never use masked values. A metric facade rejects a blocked label with `MetricsError` code `POLICY_BLOCKED`. A direct Effect metric drops the label during collection and reports `POLICY_BLOCKED` in the flush result.
+Metric labels never use masked values. A metric facade rejects a blocked label with `MetricsError` code `POLICY_BLOCKED`. Its `policyReason` identifies the safe rejection category without carrying the key or value. A direct Effect metric drops the label during collection and reports the same reason in the flush result. `service.instance.id` remains a hard direct-metric export failure.
 
 ## Safe failures
 
@@ -48,6 +48,14 @@ Bootstrap wraps `InvalidDataPolicy` in `InvalidObservabilityConfig`. The wrapper
 
 Browser ingestion does not reject a valid batch because one field violates the policy. The response reports bounded `accepted`, `redacted`, and `dropped` counts.
 
+## Signal bounds
+
+Browser events keep at most 32 fields and 1,024 characters per value. Server events keep 128 fields and 16,384 characters per value. Logs and spans keep 128 fields and 32,768 characters per value. Defect context keeps 128 fields, while defect text and stack traces keep 65,536 characters. Resources keep 128 attributes and 8,192 characters per value. Metrics keep 16 labels and 256 characters per string label.
+
+Server truncation preserves the bounded prefix. Policy decisions emit `rule: "bounds"` with `action: "truncated"` or `action: "dropped"`. `dropped` counts every field removed by policy or bounds.
+
+`layer`, `layerOtlp`, and `layerFromEnv` accept `resourceAttributes`. Resource additions merge at layer construction after policy classification. Duplicate canonical or application keys stop construction with `OBS_POLICY_DUPLICATE_RESOURCE_ATTRIBUTE`.
+
 ## Defect adapter handoff
 
 OBS-61 owns the Sentry adapters. The adapter must meet these requirements:
@@ -55,7 +63,10 @@ OBS-61 owns the Sentry adapters. The adapter must meet these requirements:
 - Capture only `UnexpectedDefect` values.
 - Set `sendDefaultPii` to `false`.
 - Run `sanitizeDefectEnvelope` in `beforeSend`.
-- Return `null` when policy application fails.
+- Return `null` when `sanitizeDefectEnvelope` returns `Option.none`.
+
+`Option.none` is required when a forbidden defect context or tag would otherwise produce a partial envelope.
+
 - Preserve the policy-approved correlation tags.
 
 `sanitizeDefectEnvelope` is destination-neutral. The telemetry package does not import a Sentry SDK.
