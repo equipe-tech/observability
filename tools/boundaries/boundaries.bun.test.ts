@@ -17,6 +17,7 @@ const ruleNames = (
 
 const adapterPaths = [
   "packages/nestjs/src/TelemetryModule.ts",
+  "packages/sentry/src/node/SentryDefectAdapter.ts",
   "packages/telemetry/src/MetricsRuntime.ts",
   "packages/telemetry/src/PolicyOtlpLogger.ts",
   "packages/telemetry/src/Telemetry.ts",

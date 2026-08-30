@@ -244,6 +244,8 @@ try {
         "package/dist/node/index.d.ts",
         "package/dist/effect/index.js",
         "package/dist/effect/index.d.ts",
+        "package/dist/policy/entrypoint.js",
+        "package/dist/policy/entrypoint.d.ts",
         "package/dist/browser/index.js",
         "package/dist/browser/index.d.ts",
         "package/dist/browser/client.js",
@@ -261,6 +263,21 @@ try {
         "package/dist/LICENSE",
         "package/dist/index.js",
         "package/dist/index.d.ts",
+      ],
+    },
+    {
+      directory: join(root, "packages/sentry"),
+      archive: "sentry.tgz",
+      required: [
+        "package/LICENSE",
+        "package/README.md",
+        "package/dist/LICENSE",
+        "package/dist/index.js",
+        "package/dist/index.d.ts",
+        "package/dist/node/index.js",
+        "package/dist/node/index.d.ts",
+        "package/dist/browser/index.js",
+        "package/dist/browser/index.d.ts",
       ],
     },
     {
@@ -426,6 +443,7 @@ try {
         "@equipe-tech/observability-cli": `file:${join(temporaryDirectory, "cli.tgz")}`,
         "@equipe-tech/observability-evlog": `file:${join(temporaryDirectory, "evlog.tgz")}`,
         "@equipe-tech/observability-nestjs": `file:${join(temporaryDirectory, "nestjs.tgz")}`,
+        "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
         effect: "4.0.0-rc.111",
       },
     }),
@@ -444,6 +462,7 @@ try {
         "@equipe-tech/observability-cli": `file:${join(temporaryDirectory, "cli.tgz")}`,
         "@equipe-tech/observability-evlog": `file:${join(temporaryDirectory, "evlog.tgz")}`,
         "@equipe-tech/observability-nestjs": `file:${join(temporaryDirectory, "nestjs.tgz")}`,
+        "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
         "@nestjs/common": "^11.0.0",
         "@nestjs/core": "^11.0.0",
         effect: "4.0.0-rc.111",
@@ -492,7 +511,7 @@ try {
         "node",
         "--input-type=module",
         "--eval",
-        "const [root, effectEntry, metrics, node, evlog, nestjs, browser, client, testing] = await Promise.all([import('@equipe-tech/observability'), import('@equipe-tech/observability/effect'), import('@equipe-tech/observability/metrics'), import('@equipe-tech/observability/node'), import('@equipe-tech/observability-evlog'), import('@equipe-tech/observability-nestjs'), import('@equipe-tech/observability/browser'), import('@equipe-tech/observability/browser/client'), import('@equipe-tech/observability/testing')]); if ('WideEvent' in root || 'layerWideEvent' in root || !effectEntry.WideEvent || !effectEntry.layerWideEvent || !root.Telemetry || !root.ServiceName || !root.EnvironmentName || !root.CorrelationContext || root.Correlation || root.registerTestingAdapter || root.profileCapabilityRank || root.profileCapabilityRequirement || root.secondReleaseVariables || root.baseBlockedValuePatterns || !root.registerOfficialAdapter || !root.ObservabilityLifecycleError || node.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.CurrentCorrelation !== root.CurrentCorrelation || nestjs.TelemetryEventSink !== root.TelemetryEventSink || !evlog.evlogAdapter || !nestjs.TelemetryModule || !metrics.createMetrics || !node.runMain || !node.createNodeObservability || !node.makeNodeObservability || !node.layerNodeObservability || !browser.BrowserTelemetry || !client.createBrowserTelemetryClient || !testing.run || !testing.registerTestingAdapter) process.exit(1); try { await import('@equipe-tech/observability/nestjs'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') process.exit(1); }",
+        "const [root, effectEntry, metrics, node, evlog, nestjs, browser, client, testing, policy, sentry, sentryNode, sentryBrowser] = await Promise.all([import('@equipe-tech/observability'), import('@equipe-tech/observability/effect'), import('@equipe-tech/observability/metrics'), import('@equipe-tech/observability/node'), import('@equipe-tech/observability-evlog'), import('@equipe-tech/observability-nestjs'), import('@equipe-tech/observability/browser'), import('@equipe-tech/observability/browser/client'), import('@equipe-tech/observability/testing'), import('@equipe-tech/observability/policy'), import('@equipe-tech/observability-sentry'), import('@equipe-tech/observability-sentry/node'), import('@equipe-tech/observability-sentry/browser')]); if ('WideEvent' in root || 'layerWideEvent' in root || !effectEntry.WideEvent || !effectEntry.layerWideEvent || !root.Telemetry || !root.ServiceName || !root.EnvironmentName || !root.CorrelationContext || root.Correlation || root.registerTestingAdapter || root.profileCapabilityRank || root.profileCapabilityRequirement || root.secondReleaseVariables || root.baseBlockedValuePatterns || !root.registerOfficialAdapter || !root.ObservabilityLifecycleError || node.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.CurrentCorrelation !== root.CurrentCorrelation || nestjs.TelemetryEventSink !== root.TelemetryEventSink || !evlog.evlogAdapter || !nestjs.TelemetryModule || !metrics.createMetrics || !node.runMain || !node.createNodeObservability || !node.makeNodeObservability || !node.layerNodeObservability || !browser.BrowserTelemetry || !client.createBrowserTelemetryClient || !testing.run || !testing.registerTestingAdapter || !policy.sanitizeDefectEnvelope || !sentry.sentrySourceMapUpload || !sentryNode.sentryDefectAdapter || !sentryBrowser.createBrowserSentryDefectReporter) process.exit(1); try { await import('@equipe-tech/observability/nestjs'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') process.exit(1); }",
       ],
       nodeConsumer,
     ),
@@ -508,6 +527,7 @@ try {
     "observability",
     "observability-evlog",
     "observability-nestjs",
+    "observability-sentry",
     "observability-cli",
   ]) {
     const packageDirectory = join(consumer, "node_modules/@equipe-tech", packageName);
@@ -541,6 +561,9 @@ try {
         /\b(?:DrainContext|DrainFn|OTLPConfig|OTLPLogRecord|WideEvent)\b/.test(source)
       ) {
         throw new Error(`The evlog adapter declaration ${declaration} exposes evlog internals.`);
+      }
+      if (packageName === "observability-sentry" && /@sentry\//.test(source)) {
+        throw new Error(`The Sentry adapter declaration ${declaration} exposes SDK internals.`);
       }
       for (const violation of declarationReferenceViolations(source, declared)) {
         if (violation.kind === "source-path") {
