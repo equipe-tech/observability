@@ -73,7 +73,7 @@ const containsCoreValue = (value: string): boolean => {
   return false;
 };
 
-const replaceStructuredAssignments = (value: string): string => {
+export const replaceStructuredAssignments = (value: string): string => {
   structuredAssignmentPattern.lastIndex = 0;
   let sanitized = "";
   let offset = 0;

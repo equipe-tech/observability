@@ -6,7 +6,7 @@ import type {
 } from "../contract/TelemetryContract.ts";
 import { isValidAttributeName } from "../contract/EventName.ts";
 import {
-  baseBlockedKeys,
+  baseBlockedKeyPatternSource,
   baseBlockedValuePatterns,
   isSensitiveFieldKey,
 } from "./PolicyVocabulary.ts";
@@ -218,10 +218,7 @@ export const parseDataPolicy = Effect.fn("parseDataPolicy")(function* (
     issues,
   );
   if (issues.length > 0) return yield* invalid(issues);
-  const blockedKeys = [
-    ...baseBlockedKeys.map((source) => new RegExp(source, "i")),
-    ...applicationKeyPatterns,
-  ];
+  const blockedKeys = [new RegExp(baseBlockedKeyPatternSource), ...applicationKeyPatterns];
   const blockedValuePatterns = [
     ...baseBlockedValuePatterns.map((pattern) => new RegExp(pattern.source, pattern.flags)),
     ...applicationValuePatterns,

@@ -67,13 +67,13 @@ export const emitCanary = (
   const sensitive = canarySensitiveValues(runId);
   const sensitiveAttributes = {
     "canary.run_id": runId,
-    authorization: sensitive.authorization,
-    password: sensitive.password,
-    accessToken: sensitive.accessToken,
-    userPassword: sensitive.userPassword,
-    phoneNumber: sensitive.phoneNumber,
-    tokenizer: sensitive.tokenizerValue,
-    documentation: sensitive.documentationValue,
+    "http.authorization": sensitive.authorization,
+    "user.password": sensitive.password,
+    "auth.access_token": sensitive.accessToken,
+    "profile.password": sensitive.userPassword,
+    "contact.phone": sensitive.phoneNumber,
+    "tool.tokenizer": sensitive.tokenizerValue,
+    "docs.documentation": sensitive.documentationValue,
     "safe.message": `token=${sensitive.token} email=${sensitive.email}`,
   };
   return Effect.gen(function* () {

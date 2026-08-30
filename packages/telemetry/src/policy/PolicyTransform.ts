@@ -2,7 +2,7 @@ import { Predicate } from "effect";
 import { maxFieldKeyLength } from "../BrowserEvents.ts";
 import { isValidAttributeName } from "../contract/EventName.ts";
 import type { AttributeValue } from "../contract/TelemetryEvent.ts";
-import { sanitizeBrowserFields } from "./BrowserFieldPolicy.ts";
+import { replaceStructuredAssignments, sanitizeBrowserFields } from "./BrowserFieldPolicy.ts";
 import type { WideEventFields } from "../WideEvent.ts";
 import type { DataPolicy, PolicySurface } from "./DataPolicy.ts";
 import { sensitiveFieldReplacement, sensitiveTextReplacement } from "./PolicyVocabulary.ts";
@@ -47,7 +47,7 @@ const serverBounds: {
 const reservedPrefixes = ["event.", "browser."];
 
 const replaceBlockedValues = (policy: DataPolicy, value: string): string => {
-  let output = value;
+  let output = replaceStructuredAssignments(value);
   for (const pattern of policy.blockedValuePatterns) {
     pattern.lastIndex = 0;
     output = output.replace(pattern, sensitiveTextReplacement);

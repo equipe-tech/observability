@@ -17,6 +17,7 @@ import type { HttpClient } from "effect/unstable/http";
 import { OtlpExporter, OtlpResource, OtlpSerialization } from "effect/unstable/observability";
 import { CurrentDataPolicy } from "./policy/DataPolicy.ts";
 import { sanitizeText, transformSignalFields } from "./policy/PolicyTransform.ts";
+import { effectDroppedAttributesKey } from "./policy/PolicyVocabulary.ts";
 
 interface LogRecord {
   readonly severityNumber: number;
@@ -114,27 +115,29 @@ export const makePolicyOtlpLogger = Effect.fn("makePolicyOtlpLogger")(function* 
         unsupportedDropped += 1;
       }
     }
-    const decision = transformSignalFields(policy, "log", raw);
-    const now = clock.currentTimeNanosUnsafe().toString();
-    const attributes = OtlpResource.entriesToAttributes(Object.entries(decision.value));
-    attributes.push({ key: "fiberId", value: { intValue: entry.fiber.id } });
+    const packageGeneratedKeys = new Set<string>();
+    raw["effect.fiber.id"] = entry.fiber.id;
+    packageGeneratedKeys.add("effect.fiber.id");
     const nowMillis = entry.date.getTime();
     for (const [label, startTime] of entry.fiber.getRef(References.CurrentLogSpans)) {
-      attributes.push({
-        key: `logSpan.${label}`,
-        value: { stringValue: `${nowMillis - startTime}ms` },
-      });
+      const key = `effect.log_span.${label}`;
+      raw[key] = `${nowMillis - startTime}ms`;
+      packageGeneratedKeys.add(key);
     }
     const sanitizedCause =
       entry.cause.reasons.length > 0
         ? sanitizeText(policy, Cause.pretty(entry.cause), "log")
         : undefined;
     if (sanitizedCause !== undefined) {
-      attributes.push({
-        key: "log.error",
-        value: { stringValue: sanitizedCause },
-      });
+      raw["log.error"] = sanitizedCause;
+      packageGeneratedKeys.add("log.error");
     }
+    const decision = transformSignalFields(policy, "log", raw);
+    const delegatedAnnotations = Object.fromEntries(
+      Object.entries(decision.value).filter(([key]) => !packageGeneratedKeys.has(key)),
+    );
+    const now = clock.currentTimeNanosUnsafe().toString();
+    const attributes = OtlpResource.entriesToAttributes(Object.entries(decision.value));
     const messages = Arr.ensure(entry.message).map((message) => {
       const decoded = decodeScalar(message);
       if (Option.isSome(decoded)) {
@@ -148,7 +151,10 @@ export const makePolicyOtlpLogger = Effect.fn("makePolicyOtlpLogger")(function* 
     Object.defineProperty(sanitizedFiber, "getRef", {
       value: (reference: Context.Reference<unknown>) =>
         reference === References.CurrentLogAnnotations
-          ? decision.value
+          ? {
+              ...delegatedAnnotations,
+              [effectDroppedAttributesKey]: decision.dropped + unsupportedDropped,
+            }
           : entry.fiber.getRef(reference),
     });
     const sanitizedEntry = {

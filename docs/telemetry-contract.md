@@ -93,6 +93,10 @@ Canários usam `mandatory: true` na definição. Um resultado `cancelled` contin
 
 `BrowserError` mantém tipo, mensagem e possibilidade de repetição em `ErrorContext`. O atributo `error.origin` identifica a origem do erro no navegador sem duplicar esses campos.
 
+## Recibo de emissão
+
+`EventProducer.emit` retorna `EmitReceipt`. O variante `recorded` contém `decision`, `event` e o campo obrigatório `redactions`. Cada item de `redactions` informa a superfície, a regra e a ação de política aplicada. O array fica vazio quando a política não altera o evento. O variante `sampled_out` continua contendo `decision` e `name`.
+
 ## Saída WideEvent
 
 `layerWideEvent` conecta o produtor ao `WideEvent.emit` existente. O marcador `event.kind` continua com o valor `wide`. O tipo canônico usa `event.type`.

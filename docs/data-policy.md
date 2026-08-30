@@ -50,6 +50,10 @@ Bootstrap wraps `InvalidDataPolicy` in `InvalidObservabilityConfig`. The wrapper
 
 Browser ingestion does not reject a valid batch because one field violates the policy. The response reports bounded `accepted`, `redacted`, and `dropped` counts.
 
+## Attribute names
+
+Logs, spans, contract events, span events, defects, resources, and metrics accept only dotted lowercase attribute names. Each name needs at least two segments. Segments start with a lowercase letter and contain lowercase letters, numbers, or underscores. The policy drops application attributes such as `requestId`, `userId`, and `component` instead of normalizing them. Package-generated Effect fields use canonical names such as `effect.fiber.id`, `effect.log.level`, and `effect.log_span.database` before validation.
+
 ## Signal bounds
 
 Browser events keep at most 32 fields and 1,024 characters per value. Server events keep 128 fields and 16,384 characters per value. Logs and spans keep 128 fields and 32,768 characters per value. A span keeps the earliest 128 events and earliest 128 links. OTLP reports exact dropped attribute, event, and link counts after policy and bounds. Defect context and the complete defect tag map each keep 128 fields, while defect text and stack traces keep 65,536 characters. Resources keep 128 attributes and 8,192 characters per value. Metrics keep 16 labels and 64 characters per string label. Metric keys require dotted names. The reserved identifiers `unit`, `time_unit`, `service.instance.id`, `trace.id`, `span.id`, `user.id`, and `session.id` are forbidden. Each label accepts at most 100 distinct values per instrument lifetime.

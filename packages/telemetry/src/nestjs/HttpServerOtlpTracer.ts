@@ -1,10 +1,11 @@
-import { Cause, Duration, Effect, Layer, Option, Schema, Tracer } from "effect";
+import { Cause, Duration, Effect, Layer, Option, Predicate, Schema, Tracer } from "effect";
 import type { Exit } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 import { OtlpExporter, OtlpResource, OtlpSerialization } from "effect/unstable/observability";
 import type { ResourceAttributes } from "../ResourceIdentity.ts";
 import type { DataPolicy } from "../policy/DataPolicy.ts";
 import { sanitizeText, transformSignalFields } from "../policy/PolicyTransform.ts";
+import { effectDroppedAttributesKey } from "../policy/PolicyVocabulary.ts";
 
 const HttpStatusCode = Schema.Number.check(
   Schema.isInt(),
@@ -18,8 +19,8 @@ const SpanScalar = Schema.Union([
 ]);
 const decodeSpanScalar = Schema.decodeUnknownOption(SpanScalar);
 
-export const maxSpanEvents = 128;
-export const maxSpanLinks = 128;
+const maxSpanEvents = 128;
+const maxSpanLinks = 128;
 
 type SanitizedEntries = {
   readonly attributes: Array<OtlpResource.KeyValue>;
@@ -38,16 +39,30 @@ const sanitizeEntries = (
   };
 };
 
-const scalarFields = (entries: Iterable<readonly [string, unknown]>) => {
+const scalarFields = (
+  entries: Iterable<readonly [string, unknown]>,
+  canonicalizeEffectKeys = false,
+) => {
   const fields: { [key: string]: string | number | boolean } = {};
   let unsupported = 0;
   for (const [key, value] of entries) {
     const decoded = decodeSpanScalar(value);
-    if (Option.isSome(decoded)) {
-      fields[key] = decoded.value;
-    } else {
-      unsupported += 1;
+    if (key === effectDroppedAttributesKey && Option.isSome(decoded)) {
+      if (Predicate.isNumber(decoded.value)) unsupported += decoded.value;
+      continue;
     }
+    if (Option.isNone(decoded)) {
+      unsupported += 1;
+      continue;
+    }
+    const canonicalKey = canonicalizeEffectKeys
+      ? key === "effect.fiberId"
+        ? "effect.fiber.id"
+        : key === "effect.logLevel"
+          ? "effect.log.level"
+          : key
+      : key;
+    fields[canonicalKey] = decoded.value;
   }
   return { fields, unsupported };
 };
@@ -136,7 +151,9 @@ class ExportingSpan extends Tracer.NativeSpan {
 
 const makeEvents = (policy: DataPolicy, span: ExportingSpan): Array<OtlpEvent> =>
   span.events.map(([name, startTime, attributes]) => {
-    const input = scalarFields(Object.entries(attributes));
+    const canonicalizeEffectKeys =
+      Object.hasOwn(attributes, "effect.fiberId") && Object.hasOwn(attributes, "effect.logLevel");
+    const input = scalarFields(Object.entries(attributes), canonicalizeEffectKeys);
     const decision = sanitizeEntries(policy, input.fields, input.unsupported);
     return {
       name: sanitizeText(policy, name, "span"),

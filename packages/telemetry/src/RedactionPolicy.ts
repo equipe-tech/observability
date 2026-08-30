@@ -1,8 +1,4 @@
-export {
-  sanitizeBrowserFields,
-  sanitizeEventName,
-  sanitizeEventName as sanitizeBrowserEventName,
-} from "./policy/BrowserFieldPolicy.ts";
+export { sanitizeBrowserFields, sanitizeEventName } from "./policy/BrowserFieldPolicy.ts";
 export {
   baseBlockedKeys,
   baseBlockedValuePatterns,

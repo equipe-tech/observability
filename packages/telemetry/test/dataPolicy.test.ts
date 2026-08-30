@@ -225,6 +225,39 @@ describe("executable data policy discrimination", () => {
     );
   });
 
+  it("redacts repeated structured assignments on every server signal", async () => {
+    const policy = await compile();
+    const source =
+      "password=first password=second authorization: alpha authorization: beta cookie=one cookie=two";
+    const expected =
+      "password=[REDACTED] password=[REDACTED] authorization: [REDACTED] authorization: [REDACTED] cookie=[REDACTED] cookie=[REDACTED]";
+    const surfaces: ReadonlyArray<Exclude<PolicySurface, "browser-ingest" | "metric">> = [
+      "log",
+      "span",
+      "resource",
+      "event",
+      "defect",
+    ];
+    for (const surface of surfaces) {
+      const decision = transformSignalFields(policy, surface, { "request.detail": source });
+      assert.strictEqual(decision.value["request.detail"], expected);
+      assert.deepInclude(decision.redactions, {
+        rule: "blocked-value",
+        action: "masked",
+        surface,
+      });
+    }
+    const textSurfaces: ReadonlyArray<"log" | "span" | "event" | "defect"> = [
+      "log",
+      "span",
+      "event",
+      "defect",
+    ];
+    for (const surface of textSurfaces) {
+      assert.strictEqual(sanitizeText(policy, source, surface), expected);
+    }
+  });
+
   it("reports exact browser masking and truncation records", async () => {
     const policy = await compile();
     const secret = marker();

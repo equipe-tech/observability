@@ -36,11 +36,26 @@ O valor `latest` era válido em 0.2.1 e agora é rejeitado. Troque-o pela versã
 
 A mesma regra vale para `OTEL_SERVICE_VERSION` quando a configuração vem de `telemetryConfigFromEnv`.
 
-## Usar nomes pontuados em atributos de métricas
+## Usar nomes pontuados em atributos
+
+A versão 0.3 exige nomes minúsculos e pontuados em logs, spans, eventos de contrato, eventos de span, defeitos, resources e métricas. Cada nome precisa de pelo menos dois segmentos. O runtime descarta chaves incompatíveis. Ele não converte chaves da aplicação porque uma conversão silenciosa poderia criar colisões.
+
+| Chave antiga       | Chave 0.3                  |
+| ------------------ | -------------------------- |
+| `requestId`        | `request.id`               |
+| `userId`           | `user.id`                  |
+| `component`        | `service.component`        |
+| `region`           | `deployment.region`        |
+| `fiberId`          | `effect.fiber.id`          |
+| `logSpan.database` | `effect.log_span.database` |
 
 A versão 0.3 exige nomes estáveis e pontuados para atributos de métricas. Troque chaves de segmento único, como `region`, por nomes de domínio, como `deployment.region`. Remova os identificadores reservados `unit`, `time_unit`, `service.instance.id`, `trace.id`, `span.id`, `user.id` e `session.id`. Strings de rótulo agora aceitam no máximo 64 caracteres e não aceitam formatos de identificador. A API rejeita essas violações com `MetricsError` e código `POLICY_BLOCKED`.
 
 Cada instrumento aceita no máximo 100 valores distintos por rótulo durante a vida do runtime. Reduza a cardinalidade antes da atualização. O valor 101 produz `MetricsError` com código `LIMIT_EXCEEDED`.
+
+## Atualizar recibos de eventos
+
+O variante `recorded` de `EmitReceipt` agora exige `redactions`. O campo contém todos os registros de máscara, truncamento e descarte aplicados ao evento. Consumidores que constroem recibos manualmente precisam fornecer `redactions: []` quando nenhuma regra alterou o evento. Código que verifica ou serializa o recibo deve aceitar o novo campo obrigatório.
 
 ## Tratar falhas de política no runtime Node
 

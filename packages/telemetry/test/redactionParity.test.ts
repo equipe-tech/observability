@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import {
   collectorBlockedKeyPattern,
   collectorBlockedValuePatterns,
+  isSensitiveFieldKey,
 } from "../src/RedactionPolicy.ts";
+import { baseDataPolicy } from "../src/policy/DataPolicy.ts";
 
 const assetPaths = [
   "packages/cli/src/assets/local.yaml",
@@ -30,6 +32,33 @@ const behaviouralCases = [
 const collectorParityAllowances = ["nested-json-sensitive-key"];
 
 describe("browser and Collector redaction parity", () => {
+  it("classifies base blocked keys with the Collector word boundary", () => {
+    const publicKeys = [
+      "documentation",
+      "tokenizer",
+      "cookies.consent",
+      "emailer.status",
+      "passwordless.flow",
+      "secrets_manager.region",
+    ];
+    const sensitiveKeys = [
+      "http.authorization",
+      "session.cookie",
+      "user.password",
+      "auth.access_token",
+      "customer.email",
+      "secrets_manager.token",
+    ];
+    for (const key of publicKeys) {
+      assert.isFalse(isSensitiveFieldKey(key));
+      assert.strictEqual(baseDataPolicy.classify(key), "internal");
+    }
+    for (const key of sensitiveKeys) {
+      assert.isTrue(isSensitiveFieldKey(key));
+      assert.strictEqual(baseDataPolicy.classify(key), "sensitive");
+    }
+  });
+
   it("recognizes blocked values and records the nested JSON parity allowance", () => {
     for (const value of behaviouralCases) {
       assert.isTrue(

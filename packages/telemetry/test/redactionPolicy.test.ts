@@ -2,7 +2,7 @@ import { assert, describe, it } from "vite-plus/test";
 import { Schema } from "effect";
 import {
   isSensitiveFieldKey,
-  sanitizeBrowserEventName,
+  sanitizeEventName,
   sanitizeBrowserFields,
   sensitiveFieldReplacement,
   sensitiveTextReplacement,
@@ -255,9 +255,9 @@ describe("browser telemetry redaction policy", () => {
 
   it("sanitizes event names before truncation", () => {
     const secret = marker();
-    const eventName = sanitizeBrowserEventName(`checkout token=${secret} Bearer ${secret}`);
+    const eventName = sanitizeEventName(`checkout token=${secret} Bearer ${secret}`);
     assert.notInclude(eventName, secret);
     assert.include(eventName, sensitiveTextReplacement);
-    assert.strictEqual(sanitizeBrowserEventName("x".repeat(16_385)), sensitiveTextReplacement);
+    assert.strictEqual(sanitizeEventName("x".repeat(16_385)), sensitiveTextReplacement);
   });
 });

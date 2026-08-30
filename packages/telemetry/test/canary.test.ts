@@ -365,22 +365,24 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
         assert.strictEqual(decodedRedactedBody.documentation, sensitive.documentationValue);
 
         const redactedAttributeKeys: ReadonlyArray<string> = [
-          "authorization",
-          "password",
-          "accessToken",
-          "userPassword",
-          "phoneNumber",
+          "http.authorization",
+          "user.password",
+          "auth.access_token",
+          "profile.password",
+          "contact.phone",
         ];
-        const redactedAttributeSets = [
+        const maskedAttributeSets = [
           run.root.span.attributes,
           run.redactionSpanEvent.attributes,
           run.redactionLog.log.attributes,
-          run.metric.dataPoint.attributes,
         ];
-        for (const attributes of redactedAttributeSets) {
+        for (const attributes of maskedAttributeSets) {
           for (const key of redactedAttributeKeys) {
-            assert.isTrue(Option.isNone(attributeValue(attributes, key)));
+            assert.strictEqual(Option.getOrUndefined(attributeValue(attributes, key)), "****");
           }
+        }
+        for (const key of redactedAttributeKeys) {
+          assert.isTrue(Option.isNone(attributeValue(run.metric.dataPoint.attributes, key)));
         }
         assert.include(redactedBody, "[REDACTED]");
         assert.include(run.redactionSpanEvent.name, "[REDACTED]");

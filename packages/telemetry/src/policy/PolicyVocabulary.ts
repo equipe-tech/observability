@@ -1,5 +1,6 @@
 export const sensitiveFieldReplacement = "****";
 export const sensitiveTextReplacement = "[REDACTED]";
+export const effectDroppedAttributesKey = "effect.dropped_attributes_count";
 
 export const baseBlockedKeys = [
   "authorization",
@@ -43,6 +44,7 @@ export const baseBlockedValuePatterns = [
 const asciiCaseInsensitive = (source: string): string =>
   source.replace(/[A-Za-z]/g, (letter) => `[${letter.toLowerCase()}${letter.toUpperCase()}]`);
 const sensitiveTerms = baseBlockedKeys.map(asciiCaseInsensitive).join("|");
-const sensitiveKeyPattern = new RegExp(`(?:${sensitiveTerms})(?=[._-]|[A-Z0-9]|$)`);
+export const baseBlockedKeyPatternSource = `(?:${sensitiveTerms})(?=[._-]|[A-Z0-9]|$)`;
+const sensitiveKeyPattern = new RegExp(baseBlockedKeyPatternSource);
 
 export const isSensitiveFieldKey = (key: string): boolean => sensitiveKeyPattern.test(key);

@@ -54,7 +54,7 @@ describe("Telemetry.layer", () => {
           Option.getOrUndefined(Testing.attribute(log.attributes, "probe.value")),
           "kept",
         );
-        assert.isTrue(Option.isSome(Testing.attribute(log.attributes, "fiberId")));
+        assert.isTrue(Option.isSome(Testing.attribute(log.attributes, "effect.fiber.id")));
       }),
   );
 
@@ -243,8 +243,46 @@ describe("Telemetry.layer", () => {
         Option.contains(candidate.body, "drop-count"),
       );
       assert.isDefined(log);
-      assert.strictEqual(log.droppedAttributesCount, 3);
-      assert.lengthOf(log.attributes, 129);
+      assert.strictEqual(log.droppedAttributesCount, 4);
+      assert.lengthOf(log.attributes, 128);
+    }),
+  );
+
+  it.live("counts upstream and tracer span-event attribute drops exactly", () =>
+    Effect.gen(function* () {
+      const result = yield* Testing.run(
+        Effect.gen(function* () {
+          yield* Effect.logInfo("upstream-drop").pipe(
+            Effect.annotateLogs({
+              "app.field": "kept",
+              plainkey: "dropped",
+              "unsupported.field": { nested: true },
+            }),
+          );
+          const span = yield* Effect.currentSpan;
+          span.event("tracer-drop", 1n, {
+            "app.field": "kept",
+            plainkey: "dropped",
+            "unsupported.field": { nested: true },
+          });
+        }).pipe(Effect.withSpan("drop.differential")),
+      );
+      const span = result.telemetry.spans.find(
+        (candidate) => candidate.name === "drop.differential",
+      );
+      assert.isDefined(span);
+      const upstream = span.events.find((event) => event.name === "upstream-drop");
+      const tracer = span.events.find((event) => event.name === "tracer-drop");
+      assert.isDefined(upstream);
+      assert.isDefined(tracer);
+      assert.strictEqual(upstream.droppedAttributesCount, 2);
+      assert.strictEqual(upstream.attributes.get("app.field"), "kept");
+      assert.isTrue(upstream.attributes.has("effect.fiber.id"));
+      assert.isTrue(upstream.attributes.has("effect.log.level"));
+      assert.isFalse(upstream.attributes.has("effect.fiberId"));
+      assert.isFalse(upstream.attributes.has("effect.logLevel"));
+      assert.strictEqual(tracer.droppedAttributesCount, 2);
+      assert.deepStrictEqual([...tracer.attributes], [["app.field", "kept"]]);
     }),
   );
 
@@ -313,7 +351,7 @@ describe("Telemetry.layer", () => {
         Option.contains(candidate.body, "bounded-cause"),
       );
       assert.isDefined(log);
-      assert.isTrue(Option.isSome(Testing.attribute(log.attributes, "logSpan.database")));
+      assert.isTrue(Option.isSome(Testing.attribute(log.attributes, "effect.log_span.database")));
       const renderedCause = String(
         Option.getOrUndefined(Testing.attribute(log.attributes, "log.error")),
       );
