@@ -1,6 +1,6 @@
 # Framework-neutral metrics
 
-Consulte a [política de dados](data-policy.md) para classificações, rejeições e limites de labels.
+See the [data policy](data-policy.md) for classifications, rejections, and label limits.
 
 Use `@equipe-tech/observability/metrics` from NestJS, plain Node.js, or any other JavaScript runtime. The facade exports counters, histograms, observable gauges, bounded flush, and idempotent close without exposing Effect types.
 

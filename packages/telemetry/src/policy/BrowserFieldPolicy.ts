@@ -51,7 +51,7 @@ const sensitiveTextTermPattern = new RegExp(
 );
 
 const structuredAssignmentPattern =
-  /([A-Za-z0-9_.-]+)(\s*[=:]\s*)(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([^,;\s]+))/g;
+  /(?:"([A-Za-z0-9_.-]+)"|([A-Za-z0-9_.-]+))(\s*[=:]\s*)(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([^,;\s]+))/g;
 
 const replaceCoreValues = (value: string): string => {
   let sanitized = value;
@@ -80,8 +80,10 @@ export const replaceStructuredAssignments = (value: string): string => {
   for (const match of value.matchAll(structuredAssignmentPattern)) {
     const index = match.index;
     const full = match[0];
-    const key = match[1];
-    const separator = match[2];
+    const quotedKey = match[1];
+    const unquotedKey = match[2];
+    const separator = match[3];
+    const key = Predicate.isString(quotedKey) ? quotedKey : unquotedKey;
     if (!Predicate.isNumber(index) || !Predicate.isString(full) || !Predicate.isString(key)) {
       continue;
     }
@@ -91,14 +93,16 @@ export const replaceStructuredAssignments = (value: string): string => {
       offset = index + full.length;
       continue;
     }
-    if (Predicate.isString(match[3])) {
-      sanitized += `${key}${separator}"${sensitiveTextReplacement}"`;
-    } else if (Predicate.isString(match[4])) {
-      sanitized += `${key}${separator}'${sensitiveTextReplacement}'`;
+    const renderedKey = Predicate.isString(quotedKey) ? `"${key}"` : key;
+    if (Predicate.isString(match[4])) {
+      sanitized += `${renderedKey}${separator}"${sensitiveTextReplacement}"`;
+    } else if (Predicate.isString(match[5])) {
+      sanitized += `${renderedKey}${separator}'${sensitiveTextReplacement}'`;
     } else {
-      sanitized += `${key}${separator}${sensitiveTextReplacement}`;
+      sanitized += `${renderedKey}${separator}${sensitiveTextReplacement}`;
     }
-    offset = index + full.length;
+    offset = value.length;
+    break;
   }
   return sanitized + value.slice(offset);
 };
@@ -204,25 +208,28 @@ const sanitizeJson = (source: JsonValue): Option.Option<string> => {
   return Option.some(JSON.stringify(root.value));
 };
 
-const sanitizeString = (value: string, outputLimit: number): string => {
-  if (value.length > maxOriginalStringLength) {
-    return sensitiveTextReplacement;
-  }
+export const replaceStructuredText = (value: string): string => {
   const trimmed = value.trimStart();
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
     const parsed = decodeJsonText(value);
     if (Option.isSome(parsed)) {
-      const sanitizedJson = Option.getOrElse(
-        sanitizeJson(parsed.value),
-        () => sensitiveTextReplacement,
-      );
-      return sanitizedJson.length <= outputLimit ? sanitizedJson : sensitiveTextReplacement;
+      return Option.getOrElse(sanitizeJson(parsed.value), () => sensitiveTextReplacement);
     }
-    if (sensitiveTextTermPattern.test(value)) {
-      return sensitiveTextReplacement;
-    }
+    if (sensitiveTextTermPattern.test(value)) return sensitiveTextReplacement;
   }
-  return replaceStructuredAssignments(replaceCoreValues(value));
+  return replaceStructuredAssignments(value);
+};
+
+const sanitizeString = (value: string, outputLimit: number): string => {
+  if (value.length > maxOriginalStringLength) {
+    return sensitiveTextReplacement;
+  }
+  const sanitized = replaceStructuredText(replaceCoreValues(value));
+  const trimmed = value.trimStart();
+  if ((trimmed.startsWith("{") || trimmed.startsWith("[")) && sanitized.length > outputLimit) {
+    return sensitiveTextReplacement;
+  }
+  return sanitized;
 };
 
 const shouldDropKey = (key: string): boolean =>

@@ -152,17 +152,30 @@ describe("executable data policy discrimination", () => {
     assert.notInclude(JSON.stringify(failure), secret);
   });
 
-  it("uses a blocked-key-specific unsafe pattern code", async () => {
-    const failure = await Effect.runPromise(
-      Effect.flip(
+  it("rejects nested group repetition without rejecting useful repeated groups", async () => {
+    for (const blockedKey of ["(a+)+", "((a+))+", "(?:prefix((ab*)+))+suffix"]) {
+      const failure = await Effect.runPromise(
+        Effect.flip(
+          parseDataPolicy({
+            attributes: {},
+            blockedKeys: [blockedKey],
+            blockedValuePatterns: [],
+          }),
+        ),
+      );
+      assert.strictEqual(failure.issues[0]?.code, "OBS_POLICY_UNSAFE_BLOCKED_KEY_PATTERN");
+      assert.notInclude(JSON.stringify(failure), blockedKey);
+    }
+    for (const blockedKey of ["(ab)+", "(?:authorization|cookie)+", "[a+]+"]) {
+      const policy = await Effect.runPromise(
         parseDataPolicy({
           attributes: {},
-          blockedKeys: ["(a+)+"],
+          blockedKeys: [blockedKey],
           blockedValuePatterns: [],
         }),
-      ),
-    );
-    assert.strictEqual(failure.issues[0]?.code, "OBS_POLICY_UNSAFE_BLOCKED_KEY_PATTERN");
+      );
+      assert.lengthOf(policy.blockedKeys, 2);
+    }
   });
 
   it("removes bearer secrets from error text", async () => {
@@ -229,8 +242,7 @@ describe("executable data policy discrimination", () => {
     const policy = await compile();
     const source =
       "password=first password=second authorization: alpha authorization: beta cookie=one cookie=two";
-    const expected =
-      "password=[REDACTED] password=[REDACTED] authorization: [REDACTED] authorization: [REDACTED] cookie=[REDACTED] cookie=[REDACTED]";
+    const expected = "password=[REDACTED]";
     const surfaces: ReadonlyArray<Exclude<PolicySurface, "browser-ingest" | "metric">> = [
       "log",
       "span",
@@ -273,10 +285,7 @@ describe("executable data policy discrimination", () => {
     for (const surface of surfaces) {
       const decision = transformSignalFields(policy, surface, { "request.detail": source });
       assert.notInclude(JSON.stringify(decision.value), secret);
-      assert.strictEqual(
-        decision.value["request.detail"],
-        "authorization: [REDACTED] authorization: [REDACTED]",
-      );
+      assert.strictEqual(decision.value["request.detail"], "authorization: [REDACTED]");
     }
     const textSurfaces: ReadonlyArray<"event" | "log" | "span" | "defect"> = [
       "event",
@@ -287,7 +296,7 @@ describe("executable data policy discrimination", () => {
     for (const surface of textSurfaces) {
       const body = sanitizeText(policy, source, surface);
       assert.notInclude(body, secret);
-      assert.strictEqual(body, "authorization: [REDACTED] authorization: [REDACTED]");
+      assert.strictEqual(body, "authorization: [REDACTED]");
     }
   });
 

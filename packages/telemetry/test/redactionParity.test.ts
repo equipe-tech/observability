@@ -29,8 +29,6 @@ const behaviouralCases = [
   "-----BEGIN PRIVATE KEY-----marker-----END PRIVATE KEY-----",
 ];
 
-const collectorParityAllowances = ["nested-json-sensitive-key"];
-
 describe("browser and Collector redaction parity", () => {
   it("classifies base blocked keys with the Collector word boundary", () => {
     const publicKeys = [
@@ -59,13 +57,12 @@ describe("browser and Collector redaction parity", () => {
     }
   });
 
-  it("recognizes blocked values and records the nested JSON parity allowance", () => {
+  it("recognizes blocked values without SDK and Collector parity allowances", () => {
     for (const value of behaviouralCases) {
       assert.isTrue(
         collectorBlockedValuePatterns.some((source) => collectorPattern(source).test(value)),
       );
     }
-    assert.deepStrictEqual(collectorParityAllowances, ["nested-json-sensitive-key"]);
   });
   for (const assetPath of assetPaths) {
     it(`keeps the canonical key and value vocabulary in ${assetPath}`, () => {
@@ -77,7 +74,7 @@ describe("browser and Collector redaction parity", () => {
         const index = asset.indexOf(blockedValue);
         assert.isAbove(index, previousIndex);
         previousIndex = index;
-        assert.strictEqual(occurrences(asset, pattern), 3);
+        assert.strictEqual(occurrences(asset, pattern), 4);
       }
       const transform = asset.slice(
         asset.indexOf("  transform/redact:"),
@@ -91,6 +88,12 @@ describe("browser and Collector redaction parity", () => {
       const vocabulary = collectorBlockedKeyPattern.replace("(?:[._-]|[A-Z0-9]|$)", "");
       assert.include(trace, vocabulary);
       assert.include(logs, vocabulary);
+      assert.include(trace, "span.name");
+      assert.include(trace, 'replace_all_patterns(span.attributes, "value"');
+      assert.include(trace, 'replace_all_patterns(spanevent.attributes, "value"');
+      assert.include(trace, 'replace_all_patterns(resource.attributes, "value"');
+      assert.include(logs, 'replace_all_patterns(log.attributes, "value"');
+      assert.include(logs, 'replace_all_patterns(resource.attributes, "value"');
       for (const pattern of collectorBlockedValuePatterns) {
         assert.include(trace, pattern);
         assert.include(logs, pattern);

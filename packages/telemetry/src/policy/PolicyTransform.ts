@@ -2,7 +2,7 @@ import { Predicate } from "effect";
 import { maxFieldKeyLength } from "../BrowserEvents.ts";
 import { isValidAttributeName } from "../contract/EventName.ts";
 import type { AttributeValue } from "../contract/TelemetryEvent.ts";
-import { replaceStructuredAssignments, sanitizeBrowserFields } from "./BrowserFieldPolicy.ts";
+import { replaceStructuredText, sanitizeBrowserFields } from "./BrowserFieldPolicy.ts";
 import type { WideEventFields } from "../WideEvent.ts";
 import type { DataPolicy, PolicySurface } from "./DataPolicy.ts";
 import { sensitiveFieldReplacement, sensitiveTextReplacement } from "./PolicyVocabulary.ts";
@@ -52,7 +52,7 @@ const replaceBlockedValues = (policy: DataPolicy, value: string): string => {
     pattern.lastIndex = 0;
     output = output.replace(pattern, sensitiveTextReplacement);
   }
-  return replaceStructuredAssignments(output);
+  return replaceStructuredText(output);
 };
 
 const sanitizeBoundedText = (

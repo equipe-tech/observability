@@ -74,7 +74,52 @@ const invalid = (issues: ReadonlyArray<PolicyIssue>): InvalidDataPolicy =>
     issues,
   });
 
-const unsafePattern = /\([^)]*[+*][^)]*\)(?:[+*]|\{\d)/;
+const hasUnsafeNestedRepetition = (source: string): boolean => {
+  const groups: Array<boolean> = [];
+  let inCharacterClass = false;
+  let escaped = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (character === "[") {
+      inCharacterClass = true;
+      continue;
+    }
+    if (character === "]") {
+      inCharacterClass = false;
+      continue;
+    }
+    if (inCharacterClass) continue;
+    if (character === "(") {
+      groups.push(false);
+      continue;
+    }
+    const repetition =
+      character === "+" ||
+      character === "*" ||
+      (character === "{" && /\d/.test(source[index + 1] ?? ""));
+    if (character === ")") {
+      const containsRepetition = groups.pop() ?? false;
+      const next = source[index + 1] ?? "";
+      const repeatedGroup =
+        next === "+" || next === "*" || (next === "{" && /\d/.test(source[index + 2] ?? ""));
+      if (containsRepetition && repeatedGroup) return true;
+      if (groups.length > 0 && (containsRepetition || repeatedGroup)) {
+        groups[groups.length - 1] = true;
+      }
+      continue;
+    }
+    if (repetition && groups.length > 0) groups[groups.length - 1] = true;
+  }
+  return false;
+};
 
 const compilePatterns = (
   sources: ReadonlyArray<string>,
@@ -85,7 +130,7 @@ const compilePatterns = (
 ): Array<RegExp> => {
   const patterns: Array<RegExp> = [];
   for (const source of sources) {
-    if (unsafePattern.test(source)) {
+    if (hasUnsafeNestedRepetition(source)) {
       issues.push(
         issue(
           unsafeCode,

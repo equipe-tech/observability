@@ -178,11 +178,41 @@ describe("browser telemetry redaction policy", () => {
       json: JSON.stringify({ note: source }),
     });
     assert.notInclude(JSON.stringify(fields), secret);
-    assert.strictEqual(
-      fields["request.detail"],
-      "authorization: [REDACTED] authorization: [REDACTED]",
+    assert.strictEqual(fields["request.detail"], "authorization: [REDACTED]");
+    assert.include(String(fields.json), "authorization: [REDACTED]");
+  });
+
+  it("redacts assignment suffixes for every sensitive credential form", () => {
+    const secret = marker();
+    const cases = [
+      `authorization: Basic ${secret} ${secret}`,
+      `authorization: Digest username=${secret}, response=${secret}`,
+      `password: my ${secret} pass phrase`,
+      `x-api-key: ${secret} ${secret}`,
+      `cookie: sid=${secret}; csrf=${secret}; theme=dark`,
+      `client-secret: ${secret}, access-token=${secret}`,
+      `document: ${secret}; password=${secret}`,
+    ];
+    const fields = sanitizeBrowserFields(
+      Object.fromEntries(cases.map((value, index) => [`case${index}`, value])),
     );
-    assert.include(String(fields.json), "authorization: [REDACTED] authorization: [REDACTED]");
+    assert.notInclude(JSON.stringify(fields), secret);
+    for (const value of Object.values(fields)) {
+      assert.match(String(value), /^[A-Za-z-]+: \[REDACTED\]$/);
+    }
+  });
+
+  it("supports quoted JSON keys and values before buffering", () => {
+    const secret = marker();
+    const fields = sanitizeBrowserFields({
+      json: `{"authorization":"Basic ${secret} ${secret}","password":"${secret} phrase","safe":"kept"}`,
+    });
+    assert.notInclude(String(fields.json), secret);
+    assert.deepStrictEqual(JSON.parse(String(fields.json)), {
+      authorization: sensitiveTextReplacement,
+      password: sensitiveTextReplacement,
+      safe: "kept",
+    });
   });
 
   it("fails closed for excessive JSON depth, value count, and original string size", () => {
