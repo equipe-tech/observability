@@ -5,6 +5,7 @@ import {
   Contract,
   instanceResourceAttributes,
   registerOfficialAdapter,
+  sanitizeText,
   SpanId,
   TelemetryEventSink,
   TraceId,
@@ -143,6 +144,7 @@ const AdapterOptionsDocument = Schema.Struct({
 const decodeOptions = Schema.decodeUnknownOption(AdapterOptionsDocument);
 const decodeString = Schema.decodeUnknownOption(Schema.String);
 const decodeNumber = Schema.decodeUnknownOption(Schema.Number.check(Schema.isFinite()));
+const decodeDate = Schema.decodeUnknownOption(Schema.Date);
 const decodeScalar = Schema.decodeUnknownOption(
   Schema.Union([Schema.String, Schema.Number.check(Schema.isFinite()), Schema.Boolean]),
 );
@@ -291,9 +293,30 @@ const incrementReason = (state: MutableDropState, reason: DropReason): void => {
   state.lastDroppedAt = Option.some(droppedAt);
 };
 
+const normalizeGlobalTimestamp = (
+  value: DrainContext["event"]["timestamp"],
+): Option.Option<string> => {
+  const date = decodeDate(value);
+  const string = decodeString(value);
+  const number = decodeNumber(value);
+  const milliseconds = Option.isSome(date)
+    ? date.value.getTime()
+    : Option.isSome(string)
+      ? Date.parse(string.value)
+      : Option.isSome(number)
+        ? number.value
+        : Number.NaN;
+  return Number.isFinite(milliseconds) &&
+    milliseconds >= 0 &&
+    milliseconds <= BrowserEvents.maxBrowserEventOccurredAt
+    ? Option.some(new Date(milliseconds).toISOString())
+    : Option.none();
+};
+
 const fieldsForContractEvent = (
   event: TelemetryEvent,
   attributes: EventAttributes,
+  sanitizeDefectText: (value: string) => string,
 ): EventAttributes => {
   const fields: { [attributeName: string]: Contract.AttributeValue } = {
     "event.name": event.name,
@@ -320,7 +343,7 @@ const fieldsForContractEvent = (
     case "defect": {
       const structured = createError({
         code: event.error.type,
-        message: event.error.message,
+        message: sanitizeDefectText(event.error.message),
         status: event.error.retryable ? 503 : 500,
       });
       fields["error.type"] = structured.code ?? structured.name;
@@ -543,7 +566,9 @@ export const makeEvlogAdapter = (
             }
             const decision = transformSignalFields(context.policy, "event", event.attributes);
             const admittedFields = {
-              ...fieldsForContractEvent(event, decision.value),
+              ...fieldsForContractEvent(event, decision.value, (value) =>
+                sanitizeText(context.policy, value, "defect"),
+              ),
               "event.policy_dropped_attributes":
                 admission.policyDroppedAttributes + decision.dropped,
             };
@@ -613,6 +638,12 @@ export const makeEvlogAdapter = (
           });
 
         const admitGlobal = (drainContext: DrainContext): void => {
+          const timestamp = normalizeGlobalTimestamp(drainContext.event.timestamp);
+          if (Option.isNone(timestamp)) {
+            incrementReason(dropState, "contract-rejected");
+            return;
+          }
+          drainContext.event.timestamp = timestamp.value;
           let rawName = decodeString(drainContext.event["event.name"]);
           if (
             Option.isNone(rawName) &&
@@ -666,7 +697,7 @@ export const makeEvlogAdapter = (
             "event.type": definition.kind,
             "event.severity": definition.defaultSeverity,
             "event.outcome": "success",
-            "event.timestamp": drainContext.event.timestamp,
+            "event.timestamp": timestamp.value,
             "event.policy_dropped_attributes": decision.dropped,
             ...decision.value,
           };
@@ -686,7 +717,7 @@ export const makeEvlogAdapter = (
             admittedRecord(
               wideEventFor(
                 context,
-                drainContext.event.timestamp,
+                timestamp.value,
                 definition.defaultSeverity,
                 fields,
                 Option.getOrUndefined(traceId),

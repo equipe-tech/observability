@@ -490,6 +490,45 @@ describe("evlogAdapter", () => {
     expect(JSON.stringify(adapter.drops())).not.toContain("Bearer");
   });
 
+  it("normalizes safe native timestamps and rejects batch-poison values before insertion", async () => {
+    const receiver = await startReceiver();
+    const { config } = await makeConfig(receiver.endpoint);
+    const adapter = evlogAdapter({ batchSize: 50, transportRetries: 0 });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    const boundary = BrowserEvents.maxBrowserEventOccurredAt;
+    const safeTimestamps = [
+      "2026-08-30T16:41:55.558Z",
+      new Date("2025-01-02T03:04:05.006Z"),
+      1_700_000_000_123,
+      boundary,
+    ];
+    for (const [index, timestamp] of safeTimestamps.entries()) {
+      log.info({ "event.name": "job.completed", "job.name": `safe-${index}`, timestamp });
+    }
+    log.info({ "event.name": "job.completed", "job.name": "generated" });
+    for (const timestamp of [
+      "not-a-date",
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      -1,
+      "3000-01-01T00:00:00.000Z",
+      "9999-12-31T23:59:59.000Z",
+      boundary + 1,
+    ]) {
+      log.info({ "event.name": "job.completed", "job.name": "poison", timestamp });
+    }
+    await observability.close();
+    await receiver.close();
+    const wire = receiver.bodies.join("\n");
+    for (let index = 0; index < safeTimestamps.length; index += 1) {
+      expect(wire).toContain(`safe-${index}`);
+    }
+    expect(wire).toContain("generated");
+    expect(wire).toContain(new Date(boundary).toISOString());
+    expect(wire).not.toContain("poison");
+    expect(adapter.drops().reasons.contractRejected).toBe(7);
+  });
+
   it("preserves native global correlation and rejects malformed identifiers visibly", async () => {
     const receiver = await startReceiver();
     const { config } = await makeConfig(receiver.endpoint);
@@ -519,6 +558,77 @@ describe("evlogAdapter", () => {
     expect(wire).not.toContain("bad-span");
     expect(adapter.drops().reasons.contractRejected).toBe(2);
     expect(report.degraded).toBe(true);
+  });
+
+  it("sanitizes canonical defect text while preserving structured error semantics", async () => {
+    const receiver = await startReceiver();
+    const { contract, config } = await makeConfig(receiver.endpoint);
+    const lines: Array<string> = [];
+    const adapter = evlogAdapter({
+      installGlobalLogger: false,
+      batchSize: 1,
+      transportRetries: 0,
+      stdout: { write: (line) => lines.push(line) > 0 },
+    });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    const secrets = [
+      "Bearer AAAABBBBCCCCDDDDEEEEFFFF",
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.signature",
+      "sk_live_providerSecret123",
+      "person@example.com",
+      "-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----",
+      "password=hunter2",
+    ];
+    await observability.runtime.runPromise(
+      makeEventProducer(contract)
+        .emit("failed", {
+          error: {
+            type: "PAYMENT_DECLINED",
+            message: secrets.join(" "),
+            retryable: true,
+          },
+          attributes: { "job.name": "structured-error" },
+        })
+        .pipe(Effect.provide(observability.eventLayer)),
+    );
+    await observability.close();
+    await receiver.close();
+    const fallback = await makeConfig(new URL("http://127.0.0.1:1"));
+    const fallbackAdapter = evlogAdapter({
+      installGlobalLogger: false,
+      batchSize: 1,
+      maximumAttempts: 1,
+      transportRetries: 0,
+      stdout: { write: (line) => lines.push(line) > 0 },
+    });
+    const fallbackObservability = await createNodeObservabilityFromConfig(fallback.config, [
+      fallbackAdapter.registration,
+    ]);
+    if (!fallbackObservability.enabled) throw new Error("Expected enabled observability.");
+    await fallbackObservability.runtime.runPromise(
+      makeEventProducer(fallback.contract)
+        .emit("failed", {
+          error: {
+            type: "PAYMENT_DECLINED",
+            message: secrets.join(" "),
+            retryable: true,
+          },
+          attributes: { "job.name": "structured-error" },
+        })
+        .pipe(Effect.provide(fallbackObservability.eventLayer)),
+    );
+    await fallbackObservability.close();
+    const wire = receiver.bodies.join("\n");
+    expect(lines).toHaveLength(1);
+    for (const secret of secrets) {
+      expect(wire).not.toContain(secret);
+      expect(lines.join("\n")).not.toContain(secret);
+    }
+    expect(wire).toContain('\\"error.type\\":\\"PAYMENT_DECLINED\\"');
+    expect(wire).toContain('\\"error.name\\":\\"EvlogError\\"');
+    expect(wire).toContain('\\"error.status\\":503');
+    expect(wire).toContain('\\"error.retryable\\":true');
   });
 
   it("projects structured errors and preserves upstream float string encoding", async () => {
