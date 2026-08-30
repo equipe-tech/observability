@@ -7,6 +7,7 @@ export const maxFieldKeyLength = 128;
 export const maxFieldValueLength = 1024;
 export const maxEventNameLength = 128;
 export const maxEventIdLength = 64;
+export const maxBrowserEventOccurredAt = 8_640_000_000_000_000;
 
 const BoundedFieldValue = Schema.Union([
   Schema.String.check(Schema.isMaxLength(maxFieldValueLength)),
@@ -31,8 +32,8 @@ export class BrowserEvent extends Schema.Class<BrowserEvent>(
   name: Schema.NonEmptyString.check(Schema.isMaxLength(maxEventNameLength)),
   occurredAt: Schema.Number.check(
     Schema.isFinite(),
-    Schema.makeFilter((millis) => millis >= 0, {
-      expected: "a non-negative epoch timestamp in milliseconds",
+    Schema.makeFilter((millis) => millis >= 0 && millis <= maxBrowserEventOccurredAt, {
+      expected: `an epoch timestamp in milliseconds from 0 through ${maxBrowserEventOccurredAt}`,
     }),
   ),
   fields: BrowserEventFields,

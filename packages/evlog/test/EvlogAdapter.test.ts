@@ -32,6 +32,17 @@ const contractDefinition = Contract.telemetryContractDefinition({
       attributes: {
         "job.name": { classification: "public", required: true, metricLabel: false },
         "job.detail": { classification: "internal", required: false, metricLabel: false },
+        "job.amount": { classification: "public", required: false, metricLabel: false },
+      },
+    },
+    failed: {
+      name: "job.processing",
+      kind: "defect",
+      defaultSeverity: "error",
+      mandatory: false,
+      sampling: { kind: "always" },
+      attributes: {
+        "job.name": { classification: "public", required: true, metricLabel: false },
       },
     },
   },
@@ -330,6 +341,143 @@ describe("evlogAdapter", () => {
     );
     expect(event["event.policy_dropped_attributes"]).toBe(1);
     expect(adapter.drops().total).toBe(0);
+  });
+
+  it("applies policy at direct sink admission and preserves producer drop counts", async () => {
+    const receiver = await startReceiver();
+    const contract = await Effect.runPromise(defineTelemetryContract(contractDefinition));
+    const config = await Effect.runPromise(
+      parseNodeObservabilityConfig({
+        enabled: true,
+        profile: "worker",
+        service: { name: "evlog-test", version: "1.2.3", environment: "test" },
+        telemetry: { endpoint: receiver.endpoint },
+        evlog: {
+          contract,
+          policy: {
+            attributes: {
+              "job.detail": {
+                classification: "forbidden",
+                required: false,
+                metricLabel: false,
+              },
+            },
+            blockedKeys: ["password"],
+            blockedValuePatterns: ["secret-[0-9]+"],
+          },
+        },
+        sentry: { enabled: false },
+      }),
+    );
+    const adapter = evlogAdapter({ installGlobalLogger: false, batchSize: 1, transportRetries: 0 });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    const receipt = await observability.runtime.runPromise(
+      makeEventProducer(contract)
+        .emit("completed", {
+          outcome: "success",
+          durationMs: 1,
+          attributes: { "job.name": "billing" },
+        })
+        .pipe(Effect.provide(observability.eventLayer)),
+    );
+    if (receipt.decision !== "recorded") throw new Error("Expected a recorded event.");
+    const sink = await observability.runtime.runPromise(
+      TelemetryEventSink.pipe(Effect.provide(observability.eventLayer)),
+    );
+    const secrets = ["Bearer AAAABBBBCCCCDDDDEEEEFFFF", "secret-12345"];
+    for (const secret of secrets) {
+      await Effect.runPromise(
+        sink.record(
+          { ...receipt.event, attributes: { "job.name": "billing", "job.detail": secret } },
+          { policyDroppedAttributes: 2 },
+        ),
+      );
+    }
+    await observability.close();
+    await receiver.close();
+    const wire = receiver.bodies.join("\n");
+    for (const secret of secrets) expect(wire).not.toContain(secret);
+    expect(wire).not.toContain("job.detail");
+    const projected = receiver.bodies
+      .filter((body) => body.includes('"resourceLogs"'))
+      .flatMap((body) => {
+        const request = Schema.decodeUnknownSync(RequestBody)(JSON.parse(body));
+        return request.resourceLogs.flatMap((resource) =>
+          resource.scopeLogs.flatMap((scope) =>
+            scope.logRecords.map((record) => JSON.parse(record.body.stringValue)),
+          ),
+        );
+      });
+    expect(
+      projected.filter((event) => event["event.policy_dropped_attributes"] === 3),
+    ).toHaveLength(2);
+    expect(JSON.stringify(adapter.drops())).not.toContain("Bearer");
+  });
+
+  it("preserves native global correlation and rejects malformed identifiers visibly", async () => {
+    const receiver = await startReceiver();
+    const { config } = await makeConfig(receiver.endpoint);
+    const adapter = evlogAdapter({ batchSize: 1, transportRetries: 0 });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    const traceId = "1".repeat(32);
+    const spanId = "2".repeat(16);
+    log.info({ "event.name": "job.completed", "job.name": "valid", traceId, spanId });
+    log.info({
+      "event.name": "job.completed",
+      "job.name": "bad-trace",
+      traceId: "A".repeat(32),
+      spanId,
+    });
+    log.info({
+      "event.name": "job.completed",
+      "job.name": "bad-span",
+      traceId,
+      spanId: "2".repeat(15),
+    });
+    const report = await observability.close();
+    await receiver.close();
+    const wire = receiver.bodies.join("\n");
+    expect(wire).toContain(`"traceId":"${traceId}"`);
+    expect(wire).toContain(`"spanId":"${spanId}"`);
+    expect(wire).not.toContain("bad-trace");
+    expect(wire).not.toContain("bad-span");
+    expect(adapter.drops().reasons.contractRejected).toBe(2);
+    expect(report.degraded).toBe(true);
+  });
+
+  it("projects structured errors and preserves upstream float string encoding", async () => {
+    const receiver = await startReceiver();
+    const { contract, config } = await makeConfig(receiver.endpoint);
+    const adapter = evlogAdapter({ installGlobalLogger: false, batchSize: 1, transportRetries: 0 });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    const producer = makeEventProducer(contract);
+    await observability.runtime.runPromise(
+      producer
+        .emit("completed", {
+          outcome: "success",
+          durationMs: 1,
+          attributes: { "job.name": "float", "job.amount": 42.5 },
+        })
+        .pipe(Effect.provide(observability.eventLayer)),
+    );
+    await observability.runtime.runPromise(
+      producer
+        .emit("failed", {
+          error: { type: "PAYMENT_DECLINED", message: "Payment failed", retryable: false },
+          attributes: { "job.name": "structured-error" },
+        })
+        .pipe(Effect.provide(observability.eventLayer)),
+    );
+    await observability.close();
+    await receiver.close();
+    const wire = receiver.bodies.join("\n");
+    expect(wire).toContain('"key":"job.amount","value":{"stringValue":"42.5"}');
+    expect(wire).toContain('\\"error.type\\":\\"PAYMENT_DECLINED\\"');
+    expect(wire).toContain('\\"error.message\\":\\"Payment failed\\"');
+    expect(wire).toContain('\\"error.retryable\\":false');
+    expect(wire).not.toContain("stack");
   });
 
   it("separates byte overflow from count overflow and balances bytes", async () => {

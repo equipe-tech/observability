@@ -1,10 +1,13 @@
 import {
   AdapterFailure,
   AdapterName,
+  BrowserEvents,
   Contract,
   instanceResourceAttributes,
   registerOfficialAdapter,
+  SpanId,
   TelemetryEventSink,
+  TraceId,
   transformSignalFields,
   validateContractEvent,
   type BrowserTelemetryEvent,
@@ -14,7 +17,14 @@ import {
   type ObservabilityAdapterContext,
   type TelemetryEvent,
 } from "@equipe-tech/observability";
-import { defineErrorCatalog, initLogger, log, type DrainContext, type WideEvent } from "evlog";
+import {
+  createError,
+  defineErrorCatalog,
+  initLogger,
+  log,
+  type DrainContext,
+  type WideEvent,
+} from "evlog";
 import { sendBatchToOTLP } from "evlog/otlp";
 import { createDrainPipeline, type PipelineDrainFn } from "evlog/pipeline";
 import { Effect, Layer, Option, Schema } from "effect";
@@ -106,6 +116,10 @@ const adapterErrors = defineErrorCatalog("OBS_EVLOG", {
     status: 500,
     message: "Another evlog logger owns the process-global logger.",
   },
+  CONTRACT_EVENT: {
+    status: 500,
+    message: "A contract defect event was recorded.",
+  },
 });
 
 const positiveInteger = Schema.Int.check(Schema.makeFilter((value) => value > 0));
@@ -132,6 +146,8 @@ const decodeString = Schema.decodeUnknownOption(Schema.String);
 const decodeScalar = Schema.decodeUnknownOption(
   Schema.Union([Schema.String, Schema.Number.check(Schema.isFinite()), Schema.Boolean]),
 );
+const decodeTraceId = Schema.decodeUnknownOption(TraceId);
+const decodeSpanId = Schema.decodeUnknownOption(SpanId);
 const textEncoder = new TextEncoder();
 const globalEnvelopeFields = new Set([
   "timestamp",
@@ -145,6 +161,8 @@ const globalEnvelopeFields = new Set([
   "durationMs",
   "audit",
   "event.name",
+  "traceId",
+  "spanId",
 ]);
 let globalLoggerOwner: symbol | undefined;
 
@@ -267,7 +285,10 @@ const incrementReason = (state: MutableDropState, reason: DropReason): void => {
   state.lastDroppedAt = Option.some(droppedAt);
 };
 
-const fieldsForContractEvent = (event: TelemetryEvent): EventAttributes => {
+const fieldsForContractEvent = (
+  event: TelemetryEvent,
+  attributes: EventAttributes,
+): EventAttributes => {
   const fields: { [attributeName: string]: Contract.AttributeValue } = {
     "event.name": event.name,
     "event.kind": "wide",
@@ -276,7 +297,7 @@ const fieldsForContractEvent = (event: TelemetryEvent): EventAttributes => {
     "event.outcome": event.outcome,
     "event.timestamp": event.timestamp,
   };
-  for (const [name, value] of Object.entries(event.attributes)) fields[name] = value;
+  for (const [name, value] of Object.entries(attributes)) fields[name] = value;
   if (Option.isSome(event.correlation.requestId))
     fields["request.id"] = event.correlation.requestId.value;
   if (Option.isSome(event.correlation.runId)) fields["run.id"] = event.correlation.runId.value;
@@ -290,11 +311,21 @@ const fieldsForContractEvent = (event: TelemetryEvent): EventAttributes => {
     case "operation":
       fields["event.duration_ms"] = event.durationMs;
       break;
-    case "defect":
+    case "defect": {
+      const catalogError = adapterErrors.CONTRACT_EVENT({
+        message: event.error.message,
+        status: event.error.retryable ? 503 : 500,
+      });
+      const structured = createError({
+        code: adapterErrors.CONTRACT_EVENT.code,
+        message: catalogError.message,
+        status: catalogError.status,
+      });
       fields["error.type"] = event.error.type;
-      fields["error.message"] = event.error.message;
+      fields["error.message"] = structured.message;
       fields["error.retryable"] = event.error.retryable;
       break;
+    }
     case "audit":
       fields["audit.action"] = event.audit.action;
       fields["audit.actor.kind"] = event.audit.actor.kind;
@@ -486,9 +517,11 @@ const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
                 attributeName: "event.type",
               });
             }
+            const decision = transformSignalFields(context.policy, "event", event.attributes);
             const admittedFields = {
-              ...fieldsForContractEvent(event),
-              "event.policy_dropped_attributes": admission.policyDroppedAttributes,
+              ...fieldsForContractEvent(event, decision.value),
+              "event.policy_dropped_attributes":
+                admission.policyDroppedAttributes + decision.dropped,
             };
             const traceId = Option.getOrUndefined(event.correlation.traceId);
             const spanId = Option.getOrUndefined(event.correlation.spanId);
@@ -508,6 +541,19 @@ const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
 
         const admitBrowser = (event: BrowserTelemetryEvent) =>
           Effect.gen(function* () {
+            if (
+              !Number.isFinite(event.occurredAt) ||
+              event.occurredAt < 0 ||
+              event.occurredAt > BrowserEvents.maxBrowserEventOccurredAt
+            ) {
+              return yield* new Contract.InvalidTelemetryEvent({
+                code: "OBS_EVENT_INVALID_FIELD",
+                message: `Event "${event.name}" has an invalid browser occurrence timestamp. Use epoch milliseconds from 0 through ${BrowserEvents.maxBrowserEventOccurredAt}.`,
+                eventName: event.name,
+                attributeName: "browser.event.occurred_at",
+              });
+            }
+            const timestamp = new Date(event.occurredAt).toISOString();
             const validation = validateContractEvent(
               context.contract,
               event.name,
@@ -520,7 +566,7 @@ const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
               "event.type": validation.kind,
               "event.severity": validation.defaultSeverity,
               "event.outcome": "success",
-              "event.timestamp": new Date(event.occurredAt).toISOString(),
+              "event.timestamp": timestamp,
               "event.source": "browser",
               "browser.event.id": event.id,
               "browser.event.occurred_at": event.occurredAt,
@@ -534,12 +580,7 @@ const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
             };
             offer(
               admittedRecord(
-                wideEventFor(
-                  context,
-                  new Date(event.occurredAt).toISOString(),
-                  validation.defaultSeverity,
-                  admittedFields,
-                ),
+                wideEventFor(context, timestamp, validation.defaultSeverity, admittedFields),
               ),
             );
           });
@@ -556,6 +597,15 @@ const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
           const definition =
             eventName === undefined ? undefined : context.contract.eventByName.get(eventName);
           if (definition === undefined) {
+            incrementReason(dropState, "contract-rejected");
+            return;
+          }
+          const traceId = decodeTraceId(drainContext.event.traceId);
+          const spanId = decodeSpanId(drainContext.event.spanId);
+          if (
+            (drainContext.event.traceId !== undefined && Option.isNone(traceId)) ||
+            (drainContext.event.spanId !== undefined && Option.isNone(spanId))
+          ) {
             incrementReason(dropState, "contract-rejected");
             return;
           }
@@ -592,6 +642,8 @@ const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
                 drainContext.event.timestamp,
                 definition.defaultSeverity,
                 fields,
+                Option.getOrUndefined(traceId),
+                Option.getOrUndefined(spanId),
               ),
             ),
           );
@@ -662,7 +714,7 @@ const makeEvlogAdapter = (options: EvlogAdapterOptions): EvlogAdapter => {
           flush,
           close,
           eventLayer: Option.some(eventLayer),
-          degraded: () => dropState.stdoutUnavailable > 0 || detached,
+          degraded: () => dropState.total > 0 || detached,
         };
       }),
   });

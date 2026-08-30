@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import { Module } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
+import { createServer } from "node:http";
 import { Effect, Layer, ManagedRuntime, Option, Schema } from "effect";
 import { assert, describe, it } from "vite-plus/test";
 import {
@@ -12,7 +13,13 @@ import {
   maxFieldsPerEvent,
   maxFieldValueLength,
 } from "@equipe-tech/observability/browser";
-import { Contract, TelemetryEventSink } from "@equipe-tech/observability";
+import {
+  Contract,
+  parseNodeObservabilityConfig,
+  TelemetryEventSink,
+} from "@equipe-tech/observability";
+import { createNodeObservabilityFromConfig } from "@equipe-tech/observability/node";
+import { evlogAdapter } from "@equipe-tech/observability-evlog";
 import { layerWideEvent } from "@equipe-tech/observability/effect";
 import * as Testing from "@equipe-tech/observability/testing";
 import { createBrowserEventsController, TelemetryInterceptor } from "../src/index.ts";
@@ -105,6 +112,57 @@ const startApp = async (
       await app.close();
       await runtime.dispose();
       return Effect.runPromise(capture.telemetry);
+    },
+  };
+};
+
+const startRealAdapterApp = async (): Promise<Harness> => {
+  const receiver = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end("{}");
+    });
+  });
+  await new Promise<void>((resolve) => receiver.listen(0, "127.0.0.1", resolve));
+  const receiverAddress = decodeAddressInfo(receiver.address());
+  assert.isTrue(Option.isSome(receiverAddress));
+  const contract = browserContract;
+  const config = await Effect.runPromise(
+    parseNodeObservabilityConfig({
+      enabled: true,
+      profile: "nestjs-api",
+      service: { name: "browser-e2e", version: "1.0.0", environment: "test" },
+      telemetry: {
+        endpoint: new URL(`http://127.0.0.1:${Option.getOrThrow(receiverAddress).port}`),
+      },
+      evlog: { contract, policy: { attributes: {}, blockedKeys: [], blockedValuePatterns: [] } },
+      sentry: { enabled: false },
+    }),
+  );
+  const adapter = evlogAdapter({ installGlobalLogger: false, batchSize: 1, transportRetries: 0 });
+  const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+  if (!observability.enabled) throw new Error("Expected enabled observability.");
+
+  class RealAdapterModule {}
+  Module({
+    controllers: [
+      createBrowserEventsController(observability.runtime, {
+        eventLayer: observability.eventLayer,
+      }),
+    ],
+  })(RealAdapterModule);
+  const app = await NestFactory.create(RealAdapterModule, { logger: false });
+  await app.listen(0);
+  const address = decodeAddressInfo(app.getHttpServer().address());
+  assert.isTrue(Option.isSome(address));
+  return {
+    baseUrl: `http://127.0.0.1:${Option.getOrThrow(address).port}`,
+    close: async () => {
+      await app.close();
+      await observability.close();
+      await new Promise<void>((resolve) => receiver.close(() => resolve()));
+      return { spans: [], logs: [], metrics: [] };
     },
   };
 };
@@ -276,6 +334,64 @@ describe("browser events endpoint", () => {
       assert.notInclude(JSON.stringify(payload), "cause");
       assert.notInclude(JSON.stringify(payload), "    at ");
     }
+    await harness.close();
+  }, 30_000);
+
+  it("returns evidence-safe 400 responses through the real evlog adapter", async () => {
+    const harness = await startRealAdapterApp();
+    const cases = [
+      JSON.stringify({
+        version: 1,
+        events: [
+          {
+            id: "evt",
+            name: "checkout.completed",
+            occurredAt: 8_640_000_000_000_001,
+            fields: { "cart.total": 1 },
+          },
+        ],
+      }),
+      JSON.stringify({
+        version: 1,
+        events: [
+          { id: "evt", name: "checkout.completed", occurredAt: 1e300, fields: { "cart.total": 1 } },
+        ],
+      }),
+      JSON.stringify({
+        version: 1,
+        events: [
+          { id: "evt", name: "checkout.completed", occurredAt: -1, fields: { "cart.total": 1 } },
+        ],
+      }),
+      '{"version":1,"events":[{"id":"evt","name":"checkout.completed","occurredAt":NaN,"fields":{"cart.total":1}}]}',
+      JSON.stringify({
+        version: 1,
+        events: [{ id: "evt", name: "checkout.completed", occurredAt: 1, fields: {} }],
+      }),
+    ];
+    for (const body of cases) {
+      const response = await postEvents(harness.baseUrl, body);
+      assert.strictEqual(response.status, 400);
+      const text = await response.text();
+      assert.notInclude(text, "    at ");
+      assert.notInclude(text, "RangeError");
+      assert.notInclude(text, "Schema");
+    }
+    const boundary = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({
+        version: 1,
+        events: [
+          {
+            id: "evt",
+            name: "checkout.completed",
+            occurredAt: 8_640_000_000_000_000,
+            fields: { "cart.total": 1 },
+          },
+        ],
+      }),
+    );
+    assert.strictEqual(boundary.status, 202);
     await harness.close();
   }, 30_000);
 

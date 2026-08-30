@@ -23,7 +23,7 @@ await observability.runtime.runPromise(
 
 O adapter valida o contrato e aplica a política antes de inserir cada registro em `createDrainPipeline`. A fila usa limites independentes de quantidade e bytes serializados. Falhas terminais escrevem somente o registro já sanitizado como uma linha NDJSON em stdout.
 
-A entrega compõe as APIs públicas `createDrainPipeline`, `sendBatchToOTLP`, `createError` e `defineErrorCatalog` do evlog 2.27.1. `sendBatchToOTLP` mantém o scope fixo `evlog` sem versão. A API pública não permite definir `droppedAttributesCount`, então o adapter grava a contagem pré-fila em `event.policy_dropped_attributes`.
+A entrega compõe as APIs públicas `createDrainPipeline`, `sendBatchToOTLP`, `createError` e `defineErrorCatalog` do evlog 2.27.1. Eventos de defeito passam por `createError` antes da projeção dos campos estruturados `error.type`, `error.message` e `error.retryable`. `sendBatchToOTLP` mantém o scope fixo `evlog` sem versão. O encoder público serializa números inteiros como `intValue` e números fracionários como `stringValue`. O adapter não substitui esse encoder. A API pública não permite definir `droppedAttributesCount`, então o adapter grava a contagem pré-fila em `event.policy_dropped_attributes`.
 
 O encoder público sempre gera `deployment.environment` a partir do evento evlog. Por isso, o modo `environmentAlias: "omitted"` ainda contém esse alias em logs, embora traces do núcleo o omitam. O adapter acrescenta `deployment.environment.name`, `service.namespace` e `service.instance.id` por `resourceAttributes`, que é o único mecanismo público suportado pelo encoder para esses campos.
 
