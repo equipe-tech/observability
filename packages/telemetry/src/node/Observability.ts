@@ -5,7 +5,7 @@ import * as Telemetry from "../Telemetry.ts";
 import type { Metrics } from "../Metrics.ts";
 import {
   createDisabledMetrics,
-  createStandaloneMetrics,
+  LayerMetricsRuntime,
   releaseMetricsLease,
 } from "../MetricsRuntime.ts";
 import {
@@ -207,17 +207,14 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
     }),
   );
   const flusher = yield* acquireRuntimeFlusher(runtime);
-  const metrics = yield* Effect.promise(() =>
-    createStandaloneMetrics({
-      serviceName: config.identity.serviceName,
-      serviceVersion: config.identity.serviceVersion,
-      environment: config.identity.environment,
-      deploymentEnvironmentAlias: config.telemetry.environmentAlias,
-      otlpEndpoint: config.telemetry.otlpEndpoint.toString(),
-      flushTimeoutMilliseconds: nodeMetricsFlushTimeoutMilliseconds,
-      policy: config.evlog.policy,
-    }),
+  const metricsRuntime = yield* Effect.promise(() =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        return yield* LayerMetricsRuntime;
+      }),
+    ),
   );
+  const metrics = metricsRuntime.acquireMetrics();
   const context = {
     profile: config.profile,
     identity: config.identity,

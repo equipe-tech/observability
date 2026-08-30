@@ -671,7 +671,7 @@ class MetricsRuntimeState {
   readonly runtimeLifetimeSeries = new Set<string>();
   readonly lifetimeSeriesByInstrument = new Map<string, Set<string>>();
   readonly lifetimeValuesByInstrumentKey = new Map<string, Set<string>>();
-  readonly contractValuesByDefinition = new Map<
+  readonly contractValuesByDefinition = new WeakMap<
     ContractMetricDefinitionIdentity,
     Map<string, Set<string>>
   >();
@@ -2000,15 +2000,20 @@ class DisabledMetrics implements Metrics {
   }
 }
 
+type ContractCardinalityLedger = WeakMap<
+  ContractMetricDefinitionIdentity,
+  Map<string, Set<string>>
+>;
+
 type MetricContractState = {
-  readonly values: Map<ContractMetricDefinitionIdentity, Map<string, Set<string>>>;
+  readonly values: ContractCardinalityLedger;
 };
 
 const metricContractStates = new WeakMap<Metrics, MetricContractState>();
 
 class MetricContractTransaction {
   private readonly valuesByLedger = new Map<
-    Map<ContractMetricDefinitionIdentity, Map<string, Set<string>>>,
+    ContractCardinalityLedger,
     Map<ContractMetricDefinitionIdentity, Map<string, Set<string>>>
   >();
 
@@ -2131,7 +2136,7 @@ export const releaseMetricsLease = async (metrics: Metrics): Promise<void> => {
 
 export const createDisabledMetrics = (policy: DataPolicy = baseDataPolicy): Metrics => {
   const metrics = new DisabledMetrics(policy);
-  metricContractStates.set(metrics, { values: new Map() });
+  metricContractStates.set(metrics, { values: new WeakMap() });
   return metrics;
 };
 
@@ -2156,6 +2161,11 @@ interface LayerMetricsOptions {
   readonly policy: DataPolicy;
   readonly resourceAttributes: ReadonlyMap<string, string>;
 }
+
+export class LayerMetricsRuntime extends Context.Service<
+  LayerMetricsRuntime,
+  { readonly acquireMetrics: () => Metrics }
+>()("@equipe-tech/observability/internal/LayerMetricsRuntime") {}
 
 const makeEffectTransport = (endpoint: string, client: HttpClient.HttpClient): MetricsTransport => {
   const request = HttpClientRequest.post(endpoint, {
@@ -2211,10 +2221,11 @@ const makeMetricsRuntime = Effect.fn("makeMetricsRuntime")(function* (
         : JSON.stringify([parsed.poolKey, resourceKey]),
     resourceAttributes,
   } satisfies NormalizedOptions;
-  const lease = acquireRuntime(normalized, {
+  const transport = {
     kind: "layer",
     send: makeEffectTransport(normalized.metricsEndpoint, client),
-  });
+  } satisfies MetricsTransportBinding;
+  const lease = acquireRuntime(normalized, transport);
   yield* flusher.register(
     Effect.tryPromise(() => lease.state.flush(parsed.flushTimeoutMilliseconds)).pipe(
       Effect.catch(() => Effect.void),
@@ -2229,10 +2240,20 @@ const makeMetricsRuntime = Effect.fn("makeMetricsRuntime")(function* (
       Effect.asVoid,
     ),
   );
-  return lease.state.registry;
+  const acquireMetrics = (): Metrics => {
+    const metrics = new ActiveMetrics(
+      lease.state.acquire(transport),
+      parsed.flushTimeoutMilliseconds,
+    );
+    metricContractStates.set(metrics, { values: lease.state.contractValuesByDefinition });
+    return metrics;
+  };
+  return Context.make(Metric.MetricRegistry, lease.state.registry).pipe(
+    Context.add(LayerMetricsRuntime, LayerMetricsRuntime.of({ acquireMetrics })),
+  );
 });
 
 export const layerMetricsRuntime = (config: TelemetryConfig, options: LayerMetricsOptions) =>
-  Layer.effect(Metric.MetricRegistry, makeMetricsRuntime(config, options)).pipe(
+  Layer.effectContext(makeMetricsRuntime(config, options)).pipe(
     Layer.provideMerge(OtlpExporter.layerFlusher),
   );

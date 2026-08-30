@@ -3,7 +3,7 @@ import type { MetricAttributeValue } from "../Metrics.ts";
 
 const metricScalarSchema = Schema.Union([Schema.String, Schema.Number, Schema.Boolean]);
 
-export const isMetricScalar = Schema.is(metricScalarSchema);
+const isMetricScalar = Schema.is(metricScalarSchema);
 
 export const isFiniteMetricScalar = (value: MetricAttributeValue): boolean =>
   isMetricScalar(value) && (!Predicate.isNumber(value) || Number.isFinite(value));
