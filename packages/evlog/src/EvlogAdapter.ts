@@ -5,13 +5,13 @@ import {
   Contract,
   instanceResourceAttributes,
   registerOfficialAdapter,
-  sanitizeText,
   SpanId,
   TelemetryEventSink,
   TraceId,
   transformSignalFields,
   validateContractEvent,
   type BrowserTelemetryEvent,
+  type DataPolicy,
   type EventAdmissionMetadata,
   type EventAttributes,
   type OfficialAdapterRegistration,
@@ -316,7 +316,6 @@ const normalizeGlobalTimestamp = (
 const fieldsForContractEvent = (
   event: TelemetryEvent,
   attributes: EventAttributes,
-  sanitizeDefectText: (value: string) => string,
 ): EventAttributes => {
   const fields: { [attributeName: string]: Contract.AttributeValue } = {
     "event.name": event.name,
@@ -343,7 +342,7 @@ const fieldsForContractEvent = (
     case "defect": {
       const structured = createError({
         code: event.error.type,
-        message: sanitizeDefectText(event.error.message),
+        message: event.error.message,
         status: event.error.retryable ? 503 : 500,
       });
       fields["error.type"] = structured.code ?? structured.name;
@@ -399,6 +398,21 @@ const resourceAttributesFor = (context: ObservabilityAdapterContext) => {
         name !== "service.name" && name !== "service.version" && name !== "deployment.environment",
     ),
   );
+};
+
+const finalCanonicalFields = (
+  policy: DataPolicy,
+  fields: EventAttributes,
+  policyDroppedAttributes: number,
+): EventAttributes => {
+  const decision = transformSignalFields(policy, "event", {
+    "event.policy_dropped_attributes": policyDroppedAttributes,
+    ...fields,
+  });
+  return {
+    ...decision.value,
+    "event.policy_dropped_attributes": policyDroppedAttributes + decision.dropped,
+  };
 };
 
 const admittedRecord = (event: WideEvent): AdmittedRecord => {
@@ -564,14 +578,11 @@ export const makeEvlogAdapter = (
                 attributeName: "event.type",
               });
             }
-            const decision = transformSignalFields(context.policy, "event", event.attributes);
-            const admittedFields = {
-              ...fieldsForContractEvent(event, decision.value, (value) =>
-                sanitizeText(context.policy, value, "defect"),
-              ),
-              "event.policy_dropped_attributes":
-                admission.policyDroppedAttributes + decision.dropped,
-            };
+            const admittedFields = finalCanonicalFields(
+              context.policy,
+              fieldsForContractEvent(event, event.attributes),
+              admission.policyDroppedAttributes,
+            );
             const traceId = Option.getOrUndefined(event.correlation.traceId);
             const spanId = Option.getOrUndefined(event.correlation.spanId);
             offer(
@@ -621,13 +632,17 @@ export const makeEvlogAdapter = (
               "browser.event.occurred_at": event.occurredAt,
               ...event.attributes,
             };
-            const decision = transformSignalFields(context.policy, "event", projected);
             return admittedRecord(
-              wideEventFor(context, timestamp, validation.defaultSeverity, {
-                ...decision.value,
-                "event.policy_dropped_attributes":
-                  event.admission.policyDroppedAttributes + decision.dropped,
-              }),
+              wideEventFor(
+                context,
+                timestamp,
+                validation.defaultSeverity,
+                finalCanonicalFields(
+                  context.policy,
+                  projected,
+                  event.admission.policyDroppedAttributes,
+                ),
+              ),
             );
           });
 
@@ -690,7 +705,6 @@ export const makeEvlogAdapter = (
             incrementReason(dropState, "contract-rejected");
             return;
           }
-          const decision = transformSignalFields(context.policy, "event", attributes);
           const fields: { [attributeName: string]: Contract.AttributeValue } = {
             "event.name": rawName.value,
             "event.kind": "wide",
@@ -698,8 +712,7 @@ export const makeEvlogAdapter = (
             "event.severity": definition.defaultSeverity,
             "event.outcome": "success",
             "event.timestamp": timestamp.value,
-            "event.policy_dropped_attributes": decision.dropped,
-            ...decision.value,
+            ...attributes,
           };
           if (definition.kind === "request") {
             const method = decodeString(drainContext.request?.method);
@@ -719,7 +732,7 @@ export const makeEvlogAdapter = (
                 context,
                 timestamp.value,
                 definition.defaultSeverity,
-                fields,
+                finalCanonicalFields(context.policy, fields, 0),
                 Option.getOrUndefined(traceId),
                 Option.getOrUndefined(spanId),
               ),

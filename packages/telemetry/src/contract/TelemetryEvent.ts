@@ -75,6 +75,7 @@ const isValidTimestamp = (timestamp: string): boolean => {
   const hour = Number(parts[4]);
   const minute = Number(parts[5]);
   const second = Number(parts[6]);
+  const milliseconds = Date.parse(timestamp);
   return (
     month >= 1 &&
     month <= 12 &&
@@ -84,13 +85,14 @@ const isValidTimestamp = (timestamp: string): boolean => {
     minute <= 59 &&
     second <= 59 &&
     Option.isSome(DateTime.make(timestamp)) &&
-    Date.parse(timestamp) <= maxOtlpUnixTimestampMillis
+    milliseconds >= 0 &&
+    milliseconds <= maxOtlpUnixTimestampMillis
   );
 };
 
 export const EventTimestamp = Schema.String.check(
   Schema.makeFilter(isValidTimestamp, {
-    expected: `an RFC 3339 UTC timestamp at or before ${new Date(maxOtlpUnixTimestampMillis).toISOString()}`,
+    expected: `an RFC 3339 UTC timestamp from 1970-01-01T00:00:00.000Z through ${new Date(maxOtlpUnixTimestampMillis).toISOString()}`,
   }),
 ).pipe(Schema.brand("EventTimestamp"));
 export type EventTimestamp = typeof EventTimestamp.Type;

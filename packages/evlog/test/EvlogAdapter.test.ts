@@ -16,7 +16,7 @@ import {
 import { defineTelemetryContract, parseNodeObservabilityConfig } from "@equipe-tech/observability";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { initLogger, isEnabled, log } from "evlog";
+import { initLogger, isEnabled, log, type DrainContext } from "evlog";
 import { Effect, Option, Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 import { makeEvlogAdapter } from "../src/EvlogAdapter.ts";
@@ -558,6 +558,243 @@ describe("evlogAdapter", () => {
     expect(wire).not.toContain("bad-span");
     expect(adapter.drops().reasons.contractRejected).toBe(2);
     expect(report.degraded).toBe(true);
+  });
+
+  it("sanitizes every canonical string field on contract, browser, and global paths", async () => {
+    const adversarial = [
+      "Bearer AAAABBBBCCCCDDDDEEEEFFFF",
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.signature",
+      "sk_live_providerSecret123",
+      "person@example.com",
+      "-----BEGIN PRIVATE KEY-----private-material-----END PRIVATE KEY-----",
+      "cookie=session-secret",
+      "password=hunter2",
+      "canonicalsecret",
+    ];
+    const secretText = adversarial.join(" ");
+    const definition = Contract.telemetryContractDefinition({
+      version: 1,
+      events: {
+        operation: {
+          name: "canonicalsecret.operation",
+          kind: "operation",
+          defaultSeverity: "info",
+          mandatory: true,
+          sampling: { kind: "always" },
+          attributes: {
+            "case.name": { classification: "public", required: true, metricLabel: false },
+          },
+        },
+        request: {
+          name: "canonicalsecret.request",
+          kind: "request",
+          defaultSeverity: "info",
+          mandatory: true,
+          sampling: { kind: "always" },
+          attributes: {
+            "case.name": { classification: "public", required: true, metricLabel: false },
+          },
+        },
+        defect: {
+          name: "canonicalsecret.defect",
+          kind: "defect",
+          defaultSeverity: "error",
+          mandatory: true,
+          sampling: { kind: "always" },
+          attributes: {
+            "case.name": { classification: "public", required: true, metricLabel: false },
+          },
+        },
+        audit: {
+          name: "canonicalsecret.audit",
+          kind: "audit",
+          defaultSeverity: "info",
+          mandatory: true,
+          sampling: { kind: "always" },
+          attributes: {
+            "case.name": { classification: "public", required: true, metricLabel: false },
+          },
+        },
+      },
+      metrics: {},
+      auditActions: {
+        CanonicalAction: {
+          action: "canonicalsecret.action",
+          resourceType: "canonicalsecret_resource",
+          allowedOutcomes: ["success", "failure"],
+        },
+      },
+    });
+    const run = async (endpoint: URL, stdout: Array<string>) => {
+      const contract = await Effect.runPromise(defineTelemetryContract(definition));
+      const config = await Effect.runPromise(
+        parseNodeObservabilityConfig({
+          enabled: true,
+          profile: "worker",
+          service: { name: "evlog-test", version: "1.2.3", environment: "test" },
+          telemetry: { endpoint },
+          evlog: {
+            contract,
+            policy: {
+              attributes: {},
+              blockedKeys: [],
+              blockedValuePatterns: [
+                "canonicalsecret",
+                "operation",
+                "request",
+                "defect",
+                "audit",
+                "success",
+                "failure",
+                "info",
+                "error",
+                "wide",
+                "browser",
+                "EvlogError",
+              ],
+            },
+          },
+          sentry: { enabled: false },
+        }),
+      );
+      let drain: ((context: DrainContext) => void | Promise<void>) | undefined;
+      const adapter = makeEvlogAdapter(
+        {
+          batchSize: 20,
+          maximumAttempts: 1,
+          transportRetries: 0,
+          stdout: { write: (line) => stdout.push(line) > 0 },
+        },
+        (options) => {
+          if (options === undefined) throw new Error("Expected logger options.");
+          drain = options.drain;
+          initLogger(options);
+        },
+      );
+      const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+      if (!observability.enabled) throw new Error("Expected enabled observability.");
+      const producer = makeEventProducer(contract);
+      const requestId = await Effect.runPromise(parseRequestId("canonicalsecret-request"));
+      const runId = await Effect.runPromise(parseRunId("canonicalsecret-run"));
+      const traceId = await Effect.runPromise(parseTraceId("1".repeat(32)));
+      const spanId = await Effect.runPromise(parseSpanId("2".repeat(16)));
+      await observability.runtime.runPromise(
+        producer
+          .emit("request", {
+            outcome: "success",
+            durationMs: 1,
+            http: {
+              method: secretText,
+              route: `/checkout?token=${secretText}`,
+              statusCode: 200,
+            },
+            correlation: new CorrelationContext({
+              trace: { _tag: "Traced", traceId, spanId },
+              requestId: Option.some(requestId),
+              runId: Option.some(runId),
+            }),
+            attributes: { "case.name": "contract-request" },
+          })
+          .pipe(Effect.provide(observability.eventLayer)),
+      );
+      await observability.runtime.runPromise(
+        producer
+          .emit("defect", {
+            error: {
+              type: secretText,
+              message: secretText,
+              retryable: true,
+            },
+            attributes: { "case.name": "contract-defect" },
+          })
+          .pipe(Effect.provide(observability.eventLayer)),
+      );
+      await observability.runtime.runPromise(
+        producer
+          .emit("audit", {
+            outcome: "failure",
+            audit: {
+              action: "canonicalsecret.action",
+              actor: { kind: "user", id: secretText },
+              resourceType: "canonicalsecret_resource",
+              resourceId: secretText,
+            },
+            attributes: { "case.name": "contract-audit" },
+          })
+          .pipe(Effect.provide(observability.eventLayer)),
+      );
+      const sink = await observability.runtime.runPromise(
+        TelemetryEventSink.pipe(Effect.provide(observability.eventLayer)),
+      );
+      await Effect.runPromise(
+        sink.recordBrowserBatch([
+          {
+            id: secretText,
+            name: "canonicalsecret.operation",
+            occurredAt: 0,
+            attributes: { "case.name": "browser-event" },
+            admission: { policyDroppedAttributes: 0 },
+          },
+        ]),
+      );
+      if (drain === undefined) throw new Error("Expected an installed global drain.");
+      await drain({
+        event: {
+          timestamp: "1970-01-01T00:00:00.000Z",
+          level: "info",
+          service: "evlog-test",
+          environment: "test",
+          "event.name": "canonicalsecret.request",
+          "case.name": "global-request",
+          traceId: "1".repeat(32),
+          spanId: "2".repeat(16),
+        },
+        request: {
+          method: secretText,
+          path: `/global?token=${secretText}`,
+          requestId: secretText,
+        },
+      });
+      await observability.close();
+      return adapter.drops();
+    };
+    const receiver = await startReceiver();
+    const wireStdout: Array<string> = [];
+    const wireDrops = await run(receiver.endpoint, wireStdout);
+    await receiver.close();
+    const fallback: Array<string> = [];
+    await run(new URL("http://127.0.0.1:1"), fallback);
+    const outputs = [receiver.bodies.join("\n"), fallback.join("\n")];
+    const fields = [
+      "request.id",
+      "run.id",
+      "http.request.method",
+      "http.route",
+      "error.type",
+      "error.name",
+      "error.message",
+      "audit.actor.id",
+      "audit.action",
+      "audit.resource.type",
+      "audit.resource.id",
+      "event.name",
+      "event.kind",
+      "event.type",
+      "event.severity",
+      "event.outcome",
+      "event.source",
+      "browser.event.id",
+    ];
+    for (const output of outputs) {
+      for (const secret of adversarial) expect(output).not.toContain(secret);
+      expect(output).not.toMatch(/canonicalsecret/i);
+      for (const field of fields) expect(output).toContain(field);
+      expect(output).toContain("1".repeat(32));
+      expect(output).toContain("2".repeat(16));
+      expect(output).toContain("browser.event.occurred_at");
+    }
+    expect(wireStdout).toHaveLength(0);
+    expect(wireDrops.reasons.transport).toBe(0);
   });
 
   it("sanitizes canonical defect text while preserving structured error semantics", async () => {

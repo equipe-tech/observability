@@ -964,19 +964,29 @@ describe("contract event producer", () => {
       const contract = yield* compileApplicationContract;
       const sink = yield* makeCollectingTelemetryEventSink();
       const producer = makeEventProducer(contract);
-      const accepted = yield* producer
-        .emit("CanaryCompleted", {
-          outcome: "success",
-          timestamp: new Date(maxOtlpUnixTimestampMillis).toISOString(),
-          attributes: {},
-        })
-        .pipe(Effect.provide(sink.layer));
-      assert.strictEqual(accepted.decision, "recorded");
       for (const timestamp of [
+        "1970-01-01T00:00:00.000Z",
+        "2026-08-30T16:41:55.558Z",
+        new Date(maxOtlpUnixTimestampMillis).toISOString(),
+      ]) {
+        const accepted = yield* producer
+          .emit("CanaryCompleted", {
+            outcome: "success",
+            timestamp,
+            attributes: {},
+          })
+          .pipe(Effect.provide(sink.layer));
+        assert.strictEqual(accepted.decision, "recorded");
+      }
+      for (const timestamp of [
+        "1969-12-31T23:59:59.999Z",
+        "1900-01-01T00:00:00Z",
+        "not-a-date",
         new Date(maxOtlpUnixTimestampMillis + 1).toISOString(),
         "3000-01-01T00:00:00Z",
         "9999-01-01T00:00:00Z",
         "+275760-09-13T00:00:00.000Z",
+        Number.NEGATIVE_INFINITY,
         Number.POSITIVE_INFINITY,
         Number.NaN,
       ]) {
@@ -988,7 +998,7 @@ describe("contract event producer", () => {
         assert.strictEqual(failure.code, "OBS_EVENT_INVALID_FIELD");
         assert.strictEqual(failure.attributeName, "event.timestamp");
       }
-      assert.lengthOf(yield* sink.events, 1);
+      assert.lengthOf(yield* sink.events, 3);
     }),
   );
 

@@ -59,7 +59,7 @@ A versão 0.3 reserva campos preenchidos pelos sinks. Remova das definições de
 
 ## Limitar timestamps ao intervalo do OTLP
 
-Eventos de servidor e browser não aceitam timestamps depois de `2554-07-21T23:34:33.709Z`, ou `18446744073709` milissegundos desde o epoch. Corrija relógios de dispositivo e timestamps fornecidos pela aplicação antes da emissão. O limite anterior do JavaScript permitia valores que excediam o `fixed64` do OTLP e faziam o Collector rejeitar o lote inteiro.
+Eventos de servidor e browser aceitam timestamps entre `1970-01-01T00:00:00.000Z` e `2554-07-21T23:34:33.709Z`, inclusive. O limite superior corresponde a `18446744073709` milissegundos desde o epoch. Corrija relógios de dispositivo e timestamps fornecidos pela aplicação antes da emissão. Valores fora desse intervalo podem fazer o Collector rejeitar o lote inteiro.
 
 ## Atualizar atributos sensíveis do contrato
 
