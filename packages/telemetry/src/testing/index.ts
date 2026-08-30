@@ -10,10 +10,7 @@ export {
   registerTestingAdapter,
   type TestingAdapterRegistration,
 } from "../profile/ObservabilityAdapter.ts";
-export {
-  createTestingNodeObservabilityFromConfig,
-  makeTestingNodeObservability,
-} from "../node/Observability.ts";
+export { createTestingNodeObservabilityFromConfig } from "../node/Observability.ts";
 
 export type CapturedAttributeValue = string | number | boolean;
 

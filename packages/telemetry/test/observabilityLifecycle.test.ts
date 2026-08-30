@@ -23,8 +23,12 @@ import {
 } from "../src/profile/LifecycleRegistry.ts";
 import { workerProfile } from "../src/profile/ObservabilityProfile.ts";
 import {
+  createNodeObservability,
   createNodeObservabilityFromConfig,
   createTestingNodeObservabilityFromConfig,
+  layerNodeObservability,
+  makeNodeObservability,
+  NodeObservabilityService,
   type NodeObservabilityEnabled,
 } from "../src/node/Observability.ts";
 
@@ -114,6 +118,51 @@ describe("observability lifecycle", () => {
     );
     expect(unsupportedError.code).toBe("OBS_OBSERVABILITY_ADAPTER_UNSUPPORTED");
 
+    const coreClaims: ReadonlyArray<{
+      readonly name: string;
+      readonly capability: "traces" | "metrics";
+      readonly stage: "server" | "metrics";
+    }> = [
+      { name: "user-traces", capability: "traces", stage: "server" },
+      { name: "user-metrics", capability: "metrics", stage: "metrics" },
+    ];
+    for (const core of coreClaims) {
+      const registration = registerTestingAdapter({
+        name: AdapterName.make(core.name),
+        capability: core.capability,
+        stage: core.stage,
+        start: () => Effect.succeed({ flush: Effect.void, close: Effect.void }),
+      });
+      const error = await Effect.runPromise(
+        Effect.flip(
+          validateAdapterRegistrations(parsed.profile, "test", [registration], {
+            allowTesting: true,
+          }),
+        ),
+      );
+      expect(error).toMatchObject({
+        code: "OBS_OBSERVABILITY_ADAPTER_UNSUPPORTED",
+        field: "adapters",
+      });
+    }
+
+    const coreReport = await Effect.runPromise(
+      createLifecycleRegistry(
+        workerProfile,
+        [],
+        OtlpExporter.Flusher.of({ flush: Effect.void, register: () => Effect.void }),
+        Effect.void,
+      ).run("flush"),
+    );
+    expect(
+      coreReport.outcomes.flatMap((outcome) =>
+        outcome.participant === "adapter" ? [[String(outcome.adapter), outcome.capability]] : [],
+      ),
+    ).toEqual([
+      ["core-traces", "traces"],
+      ["core-metrics", "metrics"],
+    ]);
+
     const events = registerTestingAdapter(recordingAdapter("events", "events", calls));
     const duplicate = await Effect.runPromise(
       Effect.flip(
@@ -123,6 +172,49 @@ describe("observability lifecycle", () => {
       ),
     );
     expect(duplicate.code).toBe("OBS_OBSERVABILITY_ADAPTER_DUPLICATE");
+  });
+
+  it("runs the public create and Effect entrypoints", async () => {
+    const calls: Array<string> = [];
+    const registration = registerOfficialAdapter(recordingAdapter("events", "events", calls));
+    const parsed = await Effect.runPromise(config());
+    const made = enabled(await Effect.runPromise(makeNodeObservability(parsed, [registration])));
+    await made.close();
+    const created = enabled(
+      await createNodeObservability({
+        profile: "worker",
+        env: { OTEL_SERVICE_NAME: "worker" },
+        contract,
+        policy,
+        adapters: [registration],
+      }),
+    );
+    await created.close();
+    expect(calls.filter((call) => call === "start:events")).toHaveLength(2);
+    expect(calls.filter((call) => call === "close:events")).toHaveLength(2);
+  });
+
+  it("runs the layer finalizer exactly once", async () => {
+    const calls: Array<string> = [];
+    const registration = registerOfficialAdapter(recordingAdapter("events", "events", calls));
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const handle = yield* NodeObservabilityService;
+        expect(handle.enabled).toBe(true);
+      }).pipe(
+        Effect.provide(
+          layerNodeObservability({
+            profile: "worker",
+            env: { OTEL_SERVICE_NAME: "worker" },
+            contract,
+            policy,
+            adapters: [registration],
+          }),
+        ),
+        Effect.scoped,
+      ),
+    );
+    expect(calls.filter((call) => call === "close:events")).toHaveLength(1);
   });
 
   it("validates official registrations and runs their lifecycle through the root factory", async () => {
@@ -156,6 +248,20 @@ describe("observability lifecycle", () => {
     await expect(
       createNodeObservabilityFromConfig({ enabled: false }, [registration]),
     ).rejects.toMatchObject({ code: "OBS_OBSERVABILITY_ADAPTER_TESTING" });
+  });
+
+  it("matches enabled post-close flush behavior for disabled handles", async () => {
+    const handle = await createNodeObservabilityFromConfig({ enabled: false }, []);
+    expect((await handle.flush()).operation).toBe("flush");
+    const first = handle.close();
+    expect(handle.dispose()).toBe(first);
+    await first;
+    await handle[Symbol.asyncDispose]();
+    await expect(handle.flush()).rejects.toMatchObject({
+      _tag: "ObservabilityLifecycleError",
+      code: "OBS_OBSERVABILITY_CLOSED",
+      cause: "flush after close",
+    });
   });
 
   it("uses a changed profile capability order for startup and shutdown", async () => {

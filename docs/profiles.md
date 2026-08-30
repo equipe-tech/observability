@@ -20,6 +20,8 @@ OTLP, traces e métricas pertencem ao núcleo. Aplicações registram adapters o
 
 `parseNodeObservabilityConfig` analisa valores explícitos. `nodeObservabilityConfigFromEnv` analisa ambiente. As duas entradas permanecem separadas e não aplicam precedência entre fontes.
 
+`createNodeObservability` é a entrada assíncrona para aplicações Node. Ela analisa o ambiente, inicia o runtime e devolve um handle que a aplicação deve fechar. `makeNodeObservability` recebe uma configuração já analisada e devolve um `Effect`, para composição em programas Effect. `layerNodeObservability` fornece `NodeObservabilityService` em uma `Layer` com escopo e fecha o handle uma vez quando o escopo termina.
+
 Um endpoint em `localhost`, `localhost.`, `127.0.0.0/8`, `::1` ou no equivalente IPv4-mapped de `127.0.0.0/8` define escopo local. Somente nesse escopo o parser usa `0.0.0` e `development`. Qualquer outro endpoint exige `OTEL_SERVICE_VERSION` e `OTEL_DEPLOYMENT_ENVIRONMENT`.
 
 `OTEL_SERVICE_VERSION` é a identidade canônica da release. Um valor não vazio em `SENTRY_RELEASE` ou `OTEL_SERVICE_RELEASE` encerra o bootstrap.

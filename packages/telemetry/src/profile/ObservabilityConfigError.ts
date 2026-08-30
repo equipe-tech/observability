@@ -5,8 +5,11 @@ export const ObservabilityConfigField = Schema.Literals([
   "adapters",
   "policy",
   "policy.blockedValuePatterns",
+  "OTEL_SERVICE_NAME",
   "OTEL_SERVICE_VERSION",
+  "OTEL_SERVICE_INSTANCE_ID",
   "OTEL_DEPLOYMENT_ENVIRONMENT",
+  "OTEL_EXPORTER_OTLP_ENDPOINT",
   "SENTRY_DSN",
 ]);
 export type ObservabilityConfigField = typeof ObservabilityConfigField.Type;

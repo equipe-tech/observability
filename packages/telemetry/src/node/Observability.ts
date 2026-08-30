@@ -53,14 +53,32 @@ const emptyReport = (operation: "flush" | "close"): LifecycleReport => ({
   degraded: false,
 });
 
+const closedFlush = (): Promise<LifecycleReport> =>
+  Effect.runPromise(
+    new ObservabilityLifecycleError({
+      code: "OBS_OBSERVABILITY_CLOSED",
+      message: "Observability is closed. Create a new runtime before flushing again.",
+      adapter: Option.none(),
+      cause: "flush after close",
+    }),
+  );
+
 const disabledHandle = (): NodeObservabilityDisabled => {
   const report = emptyReport("close");
+  const closePromise = Promise.resolve(report);
+  let closed = false;
+  const close = () => {
+    closed = true;
+    return closePromise;
+  };
   return {
     enabled: false,
-    flush: () => Promise.resolve(emptyReport("flush")),
-    close: () => Promise.resolve(report),
-    dispose: () => Promise.resolve(report),
-    [Symbol.asyncDispose]: () => Promise.resolve(),
+    flush: () => (closed ? closedFlush() : Promise.resolve(emptyReport("flush"))),
+    close,
+    dispose: close,
+    [Symbol.asyncDispose]: async () => {
+      await close();
+    },
   };
 };
 
@@ -78,14 +96,7 @@ class LiveNodeObservability implements NodeObservabilityEnabled {
 
   flush(): Promise<LifecycleReport> {
     if (this.#closed) {
-      return Effect.runPromise(
-        new ObservabilityLifecycleError({
-          code: "OBS_OBSERVABILITY_CLOSED",
-          message: "Observability is closed. Create a new runtime before flushing again.",
-          adapter: Option.none(),
-          cause: "flush after close",
-        }),
-      );
+      return closedFlush();
     }
     if (this.#flushPromise !== undefined) {
       return this.#flushPromise;
@@ -194,12 +205,6 @@ export const makeNodeObservability = (
 ): Effect.Effect<NodeObservability, InvalidObservabilityConfig | ObservabilityLifecycleError> =>
   makeNodeObservabilityWithOptions(config, registrations, { allowTesting: false });
 
-export const makeTestingNodeObservability = (
-  config: NodeObservabilityConfig,
-  registrations: ReadonlyArray<TestingAdapterRegistration>,
-): Effect.Effect<NodeObservability, InvalidObservabilityConfig | ObservabilityLifecycleError> =>
-  makeNodeObservabilityWithOptions(config, registrations, { allowTesting: true });
-
 export const createNodeObservabilityFromConfig = (
   config: NodeObservabilityConfig,
   registrations: ReadonlyArray<AdapterRegistration>,
@@ -209,7 +214,9 @@ export const createTestingNodeObservabilityFromConfig = (
   config: NodeObservabilityConfig,
   registrations: ReadonlyArray<TestingAdapterRegistration>,
 ): Promise<NodeObservability> =>
-  Effect.runPromise(makeTestingNodeObservability(config, registrations));
+  Effect.runPromise(
+    makeNodeObservabilityWithOptions(config, registrations, { allowTesting: true }),
+  );
 
 export type CreateNodeObservabilityInput = EnvBootstrapInput & {
   readonly adapters: ReadonlyArray<AdapterRegistration>;

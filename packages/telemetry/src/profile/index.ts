@@ -1,4 +1,4 @@
-export * from "./DataPolicy.ts";
+export { parseDataPolicy, type DataPolicy, type DataPolicyInput } from "./DataPolicy.ts";
 export {
   AdapterFailure,
   AdapterName,
@@ -16,6 +16,36 @@ export {
   type RuntimeDisposalOutcome,
 } from "./ObservabilityAdapter.ts";
 export { ObservabilityLifecycleError } from "./LifecycleRegistry.ts";
-export * from "./ObservabilityConfig.ts";
-export * from "./ObservabilityConfigError.ts";
-export * from "./ObservabilityProfile.ts";
+export {
+  nodeObservabilityConfigFromEnv,
+  parseNodeObservabilityConfig,
+  type DeploymentScope,
+  type EnvBootstrapInput,
+  type NodeObservabilityConfig,
+  type NodeObservabilityConfigDisabled,
+  type NodeObservabilityConfigEnabled,
+  type NodeObservabilityConfigInput,
+  type SentryConfig,
+} from "./ObservabilityConfig.ts";
+export {
+  DuplicateReleaseVariable,
+  InvalidObservabilityConfig,
+  ObservabilityConfigField,
+  SecondReleaseVariable,
+} from "./ObservabilityConfigError.ts";
+export {
+  cliProfile,
+  libraryProfile,
+  nestjsApiProfile,
+  observabilityProfiles,
+  reactWebProfile,
+  workerProfile,
+  type AdapterCapability,
+  type BrowserObservabilityProfile,
+  type CapabilityRequirement,
+  type LibraryObservabilityProfile,
+  type LifecycleStage,
+  type NodeObservabilityProfile,
+  type ObservabilityProfile,
+  type ProfileName,
+} from "./ObservabilityProfile.ts";

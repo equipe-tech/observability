@@ -41,6 +41,74 @@ describe("node observability configuration", () => {
     }
   });
 
+  it("reports the exact field and code for each invalid environment value", async () => {
+    const fixtures: ReadonlyArray<{
+      readonly field:
+        | "OTEL_SERVICE_NAME"
+        | "OTEL_SERVICE_VERSION"
+        | "OTEL_SERVICE_INSTANCE_ID"
+        | "OTEL_DEPLOYMENT_ENVIRONMENT"
+        | "OTEL_EXPORTER_OTLP_ENDPOINT"
+        | "SENTRY_DSN";
+      readonly env: { readonly [name: string]: string | undefined };
+    }> = [
+      { field: "OTEL_SERVICE_NAME", env: {} },
+      { field: "OTEL_SERVICE_NAME", env: { OTEL_SERVICE_NAME: "Invalid" } },
+      {
+        field: "OTEL_SERVICE_VERSION",
+        env: { OTEL_SERVICE_NAME: "jobs", OTEL_SERVICE_VERSION: "latest" },
+      },
+      {
+        field: "OTEL_SERVICE_INSTANCE_ID",
+        env: { OTEL_SERVICE_NAME: "jobs", OTEL_SERVICE_INSTANCE_ID: "x".repeat(129) },
+      },
+      {
+        field: "OTEL_DEPLOYMENT_ENVIRONMENT",
+        env: { OTEL_SERVICE_NAME: "jobs", OTEL_DEPLOYMENT_ENVIRONMENT: "Production" },
+      },
+      {
+        field: "OTEL_EXPORTER_OTLP_ENDPOINT",
+        env: { OTEL_SERVICE_NAME: "jobs", OTEL_EXPORTER_OTLP_ENDPOINT: "not-a-url" },
+      },
+      {
+        field: "OTEL_EXPORTER_OTLP_ENDPOINT",
+        env: {
+          OTEL_SERVICE_NAME: "jobs",
+          OTEL_EXPORTER_OTLP_ENDPOINT: "https://user:secret@collector.example.com",
+        },
+      },
+      { field: "SENTRY_DSN", env: { OTEL_SERVICE_NAME: "jobs", SENTRY_DSN: "not-a-url" } },
+    ];
+    for (const fixture of fixtures) {
+      const error = await Effect.runPromise(Effect.flip(fromEnv("worker", fixture.env)));
+      expect(error).toMatchObject({
+        _tag: "InvalidObservabilityConfig",
+        code: "OBS_OBSERVABILITY_CONFIG_INVALID",
+        field: fixture.field,
+      });
+    }
+  });
+
+  it("returns a typed endpoint error for explicit credential-bearing configuration", async () => {
+    const error = await Effect.runPromise(
+      Effect.flip(
+        parseNodeObservabilityConfig({
+          enabled: true,
+          profile: "worker",
+          service: { name: "jobs", version: "1.4.0", environment: "test" },
+          telemetry: { endpoint: new URL("https://user:secret@collector.example.com") },
+          evlog: { contract, policy },
+          sentry: { enabled: false },
+        }),
+      ),
+    );
+    expect(error).toMatchObject({
+      _tag: "InvalidObservabilityConfig",
+      code: "OBS_OBSERVABILITY_CONFIG_INVALID",
+      field: "OTEL_EXPORTER_OTLP_ENDPOINT",
+    });
+  });
+
   it("classifies exact loopback spellings as local", async () => {
     for (const endpoint of [
       "http://localhost:4318",

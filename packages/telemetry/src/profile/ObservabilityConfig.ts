@@ -75,19 +75,33 @@ export type EnvBootstrapInput = {
   readonly environmentAlias?: typeof EnvironmentAliasPolicy.Type | undefined;
 };
 
-const ProfileEnvironment = Schema.Struct({
-  OTEL_SERVICE_NAME: Schema.NonEmptyString,
-  OTEL_SERVICE_VERSION: Schema.NonEmptyString.pipe(Schema.optionalKey),
-  OTEL_DEPLOYMENT_ENVIRONMENT: Schema.NonEmptyString.pipe(Schema.optionalKey),
-  OTEL_SERVICE_INSTANCE_ID: Schema.String.pipe(Schema.optionalKey),
-  OTEL_EXPORTER_OTLP_ENDPOINT: OtlpEndpoint.pipe(Schema.optionalKey),
-  SENTRY_DSN: Schema.URLFromString.pipe(Schema.optionalKey),
-});
-
-const decodeProfileEnvironment = Schema.decodeUnknownEffect(ProfileEnvironment);
+const decodeServiceName = Schema.decodeUnknownEffect(Schema.NonEmptyString);
+const decodeServiceVersion = Schema.decodeUnknownEffect(
+  Schema.Union([Schema.NonEmptyString, Schema.Undefined]),
+);
+const decodeDeploymentEnvironment = Schema.decodeUnknownEffect(
+  Schema.Union([Schema.NonEmptyString, Schema.Undefined]),
+);
+const decodeServiceInstanceId = Schema.decodeUnknownEffect(
+  Schema.Union([Schema.String, Schema.Undefined]),
+);
+const decodeOtlpEndpoint = Schema.decodeUnknownEffect(
+  Schema.Union([OtlpEndpoint, Schema.Undefined]),
+);
+const decodeSentryDsn = Schema.decodeUnknownEffect(
+  Schema.Union([Schema.URLFromString, Schema.Undefined]),
+);
+const decodeTelemetryConfig = Schema.decodeUnknownEffect(TelemetryConfig);
 
 const invalid = (
-  field: "profile" | "OTEL_SERVICE_VERSION" | "OTEL_DEPLOYMENT_ENVIRONMENT" | "SENTRY_DSN",
+  field:
+    | "profile"
+    | "OTEL_SERVICE_NAME"
+    | "OTEL_SERVICE_VERSION"
+    | "OTEL_SERVICE_INSTANCE_ID"
+    | "OTEL_DEPLOYMENT_ENVIRONMENT"
+    | "OTEL_EXPORTER_OTLP_ENDPOINT"
+    | "SENTRY_DSN",
   message: string,
   rule: string,
   cause?: unknown,
@@ -147,7 +161,6 @@ export const parseNodeObservabilityConfig = Effect.fn("parseNodeObservabilityCon
     return { enabled: false };
   }
   const profile = yield* nodeProfile(input.profile);
-  const deployment = deploymentScopeFromEndpoint(input.telemetry.endpoint);
   const identity = yield* parseResourceIdentity({
     serviceName: input.service.name,
     serviceVersion: input.service.version,
@@ -156,13 +169,34 @@ export const parseNodeObservabilityConfig = Effect.fn("parseNodeObservabilityCon
   }).pipe(
     Effect.mapError((cause) =>
       invalid(
-        cause.field === "service.version" ? "OTEL_SERVICE_VERSION" : "OTEL_DEPLOYMENT_ENVIRONMENT",
+        cause.field === "service.name"
+          ? "OTEL_SERVICE_NAME"
+          : cause.field === "service.version"
+            ? "OTEL_SERVICE_VERSION"
+            : cause.field === "service.instance.id"
+              ? "OTEL_SERVICE_INSTANCE_ID"
+              : "OTEL_DEPLOYMENT_ENVIRONMENT",
         cause.message,
         cause.rule,
         cause,
       ),
     ),
   );
+  const telemetry = yield* decodeTelemetryConfig({
+    identity,
+    environmentAlias: input.telemetry.environmentAlias ?? "omitted",
+    otlpEndpoint: input.telemetry.endpoint.href,
+  }).pipe(
+    Effect.mapError((cause) =>
+      invalid(
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "The OTLP endpoint is invalid. Use an HTTP or HTTPS URL without credentials.",
+        "an HTTP or HTTPS URL without credentials",
+        cause,
+      ),
+    ),
+  );
+  const deployment = deploymentScopeFromEndpoint(telemetry.otlpEndpoint);
   const policy = yield* parseDataPolicy(input.evlog.policy);
   const sentry = yield* sentryFor(
     profile,
@@ -174,11 +208,7 @@ export const parseNodeObservabilityConfig = Effect.fn("parseNodeObservabilityCon
     profile,
     deployment,
     identity,
-    telemetry: new TelemetryConfig({
-      identity,
-      environmentAlias: input.telemetry.environmentAlias,
-      otlpEndpoint: input.telemetry.endpoint,
-    }),
+    telemetry,
     evlog: { contract: input.evlog.contract, policy },
     sentry,
   };
@@ -196,20 +226,69 @@ export const nodeObservabilityConfigFromEnv = Effect.fn("nodeObservabilityConfig
     }
     yield* rejectSecondReleaseVariables(input.env);
     const profile = yield* nodeProfile(input.profile);
-    const variables = yield* decodeProfileEnvironment(input.env).pipe(
+    const serviceName = yield* decodeServiceName(input.env.OTEL_SERVICE_NAME).pipe(
       Effect.mapError((cause) =>
         invalid(
-          "OTEL_DEPLOYMENT_ENVIRONMENT",
-          "Observability environment is invalid. Set OTEL_SERVICE_NAME and valid runtime variables.",
-          "valid canonical observability environment variables",
+          "OTEL_SERVICE_NAME",
+          "OTEL_SERVICE_NAME is invalid. Set a non-empty service name.",
+          "a non-empty service name",
           cause,
         ),
       ),
     );
+    const serviceVersion = yield* decodeServiceVersion(input.env.OTEL_SERVICE_VERSION).pipe(
+      Effect.mapError((cause) =>
+        invalid(
+          "OTEL_SERVICE_VERSION",
+          "OTEL_SERVICE_VERSION is invalid. Set a non-empty release identity.",
+          "a non-empty release identity",
+          cause,
+        ),
+      ),
+    );
+    const environment = yield* decodeDeploymentEnvironment(
+      input.env.OTEL_DEPLOYMENT_ENVIRONMENT,
+    ).pipe(
+      Effect.mapError((cause) =>
+        invalid(
+          "OTEL_DEPLOYMENT_ENVIRONMENT",
+          "OTEL_DEPLOYMENT_ENVIRONMENT is invalid. Set a non-empty environment name.",
+          "a non-empty environment name",
+          cause,
+        ),
+      ),
+    );
+    const serviceInstanceId = yield* decodeServiceInstanceId(
+      input.env.OTEL_SERVICE_INSTANCE_ID,
+    ).pipe(
+      Effect.mapError((cause) =>
+        invalid(
+          "OTEL_SERVICE_INSTANCE_ID",
+          "OTEL_SERVICE_INSTANCE_ID is invalid. Set a string instance identifier.",
+          "a string instance identifier",
+          cause,
+        ),
+      ),
+    );
+    const endpoint = yield* decodeOtlpEndpoint(input.env.OTEL_EXPORTER_OTLP_ENDPOINT).pipe(
+      Effect.mapError((cause) =>
+        invalid(
+          "OTEL_EXPORTER_OTLP_ENDPOINT",
+          "OTEL_EXPORTER_OTLP_ENDPOINT is invalid. Use an HTTP or HTTPS URL without credentials.",
+          "an HTTP or HTTPS URL without credentials",
+          cause,
+        ),
+      ),
+    );
+    const dsn = yield* decodeSentryDsn(input.env.SENTRY_DSN).pipe(
+      Effect.mapError((cause) =>
+        invalid("SENTRY_DSN", "SENTRY_DSN is invalid. Set a valid URL.", "a valid URL", cause),
+      ),
+    );
     const resolution = resolveEnvironmentPolicy({
-      endpoint: variables.OTEL_EXPORTER_OTLP_ENDPOINT,
-      serviceVersion: variables.OTEL_SERVICE_VERSION,
-      environment: variables.OTEL_DEPLOYMENT_ENVIRONMENT,
+      endpoint,
+      serviceVersion,
+      environment,
     });
     if (resolution.kind === "missing-remote-identity") {
       if (
@@ -229,19 +308,20 @@ export const nodeObservabilityConfigFromEnv = Effect.fn("nodeObservabilityConfig
       );
     }
     const identity = yield* parseResourceIdentity({
-      serviceName: variables.OTEL_SERVICE_NAME,
+      serviceName,
       serviceVersion: resolution.serviceVersion,
       environment: resolution.environment,
-      instance:
-        variables.OTEL_SERVICE_INSTANCE_ID === ""
-          ? Option.none()
-          : Option.fromNullishOr(variables.OTEL_SERVICE_INSTANCE_ID),
+      instance: serviceInstanceId === "" ? Option.none() : Option.fromNullishOr(serviceInstanceId),
     }).pipe(
       Effect.mapError((cause) =>
         invalid(
-          cause.field === "service.version"
-            ? "OTEL_SERVICE_VERSION"
-            : "OTEL_DEPLOYMENT_ENVIRONMENT",
+          cause.field === "service.name"
+            ? "OTEL_SERVICE_NAME"
+            : cause.field === "service.version"
+              ? "OTEL_SERVICE_VERSION"
+              : cause.field === "service.instance.id"
+                ? "OTEL_SERVICE_INSTANCE_ID"
+                : "OTEL_DEPLOYMENT_ENVIRONMENT",
           cause.message,
           cause.rule,
           cause,
@@ -249,7 +329,7 @@ export const nodeObservabilityConfigFromEnv = Effect.fn("nodeObservabilityConfig
       ),
     );
     const policy = yield* parseDataPolicy(input.policy);
-    const sentry = yield* sentryFor(profile, resolution.environment, variables.SENTRY_DSN);
+    const sentry = yield* sentryFor(profile, resolution.environment, dsn);
     return {
       enabled: true,
       profile,
