@@ -7,7 +7,7 @@ import {
   type TelemetryContract,
   type TelemetryContractInput,
 } from "../contract/index.ts";
-import { defineMetricDefinitions, type MetricKind } from "../contract/MetricDefinition.ts";
+import type { MetricDefinitionsInput } from "../contract/MetricDefinition.ts";
 import { ContractIssueCode, TelemetryEventErrorCode } from "../contract/TelemetryContractError.ts";
 import type { TelemetryEvent } from "../contract/TelemetryEvent.ts";
 import { organizationEvents } from "../contract/OrganizationEvents.ts";
@@ -26,7 +26,7 @@ export const contractIssueFixtures = ContractIssueCode.literals;
 
 export const telemetryEventErrorFixtures = TelemetryEventErrorCode.literals;
 
-export const metricDefinitionFixtures = defineMetricDefinitions({
+export const metricDefinitionFixtures = {
   Counter: {
     name: "fixture.counter",
     description: "Counter fixture",
@@ -49,17 +49,68 @@ export const metricDefinitionFixtures = defineMetricDefinitions({
     kind: "observable_gauge",
     attributes: {},
   },
-});
+} satisfies MetricDefinitionsInput;
+
+type MetricDefinitionIssueCode = Extract<
+  ContractIssueCode,
+  | "OBS_CONTRACT_INVALID_METRIC_NAME"
+  | "OBS_CONTRACT_DUPLICATE_METRIC_NAME"
+  | "OBS_CONTRACT_INVALID_METRIC_KIND"
+  | "OBS_CONTRACT_INVALID_METRIC_DESCRIPTION"
+  | "OBS_CONTRACT_INVALID_METRIC_UNIT"
+  | "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES"
+  | "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_NAME"
+  | "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_DEFINITION"
+  | "OBS_CONTRACT_INVALID_METRIC_CARDINALITY"
+  | "OBS_CONTRACT_INVALID_METRIC_ALLOWED_VALUES"
+>;
 
 export type InvalidMetricDefinitionFixture = {
-  readonly kind: MetricKind;
-  readonly issue: ContractIssueCode;
+  readonly issue: MetricDefinitionIssueCode;
+  readonly metricsDocument: string;
 };
 
 export const invalidMetricDefinitionFixtures: ReadonlyArray<InvalidMetricDefinitionFixture> = [
-  { kind: "counter", issue: "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES" },
-  { kind: "histogram", issue: "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES" },
-  { kind: "observable_gauge", issue: "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES" },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_NAME",
+    metricsDocument: `{"Metric":{"name":"invalid","description":"Fixture","unit":"1","kind":"counter","attributes":{}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_DUPLICATE_METRIC_NAME",
+    metricsDocument: `{"First":{"name":"fixture.duplicate","description":"Fixture","unit":"1","kind":"counter","attributes":{}},"Second":{"name":"fixture.duplicate","description":"Fixture","unit":"1","kind":"counter","attributes":{}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_KIND",
+    metricsDocument: `{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"1","kind":"summary","attributes":{}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_DESCRIPTION",
+    metricsDocument: `{"Metric":{"name":"fixture.metric","description":"","unit":"1","kind":"counter","attributes":{}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_UNIT",
+    metricsDocument: `{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"bad unit","kind":"counter","attributes":{}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES",
+    metricsDocument: `{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"ms","kind":"histogram","boundaries":[],"attributes":{}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_NAME",
+    metricsDocument: `{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"1","kind":"counter","attributes":{"Invalid":{"classification":"public","maximumCardinality":1}}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_DEFINITION",
+    metricsDocument: `{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"1","kind":"counter","attributes":{"fixture.label":{"classification":"sensitive","maximumCardinality":1}}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_CARDINALITY",
+    metricsDocument: `{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"1","kind":"counter","attributes":{"fixture.label":{"classification":"public","maximumCardinality":0}}}}`,
+  },
+  {
+    issue: "OBS_CONTRACT_INVALID_METRIC_ALLOWED_VALUES",
+    metricsDocument: `{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"1","kind":"counter","attributes":{"fixture.label":{"classification":"public","maximumCardinality":1,"allowedValues":[]}}}}`,
+  },
 ];
 
 export type CollectingTelemetryEventSink = {

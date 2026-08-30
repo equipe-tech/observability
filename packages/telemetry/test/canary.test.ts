@@ -93,7 +93,9 @@ const MetricDataPoint = Schema.Struct({
 
 const ExportedMetric = Schema.Struct({
   name: Schema.String,
-  sum: Schema.Struct({ dataPoints: Schema.Array(MetricDataPoint) }).pipe(Schema.optionalKey),
+  sum: Schema.Struct({
+    dataPoints: Schema.Array(MetricDataPoint).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  }).pipe(Schema.optionalKey),
 });
 
 const MetricExport = Schema.Struct({
@@ -381,8 +383,19 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
             assert.strictEqual(Option.getOrUndefined(attributeValue(attributes, key)), "****");
           }
         }
-        for (const key of redactedAttributeKeys) {
-          assert.isTrue(Option.isNone(attributeValue(run.metric.dataPoint.attributes, key)));
+        assert.strictEqual(
+          Option.getOrUndefined(attributeValue(run.metric.dataPoint.attributes, "canary.run_id")),
+          runId,
+        );
+        const metricAttributes = JSON.stringify(run.metric.dataPoint.attributes);
+        for (const value of [
+          sensitive.authorization,
+          sensitive.password,
+          sensitive.accessToken,
+          sensitive.email,
+          sensitive.phoneNumber,
+        ]) {
+          assert.notInclude(metricAttributes, value);
         }
         assert.include(redactedBody, "[REDACTED]");
         assert.include(run.redactionSpanEvent.name, "[REDACTED]");

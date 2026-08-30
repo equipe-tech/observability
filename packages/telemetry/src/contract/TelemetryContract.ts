@@ -36,7 +36,7 @@ export type {
   MetricKind,
   ObservableGaugeMetricDefinitionInput,
 } from "./MetricDefinition.ts";
-export { defineMetricDefinitions, isValidMetricName } from "./MetricDefinition.ts";
+export { isValidMetricName } from "./MetricDefinition.ts";
 
 export const AttributeClassification = Schema.Literals([
   "public",

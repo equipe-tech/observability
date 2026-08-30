@@ -1,6 +1,6 @@
-import { Schema } from "effect";
 import { isReservedEventNamePart, isValidAttributeName } from "./EventName.ts";
 import { isForbiddenMetricAttributeName } from "../policy/MetricLabelPolicy.ts";
+import { isFiniteMetricScalar, metricScalarIdentity } from "../metrics/MetricScalar.ts";
 import {
   containsControlCharacter,
   instrumentNamePattern,
@@ -77,10 +77,6 @@ export type CompiledMetricDefinition =
       readonly kind: "observable_gauge";
       readonly boundaries?: never;
     });
-
-export const defineMetricDefinitions = <const Metrics extends MetricDefinitionsInput>(
-  metrics: Metrics,
-): Metrics => metrics;
 
 const metricNamePattern = /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/;
 const reservedMetricParts = new Set([
@@ -162,9 +158,6 @@ export const isValidMetricAttributeCount = (count: number): boolean =>
 export const isValidMetricCardinality = (value: number): boolean =>
   Number.isInteger(value) && value >= 1 && value <= maximumMetricAttributeCardinality;
 
-const scalarSchema = Schema.Union([Schema.String, Schema.Number, Schema.Boolean]);
-const isMetricScalar = Schema.is(scalarSchema);
-
 export const validAllowedValues = (
   values: ReadonlyArray<MetricAttributeScalar> | undefined,
   maximumCardinality: number,
@@ -173,10 +166,10 @@ export const validAllowedValues = (
   if (values.length === 0 || values.length > maximumCardinality) return false;
   const identities = new Set<string>();
   for (const value of values) {
-    if (!isMetricScalar(value) || (Schema.is(Schema.Number)(value) && !Number.isFinite(value))) {
+    if (!isFiniteMetricScalar(value)) {
       return false;
     }
-    const identity = `${Schema.is(Schema.String)(value) ? "string" : Schema.is(Schema.Number)(value) ? "number" : "boolean"}:${String(value)}`;
+    const identity = metricScalarIdentity(value);
     if (identities.has(identity)) return false;
     identities.add(identity);
   }

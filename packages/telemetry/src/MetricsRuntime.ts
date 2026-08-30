@@ -28,6 +28,7 @@ import {
 import type { TelemetryConfig } from "./TelemetryConfig.ts";
 import { baseDataPolicy, type DataPolicy } from "./policy/DataPolicy.ts";
 import { metricLabelRejection, type MetricLabelRejection } from "./policy/MetricLabelPolicy.ts";
+import { isFiniteMetricScalar, metricScalarIdentity } from "./metrics/MetricScalar.ts";
 import {
   containsControlCharacter,
   instrumentNamePattern,
@@ -469,16 +470,6 @@ const parseHistogramDefinition = (input: HistogramDefinition): NormalizedHistogr
   return { ...common, boundaries: [...definition.boundaries] };
 };
 
-const attributeIdentity = (value: MetricAttributeValue): string => {
-  if (Predicate.isString(value)) {
-    return `s:${JSON.stringify(value)}`;
-  }
-  if (Predicate.isBoolean(value)) {
-    return value ? "b:1" : "b:0";
-  }
-  return `n:${Object.is(value, -0) ? 0 : value}`;
-};
-
 const parseAttributes = (
   input: ReadonlyArray<MetricAttribute> | undefined,
   operation: string,
@@ -510,8 +501,6 @@ const parseAttributes = (
   const keys = new Set<string>();
   const normalized: Array<NormalizedAttribute> = [];
   for (const attribute of attributes) {
-    const numberIsInvalid =
-      Predicate.isNumber(attribute.value) && !Number.isFinite(attribute.value);
     if (
       attribute.key.length > 128 ||
       !instrumentNamePattern.test(attribute.key) ||
@@ -519,7 +508,7 @@ const parseAttributes = (
       attribute.key === "time_unit" ||
       attribute.key === "service.instance.id" ||
       keys.has(attribute.key) ||
-      numberIsInvalid
+      !isFiniteMetricScalar(attribute.value)
     ) {
       throw metricError(
         "INVALID_MEASUREMENT",
@@ -552,7 +541,7 @@ const parseAttributes = (
   normalized.sort((left, right) => left.key.localeCompare(right.key));
   return {
     identity: normalized
-      .map((attribute) => `${attribute.key}=${attributeIdentity(attribute.value)}`)
+      .map((attribute) => `${attribute.key}=${metricScalarIdentity(attribute.value)}`)
       .join("|"),
     values: normalized,
   };
@@ -995,7 +984,7 @@ class MetricsRuntimeState {
     for (const attribute of attributes.values) {
       const key = `${entry.definition.name}:${attribute.key}`;
       const values = this.lifetimeValuesByInstrumentKey.get(key);
-      const identity = attributeIdentity(attribute.value);
+      const identity = metricScalarIdentity(attribute.value);
       if (
         values !== undefined &&
         !values.has(identity) &&
@@ -1049,7 +1038,7 @@ class MetricsRuntimeState {
         values = new Set();
         this.lifetimeValuesByInstrumentKey.set(key, values);
       }
-      values.add(attributeIdentity(attribute.value));
+      values.add(metricScalarIdentity(attribute.value));
     }
   }
 
@@ -1989,14 +1978,10 @@ type ContractMetricAttribute = {
 };
 
 type MetricContractState = {
-  readonly policy: DataPolicy;
   readonly values: Map<string, Set<string>>;
 };
 
 const metricContractStates = new WeakMap<Metrics, MetricContractState>();
-
-const contractValueIdentity = (value: MetricAttributeValue): string =>
-  `${Predicate.isString(value) ? "string" : Predicate.isNumber(value) ? "number" : "boolean"}:${String(value)}`;
 
 export const prepareContractMetricAttributes = (
   metrics: Metrics,
@@ -2015,21 +2000,6 @@ export const prepareContractMetricAttributes = (
       metricName,
     });
   }
-  for (const attribute of attributes) {
-    const rejection = metricLabelRejection(state.policy, attribute.key, attribute.value);
-    if (rejection !== undefined) {
-      throw metricError(
-        "POLICY_BLOCKED",
-        "record",
-        `Metric attribute "${attribute.key}" was blocked by the data policy before recording.`,
-        metricName,
-        false,
-        undefined,
-        attribute.key,
-        rejection,
-      );
-    }
-  }
   const additions: Array<{
     readonly catalogKey: string;
     readonly values: Set<string>;
@@ -2040,7 +2010,7 @@ export const prepareContractMetricAttributes = (
     if (attribute === undefined) continue;
     const catalogKey = `${metricName}\u0000${limit.attributeName}`;
     const values = state.values.get(catalogKey) ?? new Set<string>();
-    const identity = contractValueIdentity(attribute.value);
+    const identity = metricScalarIdentity(attribute.value);
     if (!values.has(identity) && values.size >= limit.maximumCardinality) {
       throw new InvalidMetricMeasurement({
         code: "OBS_METRIC_CARDINALITY_EXCEEDED",
@@ -2071,7 +2041,7 @@ export const releaseMetricsLease = async (metrics: Metrics): Promise<void> => {
 
 export const createDisabledMetrics = (policy: DataPolicy = baseDataPolicy): Metrics => {
   const metrics = new DisabledMetrics(policy);
-  metricContractStates.set(metrics, { policy, values: new Map() });
+  metricContractStates.set(metrics, { values: new Map() });
   return metrics;
 };
 
@@ -2086,7 +2056,6 @@ export const createStandaloneMetrics = async (optionsInput: MetricsOptions): Pro
   });
   const metrics = new ActiveMetrics(lease, options.flushTimeoutMilliseconds);
   metricContractStates.set(metrics, {
-    policy: lease.state.policy,
     values: lease.state.contractValuesByInstrumentKey,
   });
   return metrics;

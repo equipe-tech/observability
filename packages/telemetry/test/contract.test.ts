@@ -18,7 +18,9 @@ import {
 } from "../src/contract/index.ts";
 import {
   contractIssueFixtures,
+  invalidMetricDefinitionFixtures,
   makeCollectingTelemetryEventSink,
+  metricDefinitionFixtures,
   organizationEventFixtures,
   telemetryEventErrorFixtures,
   withFixedSampling,
@@ -162,6 +164,104 @@ describe("defineTelemetryContract", () => {
         contract.metricByName.get("orders.duration")?.boundaries,
         [10, 25, 50],
       );
+    }),
+  );
+
+  it.effect("accepts every public metric definition fixture", () =>
+    Effect.gen(function* () {
+      const contract = yield* defineTelemetryContract({
+        version: 1,
+        events: {},
+        metrics: metricDefinitionFixtures,
+        auditActions: {},
+      });
+      assert.sameMembers(Array.from(contract.metricByAlias.keys()), [
+        "Counter",
+        "Histogram",
+        "ObservableGauge",
+      ]);
+    }),
+  );
+
+  it.effect("rejects every public invalid metric definition fixture", () =>
+    Effect.gen(function* () {
+      for (const fixture of invalidMetricDefinitionFixtures) {
+        const error = yield* defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: JSON.parse(fixture.metricsDocument),
+          auditActions: {},
+        }).pipe(Effect.flip);
+        assert.include(issueCodes(error), fixture.issue);
+      }
+    }),
+  );
+
+  it.effect("rejects every invalid histogram boundary form and non-histogram boundaries", () =>
+    Effect.gen(function* () {
+      const histogramCases = [
+        [],
+        Array.from({ length: 51 }, (_, index) => index),
+        [1, Number.NaN],
+        [2, 1],
+        [1, 1],
+      ];
+      for (const boundaries of histogramCases) {
+        const error = yield* defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            Metric: {
+              name: "fixture.metric",
+              description: "Fixture",
+              unit: "1",
+              kind: "histogram",
+              boundaries,
+              attributes: {},
+            },
+          },
+          auditActions: {},
+        }).pipe(Effect.flip);
+        assert.include(issueCodes(error), "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES");
+      }
+      for (const kind of ["counter", "observable_gauge"]) {
+        const error = yield* defineTelemetryContract(
+          JSON.parse(
+            `{"version":1,"events":{},"metrics":{"Metric":{"name":"fixture.metric","description":"Fixture","unit":"1","kind":"${kind}","boundaries":[1],"attributes":{}}},"auditActions":{}}`,
+          ),
+        ).pipe(Effect.flip);
+        assert.include(issueCodes(error), "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES");
+      }
+    }),
+  );
+
+  it.effect("rejects metric definitions with more than sixteen attributes", () =>
+    Effect.gen(function* () {
+      const attributes = JSON.parse(
+        JSON.stringify(
+          Object.fromEntries(
+            Array.from({ length: 17 }, (_, index) => [
+              `fixture.label_${index}`,
+              { classification: "public", maximumCardinality: 1 },
+            ]),
+          ),
+        ),
+      );
+      const error = yield* defineTelemetryContract({
+        version: 1,
+        events: {},
+        metrics: {
+          Metric: {
+            name: "fixture.metric",
+            description: "Fixture",
+            unit: "1",
+            kind: "counter",
+            attributes,
+          },
+        },
+        auditActions: {},
+      }).pipe(Effect.flip);
+      assert.include(issueCodes(error), "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_DEFINITION");
     }),
   );
 

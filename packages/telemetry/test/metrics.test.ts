@@ -1,7 +1,7 @@
 import { assert, describe, it } from "vite-plus/test";
 import { Effect, ManagedRuntime, Metric, Option, Predicate, Schema } from "effect";
 import { createServer, type Server } from "node:http";
-import { createMetrics, MetricsError, type MetricAttribute } from "../src/Metrics.ts";
+import { createMetrics, MetricsError, type MetricAttribute, type Metrics } from "../src/Metrics.ts";
 import {
   defineTelemetryContract,
   InvalidMetricMeasurement,
@@ -142,7 +142,9 @@ const errorCode = (operation: () => void): string | undefined => {
     operation();
     return undefined;
   } catch (cause) {
-    return cause instanceof MetricsError ? cause.code : undefined;
+    return cause instanceof MetricsError || cause instanceof InvalidMetricMeasurement
+      ? cause.code
+      : undefined;
   }
 };
 
@@ -1263,6 +1265,39 @@ describe("framework-neutral metrics", () => {
     }
   });
 
+  it("rejects contract producers bound to unsupported metrics facades", async () => {
+    const contract = await Effect.runPromise(
+      defineTelemetryContract({
+        version: 1,
+        events: {},
+        metrics: {
+          Counter: {
+            name: "fixture.counter",
+            description: "Fixture",
+            unit: "1",
+            kind: "counter",
+            attributes: {},
+          },
+        },
+        auditActions: {},
+      }),
+    );
+    const unsupported: Metrics = {
+      counter: () => ({ add: () => undefined }),
+      histogram: () => ({ record: () => undefined }),
+      observableGauge: () => ({
+        unregister: () => undefined,
+        [Symbol.dispose]: () => undefined,
+      }),
+      flush: async () => ({ gaugeFailures: [] }),
+      close: async () => ({ gaugeFailures: [] }),
+    };
+    assert.strictEqual(
+      errorCode(() => makeMetricProducer(contract, unsupported).counter("Counter").add(1, {})),
+      "OBS_METRIC_INVALID_VALUE",
+    );
+  });
+
   it("shares declared cardinality across producers and facade leases without committing failures", async () => {
     const collector = await startCollector();
     try {
@@ -1343,16 +1378,14 @@ describe("framework-neutral metrics", () => {
       const facade = await createMetrics(options(collector.endpoint));
       const producer = makeMetricProducer(contract, facade);
       producer.observableGauge("QueueDepth", () => [
-        { value: 1, attributes: { "queue.name": Number.NaN } },
+        { value: Number.NaN, attributes: { "queue.name": "primary" } },
       ]);
       assert.deepStrictEqual(await facade.flush(), {
         gaugeFailures: [
           {
             instrumentName: "orders.queue_depth",
-            code: "CONTRACT_REJECTED",
-            message:
-              'Observable gauge "orders.queue_depth" callback violated its metric contract and was omitted from this export.',
-            contractReason: "OBS_METRIC_INVALID_VALUE",
+            code: "INVALID_OBSERVATION",
+            message: 'Observable gauge "orders.queue_depth" produced a non-finite observation.',
           },
         ],
       });

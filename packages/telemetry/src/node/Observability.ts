@@ -159,6 +159,8 @@ class LiveNodeObservability implements NodeObservabilityEnabled {
 
 type NodeObservabilityFactoryOptions = { readonly allowTesting: boolean };
 
+const nodeMetricsFlushTimeoutMilliseconds = 400;
+
 export const acquireRuntimeFlusher = Effect.fn("acquireRuntimeFlusher")(function* (
   runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, InvalidObservabilityConfig>,
 ): Effect.fn.Return<
@@ -200,7 +202,7 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
   );
   const runtime = ManagedRuntime.make(
     Telemetry.layer(config.telemetry, {
-      shutdownTimeout: Duration.millis(400),
+      shutdownTimeout: Duration.millis(nodeMetricsFlushTimeoutMilliseconds),
       policy: config.evlog.policy,
     }),
   );
@@ -212,7 +214,7 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
       environment: config.identity.environment,
       deploymentEnvironmentAlias: config.telemetry.environmentAlias,
       otlpEndpoint: config.telemetry.otlpEndpoint.toString(),
-      flushTimeoutMilliseconds: 400,
+      flushTimeoutMilliseconds: nodeMetricsFlushTimeoutMilliseconds,
       policy: config.evlog.policy,
     }),
   );

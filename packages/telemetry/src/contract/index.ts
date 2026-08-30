@@ -1,7 +1,6 @@
 export * from "./EventName.ts";
 export * from "./EventProducer.ts";
 export * from "./MetricContractError.ts";
-export * from "./MetricDefinition.ts";
 export * from "./MetricProducer.ts";
 export * from "./OrganizationEvents.ts";
 export * from "./TelemetryContract.ts";

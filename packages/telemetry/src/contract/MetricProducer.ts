@@ -1,4 +1,3 @@
-import { Predicate, Schema } from "effect";
 import type {
   Counter,
   Histogram,
@@ -12,8 +11,13 @@ import {
   registerContractGaugeObservation,
 } from "../MetricsRuntime.ts";
 import type { TelemetryContract, TelemetryContractInput } from "./TelemetryContract.ts";
-import type { MetricAttributeDefinitionInput, MetricDefinitionInput } from "./MetricDefinition.ts";
+import type {
+  CompiledMetricDefinition,
+  MetricAttributeDefinitionInput,
+  MetricDefinitionInput,
+} from "./MetricDefinition.ts";
 import { InvalidMetricMeasurement } from "./MetricContractError.ts";
+import { isFiniteMetricScalar, metricScalarIdentity } from "../metrics/MetricScalar.ts";
 
 export type MetricAttributeValueOf<Definition extends MetricAttributeDefinitionInput> =
   Definition["allowedValues"] extends ReadonlyArray<infer Value extends MetricAttributeValue>
@@ -71,12 +75,6 @@ export type MetricProducer<Definition extends TelemetryContractInput> = {
   ) => ObservableGaugeRegistration;
 };
 
-const scalarSchema = Schema.Union([Schema.String, Schema.Number, Schema.Boolean]);
-const isScalar = Schema.is(scalarSchema);
-
-const valueIdentity = (value: MetricAttributeValue): string =>
-  `${Predicate.isString(value) ? "string" : Predicate.isNumber(value) ? "number" : "boolean"}:${String(value)}`;
-
 const measurementError = (
   code: InvalidMetricMeasurement["code"],
   operation: string,
@@ -98,11 +96,26 @@ const measurementError = (
   return new InvalidMetricMeasurement(options);
 };
 
-const resolveDefinition = <Definition extends TelemetryContractInput>(
+function resolveDefinition<Definition extends TelemetryContractInput>(
+  contract: TelemetryContract<Definition>,
+  alias: string,
+  kind: "counter",
+): Extract<CompiledMetricDefinition, { readonly kind: "counter" }>;
+function resolveDefinition<Definition extends TelemetryContractInput>(
+  contract: TelemetryContract<Definition>,
+  alias: string,
+  kind: "histogram",
+): Extract<CompiledMetricDefinition, { readonly kind: "histogram" }>;
+function resolveDefinition<Definition extends TelemetryContractInput>(
+  contract: TelemetryContract<Definition>,
+  alias: string,
+  kind: "observable_gauge",
+): Extract<CompiledMetricDefinition, { readonly kind: "observable_gauge" }>;
+function resolveDefinition<Definition extends TelemetryContractInput>(
   contract: TelemetryContract<Definition>,
   alias: string,
   kind: MetricDefinitionInput["kind"],
-) => {
+): CompiledMetricDefinition {
   const definition = contract.metricByAlias.get(alias);
   if (definition === undefined) {
     throw measurementError(
@@ -123,14 +136,12 @@ const resolveDefinition = <Definition extends TelemetryContractInput>(
     );
   }
   return definition;
-};
+}
 
-const parseContractAttributes = <
-  Input extends { readonly [Name in keyof Input]: MetricAttributeValue },
->(
+const parseContractAttributes = (
   alias: string,
-  definition: ReturnType<typeof resolveDefinition>,
-  input: Input,
+  definition: CompiledMetricDefinition,
+  input: { readonly [name: string]: MetricAttributeValue },
 ): ReadonlyArray<MetricAttribute> => {
   const attributes: Array<MetricAttribute> = [];
   for (const attributeName of definition.attributes.keys()) {
@@ -157,7 +168,7 @@ const parseContractAttributes = <
         attributeName,
       );
     }
-    if (!isScalar(value) || (Predicate.isNumber(value) && !Number.isFinite(value))) {
+    if (!isFiniteMetricScalar(value)) {
       throw measurementError(
         "OBS_METRIC_INVALID_VALUE",
         "record",
@@ -170,7 +181,9 @@ const parseContractAttributes = <
     const allowedValues = attributeDefinition.allowedValues;
     if (
       allowedValues !== undefined &&
-      !allowedValues.some((allowed) => valueIdentity(allowed) === valueIdentity(value))
+      !allowedValues.some(
+        (allowed) => metricScalarIdentity(allowed) === metricScalarIdentity(value),
+      )
     ) {
       throw measurementError(
         "OBS_METRIC_VALUE_NOT_ALLOWED",
@@ -186,7 +199,7 @@ const parseContractAttributes = <
   return attributes;
 };
 
-const cardinalityLimits = (definition: ReturnType<typeof resolveDefinition>) =>
+const cardinalityLimits = (definition: CompiledMetricDefinition) =>
   Array.from(definition.attributes, ([attributeName, attribute]) => ({
     attributeName,
     maximumCardinality: attribute.maximumCardinality,
@@ -195,7 +208,7 @@ const cardinalityLimits = (definition: ReturnType<typeof resolveDefinition>) =>
 const counterHandle = (
   metrics: Metrics,
   alias: string,
-  definition: ReturnType<typeof resolveDefinition>,
+  definition: Extract<CompiledMetricDefinition, { readonly kind: "counter" }>,
 ) => {
   const counter: Counter = metrics.counter(definition);
   return {
@@ -217,7 +230,7 @@ const counterHandle = (
 const histogramHandle = (
   metrics: Metrics,
   alias: string,
-  definition: ReturnType<typeof resolveDefinition> & { readonly kind: "histogram" },
+  definition: Extract<CompiledMetricDefinition, { readonly kind: "histogram" }>,
 ) => {
   const histogram: Histogram = metrics.histogram(definition);
   return {
@@ -246,30 +259,12 @@ export const makeMetricProducer = <const Definition extends TelemetryContractInp
   },
   histogram: (alias) => {
     const definition = resolveDefinition(contract, alias, "histogram");
-    if (definition.kind !== "histogram") {
-      throw measurementError(
-        "OBS_METRIC_KIND_MISMATCH",
-        "histogram",
-        alias,
-        definition.name,
-        `Metric alias "${alias}" is not a histogram.`,
-      );
-    }
     return histogramHandle(metrics, alias, definition);
   },
   observableGauge: (alias, callback) => {
     const definition = resolveDefinition(contract, alias, "observable_gauge");
     return metrics.observableGauge(definition, () =>
       callback().map((observation) => {
-        if (!Number.isFinite(observation.value)) {
-          throw measurementError(
-            "OBS_METRIC_INVALID_VALUE",
-            "observableGauge",
-            alias,
-            definition.name,
-            `Observable gauge "${definition.name}" must return finite values.`,
-          );
-        }
         const attributes = parseContractAttributes(alias, definition, observation.attributes);
         const commit = prepareContractMetricAttributes(
           metrics,
