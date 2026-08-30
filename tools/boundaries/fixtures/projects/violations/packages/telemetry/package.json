@@ -1,6 +1,7 @@
 {
   "name": "@equipe-tech/observability",
   "dependencies": {
+    "@effect/platform-node": "1.0.0",
     "@nestjs/common": "1.0.0",
     "@opentelemetry/sdk-trace-base": "1.0.0",
     "@sentry/node": "1.0.0",

@@ -1,3 +1,5 @@
+declare module "@effect/platform-bun";
+declare module "@effect/platform-node";
 declare module "@equipe-tech/observability/metrics";
 declare module "@nestjs/common";
 declare module "@opentelemetry/sdk-trace-base";
@@ -12,4 +14,8 @@ declare module "undeclared-domain-cli-declaration";
 declare module "undeclared-domain-cli-runtime";
 declare module "undeclared-domain-declaration";
 declare module "undeclared-domain-runtime";
+declare module "undeclared-export-all";
+declare module "undeclared-export-type" {
+  export type ExternalType = string;
+}
 declare module "undeclared-package";

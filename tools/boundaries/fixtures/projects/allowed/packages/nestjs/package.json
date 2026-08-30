@@ -1,6 +1,7 @@
 {
   "name": "@equipe-tech/observability-nestjs",
   "dependencies": {
+    "@effect/platform-node": "1.0.0",
     "@equipe-tech/observability": "1.0.0",
     "@nestjs/common": "1.0.0",
     "@sentry/node": "1.0.0",

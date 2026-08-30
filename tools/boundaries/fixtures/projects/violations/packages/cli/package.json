@@ -1,6 +1,7 @@
 {
   "name": "@equipe-tech/observability-cli",
   "dependencies": {
+    "@effect/platform-bun": "1.0.0",
     "@nestjs/common": "1.0.0",
     "@sentry/node": "1.0.0",
     "effect": "1.0.0"

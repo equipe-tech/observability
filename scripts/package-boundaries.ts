@@ -26,7 +26,7 @@ type PathOwnership = {
   readonly matches: (file: string) => boolean;
 };
 
-type DependencyKind = "framework" | "metric-api" | "otlp" | "provider";
+type DependencyKind = "framework" | "metric-api" | "otlp" | "provider" | "runtime-platform";
 
 const ownership: ReadonlyArray<PathOwnership> = [
   { role: "bootstrap", matches: (file) => file === "packages/cli/src/main.ts" },
@@ -93,14 +93,15 @@ const frameworkPackages = new Set([
 ]);
 
 const forbiddenByRole = new Map<BoundaryRole, ReadonlySet<DependencyKind>>([
-  ["core", new Set(["framework", "metric-api", "otlp", "provider"])],
-  ["domain", new Set(["metric-api", "otlp", "provider"])],
+  ["core", new Set(["framework", "metric-api", "otlp", "provider", "runtime-platform"])],
+  ["domain", new Set(["metric-api", "otlp", "provider", "runtime-platform"])],
   ["bootstrap", new Set(["framework", "provider"])],
   ["adapter", new Set()],
 ]);
 
 const dependencyKind = (specifier: string): DependencyKind | undefined => {
   const dependency = packageNameForSpecifier(specifier);
+  if (dependency.startsWith("@effect/platform-")) return "runtime-platform";
   if (
     specifier === "effect/Metric" ||
     specifier.startsWith("@equipe-tech/observability/metrics") ||
@@ -137,7 +138,7 @@ const evaluateSpecifier = (
 };
 
 const staticImports = (source: string): ReadonlyArray<string> => {
-  const program = parse(source.replace(/^#!.*\n/, ""), { lang: "ts" }).program;
+  const program = parse(source, { lang: "ts" }).program;
   const specifiers: Array<string> = [];
   for (const statement of program.body) {
     if (statement.type === "ImportDeclaration") {
@@ -205,14 +206,3 @@ export const checkPackageBoundaries = async (
   }
   return violations;
 };
-
-if (import.meta.main) {
-  const violations = await checkPackageBoundaries();
-  if (violations.length > 0) {
-    for (const violation of violations) {
-      console.error(`${violation.rule}: ${violation.file} imports ${violation.specifier}`);
-    }
-    process.exit(1);
-  }
-  console.log("Package boundaries passed.");
-}

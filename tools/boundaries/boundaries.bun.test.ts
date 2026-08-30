@@ -56,9 +56,11 @@ describe("package boundaries", () => {
       "boundary/core-forbidden-metric-api",
       "boundary/core-forbidden-otlp",
       "boundary/core-forbidden-provider",
+      "boundary/core-forbidden-runtime-platform",
       "boundary/domain-forbidden-metric-api",
       "boundary/domain-forbidden-otlp",
       "boundary/domain-forbidden-provider",
+      "boundary/domain-forbidden-runtime-platform",
     ]);
   });
 
@@ -82,6 +84,33 @@ describe("package boundaries", () => {
 
   it("allows declared imports according to all four role policies", async () => {
     assert.deepEqual(await checkPackageBoundaries(join(projects, "allowed")), []);
+  });
+
+  it("parses external exports and import-equals declarations", async () => {
+    const temporary = await mkdtemp(join(tmpdir(), "boundaries-declarations-"));
+    try {
+      await cp(join(projects, "violations"), temporary, { recursive: true });
+      await cp(
+        join(import.meta.dirname, "fixtures", "external-import-equals.txt"),
+        join(temporary, "packages", "telemetry", "src", "external-import-equals.ts"),
+      );
+      const violations = await checkPackageBoundaries(temporary);
+      const declarationSpecifiers = violations
+        .filter(
+          (violation) =>
+            violation.file.endsWith("external-declarations.ts") ||
+            violation.file.endsWith("external-import-equals.ts"),
+        )
+        .map((violation) => violation.specifier)
+        .toSorted();
+      assert.deepEqual(declarationSpecifiers, [
+        "undeclared-export-all",
+        "undeclared-export-type",
+        "undeclared-import-equals",
+      ]);
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
   });
 
   it("makes the core fallback load-bearing", async () => {
@@ -112,10 +141,11 @@ describe("package boundaries", () => {
     }
   });
 
-  it("makes bootstrap ownership load-bearing", async () => {
+  it("makes shebang parsing and bootstrap ownership load-bearing", async () => {
     const temporary = await mkdtemp(join(tmpdir(), "boundaries-bootstrap-"));
     try {
       await cp(join(projects, "allowed"), temporary, { recursive: true });
+      assert.deepEqual(await checkPackageBoundaries(temporary), []);
       await rename(
         join(temporary, "packages", "cli", "src", "main.ts"),
         join(temporary, "packages", "cli", "src", "Cli.ts"),
@@ -124,6 +154,7 @@ describe("package boundaries", () => {
         "boundary/domain-forbidden-metric-api",
         "boundary/domain-forbidden-metric-api",
         "boundary/domain-forbidden-otlp",
+        "boundary/domain-forbidden-runtime-platform",
       ]);
     } finally {
       await rm(temporary, { recursive: true, force: true });
