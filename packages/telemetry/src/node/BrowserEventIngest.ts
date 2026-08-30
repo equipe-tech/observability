@@ -50,7 +50,7 @@ export const ingestBrowserEventBatch = Effect.fn("ingestBrowserEventBatch")(func
       name: event.name,
       occurredAt: event.occurredAt,
       attributes: decision.value,
-      policyDroppedAttributes: decision.dropped,
+      admission: { policyDroppedAttributes: decision.dropped },
     });
   }
   return { accepted: batch.events.length, redacted, dropped };

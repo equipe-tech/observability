@@ -1,4 +1,4 @@
-import { Effect, Layer, Metric, Predicate } from "effect";
+import { Effect, Layer, Metric, Option, Predicate } from "effect";
 import { createServer } from "node:http";
 import { describe, expect, it } from "vite-plus/test";
 import type { EventName } from "../src/contract/EventName.ts";
@@ -32,10 +32,13 @@ const events = registerTestingAdapter({
     Effect.succeed({
       flush: Effect.void,
       close: Effect.void,
-      eventLayer: Layer.succeed(
-        TelemetryEventSink,
-        TelemetryEventSink.of({ record: () => Effect.void, recordBrowser: () => Effect.void }),
+      eventLayer: Option.some(
+        Layer.succeed(
+          TelemetryEventSink,
+          TelemetryEventSink.of({ record: () => Effect.void, recordBrowser: () => Effect.void }),
+        ),
       ),
+      degraded: () => false,
     }),
 });
 

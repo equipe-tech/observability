@@ -226,7 +226,8 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
   const eventHandle = started.find(
     (entry) => entry.registration.adapter.capability === "events",
   )?.handle;
-  if (eventHandle?.eventLayer === undefined) {
+  const eventLayer = eventHandle?.eventLayer ?? Option.none();
+  if (Option.isNone(eventLayer)) {
     yield* rollbackStartedAdapters(started);
     yield* runtime.disposeEffect;
     return yield* new ObservabilityLifecycleError({
@@ -241,7 +242,7 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
     });
   }
   const registry = createLifecycleRegistry(config.profile, started, flusher, runtime.disposeEffect);
-  return new LiveNodeObservability(config, runtime, eventHandle.eventLayer, registry.run);
+  return new LiveNodeObservability(config, runtime, eventLayer.value, registry.run);
 });
 
 export const makeNodeObservability = (

@@ -303,7 +303,12 @@ const coreRegistration = (
     stage,
     start: () => Effect.die("Built-in lifecycle participants are already started."),
   }),
-  handle: { flush: effect, close: effect },
+  handle: {
+    flush: effect,
+    close: effect,
+    eventLayer: Option.none(),
+    degraded: () => false,
+  },
 });
 
 export type LifecycleRegistry = {
@@ -382,7 +387,7 @@ export const createLifecycleRegistry = (
       durationMillis,
       degraded:
         outcomes.some((outcome) => outcome.result.kind !== "completed") ||
-        started.some((entry) => entry.handle.degraded?.() === true),
+        started.some((entry) => entry.handle.degraded()),
     };
   });
   return { run };

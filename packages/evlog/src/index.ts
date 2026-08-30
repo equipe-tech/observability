@@ -2,7 +2,6 @@ export { evlogAdapter } from "./EvlogAdapter.ts";
 export type {
   EvlogAdapter,
   EvlogAdapterOptions,
-  EvlogDropReason,
   EvlogDropReasonCounts,
   EvlogDropReport,
 } from "./EvlogAdapter.ts";

@@ -13,8 +13,9 @@ import {
   ingestBrowserEvents,
 } from "@equipe-tech/observability/node";
 import { defineTelemetryContract, parseNodeObservabilityConfig } from "@equipe-tech/observability";
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { getEnvironment, initLogger } from "evlog";
+import { initLogger, log } from "evlog";
 import { Effect, Option, Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 import { evlogAdapter } from "../src/index.ts";
@@ -81,15 +82,17 @@ const makeConfig = async (endpoint: URL) => {
   return { contract, config };
 };
 
-const startReceiver = async (responseDelayMillis = 0) => {
+const startReceiver = async (responseDelayMillis = 0, status = 200) => {
   const bodies: Array<string> = [];
+  const requestTimes: Array<number> = [];
   const server = createServer((request, response) => {
+    requestTimes.push(Date.now());
     const chunks: Array<Uint8Array> = [];
     request.on("data", (chunk: Uint8Array) => chunks.push(chunk));
     request.on("end", () => {
       bodies.push(Buffer.concat(chunks).toString("utf8"));
       setTimeout(() => {
-        response.writeHead(200, { "content-type": "application/json" });
+        response.writeHead(status, { "content-type": "application/json" });
         response.end("{}");
       }, responseDelayMillis);
     });
@@ -101,6 +104,7 @@ const startReceiver = async (responseDelayMillis = 0) => {
   return {
     endpoint: new URL(`http://127.0.0.1:${address.port}`),
     bodies,
+    requestTimes,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 };
@@ -182,7 +186,7 @@ describe("evlogAdapter", () => {
               name: "job.completed",
               occurredAt: 1,
               attributes: { "job.name": "billing", "unknown.value": "blocked" },
-              policyDroppedAttributes: 0,
+              admission: { policyDroppedAttributes: 0 },
             }),
           ),
           Effect.provide(observability.eventLayer),
@@ -228,6 +232,104 @@ describe("evlogAdapter", () => {
     );
     expect(event["event.source"]).toBe("browser");
     expect(event["browser.event.id"]).toBe("browser-1");
+    expect(event["browser.event.occurred_at"]).toBe(1);
+  });
+
+  it("returns every canonical contract rejection before admission", async () => {
+    const { config } = await makeConfig(new URL("http://127.0.0.1:1"));
+    const adapter = evlogAdapter({ installGlobalLogger: false });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    const sink = await observability.runtime.runPromise(
+      TelemetryEventSink.pipe(Effect.provide(observability.eventLayer)),
+    );
+    const cases = [
+      {
+        name: "job.unknown",
+        attributes: { "job.name": "billing" },
+        code: "OBS_EVENT_UNKNOWN_NAME",
+      },
+      { name: "job.completed", attributes: {}, code: "OBS_EVENT_MISSING_ATTRIBUTE" },
+      {
+        name: "job.completed",
+        attributes: { "job.name": "billing", "job.unknown": true },
+        code: "OBS_EVENT_UNDECLARED_ATTRIBUTE",
+      },
+    ];
+    for (const testCase of cases) {
+      const failure = await Effect.runPromise(
+        Effect.flip(
+          sink.recordBrowser({
+            id: crypto.randomUUID(),
+            name: testCase.name,
+            occurredAt: 1,
+            attributes: testCase.attributes,
+            admission: { policyDroppedAttributes: 0 },
+          }),
+        ),
+      );
+      expect(failure.code).toBe(testCase.code);
+    }
+    expect(adapter.pending()).toEqual({ count: 0, serializedBytes: 0 });
+    expect(adapter.drops().total).toBe(0);
+    await observability.close();
+  });
+
+  it("preserves exact producer policy-drop metadata without a second policy pass", async () => {
+    const receiver = await startReceiver();
+    const contract = await Effect.runPromise(defineTelemetryContract(contractDefinition));
+    const config = await Effect.runPromise(
+      parseNodeObservabilityConfig({
+        enabled: true,
+        profile: "worker",
+        service: { name: "evlog-test", version: "1.2.3", environment: "test" },
+        telemetry: { endpoint: receiver.endpoint },
+        evlog: {
+          contract,
+          policy: {
+            attributes: {
+              "job.detail": {
+                classification: "forbidden",
+                required: false,
+                metricLabel: false,
+              },
+            },
+            blockedKeys: [],
+            blockedValuePatterns: [],
+          },
+        },
+        sentry: { enabled: false },
+      }),
+    );
+    const adapter = evlogAdapter({
+      installGlobalLogger: false,
+      batchSize: 1,
+      transportRetries: 0,
+    });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    const receipt = await observability.runtime.runPromise(
+      makeEventProducer(contract)
+        .emit("completed", {
+          outcome: "success",
+          durationMs: 1,
+          attributes: { "job.name": "billing", "job.detail": "removed" },
+        })
+        .pipe(Effect.provide(observability.eventLayer)),
+    );
+    expect(receipt.decision).toBe("recorded");
+    if (receipt.decision !== "recorded") throw new Error("Expected a recorded event.");
+    expect(receipt.admission.policyDroppedAttributes).toBe(1);
+    await observability.close();
+    await receiver.close();
+    const body = receiver.bodies.find((candidate) => candidate.includes('"resourceLogs"')) ?? "";
+    expect(body).not.toContain("removed");
+    const request = Schema.decodeUnknownSync(RequestBody)(JSON.parse(body));
+    const event = JSON.parse(
+      request.resourceLogs[0]?.scopeLogs[0]?.logRecords[0]?.body.stringValue ?? "",
+    );
+    expect(event["event.policy_dropped_attributes"]).toBe(1);
+    expect(adapter.drops().total).toBe(0);
   });
 
   it("separates byte overflow from count overflow and balances bytes", async () => {
@@ -303,6 +405,101 @@ describe("evlogAdapter", () => {
     expect(adapter.pending()).toEqual({ count: 0, serializedBytes: 0 });
   });
 
+  it("flushes by batch interval before close", async () => {
+    const receiver = await startReceiver();
+    const { contract, config } = await makeConfig(receiver.endpoint);
+    const adapter = evlogAdapter({
+      installGlobalLogger: false,
+      batchSize: 10,
+      batchIntervalMillis: 20,
+      transportRetries: 0,
+    });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    await observability.runtime.runPromise(
+      makeEventProducer(contract)
+        .emit("completed", {
+          outcome: "success",
+          durationMs: 1,
+          attributes: { "job.name": "interval" },
+        })
+        .pipe(Effect.provide(observability.eventLayer)),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(receiver.bodies.some((body) => body.includes("interval"))).toBe(true);
+    await observability.close();
+    await receiver.close();
+  });
+
+  it("uses retry delays, maximum attempts, and transport deadlines", async () => {
+    const receiver = await startReceiver(50, 503);
+    const { contract, config } = await makeConfig(receiver.endpoint);
+    const lines: Array<string> = [];
+    const adapter = evlogAdapter({
+      installGlobalLogger: false,
+      batchSize: 1,
+      maximumAttempts: 3,
+      initialRetryDelayMillis: 10,
+      maximumRetryDelayMillis: 15,
+      transportTimeoutMillis: 5,
+      transportRetries: 0,
+      stdout: { write: (line) => lines.push(line) > 0 },
+    });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    const startedAt = Date.now();
+    await observability.runtime.runPromise(
+      makeEventProducer(contract)
+        .emit("completed", {
+          outcome: "success",
+          durationMs: 1,
+          attributes: { "job.name": "retry-exhausted" },
+        })
+        .pipe(Effect.provide(observability.eventLayer)),
+    );
+    await observability.close();
+    const elapsed = Date.now() - startedAt;
+    await receiver.close();
+    expect(receiver.requestTimes).toHaveLength(10);
+    expect(elapsed).toBeGreaterThanOrEqual(25);
+    expect(adapter.drops().reasons.transport).toBe(1);
+    expect(lines).toHaveLength(1);
+    expect(adapter.pending()).toEqual({ count: 0, serializedBytes: 0 });
+  });
+
+  it("counts post-close admission without requeueing", async () => {
+    const receiver = await startReceiver();
+    const { contract, config } = await makeConfig(receiver.endpoint);
+    const lines: Array<string> = [];
+    const adapter = evlogAdapter({
+      installGlobalLogger: false,
+      batchSize: 1,
+      transportRetries: 0,
+      stdout: { write: (line) => lines.push(line) > 0 },
+    });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    const receipt = await observability.runtime.runPromise(
+      makeEventProducer(contract)
+        .emit("completed", {
+          outcome: "success",
+          durationMs: 1,
+          attributes: { "job.name": "before-close" },
+        })
+        .pipe(Effect.provide(observability.eventLayer)),
+    );
+    if (receipt.decision !== "recorded") throw new Error("Expected a recorded event.");
+    const sink = await observability.runtime.runPromise(
+      TelemetryEventSink.pipe(Effect.provide(observability.eventLayer)),
+    );
+    await observability.close();
+    await Effect.runPromise(sink.record(receipt.event, receipt.admission));
+    await receiver.close();
+    expect(adapter.drops().reasons.closed).toBe(1);
+    expect(lines).toHaveLength(1);
+    expect(adapter.pending()).toEqual({ count: 0, serializedBytes: 0 });
+  });
+
   it("counts stdout backpressure as unrecoverable loss", async () => {
     const { contract, config } = await makeConfig(new URL("http://127.0.0.1:1"));
     const adapter = evlogAdapter({
@@ -327,28 +524,122 @@ describe("evlogAdapter", () => {
     expect(adapter.pending()).toEqual({ count: 0, serializedBytes: 0 });
   });
 
-  it("rejects a foreign global logger before startup", async () => {
-    const initial = { ...getEnvironment() };
-    initLogger({
-      silent: true,
-      pretty: false,
-      redact: false,
-      env: { service: "foreign", environment: "foreign" },
+  it("counts stdout exceptions as unavailable output", async () => {
+    const { contract, config } = await makeConfig(new URL("http://127.0.0.1:1"));
+    const adapter = evlogAdapter({
+      installGlobalLogger: false,
+      maximumBufferedBytes: 1,
+      stdout: {
+        write: () => {
+          throw new Error("closed stdout");
+        },
+      },
     });
-    const { config } = await makeConfig(new URL("http://127.0.0.1:1"));
-    const adapter = evlogAdapter();
-    const failure = await Effect.runPromise(
-      Effect.flip(
-        Effect.tryPromise(() => createNodeObservabilityFromConfig(config, [adapter.registration])),
-      ),
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    await observability.runtime.runPromise(
+      makeEventProducer(contract)
+        .emit("completed", {
+          outcome: "success",
+          durationMs: 1,
+          attributes: { "job.name": "billing" },
+        })
+        .pipe(Effect.provide(observability.eventLayer)),
     );
-    expect(JSON.stringify(failure)).toContain("OBS_EVLOG_LOGGER_CONFLICT");
-    initLogger({
-      silent: true,
-      pretty: false,
-      redact: false,
-      env: initial,
+    await observability.close();
+    expect(adapter.drops().reasons.stdoutUnavailable).toBe(1);
+  });
+
+  it("rejects concurrent global logger ownership", async () => {
+    const { config } = await makeConfig(new URL("http://127.0.0.1:1"));
+    const first = evlogAdapter();
+    const second = evlogAdapter();
+    const observability = await createNodeObservabilityFromConfig(config, [first.registration]);
+    for (const registration of [first.registration, second.registration]) {
+      const failure = await Effect.runPromise(
+        Effect.flip(
+          Effect.tryPromise(() => createNodeObservabilityFromConfig(config, [registration])),
+        ),
+      );
+      expect(JSON.stringify(failure)).toContain("OBS_EVLOG_LOGGER_CONFLICT");
+    }
+    await observability.close();
+  });
+
+  it("delivers public global logger events and permits a second generation", async () => {
+    const receiver = await startReceiver();
+    const { config } = await makeConfig(receiver.endpoint);
+    for (const name of ["first-generation", "second-generation"]) {
+      const adapter = evlogAdapter({ batchSize: 1, transportRetries: 0 });
+      const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+      log.info({ "event.name": "job.completed", "job.name": name });
+      await observability.close();
+    }
+    await receiver.close();
+    expect(receiver.bodies.some((body) => body.includes("first-generation"))).toBe(true);
+    expect(receiver.bodies.some((body) => body.includes("second-generation"))).toBe(true);
+  });
+
+  it("reports invalid and unknown options through startup", async () => {
+    const { config } = await makeConfig(new URL("http://127.0.0.1:1"));
+    const options = [
+      { batchIntervalMillis: 0 },
+      { maximumBufferedEvents: 1, batchSize: 2 },
+      Object.assign({}, { maximumBufferedEvents: 1 }, { maximumBufferEvents: 1 }),
+    ];
+    for (const candidate of options) {
+      const adapter = evlogAdapter(candidate);
+      await expect(
+        createNodeObservabilityFromConfig(config, [adapter.registration]),
+      ).rejects.toMatchObject({
+        code: "OBS_OBSERVABILITY_STARTUP_FAILED",
+        cause: {
+          cause: {
+            code: "OBS_EVLOG_ADAPTER_CONFIG_INVALID",
+          },
+        },
+      });
+    }
+  });
+
+  it("counts invalid global events without exposing payloads", async () => {
+    const { config } = await makeConfig(new URL("http://127.0.0.1:1"));
+    const adapter = evlogAdapter({ batchSize: 1 });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    log.info({ "job.name": "missing name" });
+    log.info({ "event.name": "job.unknown", "job.name": "unknown name" });
+    log.info({ "event.name": "job.completed", "job.detail": "missing required" });
+    log.info({
+      "event.name": "job.completed",
+      "job.name": { invalid: true },
     });
+    log.info({
+      "event.name": "job.completed",
+      "job.name": "billing",
+      "job.unknown": "undeclared",
+    });
+    await observability.close();
+    expect(adapter.drops().reasons.contractRejected).toBe(5);
+    expect(adapter.drops().total).toBe(5);
+    expect(Option.isSome(adapter.drops().firstDroppedAt)).toBe(true);
+    expect(Option.isSome(adapter.drops().lastDroppedAt)).toBe(true);
+    expect(JSON.stringify(adapter.drops())).not.toContain("missing required");
+  });
+
+  it("keeps TypeScript and Vite package mappings in parity", async () => {
+    const tsconfig = Schema.decodeUnknownSync(
+      Schema.Struct({
+        compilerOptions: Schema.Struct({
+          paths: Schema.Record(Schema.String, Schema.Array(Schema.String)),
+        }),
+      }),
+    )(JSON.parse(await readFile(new URL("../../../tsconfig.json", import.meta.url), "utf8")));
+    const vite = await readFile(new URL("../../../vite.config.ts", import.meta.url), "utf8");
+    expect(tsconfig.compilerOptions.paths["@equipe-tech/observability-evlog"]).toEqual([
+      "./packages/evlog/src/index.ts",
+    ]);
+    expect(vite).toContain('find: "@equipe-tech/observability-evlog"');
+    expect(vite).toContain("packages/evlog/src/index.ts");
   });
 
   it("keeps contract delivery after global logger replacement", async () => {
@@ -372,9 +663,10 @@ describe("evlogAdapter", () => {
         })
         .pipe(Effect.provide(observability.eventLayer)),
     );
-    await observability.close();
+    const report = await observability.close();
     await receiver.close();
-    expect(adapter.drops().reasons.loggerDetached).toBe(1);
+    expect(report.degraded).toBe(true);
+    expect(adapter.drops().total).toBe(0);
     expect(receiver.bodies.some((body) => body.includes("after-replacement"))).toBe(true);
   });
 });

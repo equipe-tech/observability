@@ -7,9 +7,11 @@ import {
   type EventKind as EventKindType,
   type EventOutcome as EventOutcomeType,
   type EventSeverity as EventSeverityType,
+  type EventAttributes,
 } from "./TelemetryEvent.ts";
 import {
   InvalidTelemetryContract,
+  InvalidTelemetryEvent,
   type ContractIssue,
   type ContractIssueCode,
 } from "./TelemetryContractError.ts";
@@ -99,6 +101,46 @@ export type CompiledEventDefinition = {
 
 export type CompiledAuditActionDefinition = AuditActionDefinitionInput & {
   readonly alias: string;
+};
+
+export type EventContractRegistry = {
+  readonly eventByName: ReadonlyMap<EventName, CompiledEventDefinition>;
+};
+
+export const validateContractEvent = (
+  contract: EventContractRegistry,
+  eventName: string,
+  attributes: EventAttributes,
+): CompiledEventDefinition | InvalidTelemetryEvent => {
+  const definition = contract.eventByName.get(EventName.make(eventName));
+  if (definition === undefined) {
+    return new InvalidTelemetryEvent({
+      code: "OBS_EVENT_UNKNOWN_NAME",
+      message: `Event "${eventName}" is not declared by the telemetry contract. Use a declared canonical event name.`,
+      eventName,
+    });
+  }
+  for (const required of definition.requiredAttributes) {
+    if (!Object.hasOwn(attributes, required)) {
+      return new InvalidTelemetryEvent({
+        code: "OBS_EVENT_MISSING_ATTRIBUTE",
+        message: `Event "${eventName}" is missing required attribute "${required}".`,
+        eventName,
+        attributeName: required,
+      });
+    }
+  }
+  for (const attributeName of Object.keys(attributes)) {
+    if (!definition.attributes.has(attributeName)) {
+      return new InvalidTelemetryEvent({
+        code: "OBS_EVENT_UNDECLARED_ATTRIBUTE",
+        message: `Event "${eventName}" does not declare attribute "${attributeName}".`,
+        eventName,
+        attributeName,
+      });
+    }
+  }
+  return definition;
 };
 
 export type TelemetryContract<Definition extends TelemetryContractInput> = {

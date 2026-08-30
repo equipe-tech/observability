@@ -22,7 +22,8 @@
       "@equipe-tech/observability/metrics": ["./packages/telemetry/src/Metrics.ts"],
       "@equipe-tech/observability/node": ["./packages/telemetry/src/node/index.ts"],
       "@equipe-tech/observability/testing": ["./packages/telemetry/src/testing/index.ts"],
-      "@equipe-tech/observability-nestjs": ["./packages/nestjs/src/index.ts"]
+      "@equipe-tech/observability-nestjs": ["./packages/nestjs/src/index.ts"],
+      "@equipe-tech/observability-evlog": ["./packages/evlog/src/index.ts"]
     }
   },
   "include": ["vite.config.ts", "tools/**/*.ts", "scripts/**/*.ts", "packages/**/*.ts"],

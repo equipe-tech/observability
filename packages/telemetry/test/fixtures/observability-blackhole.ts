@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 import type { EventName } from "../../src/contract/EventName.ts";
 import type {
   CompiledAuditActionDefinition,
@@ -32,10 +32,13 @@ const events = registerOfficialAdapter({
     Effect.succeed({
       flush: Effect.void,
       close: Effect.void,
-      eventLayer: Layer.succeed(
-        TelemetryEventSink,
-        TelemetryEventSink.of({ record: () => Effect.void, recordBrowser: () => Effect.void }),
+      eventLayer: Option.some(
+        Layer.succeed(
+          TelemetryEventSink,
+          TelemetryEventSink.of({ record: () => Effect.void, recordBrowser: () => Effect.void }),
+        ),
       ),
+      degraded: () => false,
     }),
 });
 
