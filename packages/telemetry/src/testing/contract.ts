@@ -1,6 +1,7 @@
 import { Effect, Layer, Random, Ref } from "effect";
 import {
   TelemetryEventSink,
+  type BrowserTelemetryEvent,
   type EventPayloadOf,
   type EventProducer,
   type TelemetryContract,
@@ -27,16 +28,25 @@ export const telemetryEventErrorFixtures = TelemetryEventErrorCode.literals;
 export type CollectingTelemetryEventSink = {
   readonly layer: Layer.Layer<TelemetryEventSink>;
   readonly events: Effect.Effect<ReadonlyArray<TelemetryEvent>>;
+  readonly browserEvents: Effect.Effect<ReadonlyArray<BrowserTelemetryEvent>>;
 };
 
 export const makeCollectingTelemetryEventSink = Effect.fn("makeCollectingTelemetryEventSink")(
   function* (): Effect.fn.Return<CollectingTelemetryEventSink> {
     const store = yield* Ref.make<ReadonlyArray<TelemetryEvent>>([]);
+    const browserStore = yield* Ref.make<ReadonlyArray<BrowserTelemetryEvent>>([]);
     const record = (event: TelemetryEvent): Effect.Effect<void> =>
       Ref.update(store, (events) => [...events, event]);
+    const recordBrowserBatch = (
+      events: ReadonlyArray<BrowserTelemetryEvent>,
+    ): Effect.Effect<void> => Ref.update(browserStore, (captured) => [...captured, ...events]);
     return {
-      layer: Layer.succeed(TelemetryEventSink, TelemetryEventSink.of({ record })),
+      layer: Layer.succeed(
+        TelemetryEventSink,
+        TelemetryEventSink.of({ record, recordBrowserBatch }),
+      ),
       events: Ref.get(store),
+      browserEvents: Ref.get(browserStore),
     };
   },
 );

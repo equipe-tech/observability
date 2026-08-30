@@ -32,6 +32,7 @@ const version = argument("--version");
 const output = argument("--output");
 const packageDirectories = new Map([
   ["observability", "telemetry"],
+  ["observability-evlog", "evlog"],
   ["observability-nestjs", "nestjs"],
   ["observability-cli", "cli"],
 ]);

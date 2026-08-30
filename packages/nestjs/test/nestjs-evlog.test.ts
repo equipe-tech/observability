@@ -1,8 +1,11 @@
 import "reflect-metadata";
 import { Controller, Get, Module, NotFoundException, Param } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { createOTLPDrain } from "evlog/otlp";
+import { Contract, parseNodeObservabilityConfig } from "@equipe-tech/observability";
+import { createNodeObservabilityFromConfig } from "@equipe-tech/observability/node";
+import { evlogAdapter } from "@equipe-tech/observability-evlog";
 import { EvlogModule, useLogger } from "evlog/nestjs";
 import { createServer, IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -503,6 +506,73 @@ describe("NestJS evlog trace correlation", () => {
     } finally {
       releaseOverlap();
       await app.close().catch(() => undefined);
+      await capture.close();
+    }
+  }, 30_000);
+
+  it("exports one contract-valid EvlogModule request event through the official adapter", async () => {
+    const capture = await makeOtlpCapture();
+    const contract = await Effect.runPromise(
+      Contract.defineTelemetryContract(
+        Contract.telemetryContractDefinition({
+          version: 1,
+          events: { RequestCompleted: Contract.organizationEvents.RequestCompleted },
+          metrics: {},
+          auditActions: {},
+        }),
+      ),
+    );
+    const config = await Effect.runPromise(
+      parseNodeObservabilityConfig({
+        enabled: true,
+        profile: "nestjs-api",
+        service: { name: "nestjs-request-event", version: "1.0.0", environment: "test" },
+        telemetry: { endpoint: new URL(capture.endpoint) },
+        evlog: { contract, policy: { attributes: {}, blockedKeys: [], blockedValuePatterns: [] } },
+        sentry: { enabled: false },
+      }),
+    );
+    const adapter = evlogAdapter({
+      requestEventName: "request.completed",
+      batchSize: 1,
+      transportRetries: 0,
+    });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+
+    class RequestController {
+      request(): { readonly ok: boolean } {
+        return { ok: true };
+      }
+    }
+    Controller()(RequestController);
+    Get("request-event")(
+      RequestController.prototype,
+      "request",
+      methodDescriptor(RequestController.prototype, "request"),
+    );
+
+    class AppModule {}
+    Module({ imports: [EvlogModule.forRoot()], controllers: [RequestController] })(AppModule);
+    const app = await NestFactory.create(AppModule, { logger: false });
+    await app.listen(0, "127.0.0.1");
+    try {
+      const response = await fetch(
+        `${applicationBaseUrl(app.getHttpServer().address())}/request-event`,
+      );
+      assert.strictEqual(response.status, 200);
+      await app.close();
+      const report = await observability.close();
+      const records = logRecords(capture);
+      assert.lengthOf(records, 1);
+      const record = records[0];
+      assert.isDefined(record);
+      assert.strictEqual(stringAttribute(record, "event.name"), "request.completed");
+      assert.strictEqual(stringAttribute(record, "event.type"), "request");
+      assert.strictEqual(adapter.drops().reasons.contractRejected, 0);
+      assert.isFalse(report.degraded);
+    } finally {
+      await app.close().catch(() => undefined);
+      await observability.close().catch(() => undefined);
       await capture.close();
     }
   }, 30_000);

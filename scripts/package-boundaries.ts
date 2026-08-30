@@ -32,6 +32,7 @@ type DependencyKind = "framework" | "metric-api" | "otlp" | "provider" | "runtim
 const ownership: ReadonlyArray<PathOwnership> = [
   { role: "bootstrap", matches: (file) => file === "packages/cli/src/main.ts" },
   { role: "adapter", matches: (file) => file.startsWith("packages/nestjs/src/") },
+  { role: "adapter", matches: (file) => file.startsWith("packages/evlog/src/") },
   {
     role: "adapter",
     matches: (file) => file === "packages/telemetry/src/MetricsRuntime.ts",

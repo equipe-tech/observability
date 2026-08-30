@@ -253,6 +253,17 @@ try {
       ],
     },
     {
+      directory: join(root, "packages/evlog"),
+      archive: "evlog.tgz",
+      required: [
+        "package/LICENSE",
+        "package/README.md",
+        "package/dist/LICENSE",
+        "package/dist/index.js",
+        "package/dist/index.d.ts",
+      ],
+    },
+    {
       directory: join(root, "packages/nestjs"),
       archive: "nestjs.tgz",
       required: [
@@ -413,6 +424,7 @@ try {
       dependencies: {
         "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
         "@equipe-tech/observability-cli": `file:${join(temporaryDirectory, "cli.tgz")}`,
+        "@equipe-tech/observability-evlog": `file:${join(temporaryDirectory, "evlog.tgz")}`,
         "@equipe-tech/observability-nestjs": `file:${join(temporaryDirectory, "nestjs.tgz")}`,
         effect: "4.0.0-rc.111",
       },
@@ -430,6 +442,7 @@ try {
       dependencies: {
         "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
         "@equipe-tech/observability-cli": `file:${join(temporaryDirectory, "cli.tgz")}`,
+        "@equipe-tech/observability-evlog": `file:${join(temporaryDirectory, "evlog.tgz")}`,
         "@equipe-tech/observability-nestjs": `file:${join(temporaryDirectory, "nestjs.tgz")}`,
         "@nestjs/common": "^11.0.0",
         "@nestjs/core": "^11.0.0",
@@ -443,13 +456,43 @@ try {
     await run(["npm", "install"], nodeConsumer),
     "Installing packed packages with npm",
   );
+
+  const coreOnlyConsumer = join(temporaryDirectory, "core only consumer");
+  await mkdir(coreOnlyConsumer, { recursive: true });
+  await writeFile(
+    join(coreOnlyConsumer, "package.json"),
+    JSON.stringify({
+      private: true,
+      type: "module",
+      dependencies: {
+        "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
+        effect: "4.0.0-rc.111",
+      },
+    }),
+  );
+  requireSuccess(
+    await run(["bun", "install"], coreOnlyConsumer),
+    "Installing the core package without the evlog adapter",
+  );
+  requireSuccess(
+    await run(
+      [
+        "bun",
+        "--eval",
+        "const root = await import('@equipe-tech/observability'); const node = await import('@equipe-tech/observability/node'); if (!root.Telemetry || !node.createNodeObservability) process.exit(1);",
+      ],
+      coreOnlyConsumer,
+    ),
+    "Importing core without the evlog adapter",
+  );
+
   requireSuccess(
     await run(
       [
         "node",
         "--input-type=module",
         "--eval",
-        "const [root, effectEntry, metrics, node, nestjs, browser, client, testing] = await Promise.all([import('@equipe-tech/observability'), import('@equipe-tech/observability/effect'), import('@equipe-tech/observability/metrics'), import('@equipe-tech/observability/node'), import('@equipe-tech/observability-nestjs'), import('@equipe-tech/observability/browser'), import('@equipe-tech/observability/browser/client'), import('@equipe-tech/observability/testing')]); if ('WideEvent' in root || 'layerWideEvent' in root || !effectEntry.WideEvent || !effectEntry.layerWideEvent || !root.Telemetry || !root.ServiceName || !root.EnvironmentName || !root.CorrelationContext || root.Correlation || root.registerTestingAdapter || root.profileCapabilityRank || root.profileCapabilityRequirement || root.secondReleaseVariables || root.baseBlockedValuePatterns || !root.registerOfficialAdapter || !root.ObservabilityLifecycleError || node.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.CurrentCorrelation !== root.CurrentCorrelation || nestjs.TelemetryEventSink !== root.TelemetryEventSink || !nestjs.TelemetryModule || !metrics.createMetrics || !node.runMain || !node.createNodeObservability || !node.makeNodeObservability || !node.layerNodeObservability || !browser.BrowserTelemetry || !client.createBrowserTelemetryClient || !testing.run || !testing.registerTestingAdapter) process.exit(1); try { await import('@equipe-tech/observability/nestjs'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') process.exit(1); }",
+        "const [root, effectEntry, metrics, node, evlog, nestjs, browser, client, testing] = await Promise.all([import('@equipe-tech/observability'), import('@equipe-tech/observability/effect'), import('@equipe-tech/observability/metrics'), import('@equipe-tech/observability/node'), import('@equipe-tech/observability-evlog'), import('@equipe-tech/observability-nestjs'), import('@equipe-tech/observability/browser'), import('@equipe-tech/observability/browser/client'), import('@equipe-tech/observability/testing')]); if ('WideEvent' in root || 'layerWideEvent' in root || !effectEntry.WideEvent || !effectEntry.layerWideEvent || !root.Telemetry || !root.ServiceName || !root.EnvironmentName || !root.CorrelationContext || root.Correlation || root.registerTestingAdapter || root.profileCapabilityRank || root.profileCapabilityRequirement || root.secondReleaseVariables || root.baseBlockedValuePatterns || !root.registerOfficialAdapter || !root.ObservabilityLifecycleError || node.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.CurrentCorrelation !== root.CurrentCorrelation || nestjs.TelemetryEventSink !== root.TelemetryEventSink || !evlog.evlogAdapter || !nestjs.TelemetryModule || !metrics.createMetrics || !node.runMain || !node.createNodeObservability || !node.makeNodeObservability || !node.layerNodeObservability || !browser.BrowserTelemetry || !client.createBrowserTelemetryClient || !testing.run || !testing.registerTestingAdapter) process.exit(1); try { await import('@equipe-tech/observability/nestjs'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') process.exit(1); }",
       ],
       nodeConsumer,
     ),
@@ -461,7 +504,12 @@ try {
   );
 
   const declarations = new Bun.Glob("**/*.d.ts");
-  for (const packageName of ["observability", "observability-nestjs", "observability-cli"]) {
+  for (const packageName of [
+    "observability",
+    "observability-evlog",
+    "observability-nestjs",
+    "observability-cli",
+  ]) {
     const packageDirectory = join(consumer, "node_modules/@equipe-tech", packageName);
     const distribution = join(packageDirectory, "dist");
     const manifestValue: unknown = JSON.parse(
@@ -488,6 +536,12 @@ try {
       ) {
         throw new Error(`The core declaration ${declaration} exposes a framework dependency.`);
       }
+      if (
+        packageName === "observability-evlog" &&
+        /\b(?:DrainContext|DrainFn|OTLPConfig|OTLPLogRecord|WideEvent)\b/.test(source)
+      ) {
+        throw new Error(`The evlog adapter declaration ${declaration} exposes evlog internals.`);
+      }
       for (const violation of declarationReferenceViolations(source, declared)) {
         if (violation.kind === "source-path") {
           throw new Error(
@@ -500,12 +554,24 @@ try {
       }
     }
   }
+  const coreRuntimeFiles = new Bun.Glob("**/*.js");
+  for await (const runtimeFile of coreRuntimeFiles.scan({
+    cwd: join(consumer, "node_modules/@equipe-tech/observability/dist"),
+  })) {
+    const source = await Bun.file(
+      join(consumer, "node_modules/@equipe-tech/observability/dist", runtimeFile),
+    ).text();
+    if (/(?:from|import\()["']evlog(?:\/|["'])/.test(source)) {
+      throw new Error(`The core runtime ${runtimeFile} imports evlog.`);
+    }
+  }
+
   requireSuccess(
     await run(
       [
         "bun",
         "-e",
-        "import * as Root from '@equipe-tech/observability'; import { Telemetry } from '@equipe-tech/observability'; import { WideEvent, layerWideEvent } from '@equipe-tech/observability/effect'; import { createMetrics } from '@equipe-tech/observability/metrics'; import { createNodeObservability, ingestBrowserEvents, layerNodeObservability, makeNodeObservability, runMain } from '@equipe-tech/observability/node'; import { BrowserTelemetry } from '@equipe-tech/observability/browser'; import { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client'; import { registerTestingAdapter, run } from '@equipe-tech/observability/testing'; const failed = [!Telemetry.layer, !WideEvent.emit, !layerWideEvent, 'WideEvent' in Root, 'layerWideEvent' in Root, !createMetrics, !runMain, !createNodeObservability, !makeNodeObservability, !layerNodeObservability, !ingestBrowserEvents, !BrowserTelemetry.layer, !createBrowserTelemetryClient, !run, !registerTestingAdapter, 'registerTestingAdapter' in Root, 'baseBlockedValuePatterns' in Root].findIndex(Boolean); if (failed !== -1) throw new Error(`Packed export check ${failed} failed.`); let rejected = false; try { await import('@equipe-tech/observability/nestjs'); } catch { rejected = true; } if (!rejected) throw new Error('The removed NestJS path resolved in Bun.');",
+        "import * as Root from '@equipe-tech/observability'; import { Telemetry } from '@equipe-tech/observability'; import { evlogAdapter } from '@equipe-tech/observability-evlog'; import { WideEvent, layerWideEvent } from '@equipe-tech/observability/effect'; import { createMetrics } from '@equipe-tech/observability/metrics'; import { createNodeObservability, ingestBrowserEvents, layerNodeObservability, makeNodeObservability, runMain } from '@equipe-tech/observability/node'; import { BrowserTelemetry } from '@equipe-tech/observability/browser'; import { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client'; import { registerTestingAdapter, run } from '@equipe-tech/observability/testing'; const failed = [!Telemetry.layer, !evlogAdapter, !WideEvent.emit, !layerWideEvent, 'WideEvent' in Root, 'layerWideEvent' in Root, !createMetrics, !runMain, !createNodeObservability, !makeNodeObservability, !layerNodeObservability, !ingestBrowserEvents, !BrowserTelemetry.layer, !createBrowserTelemetryClient, !run, !registerTestingAdapter, 'registerTestingAdapter' in Root, 'baseBlockedValuePatterns' in Root].findIndex(Boolean); if (failed !== -1) throw new Error(`Packed export check ${failed} failed.`); let rejected = false; try { await import('@equipe-tech/observability/nestjs'); } catch { rejected = true; } if (!rejected) throw new Error('The removed NestJS path resolved in Bun.');",
       ],
       consumer,
     ),

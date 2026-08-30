@@ -53,6 +53,14 @@ A versão 0.3 exige nomes estáveis e pontuados para atributos de métricas. Tro
 
 Cada instrumento aceita no máximo 100 valores distintos por rótulo durante a vida do runtime. Reduza a cardinalidade antes da atualização. O valor 101 produz `MetricsError` com código `LIMIT_EXCEEDED`.
 
+## Renomear campos agora reservados
+
+A versão 0.3 reserva campos preenchidos pelos sinks. Remova das definições de atributos da aplicação `event.source`, `event.policy_dropped_attributes`, `browser.event.id`, `browser.event.occurred_at`, `error.name` e `error.status`. Esses nomes, junto com os demais campos canônicos listados no contrato de telemetria, produzem `OBS_CONTRACT_RESERVED_ATTRIBUTE_NAME` durante a compilação do contrato.
+
+## Limitar timestamps ao intervalo do OTLP
+
+Eventos de servidor e browser aceitam timestamps entre `1970-01-01T00:00:00.000Z` e `2554-07-21T23:34:33.709Z`, inclusive. O limite superior corresponde a `18446744073709` milissegundos desde o epoch. Corrija relógios de dispositivo e timestamps fornecidos pela aplicação antes da emissão. Valores fora desse intervalo podem fazer o Collector rejeitar o lote inteiro.
+
 ## Atualizar atributos sensíveis do contrato
 
 A versão 0.3 mascara atributos classificados como `sensitive` com `****`, registra a transformação em `EmitReceipt.redactions` e grava o evento. Esse caso não retorna mais `OBS_EVENT_RESTRICTED_ATTRIBUTE`. Atributos `forbidden` continuam rejeitados antes do sink.
@@ -111,8 +119,14 @@ import {
 } from "@equipe-tech/observability-nestjs";
 ```
 
-O núcleo mantém `./metrics`, `./node`, `./browser`, `./browser/client` e `./testing`. `effect@4.0.0-rc.111` passa a ser peer obrigatório do núcleo e do pacote NestJS. O consumidor deve instalar uma única cópia.
+O núcleo mantém `./metrics`, `./node`, `./browser`, `./browser/client` e `./testing`. `effect@4.0.0-rc.111` passa a ser peer obrigatório do núcleo e dos pacotes de integração. O consumidor deve instalar uma única cópia.
+
+## Instalar o adapter oficial de eventos
+
+Instale `@equipe-tech/observability-evlog@0.3.x` e registre `evlogAdapter().registration` em `createNodeObservability`. Forneça `observability.eventLayer` ao `EventProducer.emit`. O adapter depende diretamente de `evlog@2.27.1`; a aplicação não monta fila, retry ou transporte.
+
+O ingest HTTP do browser agora exige a mesma layer. Passe `{ eventLayer: observability.eventLayer }` para `createBrowserEventsController`. Implementações próprias de `TelemetryEventSink` devem trocar `recordBrowser` por `recordBrowserBatch` e validar o lote inteiro antes de produzir qualquer efeito. Remova a composição manual de `EvlogModule` para o fluxo de eventos de contrato.
 
 ## Usar releases independentes
 
-Os pacotes não compartilham versão. O núcleo e o pacote NestJS começam em `0.3.0`. A CLI permanece em `0.2.1`. Tags usam `<slug>@<semver>`, por exemplo `observability@0.3.0`, `observability-nestjs@0.3.0` e `observability-cli@0.2.1`.
+Os pacotes não compartilham versão. O núcleo, o adapter evlog e o pacote NestJS começam em `0.3.0`. A CLI permanece em `0.2.1`. Tags usam `<slug>@<semver>`, por exemplo `observability@0.3.0`, `observability-evlog@0.3.0`, `observability-nestjs@0.3.0` e `observability-cli@0.2.1`.

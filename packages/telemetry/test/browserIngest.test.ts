@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Exit, Option } from "effect";
 import { maxFieldValueLength } from "../src/BrowserEvents.ts";
 import { ingestBrowserEvents } from "../src/node/index.ts";
+import { layerWideEvent } from "../src/effect/index.ts";
 import * as Testing from "../src/testing/index.ts";
 
 const attributeOrUndefined = (
@@ -38,7 +39,9 @@ describe("ingestBrowserEvents", () => {
         ],
       };
 
-      const { exit, telemetry } = yield* Testing.run(ingestBrowserEvents(payload));
+      const { exit, telemetry } = yield* Testing.run(
+        ingestBrowserEvents(payload).pipe(Effect.provide(layerWideEvent)),
+      );
 
       assert.deepStrictEqual(exit, Exit.succeed({ accepted: 2, redacted: 1, dropped: 2 }));
       assert.notInclude(JSON.stringify(telemetry.logs), secret);
@@ -66,7 +69,10 @@ describe("ingestBrowserEvents", () => {
 
   it.effect("rejects a malformed payload with the invalid batch contract", () =>
     Effect.gen(function* () {
-      const failure = yield* ingestBrowserEvents({ nonsense: true }).pipe(Effect.flip);
+      const failure = yield* ingestBrowserEvents({ nonsense: true }).pipe(
+        Effect.provide(layerWideEvent),
+        Effect.flip,
+      );
       assert.strictEqual(failure._tag, "InvalidBrowserEventBatch");
       assert.strictEqual(failure.code, "OBS_BROWSER_EVENTS_INVALID_BATCH");
     }),
@@ -74,7 +80,10 @@ describe("ingestBrowserEvents", () => {
 
   it.effect("rejects an unsupported contract version", () =>
     Effect.gen(function* () {
-      const failure = yield* ingestBrowserEvents({ version: 2, events: [] }).pipe(Effect.flip);
+      const failure = yield* ingestBrowserEvents({ version: 2, events: [] }).pipe(
+        Effect.provide(layerWideEvent),
+        Effect.flip,
+      );
       assert.strictEqual(failure.code, "OBS_BROWSER_EVENTS_INVALID_BATCH");
     }),
   );
@@ -87,7 +96,10 @@ describe("ingestBrowserEvents", () => {
         occurredAt: 1,
         fields: {},
       }));
-      const failure = yield* ingestBrowserEvents({ version: 1, events }).pipe(Effect.flip);
+      const failure = yield* ingestBrowserEvents({ version: 1, events }).pipe(
+        Effect.provide(layerWideEvent),
+        Effect.flip,
+      );
       assert.strictEqual(failure.code, "OBS_BROWSER_EVENTS_INVALID_BATCH");
     }),
   );
@@ -104,7 +116,7 @@ describe("ingestBrowserEvents", () => {
             fields: { "page.blob": "x".repeat(maxFieldValueLength + 1) },
           },
         ],
-      }).pipe(Effect.flip);
+      }).pipe(Effect.provide(layerWideEvent), Effect.flip);
       assert.strictEqual(failure.code, "OBS_BROWSER_EVENTS_INVALID_BATCH");
     }),
   );
