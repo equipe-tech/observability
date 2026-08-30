@@ -50,6 +50,10 @@ if (mode === "missing") {
   process.stderr.write("npm error code E404\\n");
   process.exit(1);
 }
+if (mode === "missing-stdout") {
+  process.stdout.write("npm error code E404\\n");
+  process.exit(1);
+}
 if (mode === "authentication") {
   process.stderr.write("npm error code E401\\n");
   process.exit(1);
@@ -70,10 +74,11 @@ describe("npm publication state classifier", () => {
     expect(classifyNpmView({ exitCode: 0, stdout: '"0.3.0"', stderr: "" })).toBe("published");
   });
 
-  test("classifies only npm not-found responses as missing", () => {
-    expect(classifyNpmView({ exitCode: 1, stdout: "", stderr: "npm error code E404" })).toBe(
-      "missing",
-    );
+  test.each([
+    ["stderr", { exitCode: 1, stdout: "", stderr: "npm error code E404" }],
+    ["stdout", { exitCode: 1, stdout: "npm error code E404", stderr: "" }],
+  ])("classifies npm not-found responses from %s as missing", (_stream, result) => {
+    expect(classifyNpmView(result)).toBe("missing");
   });
 
   test.each([
@@ -93,10 +98,13 @@ describe("npm publication state executable", () => {
     expect(result).toEqual({ exitCode: 0, stdout: "published\n", stderr: "" });
   });
 
-  test("prints missing for an E404 response", async () => {
-    const result = await executePublicationState(["@scope/package", "1.2.3"], "missing");
-    expect(result).toEqual({ exitCode: 0, stdout: "missing\n", stderr: "" });
-  });
+  test.each(["missing", "missing-stdout"])(
+    "prints missing for an E404 response in %s mode",
+    async (mode) => {
+      const result = await executePublicationState(["@scope/package", "1.2.3"], mode);
+      expect(result).toEqual({ exitCode: 0, stdout: "missing\n", stderr: "" });
+    },
+  );
 
   test.each(["authentication", "network"])("rejects an npm %s failure", async (mode) => {
     const result = await executePublicationState(["@scope/package", "1.2.3"], mode);
