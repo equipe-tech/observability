@@ -723,8 +723,7 @@ export type BrowserDeliveryCanaryReceipt = {
   readonly durationMillis: number;
 };
 
-const normalizedHostname = (hostname: string): string =>
-  (hostname.endsWith(".") ? hostname.slice(0, -1) : hostname).toLowerCase();
+const normalizedHostname = (hostname: string): string => hostname.replace(/\.+$/, "").toLowerCase();
 
 const isLocalDomain = (hostname: string): boolean =>
   hostname === "localhost" ||
@@ -769,7 +768,9 @@ const isGloballyRoutableIpv4 = (octets: ReadonlyArray<number>): boolean => {
     isLocalIpv4(octets) ||
     (first === 100 && second >= 64 && second <= 127) ||
     (first === 192 && second === 0 && (third === 0 || third === 2)) ||
+    (first === 192 && second === 31 && third === 196) ||
     (first === 192 && second === 88 && third === 99) ||
+    (first === 192 && second === 175 && third === 48) ||
     (first === 198 && (second === 18 || second === 19)) ||
     (first === 198 && second === 51 && third === 100) ||
     (first === 203 && second === 0 && third === 113) ||
@@ -794,16 +795,6 @@ const parseIpv6Address = (hostname: string): ReadonlyArray<number> | undefined =
   return groups.map((group) => Number.parseInt(group, 16));
 };
 
-const mappedIpv4Address = (groups: ReadonlyArray<number>): ReadonlyArray<number> | undefined => {
-  if (!groups.slice(0, 5).every((group) => group === 0) || groups[5] !== 0xffff) {
-    return undefined;
-  }
-  const high = groups[6];
-  const low = groups[7];
-  if (high === undefined || low === undefined) return undefined;
-  return [high >>> 8, high & 0xff, low >>> 8, low & 0xff];
-};
-
 const isLocalIpv6 = (groups: ReadonlyArray<number>): boolean => {
   const first = groups[0];
   if (first === undefined) return false;
@@ -821,8 +812,6 @@ const isGloballyRoutableIpv6 = (groups: ReadonlyArray<number>): boolean => {
   if (first === undefined || second === undefined || third === undefined) return false;
   return (
     (first & 0xe000) === 0x2000 &&
-    mappedIpv4Address(groups) === undefined &&
-    !isLocalIpv6(groups) &&
     !(first === 0x2001 && second === 0) &&
     !(first === 0x2001 && second === 2 && third === 0) &&
     !(first === 0x2001 && (second & 0xfff0) === 0x10) &&
