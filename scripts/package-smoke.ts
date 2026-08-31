@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { declarationReferenceViolations } from "./declaration-references.ts";
+import { enforceBundleGzipBudget } from "./package-smoke-budget.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const cleanupTestIndex = process.argv.indexOf("--signal-cleanup-test");
@@ -569,7 +570,7 @@ try {
         "node",
         "--input-type=module",
         "--eval",
-        "const registry = Symbol.for('@equipe-tech/observability-react/active-hosts'); Object.defineProperty(globalThis, registry, { configurable: true, value: {}, writable: true }); const poisoned = Object.getOwnPropertyDescriptor(globalThis, registry); const [browser, policy] = await Promise.all([import('@equipe-tech/observability-sentry/browser'), import('@equipe-tech/observability/policy')]); const react = await import('@equipe-tech/observability-react'); const imported = Object.getOwnPropertyDescriptor(globalThis, registry); if (imported?.value !== poisoned?.value || imported?.writable !== true || imported?.configurable !== true) process.exit(1); if (!browser.createBrowserSentryDefectReporter || !react.createBrowserObservability) process.exit(1); const config = { service: { name: 'packed-web', version: '0.3.0', environment: 'test' }, policy: policy.definePolicy({ attributes: { 'error.origin': { classification: 'internal', required: true, metricLabel: false } }, blockedKeys: [], blockedValuePatterns: [] }), sentry: { disabled: true } }; const inert = react.createBrowserObservability(config); if (inert.installed) process.exit(1); await inert.dispose(); const listeners = new Map(); const host = { addEventListener(name, listener) { listeners.set(name, listener); }, removeEventListener(name) { listeners.delete(name); } }; const active = react.createBrowserObservability({ ...config, host }); const recovered = Object.getOwnPropertyDescriptor(globalThis, registry); if (recovered?.writable !== false || recovered?.configurable !== false || !(recovered?.value instanceof WeakSet)) process.exit(1); if (!active.installed || active.defects.report({ error: new Error('packed'), origin: 'manual' }).kind !== 'recorded') process.exit(1); const duplicateReact = await import(`${import.meta.resolve('@equipe-tech/observability-react')}?duplicate-bundle`); try { duplicateReact.createBrowserObservability({ ...config, host }); process.exit(1); } catch (error) { if (error?.code !== 'OBS_REACT_ALREADY_INSTALLED') process.exit(1); } await active.dispose(); const replacement = duplicateReact.createBrowserObservability({ ...config, host }); await replacement.dispose(); if (listeners.size !== 0) process.exit(1); try { await import('@sentry/node-core'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_MODULE_NOT_FOUND') process.exit(1); }",
+        "const registry = Symbol.for('@equipe-tech/observability-react/active-hosts'); Object.defineProperty(globalThis, registry, { configurable: true, value: {}, writable: true }); const poisoned = Object.getOwnPropertyDescriptor(globalThis, registry); const [browser, policy, profile] = await Promise.all([import('@equipe-tech/observability-sentry/browser'), import('@equipe-tech/observability/policy'), import('@equipe-tech/observability/react-web-profile')]); const react = await import('@equipe-tech/observability-react'); const imported = Object.getOwnPropertyDescriptor(globalThis, registry); if (imported?.value !== poisoned?.value || imported?.writable !== true || imported?.configurable !== true) process.exit(1); if (!browser.createBrowserSentryDefectReporter || !react.createBrowserObservability || !Object.isFrozen(profile.reactWebLifecycle)) process.exit(1); const lifecycle = profile.reactWebLifecycle; for (const name of ['environmentRequiringDefects', 'shutdownDeadlineMillis', 'eventShutdownDeadlineMillis', 'sentryDeadlineMillis', 'flushDeadlineMillis']) { const descriptor = Object.getOwnPropertyDescriptor(lifecycle, name); if (descriptor?.writable !== false || descriptor.configurable !== false) process.exit(1); } try { Object.defineProperty(lifecycle, 'environmentRequiringDefects', { value: 'bypassed' }); process.exit(1); } catch (error) { if (!(error instanceof TypeError)) process.exit(1); } try { Object.defineProperty(lifecycle, 'eventShutdownDeadlineMillis', { value: 1 }); process.exit(1); } catch (error) { if (!(error instanceof TypeError)) process.exit(1); } if (lifecycle.environmentRequiringDefects !== 'production' || lifecycle.eventShutdownDeadlineMillis !== 1150) process.exit(1); const config = { service: { name: 'packed-web', version: '0.3.0', environment: 'test' }, policy: policy.definePolicy({ attributes: { 'error.origin': { classification: 'internal', required: true, metricLabel: false } }, blockedKeys: [], blockedValuePatterns: [] }), sentry: { disabled: true } }; const inert = react.createBrowserObservability(config); if (inert.installed) process.exit(1); await inert.dispose(); const listeners = new Map(); const host = { addEventListener(name, listener) { listeners.set(name, listener); }, removeEventListener(name) { listeners.delete(name); } }; try { react.createBrowserObservability({ ...config, service: { ...config.service, environment: 'production' }, host }); process.exit(1); } catch (error) { if (error?.code !== 'OBS_REACT_CONFIG_INVALID') process.exit(1); } const active = react.createBrowserObservability({ ...config, host }); const recovered = Object.getOwnPropertyDescriptor(globalThis, registry); if (recovered?.writable !== false || recovered?.configurable !== false || !(recovered?.value instanceof WeakSet)) process.exit(1); if (!active.installed || active.defects.report({ error: new Error('packed'), origin: 'manual' }).kind !== 'recorded') process.exit(1); const duplicateReact = await import(`${import.meta.resolve('@equipe-tech/observability-react')}?duplicate-bundle`); try { duplicateReact.createBrowserObservability({ ...config, host }); process.exit(1); } catch (error) { if (error?.code !== 'OBS_REACT_ALREADY_INSTALLED') process.exit(1); } await active.dispose(); const replacement = duplicateReact.createBrowserObservability({ ...config, host }); await replacement.dispose(); if (listeners.size !== 0) process.exit(1); try { await import('@sentry/node-core'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_MODULE_NOT_FOUND') process.exit(1); }",
       ],
       browserConsumer,
     ),
@@ -862,16 +863,11 @@ try {
       2,
     ),
   );
-  if (facadeGzipDeltaBytes > facadeGzipRegressionCeilingBytes * 0.95) {
-    throw new Error(
-      `The isolated browser facade gzip delta is ${facadeGzipDeltaBytes} bytes and leaves less than five percent margin below the ${facadeGzipRegressionCeilingBytes} byte ceiling.`,
-    );
-  }
-  if (facadeGzipDeltaBytes > facadeGzipRegressionCeilingBytes) {
-    throw new Error(
-      `The isolated browser facade gzip delta is ${facadeGzipDeltaBytes} bytes, above the ${facadeGzipRegressionCeilingBytes} byte regression ceiling.`,
-    );
-  }
+  enforceBundleGzipBudget({
+    artifact: "The isolated browser facade",
+    deltaBytes: facadeGzipDeltaBytes,
+    ceilingBytes: facadeGzipRegressionCeilingBytes,
+  });
 
   const reactSmokeSource = [
     "import { createBrowserObservability } from '@equipe-tech/observability-react';",
@@ -919,16 +915,11 @@ try {
       2,
     ),
   );
-  if (reactGzipDeltaBytes > reactGzipRegressionCeilingBytes * 0.95) {
-    throw new Error(
-      `The React production entrypoint gzip delta is ${reactGzipDeltaBytes} bytes and leaves less than five percent margin below the ${reactGzipRegressionCeilingBytes} byte ceiling.`,
-    );
-  }
-  if (reactGzipDeltaBytes > reactGzipRegressionCeilingBytes) {
-    throw new Error(
-      `The React production entrypoint gzip delta is ${reactGzipDeltaBytes} bytes, above the ${reactGzipRegressionCeilingBytes} byte regression ceiling.`,
-    );
-  }
+  enforceBundleGzipBudget({
+    artifact: "The React production entrypoint",
+    deltaBytes: reactGzipDeltaBytes,
+    ceilingBytes: reactGzipRegressionCeilingBytes,
+  });
 
   const executable = join(consumer, "node_modules/.bin/observability");
   const help = await run([executable, "--help"], consumer);

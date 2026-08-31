@@ -484,6 +484,38 @@ describe("React browser observability", () => {
     assert.isTrue([...fixture.listeners.values()].every((registered) => registered.size === 0));
   });
 
+  it("initiates operational and Sentry flush once on pagehide and absorbs rejection", async () => {
+    const server = createServer(() => undefined);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    const fixture = recordingHost();
+    let operationalFlushes = 0;
+    const observability = createBrowserObservability({
+      service,
+      policy,
+      host: fixture.host,
+      sentry: { dsn: `http://public@127.0.0.1:${address.port}/1` },
+      events: {
+        flushIntervalMs: 60_000,
+        transport: async () => {
+          operationalFlushes += 1;
+          throw new Error("operational flush rejected");
+        },
+      },
+    });
+    observability.defects.report({ error: new Error("page hidden"), origin: "manual" });
+    fixture.dispatch("pagehide", new Event("pagehide"));
+    await new Promise((resolve) => setTimeout(resolve, 850));
+    assert.strictEqual(operationalFlushes, 1);
+    assert.strictEqual(observability.reports().sentry.reasons.flushIncomplete, 1);
+    assert.strictEqual(observability.reports().failed, 1);
+    server.closeAllConnections();
+    await observability.dispose();
+    await new Promise<void>((resolve, reject) =>
+      server.close((cause) => (cause === undefined ? resolve() : reject(cause))),
+    );
+  });
+
   it("reconciles recorded, pending, and dropped delivery counts under queue pressure", async () => {
     const fixture = recordingHost();
     const observability = createBrowserObservability({
@@ -685,7 +717,7 @@ describe("React browser observability", () => {
     await assertCanaryError(
       () => runBrowserDeliveryCanary({ endpoint: new URL("https://127.0.0.1") }),
       "OBS_REACT_CANARY_ENDPOINT_INVALID",
-      "The published browser delivery canary endpoint must use a non-local host.",
+      "The published browser delivery canary endpoint must use a globally routable host.",
     );
     await assertCanaryError(
       () => runBrowserDeliveryCanary({ endpoint: new URL("ftp://localhost"), topology: "local" }),
@@ -713,39 +745,81 @@ describe("React browser observability", () => {
     );
   });
 
-  it("rejects published IPv4 and bracketed IPv6 loopback hosts", async () => {
-    for (const endpoint of [
-      new URL("https://localhost/_telemetry/events"),
-      new URL("https://app.localhost/_telemetry/events"),
-      new URL("https://app.local/_telemetry/events"),
-      new URL("https://127.0.0.2/_telemetry/events"),
-      new URL("https://10.0.0.1/_telemetry/events"),
-      new URL("https://172.16.0.1/_telemetry/events"),
-      new URL("https://192.168.0.1/_telemetry/events"),
-      new URL("https://169.254.0.1/_telemetry/events"),
-      new URL("https://[::1]/_telemetry/events"),
-      new URL("https://[fc00::1]/_telemetry/events"),
-      new URL("https://[fd00::1]/_telemetry/events"),
-      new URL("https://[fe80::1]/_telemetry/events"),
-    ]) {
-      try {
-        await runBrowserDeliveryCanary({ endpoint });
-        assert.fail(`Expected ${endpoint.href} to fail`);
-      } catch (cause: unknown) {
-        assert.instanceOf(cause, BrowserObservabilityError);
-        if (cause instanceof BrowserObservabilityError) {
-          assert.strictEqual(cause.code, "OBS_REACT_CANARY_ENDPOINT_INVALID");
-          assert.strictEqual(
-            cause.message,
-            "The published browser delivery canary endpoint must use a non-local host.",
-          );
-        }
-      }
+  it("accepts only globally routable published hosts", async () => {
+    const invalidHosts = [
+      "localhost",
+      "localhost.",
+      "app.localhost",
+      "app.localhost.",
+      "app.local",
+      "app.local.",
+      "0.0.0.0",
+      "0x7f000001",
+      "0177.0.0.1",
+      "2130706433",
+      "127.1",
+      "10.0.0.1",
+      "100.64.0.1",
+      "100.127.255.255",
+      "127.0.0.2",
+      "169.254.0.1",
+      "172.16.0.1",
+      "192.168.0.1",
+      "192.0.0.1",
+      "192.0.2.1",
+      "192.88.99.1",
+      "198.18.0.1",
+      "198.51.100.1",
+      "203.0.113.1",
+      "224.0.0.1",
+      "239.255.255.255",
+      "240.0.0.1",
+      "255.255.255.255",
+      "[::]",
+      "[0:0:0:0:0:0:0:0]",
+      "[::1]",
+      "[0:0:0:0:0:0:0:1]",
+      "[::ffff:127.0.0.1]",
+      "[0:0:0:0:0:ffff:10.0.0.1]",
+      "[::ffff:8.8.8.8]",
+      "[fc00::1]",
+      "[fd00::1]",
+      "[fe80::1]",
+      "[fe90::1]",
+      "[febf::1]",
+      "[fec0::1]",
+      "[ff02::1]",
+      "[2001:2::1]",
+      "[2001:db8::1]",
+      "[2002::1]",
+      "[3fff::1]",
+    ];
+    for (const host of invalidHosts) {
+      const endpoint = new URL(`https://${host}/_telemetry/events`);
+      await assertCanaryError(
+        () =>
+          runBrowserDeliveryCanary({
+            endpoint,
+            transport: async () => new Response(null, { status: 202 }),
+          }),
+        "OBS_REACT_CANARY_ENDPOINT_INVALID",
+        "The published browser delivery canary endpoint must use a globally routable host.",
+      );
     }
-    const receipt = await runBrowserDeliveryCanary({
-      endpoint: new URL("https://telemetry.example.com/_telemetry/events"),
-      transport: async () => new Response(null, { status: 202 }),
-    });
-    assert.strictEqual(receipt.endpointOrigin, "https://telemetry.example.com");
+    for (const host of [
+      "8.8.8.8",
+      "1.1.1.1",
+      "[2001:4860:4860::8888]",
+      "[2606:4700:4700::1111]",
+      "telemetry.example.com",
+      "telemetry.example.com.",
+    ]) {
+      const endpoint = new URL(`https://${host}/_telemetry/events`);
+      const receipt = await runBrowserDeliveryCanary({
+        endpoint,
+        transport: async () => new Response(null, { status: 202 }),
+      });
+      assert.strictEqual(receipt.endpointOrigin, endpoint.origin);
+    }
   });
 });

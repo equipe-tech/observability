@@ -33,6 +33,27 @@ describe("official observability profiles", () => {
     expect(() => Object.defineProperty(serverOrder[1], 0, { value: "metrics" })).toThrow(TypeError);
   });
 
+  it("keeps every React lifecycle and security constant immutable", () => {
+    expect(Object.isFrozen(reactWebLifecycle)).toBe(true);
+    expect(Object.getOwnPropertyDescriptors(reactWebLifecycle)).toMatchObject({
+      environmentRequiringDefects: { writable: false, configurable: false },
+      shutdownDeadlineMillis: { writable: false, configurable: false },
+      eventShutdownDeadlineMillis: { writable: false, configurable: false },
+      sentryDeadlineMillis: { writable: false, configurable: false },
+      flushDeadlineMillis: { writable: false, configurable: false },
+    });
+    expect(() =>
+      Object.defineProperty(reactWebLifecycle, "environmentRequiringDefects", {
+        value: "bypassed",
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      Object.defineProperty(reactWebLifecycle, "eventShutdownDeadlineMillis", { value: 1 }),
+    ).toThrow(TypeError);
+    expect(reactWebLifecycle.environmentRequiringDefects).toBe("production");
+    expect(reactWebLifecycle.eventShutdownDeadlineMillis).toBe(1_150);
+  });
+
   it("matches the normative capability matrix", () => {
     const cells = Object.values(observabilityProfiles).map((profile) => [
       profile.name,

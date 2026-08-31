@@ -18,9 +18,11 @@ await telemetry.flush();
 await telemetry.dispose();
 ```
 
-`emit` and `pending` are synchronous. `flush` and `dispose` return Promises. Concurrent flushes share one delivery operation. A rejected delivery keeps the same sanitized batch queued for a later flush. Empty event names use the valid bounded name `browser.event`. Non-positive numeric options use their documented defaults.
+`emit`, `pending`, and `dropped` are synchronous. `flush` and `dispose` return Promises. Concurrent flushes share one delivery operation. A rejected delivery keeps the same sanitized batch queued for a later flush. Empty event names use the valid bounded name `browser.event`. Non-positive numeric options use their documented defaults.
 
-Disposal clears the client-owned interval, settles an active failed flush, and makes one final queued delivery attempt. Calls share one idempotent disposal Promise. The default finite shutdown deadline is 2,000 milliseconds and can be configured with positive `shutdownTimeoutMs`. At the deadline, the client aborts every active transport signal and rejects with `BrowserTelemetryClientShutdownError`. Disposal still settles by the deadline when a custom transport ignores abort. The sanitized active batch remains counted by `pending`. A disposed client ignores new events and explicit flushes. A final delivery failure rejects disposal and retains its sanitized batch.
+`dropped()` reports the aggregate number of events removed before delivery. Queue pressure evicts the oldest queued events, and permanent delivery failures or an incomplete shutdown remove the affected queued batch. A synchronous `emit` or React defect outcome can report an event as queued before a later eviction or delivery failure. Read `deliveryDropped` from `createBrowserObservability().reports()` to reconcile those later drops with aggregate `recorded` and `pendingEvents` counts.
+
+Disposal clears the client-owned interval, settles an active failed flush, and makes one final queued delivery attempt. Calls share one idempotent disposal Promise. The default finite shutdown deadline is 2,000 milliseconds and can be configured with positive `shutdownTimeoutMs`. At the deadline, the client aborts every active transport signal and rejects with `BrowserTelemetryClientShutdownError`. Disposal still settles by the deadline when a custom transport ignores abort. Any shutdown failure counts the remaining sanitized events as dropped and clears the queue. A disposed client ignores new events and explicit flushes.
 
 Set `disabled: true` when browser telemetry is off. A disabled client creates no interval, calls no transport, ignores events, reports zero pending events, and resolves flush and disposal.
 
@@ -58,4 +60,4 @@ Call the returned cleanup when the application root is permanently stopped. Repe
 
 ## Adaptador React
 
-Use `@equipe-tech/observability-react` para instalar uma entrada única de defeitos, callbacks estruturais do React 19 e os handlers globais de `error`, `unhandledrejection` e `pagehide`. A aplicação continua dona do root, do contexto, da interface de fallback, do roteador, da rota `/_telemetry/events` e do unmount. Chame `dispose` depois do unmount. O pacote não importa React nem React DOM.
+Use `@equipe-tech/observability-react` para instalar uma entrada única de defeitos, callbacks estruturais do React 19 e os handlers globais de `error`, `unhandledrejection` e `pagehide`. O handler de `pagehide` inicia os flushes de eventos e do Sentry, absorve rejeições e não bloqueia a navegação. A aplicação continua dona do root, do contexto, da interface de fallback, do roteador, da rota `/_telemetry/events` e do unmount. Chame `dispose` depois do unmount. O pacote não importa React nem React DOM.

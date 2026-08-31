@@ -602,14 +602,18 @@ export const createBrowserObservability = (
       failed += 1;
     }
   };
-  const onPageHide = (): void => {
+  const initiatePageHideFlush = (delivery: () => Promise<boolean | void>): void => {
     try {
-      events.flush().catch(() => {
+      delivery().catch(() => {
         failed += 1;
       });
     } catch {
       failed += 1;
     }
+  };
+  const onPageHide = (): void => {
+    initiatePageHideFlush(() => events.flush());
+    initiatePageHideFlush(() => sentry.flush());
   };
   const installedListeners: Array<readonly [string, (event: Event) => void]> = [];
   try {
@@ -719,14 +723,34 @@ export type BrowserDeliveryCanaryReceipt = {
   readonly durationMillis: number;
 };
 
-const localHostnames = new Set(["localhost", "0.0.0.0"]);
+const normalizedHostname = (hostname: string): string =>
+  (hostname.endsWith(".") ? hostname.slice(0, -1) : hostname).toLowerCase();
 
-const isPrivateIpv4 = (hostname: string): boolean => {
+const isLocalDomain = (hostname: string): boolean =>
+  hostname === "localhost" ||
+  hostname.endsWith(".localhost") ||
+  hostname === "local" ||
+  hostname.endsWith(".local");
+
+const parseIpv4Address = (hostname: string): ReadonlyArray<number> | undefined => {
   const octets = hostname.split(".").map(Number);
-  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet))) return false;
+  if (
+    octets.length !== 4 ||
+    octets.some(
+      (octet) =>
+        !Number.isInteger(octet) || !Number.isSafeInteger(octet) || octet < 0 || octet > 255,
+    )
+  ) {
+    return undefined;
+  }
+  return octets;
+};
+
+const isLocalIpv4 = (octets: ReadonlyArray<number>): boolean => {
   const first = octets[0];
   const second = octets[1];
   return (
+    (first === 0 && octets.slice(1).every((octet) => octet === 0)) ||
     first === 10 ||
     first === 127 ||
     (first === 169 && second === 254) ||
@@ -735,15 +759,97 @@ const isPrivateIpv4 = (hostname: string): boolean => {
   );
 };
 
-const isLocalEndpoint = (endpoint: URL): boolean =>
-  localHostnames.has(endpoint.hostname) ||
-  endpoint.hostname.endsWith(".localhost") ||
-  endpoint.hostname.endsWith(".local") ||
-  endpoint.hostname === "[::1]" ||
-  endpoint.hostname.startsWith("[fc") ||
-  endpoint.hostname.startsWith("[fd") ||
-  endpoint.hostname.startsWith("[fe80:") ||
-  isPrivateIpv4(endpoint.hostname);
+const isGloballyRoutableIpv4 = (octets: ReadonlyArray<number>): boolean => {
+  const first = octets[0];
+  const second = octets[1];
+  const third = octets[2];
+  if (first === undefined || second === undefined || third === undefined) return false;
+  return !(
+    first === 0 ||
+    isLocalIpv4(octets) ||
+    (first === 100 && second >= 64 && second <= 127) ||
+    (first === 192 && second === 0 && (third === 0 || third === 2)) ||
+    (first === 192 && second === 88 && third === 99) ||
+    (first === 198 && (second === 18 || second === 19)) ||
+    (first === 198 && second === 51 && third === 100) ||
+    (first === 203 && second === 0 && third === 113) ||
+    first >= 224
+  );
+};
+
+const parseIpv6Address = (hostname: string): ReadonlyArray<number> | undefined => {
+  if (!hostname.startsWith("[") || !hostname.endsWith("]")) return undefined;
+  const halves = hostname.slice(1, -1).split("::");
+  if (halves.length > 2) return undefined;
+  const leading = halves[0]?.length === 0 ? [] : (halves[0]?.split(":") ?? []);
+  const trailing = halves[1]?.length === 0 ? [] : (halves[1]?.split(":") ?? []);
+  const omitted = 8 - leading.length - trailing.length;
+  if ((halves.length === 1 && omitted !== 0) || (halves.length === 2 && omitted < 1)) {
+    return undefined;
+  }
+  const groups = [...leading, ...Array.from({ length: omitted }, () => "0"), ...trailing];
+  if (groups.length !== 8 || groups.some((group) => !/^[0-9a-f]{1,4}$/i.test(group))) {
+    return undefined;
+  }
+  return groups.map((group) => Number.parseInt(group, 16));
+};
+
+const mappedIpv4Address = (groups: ReadonlyArray<number>): ReadonlyArray<number> | undefined => {
+  if (!groups.slice(0, 5).every((group) => group === 0) || groups[5] !== 0xffff) {
+    return undefined;
+  }
+  const high = groups[6];
+  const low = groups[7];
+  if (high === undefined || low === undefined) return undefined;
+  return [high >>> 8, high & 0xff, low >>> 8, low & 0xff];
+};
+
+const isLocalIpv6 = (groups: ReadonlyArray<number>): boolean => {
+  const first = groups[0];
+  if (first === undefined) return false;
+  return (
+    (groups.slice(0, 7).every((group) => group === 0) && groups[7] === 1) ||
+    (first & 0xfe00) === 0xfc00 ||
+    (first & 0xffc0) === 0xfe80
+  );
+};
+
+const isGloballyRoutableIpv6 = (groups: ReadonlyArray<number>): boolean => {
+  const first = groups[0];
+  const second = groups[1];
+  const third = groups[2];
+  if (first === undefined || second === undefined || third === undefined) return false;
+  return (
+    (first & 0xe000) === 0x2000 &&
+    mappedIpv4Address(groups) === undefined &&
+    !isLocalIpv6(groups) &&
+    !(first === 0x2001 && second === 0) &&
+    !(first === 0x2001 && second === 2 && third === 0) &&
+    !(first === 0x2001 && (second & 0xfff0) === 0x10) &&
+    !(first === 0x2001 && (second & 0xfff0) === 0x20) &&
+    !(first === 0x2001 && second === 0x0db8) &&
+    first !== 0x2002 &&
+    !(first === 0x3fff && (second & 0xf000) === 0)
+  );
+};
+
+const isLocalEndpoint = (endpoint: URL): boolean => {
+  const hostname = normalizedHostname(endpoint.hostname);
+  const ipv4 = parseIpv4Address(hostname);
+  if (ipv4 !== undefined) return isLocalIpv4(ipv4);
+  const ipv6 = parseIpv6Address(hostname);
+  if (ipv6 !== undefined) return isLocalIpv6(ipv6);
+  return isLocalDomain(hostname);
+};
+
+const isGloballyRoutableEndpoint = (endpoint: URL): boolean => {
+  const hostname = normalizedHostname(endpoint.hostname);
+  const ipv4 = parseIpv4Address(hostname);
+  if (ipv4 !== undefined) return isGloballyRoutableIpv4(ipv4);
+  const ipv6 = parseIpv6Address(hostname);
+  if (ipv6 !== undefined) return isGloballyRoutableIpv6(ipv6);
+  return !hostname.startsWith("[") && !isLocalDomain(hostname);
+};
 
 const fetchCanary: BrowserDeliveryCanaryTransport = (endpoint, signal) =>
   fetch(endpoint, {
@@ -759,6 +865,7 @@ export const runBrowserDeliveryCanary = async (
   const endpoint = input.endpoint;
   const topology = input.topology ?? "published";
   const local = isLocalEndpoint(endpoint);
+  const globallyRoutable = isGloballyRoutableEndpoint(endpoint);
   if (endpoint.username.length > 0 || endpoint.password.length > 0) {
     throw new BrowserObservabilityError({
       code: "OBS_REACT_CANARY_ENDPOINT_INVALID",
@@ -779,12 +886,12 @@ export const runBrowserDeliveryCanary = async (
       cause: endpoint.href,
     });
   }
-  if ((topology === "published" && local) || (topology === "local" && !local)) {
+  if ((topology === "published" && !globallyRoutable) || (topology === "local" && !local)) {
     throw new BrowserObservabilityError({
       code: "OBS_REACT_CANARY_ENDPOINT_INVALID",
       message:
         topology === "published"
-          ? "The published browser delivery canary endpoint must use a non-local host."
+          ? "The published browser delivery canary endpoint must use a globally routable host."
           : "The local browser delivery canary endpoint must use a loopback or private host.",
       cause: endpoint.href,
     });
