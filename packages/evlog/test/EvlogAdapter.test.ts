@@ -22,7 +22,7 @@ import {
 import { parseNodeObservabilityConfig } from "@equipe-tech/observability";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { audit, initLogger, isEnabled, log, type DrainContext, type DrainFn } from "evlog";
+import { audit, initLogger, isEnabled, log, type DrainContext } from "evlog";
 import { Effect, Option, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vite-plus/test";
@@ -605,28 +605,26 @@ describe("evlogAdapter", () => {
     const firstIntegrityStarted = Promise.withResolvers<void>();
     const releaseFirstIntegrity = Promise.withResolvers<void>();
     let integrityAttempts = 0;
-    const signAudit =
-      (drain: DrainFn): DrainFn =>
-      async (context) => {
-        integrityAttempts += 1;
-        if (integrityAttempts === 1) {
-          firstIntegrityStarted.resolve();
-          await releaseFirstIntegrity.promise;
-          throw new Error("integrity rejected");
-        }
-        await drain(context);
-      };
-    const adapter = makeEvlogAdapter(
-      {
-        installGlobalLogger: false,
-        batchSize: 1,
-        maximumAttempts: 1,
-        transportRetries: 0,
-        auditIntegrity: { strategy: "hash-chain" },
+    const adapter = evlogAdapter({
+      installGlobalLogger: false,
+      batchSize: 1,
+      maximumAttempts: 1,
+      transportRetries: 0,
+      auditIntegrity: {
+        strategy: "hash-chain",
+        state: {
+          load: () => null,
+          save: async () => {
+            integrityAttempts += 1;
+            if (integrityAttempts === 1) {
+              firstIntegrityStarted.resolve();
+              await releaseFirstIntegrity.promise;
+              throw new Error("integrity rejected");
+            }
+          },
+        },
       },
-      initLogger,
-      signAudit,
-    );
+    });
     const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
     if (!observability.enabled) throw new Error("Expected enabled observability.");
     const record = await Effect.runPromise(

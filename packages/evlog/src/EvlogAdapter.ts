@@ -584,7 +584,6 @@ const safeAdapterFailure = (message: string, cause: EvlogAdapterError): AdapterF
 export const makeEvlogAdapter = (
   options: EvlogAdapterOptions,
   initializeLogger: typeof initLogger = initLogger,
-  signAudit: typeof signed = signed,
 ): EvlogAdapter => {
   const dropState = emptyDropState();
   const auditState = emptyAuditPublishState();
@@ -701,7 +700,7 @@ export const makeEvlogAdapter = (
           onNone: () => undefined,
           onSome: (integrity) =>
             auditOnly(
-              signAudit((drainContext) => {
+              signed((drainContext) => {
                 integrityResult = drainContext.event;
               }, integrity),
               { await: true },
@@ -712,7 +711,10 @@ export const makeEvlogAdapter = (
           const operation = integrityTail.then(async () => {
             integrityResult = undefined;
             await integrityDrain({ event });
-            return integrityResult ?? event;
+            if (integrityResult === undefined) {
+              throw adapterErrors.TRANSPORT_FAILED();
+            }
+            return integrityResult;
           });
           integrityTail = operation.then(
             () => undefined,
