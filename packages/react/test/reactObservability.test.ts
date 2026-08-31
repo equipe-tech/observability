@@ -227,6 +227,37 @@ describe("React browser observability", () => {
     }
   });
 
+  it("sanitizes operational error type with the compiled policy before queue insertion", async () => {
+    const batches: Array<BrowserTelemetryClientBatch> = [];
+    const fixture = recordingHost();
+    const blockedPolicy = definePolicy({
+      attributes: {
+        "error.origin": { classification: "internal", required: true, metricLabel: false },
+      },
+      blockedKeys: [],
+      blockedValuePatterns: ["secret-[a-z]+"],
+    });
+    const observability = createBrowserObservability({
+      service,
+      policy: blockedPolicy,
+      host: fixture.host,
+      sentry: { disabled: true },
+      events: {
+        flushIntervalMs: 60_000,
+        transport: async (batch) => {
+          batches.push(batch);
+        },
+      },
+    });
+    const error = new Error("safe");
+    error.name = "secret-token";
+    observability.defects.report({ error, origin: "manual" });
+    await observability.flush();
+    assert.strictEqual(batches[0]?.events[0]?.error?.type, "[REDACTED]");
+    assert.notInclude(JSON.stringify(batches), "secret-token");
+    await observability.dispose();
+  });
+
   it("suppresses a component stack rejected by policy", async () => {
     const fixture = recordingHost();
     const rejectingPolicy = definePolicy({
@@ -304,16 +335,81 @@ describe("React browser observability", () => {
     );
   });
 
-  it("permits an explicit production defects opt-out", async () => {
+  it("requires a Sentry DSN in production even when Sentry is disabled", () => {
+    const fixture = recordingHost();
+    for (const sentry of [
+      { disabled: true },
+      { disabled: true, dsn: "https://public@telemetry.example.com/1" },
+    ]) {
+      assertConfigCode(
+        () =>
+          createBrowserObservability({
+            service: { ...service, environment: "production" },
+            policy,
+            host: fixture.host,
+            sentry,
+          }),
+        "OBS_REACT_CONFIG_INVALID",
+      );
+    }
+  });
+
+  it("keeps hostile listener and React callback values inside one failure boundary", async () => {
     const fixture = recordingHost();
     const observability = createBrowserObservability({
-      service: { ...service, environment: "production" },
+      service,
       policy,
       host: fixture.host,
-      sentry: { disabled: true, allowDisabledInProduction: true },
+      sentry: { disabled: true },
     });
+    const throwingEvent = new Event("error");
+    Object.defineProperty(throwingEvent, "error", {
+      get: () => {
+        throw new Error("getter exploded");
+      },
+    });
+    fixture.dispatch("error", throwingEvent);
+    const revoked = Proxy.revocable(new Error("revoked"), {});
+    revoked.revoke();
+    observability.reactRootOptions.onUncaughtError(revoked.proxy, {});
+    const info: { readonly componentStack?: string } = {};
+    Object.defineProperty(info, "componentStack", {
+      get: () => {
+        throw new Error("stack getter exploded");
+      },
+    });
+    observability.reactRootOptions.onCaughtError(new Error("render"), info);
+    assert.strictEqual(observability.reports().failed, 3);
+    assert.strictEqual(observability.reports().recorded, 0);
     await observability.dispose();
   });
+
+  it("bounds flush when transport ignores abort and composes with disposal", async () => {
+    const fixture = recordingHost();
+    const observability = createBrowserObservability({
+      service,
+      policy,
+      host: fixture.host,
+      sentry: { disabled: true },
+      events: {
+        flushIntervalMs: 60_000,
+        transport: async () => new Promise<void>(() => undefined),
+      },
+    });
+    observability.events.emit("flush.hang");
+    const startedAt = Date.now();
+    const flush = observability.flush();
+    assert.strictEqual(observability.flush(), flush);
+    const disposal = observability.dispose();
+    assert.strictEqual(observability.dispose(), disposal);
+    const lifecycle = await disposal;
+    assert.isBelow(Date.now() - startedAt, 2_000);
+    assert.isTrue(lifecycle.degraded);
+    await flush;
+    assert.isAtLeast(Date.now() - startedAt, 4_900);
+    assert.isAbove(observability.reports().failed, 0);
+    await observability[Symbol.asyncDispose]();
+  }, 7_000);
 
   it("rejects a second active installation on the same host", async () => {
     const fixture = recordingHost();

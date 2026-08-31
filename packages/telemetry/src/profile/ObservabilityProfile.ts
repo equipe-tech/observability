@@ -1,3 +1,5 @@
+import { reactWebLifecycle } from "./ReactWebProfile.ts";
+
 export type ProfileName = "nestjs-api" | "worker" | "react-web" | "cli" | "library";
 
 export type AdapterCapability = "events" | "traces" | "metrics" | "defects" | "browser-ingest";
@@ -118,11 +120,11 @@ export const reactWebProfile = browserProfile({
   defects: "required-in-production",
   browserIngest: "required",
   stages: ["browser"],
-  stageDeadlineMillis: [stageDeadline("browser", 2_000)],
+  stageDeadlineMillis: [stageDeadline("browser", reactWebLifecycle.shutdownDeadlineMillis)],
   capabilityOrder: [
     stageCapabilities("browser", ["browser-ingest", "events", "traces", "defects", "metrics"]),
   ],
-  shutdownDeadlineMillis: 2_000,
+  shutdownDeadlineMillis: reactWebLifecycle.shutdownDeadlineMillis,
 });
 
 export const cliProfile = nodeProfile({

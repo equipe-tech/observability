@@ -247,7 +247,15 @@ describe("browser events endpoint", () => {
     );
     assert.strictEqual(response.status, 202);
     assert.deepStrictEqual(await response.json(), { accepted: 2, redacted: 0, dropped: 0 });
-    await harness.close();
+    const telemetry = await harness.close();
+    const defect = telemetry.logs.find(
+      (log) => attributeOrUndefined(log.attributes, "event.name") === "new.defect",
+    );
+    assert.isDefined(defect);
+    assert.strictEqual(attributeOrUndefined(defect.attributes, "event.outcome"), "failure");
+    assert.strictEqual(attributeOrUndefined(defect.attributes, "error.type"), "TypeError");
+    assert.strictEqual(attributeOrUndefined(defect.attributes, "error.message"), "render failed");
+    assert.strictEqual(attributeOrUndefined(defect.attributes, "error.retryable"), false);
   });
 
   it("accepts a valid request near the documented browser byte budget", async () => {

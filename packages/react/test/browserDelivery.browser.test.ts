@@ -48,10 +48,13 @@ test("delivers one canonical defect through production browser entrypoints", asy
     sentry: { dsn: `${origin.replace("://", "://public@")}/sentry/1` },
     events: { flushIntervalMs: 60_000 },
   });
+  const defect = new Error("render secret-token failed");
   const outcome = observability.defects.report({
-    error: new Error("render secret-token failed"),
+    error: defect,
     origin: "react.uncaught",
   });
+  const duplicateEvent = new ErrorEvent("error", { error: defect, message: defect.message });
+  for (const listener of listeners.get("error") ?? []) listener(duplicateEvent);
   expect(outcome.kind).toBe("recorded");
   if (outcome.kind !== "recorded") throw new Error("Expected one recorded defect");
   await observability.flush();
@@ -70,6 +73,9 @@ test("delivers one canonical defect through production browser entrypoints", asy
   expect(sentryBodies[0]).toContain(outcome.eventId);
   expect(sentryBodies[0]).toContain('"release":"0.3.0"');
   expect(sentryBodies[0]).not.toContain("secret-token");
+  expect(sentryBodies[0]).not.toContain('"replay_id"');
+  expect(sentryBodies[0]).not.toContain('"session"');
+  expect(sentryBodies[0]).not.toContain('"transaction"');
   await observability.dispose();
   expect(listeners.get("error")?.size).toBe(0);
   expect(listeners.get("unhandledrejection")?.size).toBe(0);

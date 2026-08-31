@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { reactWebLifecycle } from "../src/profile/ReactWebProfile.ts";
 import {
   cliProfile,
   libraryProfile,
@@ -53,7 +54,10 @@ describe("official observability profiles", () => {
   it("publishes nested absolute deadlines", () => {
     expect(profileStageDeadlineMillis(workerProfile, "server")).toBe(5_000);
     expect(profileStageDeadlineMillis(workerProfile, "metrics")).toBe(3_000);
-    expect(profileStageDeadlineMillis(reactWebProfile, "browser")).toBe(2_000);
+    expect(profileStageDeadlineMillis(reactWebProfile, "browser")).toBe(
+      reactWebLifecycle.shutdownDeadlineMillis,
+    );
+    expect(reactWebProfile.shutdownDeadlineMillis).toBe(reactWebLifecycle.shutdownDeadlineMillis);
     expect(workerProfile.capabilityOrder[0]).toEqual(["server", ["events", "traces", "defects"]]);
     expect([
       nestjsApiProfile.shutdownDeadlineMillis,

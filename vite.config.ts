@@ -24,6 +24,10 @@ export default defineConfig({
         replacement: `${root}packages/sentry/src/index.ts`,
       },
       {
+        find: "@equipe-tech/observability/react-web-profile",
+        replacement: `${root}packages/telemetry/src/profile/ReactWebProfile.ts`,
+      },
+      {
         find: "@equipe-tech/observability/browser/client",
         replacement: `${root}packages/telemetry/src/browser/client.ts`,
       },

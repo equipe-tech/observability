@@ -13,6 +13,10 @@ const expected = new Map([
   ["@equipe-tech/observability-sentry/browser", "packages/sentry/src/browser/index.ts"],
   ["@equipe-tech/observability-sentry/node", "packages/sentry/src/node/index.ts"],
   ["@equipe-tech/observability-sentry", "packages/sentry/src/index.ts"],
+  [
+    "@equipe-tech/observability/react-web-profile",
+    "packages/telemetry/src/profile/ReactWebProfile.ts",
+  ],
   ["@equipe-tech/observability/browser/client", "packages/telemetry/src/browser/client.ts"],
   ["@equipe-tech/observability/browser", "packages/telemetry/src/browser/index.ts"],
   ["@equipe-tech/observability/effect", "packages/telemetry/src/effect/index.ts"],

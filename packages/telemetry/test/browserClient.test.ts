@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 import {
   BrowserTelemetryClientDeliveryError,
@@ -33,6 +33,36 @@ const deferred = (): {
 };
 
 describe("browser telemetry client", () => {
+  it("lets an error-less v1 decoder strip the additive error member", () => {
+    const OldBatch = Schema.Struct({
+      version: Schema.Literal(1),
+      events: Schema.Array(
+        Schema.Struct({
+          id: Schema.String,
+          name: Schema.String,
+          occurredAt: Schema.Number,
+          fields: Schema.Struct({}),
+        }),
+      ),
+    });
+    const decoded = Schema.decodeUnknownSync(OldBatch)({
+      version: 1,
+      events: [
+        {
+          id: "new",
+          name: "browser.error",
+          occurredAt: 1,
+          fields: {},
+          error: { type: "TypeError", message: "failed", retryable: false },
+        },
+      ],
+    });
+    expect(decoded).toEqual({
+      version: 1,
+      events: [{ id: "new", name: "browser.error", occurredAt: 1, fields: {} }],
+    });
+  });
+
   it("applies an optional compiled policy before queue insertion and emits typed defects", async () => {
     const batches: Array<BrowserTelemetryClientBatch> = [];
     const policy = definePolicy({
@@ -71,6 +101,37 @@ describe("browser telemetry client", () => {
       },
       error: { type: "TypeError", message: "failed", retryable: false },
     });
+    await client.dispose();
+  });
+
+  it("applies blocked patterns and classifications to error type before transport", async () => {
+    const batches: Array<BrowserTelemetryClientBatch> = [];
+    const classifiedPolicy = Effect.runSync(
+      parseDataPolicy(
+        definePolicy({
+          attributes: {
+            "error.type": { classification: "sensitive", required: false, metricLabel: false },
+            "error.message": { classification: "internal", required: false, metricLabel: false },
+          },
+          blockedKeys: [],
+          blockedValuePatterns: ["secret-[a-z]+"],
+        }),
+      ),
+    );
+    const client = createBrowserTelemetryClient({
+      policy: (fields) => transformSignalFields(classifiedPolicy, "browser-ingest", fields).value,
+      transport: async (batch) => {
+        batches.push(batch);
+      },
+      flushIntervalMs: 60_000,
+    });
+    client.emitDefect({
+      name: "browser.error",
+      error: { type: "secret-token", message: "failed", retryable: false },
+    });
+    await client.flush();
+    expect(batches[0]?.events[0]?.error?.type).toBe(sensitiveFieldReplacement);
+    expect(JSON.stringify(batches)).not.toContain("secret-token");
     await client.dispose();
   });
 

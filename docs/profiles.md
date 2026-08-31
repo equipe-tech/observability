@@ -46,4 +46,4 @@ Identidade, endpoint, ambiente, topologia, rota, proxy, secrets e valores de dep
 
 ## Runtime React web
 
-`createBrowserObservability` atende `browser-ingest`, `events` e `defects` do perfil `react-web`. Em produção, a configuração exige um DSN do Sentry. A desativação explícita também exige `allowDisabledInProduction: true`. O encerramento reserva 1.150 ms para o cliente do browser e 800 ms para o Sentry dentro do prazo total de 2.000 ms. O runtime remove os listeners antes de encerrar os destinos e nunca rejeita `dispose`. A capacidade `traces` continua sem implementação no browser.
+`createBrowserObservability` atende `browser-ingest`, `events` e `defects` do perfil `react-web`. Em produção, a configuração exige um DSN do Sentry e não aceita desativar a captura de defeitos. Os prazos do perfil ficam no módulo compartilhado `@equipe-tech/observability/react-web-profile`: 1.150 ms para o cliente do browser, 800 ms para o Sentry, 2.000 ms para encerramento e 5.000 ms para `flush`. O runtime remove os listeners antes de encerrar os destinos e nunca rejeita `dispose`. A capacidade `traces` continua sem implementação no browser.

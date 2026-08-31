@@ -14,7 +14,7 @@
     "build": "bun scripts/build-packages.ts",
     "test": "vp test run && bun run test:bun",
     "test:bun": "bun test packages/cli/test $(find tools -name '*.bun.test.ts' -print) --timeout 30000",
-    "test:browser": "bun run build && vp test run --config packages/react/vite.browser.config.ts",
+    "test:browser": "(test -f packages/react/dist/index.js || (echo 'test:browser requires an existing dist; run bun run build first.' >&2; exit 1)) && vp test run --config packages/react/vite.browser.config.ts",
     "test:canary": "vp test run packages/telemetry/test/canary.test.ts packages/telemetry/test/collectorRedaction.test.ts",
     "test:canary:deployed": "vp test run packages/telemetry/test/canary.deployed.test.ts",
     "test:package": "bun scripts/package-smoke.ts",

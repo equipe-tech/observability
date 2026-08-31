@@ -2,8 +2,8 @@ import {
   browserRequestByteBudget,
   maxEventIdLength,
   maxFieldValueLength,
-} from "../BrowserEvents.ts";
-import { sanitizeBrowserFields, sanitizeEventName } from "../RedactionPolicy.ts";
+} from "./BrowserEventLimits.ts";
+import { sanitizeClientEventName, sanitizeClientFields } from "./ClientPolicy.ts";
 
 export type BrowserTelemetryClientFields = {
   readonly [field: string]: string | number | boolean;
@@ -98,6 +98,17 @@ const fallbackEventName = "browser.event";
 const browserFieldValueByteBudget = 2_048;
 const textEncoder = new TextEncoder();
 
+const boundedOperationalText = (
+  value: string | number | boolean | undefined,
+  fallback: string,
+): string => {
+  try {
+    return String(value ?? fallback).slice(0, maxFieldValueLength);
+  } catch {
+    return fallback;
+  }
+};
+
 export const browserBatchByteLength = (batch: BrowserTelemetryClientBatch): number =>
   textEncoder.encode(JSON.stringify(batch)).byteLength;
 
@@ -114,16 +125,21 @@ const fitStringToByteBudget = (value: string): string => {
   return output;
 };
 
+const fitFieldValueToByteBudget = (value: string | number | boolean): string | number | boolean => {
+  try {
+    return String(value) === value ? fitStringToByteBudget(value) : value;
+  } catch {
+    return "[REDACTED]";
+  }
+};
+
 const fitEventToRequestBudget = (
   event: BrowserTelemetryClientEvent,
 ): BrowserTelemetryClientEvent => {
   const byteBoundedEvent = {
     ...event,
     fields: Object.fromEntries(
-      Object.entries(event.fields).map(([key, value]) => [
-        key,
-        String(value) === value ? fitStringToByteBudget(value) : value,
-      ]),
+      Object.entries(event.fields).map(([key, value]) => [key, fitFieldValueToByteBudget(value)]),
     ),
   };
   if (
@@ -213,7 +229,7 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
 
   emit(name: string, fields: BrowserTelemetryClientFields = {}): void {
     if (this.options.disabled || this.disposed) return;
-    const sanitizedName = sanitizeEventName(name);
+    const sanitizedName = sanitizeClientEventName(name);
     this.enqueue({
       id: crypto.randomUUID(),
       name: sanitizedName.length === 0 ? fallbackEventName : sanitizedName,
@@ -224,23 +240,29 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
 
   emitDefect(input: BrowserTelemetryDefectInput): void {
     if (this.options.disabled || this.disposed) return;
-    const sanitizedName = sanitizeEventName(input.name);
+    const sanitizedName = sanitizeClientEventName(input.name);
     const id = input.id ?? crypto.randomUUID().replaceAll("-", "");
+    const operationalError = this.sanitizeFields({
+      "error.type": input.error.type,
+      "error.message": input.error.message,
+    });
+    const type = operationalError["error.type"];
+    const message = operationalError["error.message"];
     this.enqueue({
       id: id.slice(0, maxEventIdLength),
       name: sanitizedName.length === 0 ? fallbackEventName : sanitizedName,
       occurredAt: Date.now(),
       fields: this.sanitizeFields(input.fields ?? {}),
       error: {
-        type: input.error.type.slice(0, maxFieldValueLength),
-        message: input.error.message.slice(0, maxFieldValueLength),
+        type: boundedOperationalText(type, "Error"),
+        message: boundedOperationalText(message, ""),
         retryable: input.error.retryable,
       },
     });
   }
 
   private sanitizeFields(fields: BrowserTelemetryClientFields): BrowserTelemetryClientFields {
-    if (this.options.policy === undefined) return sanitizeBrowserFields(fields);
+    if (this.options.policy === undefined) return sanitizeClientFields(fields);
     return this.options.policy(fields);
   }
 

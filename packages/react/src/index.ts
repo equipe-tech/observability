@@ -1,3 +1,4 @@
+import { reactWebLifecycle } from "@equipe-tech/observability/react-web-profile";
 import {
   createBrowserTelemetryClient,
   type BrowserTelemetryClient,
@@ -40,7 +41,6 @@ export type BrowserObservabilityConfig = {
     readonly dsn?: string;
     readonly disabled?: boolean;
     readonly componentStack?: boolean;
-    readonly allowDisabledInProduction?: boolean;
   };
   readonly dedupeWindowMillis?: number;
   readonly dedupeCapacity?: number;
@@ -127,14 +127,23 @@ export class BrowserObservabilityError extends Schema.TaggedError<BrowserObserva
   },
 ) {}
 
-declare global {
-  var __equipeTechObservabilityReactHosts: WeakSet<object> | undefined;
-}
-
-const activeHosts = (): WeakSet<object> => {
-  globalThis.__equipeTechObservabilityReactHosts ??= new WeakSet<object>();
-  return globalThis.__equipeTechObservabilityReactHosts;
-};
+const activeHostsKey = Symbol.for("@equipe-tech/observability-react/active-hosts");
+const activeHosts = (() => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, activeHostsKey);
+  if (descriptor !== undefined) {
+    try {
+      return Schema.decodeUnknownSync(Schema.instanceOf(WeakSet))(descriptor.value);
+    } catch {
+      Object.defineProperty(globalThis, activeHostsKey, {
+        configurable: false,
+        value: new WeakSet<object>(),
+      });
+    }
+  }
+  const hosts = new WeakSet<object>();
+  Object.defineProperty(globalThis, activeHostsKey, { configurable: false, value: hosts });
+  return hosts;
+})();
 const componentStackLimit = 4_096;
 
 const nativeHost = (): { readonly host: BrowserEventHost; readonly owner: object } | undefined => {
@@ -155,19 +164,23 @@ const nativeHost = (): { readonly host: BrowserEventHost; readonly owner: object
   };
 };
 
-const errorFrom = (cause: unknown): Error => {
-  if (cause instanceof Error) return cause;
-  const value = Schema.decodeUnknownOption(
-    Schema.Union([Schema.String, Schema.Number, Schema.Boolean]),
-  )(cause);
-  return new Error(
-    Option.isSome(value)
-      ? String(value.value).slice(0, 1_024)
-      : "An unhandled browser value could not be decoded.",
-  );
+const errorFrom = (cause: unknown): Error | undefined => {
+  try {
+    if (cause instanceof Error) return cause;
+    const value = Schema.decodeUnknownOption(
+      Schema.Union([Schema.String, Schema.Number, Schema.Boolean]),
+    )(cause);
+    return new Error(
+      Option.isSome(value)
+        ? String(value.value).slice(0, 1_024)
+        : "An unhandled browser value could not be decoded.",
+    );
+  } catch {
+    return undefined;
+  }
 };
 
-const eventCause = (event: Event, property: "error" | "reason"): Error => {
+const eventCause = (event: Event, property: "error" | "reason"): Error | undefined => {
   if (!Predicate.hasProperty(event, property)) return new Error(`Browser ${property} event`);
   return errorFrom(event[property]);
 };
@@ -243,9 +256,8 @@ export const createBrowserObservability = (
       (config.host !== undefined &&
         (!Predicate.isFunction(config.host.addEventListener) ||
           !Predicate.isFunction(config.host.removeEventListener))) ||
-      (config.service.environment === "production" &&
-        config.sentry?.dsn === undefined &&
-        !(config.sentry?.disabled === true && config.sentry.allowDisabledInProduction === true))
+      (config.service.environment === reactWebLifecycle.environmentRequiringDefects &&
+        (config.sentry?.dsn === undefined || config.sentry.disabled === true))
     ) {
       return invalidConfig("invalid React browser observability options");
     }
@@ -263,7 +275,7 @@ export const createBrowserObservability = (
   const selected =
     config.host === undefined ? nativeHost() : { host: config.host, owner: config.host };
   if (selected === undefined) return inertHandle(config.service);
-  if (activeHosts().has(selected.owner)) {
+  if (activeHosts.has(selected.owner)) {
     throw new BrowserObservabilityError({
       code: "OBS_REACT_ALREADY_INSTALLED",
       message:
@@ -271,11 +283,11 @@ export const createBrowserObservability = (
       cause: "active browser observability host",
     });
   }
-  activeHosts().add(selected.owner);
+  activeHosts.add(selected.owner);
   const events = createBrowserTelemetryClient({
     ...config.events,
     policy: (fields) => transformSignalFields(policy, "browser-ingest", fields).value,
-    shutdownTimeoutMs: 1_150,
+    shutdownTimeoutMs: reactWebLifecycle.eventShutdownDeadlineMillis,
   });
   const sentryConfig: Omit<BrowserSentryDefectReporterConfig, "dsn"> = {
     disabled: config.sentry?.disabled ?? config.sentry?.dsn === undefined,
@@ -285,8 +297,8 @@ export const createBrowserObservability = (
       environment: identity.environment,
     },
     policyOwnership: "delegated",
-    closeDeadlineMillis: 800,
-    flushDeadlineMillis: 800,
+    closeDeadlineMillis: reactWebLifecycle.sentryDeadlineMillis,
+    flushDeadlineMillis: reactWebLifecycle.sentryDeadlineMillis,
     deduplication: "delegated",
   };
   const sentry = createBrowserSentryDefectReporter(
@@ -341,6 +353,18 @@ export const createBrowserObservability = (
         return { kind: "suppressed", reason: "policy" };
       }
       const sentryOutcome = sentry.capture({ envelope: policyDecision.value.value });
+      if (
+        sentryOutcome.kind === "deduplicated" ||
+        (sentryOutcome.kind === "suppressed" && sentryOutcome.reason === "closed")
+      ) {
+        dedupe.release(reservedId);
+        admittedId = undefined;
+        failed += 1;
+        return {
+          kind: "failed",
+          destinations: { sentry: "failed", events: "not-attempted" },
+        };
+      }
       const sharedId = sentryOutcome.kind === "queued" ? sentryOutcome.eventId : reservedId;
       sentryDestination =
         sentryOutcome.kind === "queued"
@@ -353,7 +377,7 @@ export const createBrowserObservability = (
         id: sharedId,
         name: "browser.error",
         error: {
-          type: input.error.name || "Error",
+          type: policyDecision.value.value.fingerprint[1] ?? "Error",
           message: policyDecision.value.value.errorMessage,
           retryable: false,
         },
@@ -381,37 +405,101 @@ export const createBrowserObservability = (
   };
 
   const safeReport = (cause: unknown, origin: DefectOrigin, info?: ReactErrorInfo): void => {
-    const input = { error: errorFrom(cause), origin };
-    report(
-      info?.componentStack === undefined
-        ? input
-        : { ...input, componentStack: info.componentStack },
-    );
+    try {
+      const error = errorFrom(cause);
+      if (error === undefined) {
+        failed += 1;
+        return;
+      }
+      const input = { error, origin };
+      const componentStack = info?.componentStack;
+      report(componentStack === undefined ? input : { ...input, componentStack });
+    } catch {
+      failed += 1;
+    }
   };
-  const onError = (event: Event): void => safeReport(eventCause(event, "error"), "window.error");
-  const onUnhandledRejection = (event: Event): void =>
-    safeReport(eventCause(event, "reason"), "unhandled.rejection");
+  const onError = (event: Event): void => {
+    try {
+      const cause = eventCause(event, "error");
+      if (cause === undefined) {
+        failed += 1;
+        return;
+      }
+      safeReport(cause, "window.error");
+    } catch {
+      failed += 1;
+    }
+  };
+  const onUnhandledRejection = (event: Event): void => {
+    try {
+      const cause = eventCause(event, "reason");
+      if (cause === undefined) {
+        failed += 1;
+        return;
+      }
+      safeReport(cause, "unhandled.rejection");
+    } catch {
+      failed += 1;
+    }
+  };
   const onPageHide = (): void => {
-    events.flush().catch(() => undefined);
+    try {
+      events.flush().catch(() => {
+        failed += 1;
+      });
+    } catch {
+      failed += 1;
+    }
   };
   selected.host.addEventListener("error", onError);
   selected.host.addEventListener("unhandledrejection", onUnhandledRejection);
   selected.host.addEventListener("pagehide", onPageHide);
 
-  const flush = async (): Promise<void> => {
-    await Promise.allSettled([events.flush(), sentry.flush()]);
+  let flushInFlight: Promise<void> | undefined;
+  const flush = (): Promise<void> => {
+    if (flushInFlight !== undefined) return flushInFlight;
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const deliveries = Promise.allSettled([
+      Promise.resolve().then(() => events.flush()),
+      Promise.resolve().then(() => sentry.flush()),
+    ]).then(() => undefined);
+    const deadline = new Promise<void>((resolve) => {
+      deadlineTimer = setTimeout(() => {
+        failed += 1;
+        resolve();
+      }, reactWebLifecycle.flushDeadlineMillis);
+    });
+    flushInFlight = Promise.race([deliveries, deadline]).finally(() => {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+      flushInFlight = undefined;
+    });
+    return flushInFlight;
   };
   const dispose = (): Promise<BrowserLifecycleReport> => {
     if (disposal !== undefined) return disposal;
     const startedAt = Date.now();
     closed = true;
-    selected.host.removeEventListener("error", onError);
-    selected.host.removeEventListener("unhandledrejection", onUnhandledRejection);
-    selected.host.removeEventListener("pagehide", onPageHide);
-    activeHosts().delete(selected.owner);
-    disposal = Promise.allSettled([events.dispose(), sentry.dispose()]).then((outcomes) => ({
+    let teardownFailed = false;
+    for (const [name, listener] of [
+      ["error", onError],
+      ["unhandledrejection", onUnhandledRejection],
+      ["pagehide", onPageHide],
+    ] satisfies ReadonlyArray<readonly [string, (event: Event) => void]>) {
+      try {
+        selected.host.removeEventListener(name, listener);
+      } catch {
+        teardownFailed = true;
+        failed += 1;
+      }
+    }
+    activeHosts.delete(selected.owner);
+    disposal = Promise.allSettled([
+      Promise.resolve().then(() => events.dispose()),
+      Promise.resolve().then(() => sentry.dispose()),
+    ]).then((outcomes) => ({
       durationMillis: Date.now() - startedAt,
       degraded:
+        teardownFailed ||
         outcomes.some((outcome) => outcome.status === "rejected") ||
         (outcomes[1]?.status === "fulfilled" && outcomes[1].value === false),
     }));

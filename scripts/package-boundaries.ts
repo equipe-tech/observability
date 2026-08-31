@@ -105,7 +105,7 @@ const forbiddenByRole = new Map<BoundaryRole, ReadonlySet<DependencyKind>>([
   ["domain", new Set(["metric-api", "otlp", "provider", "runtime-platform"])],
   ["bootstrap", new Set(["framework", "provider"])],
   ["adapter", new Set()],
-  ["react", new Set(["framework", "otlp", "provider"])],
+  ["react", new Set(["framework", "otlp", "provider", "runtime-platform"])],
 ]);
 
 const dependencyKind = (specifier: string): DependencyKind | undefined => {

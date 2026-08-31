@@ -326,6 +326,10 @@ describe("package boundaries", () => {
       { file: "react-dom.txt", rule: "boundary/react-forbidden-framework" },
       { file: "sentry.txt", rule: "boundary/react-forbidden-provider" },
       { file: "otlp.txt", rule: "boundary/react-forbidden-otlp" },
+      {
+        file: "runtime-platform.txt",
+        rule: "boundary/react-forbidden-runtime-platform",
+      },
     ];
     for (const fixture of fixtures) {
       const temporary = await mkdtemp(join(tmpdir(), "boundaries-react-"));

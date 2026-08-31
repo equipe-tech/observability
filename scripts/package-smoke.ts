@@ -764,14 +764,16 @@ try {
   if (/\bEffect\b|from ["']effect["']/.test(browserClientDeclaration)) {
     throw new Error("The imperative browser client declaration exposes an Effect type.");
   }
-  const browserClientRuntime = await readFile(
-    join(consumer, "node_modules/@equipe-tech/observability/dist/browser/BrowserClient.js"),
-    "utf8",
+  const browserClientRuntimeFiles = await Promise.all(
+    ["client.js", "BrowserClient.js", "ClientPolicy.js", "BrowserEventLimits.js"].map((file) =>
+      readFile(
+        join(consumer, "node_modules/@equipe-tech/observability/dist/browser", file),
+        "utf8",
+      ),
+    ),
   );
-  if (
-    /import\s*\{[^}]*(?:Effect|Schema)[^}]*\}\s*from\s*["']effect["']/.test(browserClientRuntime)
-  ) {
-    throw new Error("The imperative browser client runtime imports Effect or Schema.");
+  if (browserClientRuntimeFiles.some((source) => /from\s*["']effect["']/.test(source))) {
+    throw new Error("The imperative browser client production graph imports Effect or Schema.");
   }
 
   const browserSmokeSource = [
@@ -860,6 +862,11 @@ try {
       2,
     ),
   );
+  if (facadeGzipDeltaBytes > facadeGzipRegressionCeilingBytes * 0.95) {
+    throw new Error(
+      `The isolated browser facade gzip delta is ${facadeGzipDeltaBytes} bytes and leaves less than five percent margin below the ${facadeGzipRegressionCeilingBytes} byte ceiling.`,
+    );
+  }
   if (facadeGzipDeltaBytes > facadeGzipRegressionCeilingBytes) {
     throw new Error(
       `The isolated browser facade gzip delta is ${facadeGzipDeltaBytes} bytes, above the ${facadeGzipRegressionCeilingBytes} byte regression ceiling.`,
