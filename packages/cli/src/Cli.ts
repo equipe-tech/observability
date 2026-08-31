@@ -1,6 +1,12 @@
 import { Console, Effect, Option, Path, Redacted } from "effect";
 import { Command, Flag, Prompt } from "effect/unstable/cli";
 import { DockerCompose } from "./DockerCompose.ts";
+import {
+  loadOperationsManifest,
+  persistOperationsPlan,
+  readOperationsPlan,
+} from "./ManifestSource.ts";
+import { encodeOperationsPlan, OperationsPlanner } from "./OperationsPlan.ts";
 import { ProvisionAssets } from "./ProvisionAssets.ts";
 import {
   Authentication,
@@ -350,7 +356,109 @@ const environment = Command.make("env").pipe(
   Command.withDescription("Inspeciona e exporta ambientes configurados"),
 );
 
+const operationsDirectory = Flag.string("dir").pipe(
+  Flag.withAlias("d"),
+  Flag.withDescription("Diretório do projeto que contém observability/operations.yaml"),
+  Flag.withDefault("."),
+);
+const operationsEnvironments = Flag.string("environment").pipe(
+  Flag.withAlias("e"),
+  Flag.withDescription("Ambiente declarado no manifesto. Repita para selecionar vários"),
+  Flag.atMost(20),
+);
+const operationsJson = Flag.boolean("json").pipe(
+  Flag.withDescription("Emite o resultado como JSON sem queries ou credenciais"),
+  Flag.withDefault(false),
+);
+const operationsPlanFile = Flag.string("plan").pipe(
+  Flag.withDescription("Arquivo exato produzido por ops plan"),
+);
+const operationsAllowDestructive = Flag.boolean("allow-destructive").pipe(
+  Flag.withDescription("Autoriza somente as mudanças destrutivas do digest do plano fornecido"),
+  Flag.withDefault(false),
+);
+const operationsConfirmedManualActions = Flag.string("confirm-manual").pipe(
+  Flag.withDescription("Confirma pelo ID uma ação manual contida no plano exato"),
+  Flag.atMost(100),
+);
+
+const printPlan = Effect.fn("printOperationsPlan")(function* (
+  plan: import("./OperationsPlan.ts").OperationsPlanDocument,
+  json: boolean,
+) {
+  if (json) {
+    yield* Console.log(encodeOperationsPlan(plan).trimEnd());
+    return;
+  }
+  for (const action of plan.actions) {
+    yield* Console.log(`${action.kind}  ${action.capability}  ${action.resource}`);
+  }
+  yield* Console.log(
+    `plan ${plan.digest}  changes=${plan.actions.length}  manual-pending=${plan.pendingManualActions.length}`,
+  );
+});
+
+const operationsPlan = Command.make(
+  "plan",
+  { dir: operationsDirectory, environments: operationsEnvironments, json: operationsJson },
+  Effect.fn(function* ({ dir, environments, json }) {
+    const validated = yield* loadOperationsManifest(dir);
+    const planner = yield* OperationsPlanner;
+    const plan = yield* planner.plan({ validated, environments });
+    yield* persistOperationsPlan(dir, plan.digest, encodeOperationsPlan(plan));
+    yield* printPlan(plan, json);
+  }),
+).pipe(Command.withDescription("Lê providers e grava um plano determinístico sem mutações"));
+
+const operationsApply = Command.make(
+  "apply",
+  {
+    dir: operationsDirectory,
+    environments: operationsEnvironments,
+    json: operationsJson,
+    plan: operationsPlanFile,
+    allowDestructive: operationsAllowDestructive,
+    confirmedManualActions: operationsConfirmedManualActions,
+  },
+  Effect.fn(function* ({
+    allowDestructive,
+    confirmedManualActions,
+    dir,
+    environments,
+    json,
+    plan: planPath,
+  }) {
+    const validated = yield* loadOperationsManifest(dir);
+    const planner = yield* OperationsPlanner;
+    const content = yield* readOperationsPlan(planPath);
+    const supplied = yield* planner.parsePlan(content);
+    const result = yield* planner.apply(
+      { validated, environments },
+      supplied,
+      allowDestructive,
+      confirmedManualActions,
+    );
+    yield* printPlan(result, json);
+  }),
+).pipe(Command.withDescription("Aplica somente um plano exato e executa read-back limitado"));
+
+const operationsVerify = Command.make(
+  "verify",
+  { dir: operationsDirectory, environments: operationsEnvironments, json: operationsJson },
+  Effect.fn(function* ({ dir, environments, json }) {
+    const validated = yield* loadOperationsManifest(dir);
+    const planner = yield* OperationsPlanner;
+    const plan = yield* planner.verify({ validated, environments });
+    yield* printPlan(plan, json);
+  }),
+).pipe(Command.withDescription("Verifica drift, mutações pendentes e ações manuais sem escrever"));
+
+const operations = Command.make("ops").pipe(
+  Command.withSubcommands([operationsPlan, operationsApply, operationsVerify]),
+  Command.withDescription("Reconcilia o manifesto versionado de operações"),
+);
+
 export const observability = Command.make("observability").pipe(
-  Command.withSubcommands([dev, auth, provision, environment]),
+  Command.withSubcommands([dev, auth, provision, environment, operations]),
   Command.withDescription("Plataforma de observabilidade da Equipe Tech"),
 );

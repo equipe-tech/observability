@@ -1,0 +1,8 @@
+{
+  "index": 1,
+  "contractVersion": 1,
+  "service": "observability",
+  "events": [],
+  "metrics": [],
+  "aliases": []
+}

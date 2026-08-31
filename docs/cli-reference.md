@@ -67,6 +67,20 @@ Sentry usa um projeto para todos os ambientes da aplicação.
 
 `--force` afeta somente os assets locais. A flag não sobrescreve recursos remotos.
 
+## `ops plan`, `ops apply` e `ops verify`
+
+```text
+observability ops plan [--dir <path>] [--environment <name>]... [--json]
+observability ops apply [--dir <path>] [--environment <name>]... --plan <file> [--allow-destructive] [--confirm-manual <id>]... [--json]
+observability ops verify [--dir <path>] [--environment <name>]... [--json]
+```
+
+`plan` decodifica `observability/operations.yaml`, `observability/contract.json` e todas as queries antes de carregar credenciais. Ele faz somente leituras remotas e grava `.observability/plan-<sha256>.json` com modo `0600`.
+
+`apply` exige esse arquivo exato. A CLI recalcula as precondições e rejeita manifesto, contrato ou provider alterado. `--allow-destructive` vale somente para o digest fornecido. `--confirm-manual` registra confirmação do operador somente para um ID contido no mesmo plano. Cada mutação grava intenção antes da chamada e executa read-back limitado.
+
+`verify` faz somente leituras. Drift, mutação sem resultado conhecido e ação manual pendente causam falha. Consulte [Manifesto de operações](operations-manifest.md) para o schema, a gramática de queries e a tabela de capacidades.
+
 ## `env list`
 
 ```text
@@ -114,6 +128,8 @@ Não volte para a CLI 0.2.0 após a migração. Ela não lê o formato 3. Restau
 
 A CLI serializa atualizações com um lock entre processos. Um comando espera no máximo 30 segundos por outra atualização.
 
+Estado de reconciliação sem segredos fica em `$OBSERVABILITY_HOME/operations/<service>.json`. O arquivo usa escrita atômica, lock exclusivo, geração monotônica e modo `0600`. Planos e estado não armazenam queries, tokens, DSNs ou corpos de resposta.
+
 ## Convenção de nomes
 
 O nome de um dataset segue este formato:
@@ -159,3 +175,11 @@ O nome do token Axiom segue este formato:
 | `OBS_CLI_AXIOM_TOKEN_CAPABILITIES_MISMATCH`    | O token não tem somente ingest-create nos três datasets exatos.             |
 | `OBS_CLI_AXIOM_RETENTION_INVALID`              | A retenção informada não é um inteiro positivo.                             |
 | `OBS_CLI_CORRELATION_CONFIRMATION_REQUIRED`    | A ação manual de Correlation ainda não foi confirmada.                      |
+| `OBS_CLI_MANIFEST_INVALID`                     | O manifesto não passa no schema ou nas regras semânticas.                   |
+| `OBS_CLI_CONTRACT_INDEX_STALE`                 | Serviço ou versão do contrato diverge do manifesto.                         |
+| `OBS_CLI_SOURCE_INVALID`                       | A fonte declarada diverge do predicado estruturado da query.                |
+| `OBS_CLI_PLAN_STALE`                           | Manifesto, contrato ou estado remoto mudou após o plano.                    |
+| `OBS_CLI_PLAN_DESTRUCTIVE`                     | O digest contém mudança destrutiva sem autorização exata.                   |
+| `OBS_CLI_READ_BACK_TIMEOUT`                    | A leitura limitada não convergiu para o estado desejado.                    |
+| `OBS_CLI_MANUAL_ACTION_PENDING`                | Uma ação manual ainda requer confirmação do operador.                       |
+| `OBS_CLI_APPLY_OUTCOME_UNKNOWN`                | Uma mutação pode ter ocorrido e bloqueia novo trabalho.                     |

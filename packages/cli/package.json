@@ -19,6 +19,12 @@
     "dist"
   ],
   "type": "module",
+  "exports": {
+    "./query": {
+      "types": "./dist/query.d.ts",
+      "import": "./dist/query.js"
+    }
+  },
   "scripts": {
     "build": "bun ../../scripts/build-packages.ts",
     "prepack": "bun run build"

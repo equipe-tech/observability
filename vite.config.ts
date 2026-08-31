@@ -8,6 +8,10 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: "@equipe-tech/observability-cli/query",
+        replacement: `${root}packages/cli/src/query.ts`,
+      },
+      {
         find: "@equipe-tech/observability-react",
         replacement: `${root}packages/react/src/index.ts`,
       },
