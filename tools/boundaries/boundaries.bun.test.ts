@@ -22,11 +22,19 @@ const adapterPaths = [
   "packages/telemetry/src/MetricsRuntime.ts",
   "packages/telemetry/src/PolicyOtlpLogger.ts",
   "packages/telemetry/src/Telemetry.ts",
+  "packages/telemetry/src/node/AuditDigest.ts",
   "packages/telemetry/src/node/Observability.ts",
   "packages/telemetry/src/profile/LifecycleRegistry.ts",
   "packages/telemetry/src/profile/ObservabilityAdapter.ts",
   "packages/telemetry/src/testing/index.ts",
   "packages/telemetry/src/trace/HttpServerOtlpTracer.ts",
+];
+
+const cliNodeAdapterPaths = [
+  "packages/cli/src/CredentialsStore.ts",
+  "packages/cli/src/PackageVersion.ts",
+  "packages/cli/src/ProvisionAssets.ts",
+  "packages/cli/src/StackAssets.ts",
 ];
 
 const mutateOwnedPath = async (ownedPath: string): Promise<ReadonlyArray<string>> => {
@@ -62,6 +70,41 @@ describe("package boundaries", () => {
       "boundary/domain-forbidden-provider",
       "boundary/domain-forbidden-runtime-platform",
     ]);
+  });
+
+  it("classifies Node imports as runtime platform and allows the Node audit adapter", async () => {
+    const temporary = await mkdtemp(join(tmpdir(), "boundaries-node-runtime-"));
+    try {
+      await cp(join(projects, "allowed"), temporary, { recursive: true });
+      const source = await readFile(
+        join(import.meta.dirname, "fixtures", "node-runtime.txt"),
+        "utf8",
+      );
+      const files = [
+        "packages/telemetry/src/node-runtime.ts",
+        "packages/telemetry/src/contract/node-runtime.ts",
+        "packages/telemetry/src/node/AuditDigest.ts",
+      ];
+      for (const file of files) {
+        const target = join(temporary, file);
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, source);
+      }
+      assert.deepEqual(
+        (await checkPackageBoundaries(temporary))
+          .map((violation) => [violation.rule, violation.file])
+          .toSorted((left, right) => String(left).localeCompare(String(right))),
+        [
+          ["boundary/core-forbidden-runtime-platform", "packages/telemetry/src/node-runtime.ts"],
+          [
+            "boundary/domain-forbidden-runtime-platform",
+            "packages/telemetry/src/contract/node-runtime.ts",
+          ],
+        ],
+      );
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
   });
 
   it("rejects database imports from every protected source role", async () => {
@@ -368,6 +411,24 @@ describe("package boundaries", () => {
     });
   }
 
+  for (const adapterPath of cliNodeAdapterPaths) {
+    it(`makes the Node adapter ownership for ${adapterPath} load-bearing`, async () => {
+      const temporary = await mkdtemp(join(tmpdir(), "boundaries-cli-node-adapter-"));
+      try {
+        await cp(join(projects, "allowed"), temporary, { recursive: true });
+        const source = join(temporary, adapterPath);
+        await writeFile(source, 'import "node:crypto";\n');
+        assert.deepEqual(await checkPackageBoundaries(temporary), []);
+        await rename(source, join(temporary, "packages/cli/src/Mutation.ts"));
+        assert.deepEqual(ruleNames(await checkPackageBoundaries(temporary)), [
+          "boundary/domain-forbidden-runtime-platform",
+        ]);
+      } finally {
+        await rm(temporary, { recursive: true, force: true });
+      }
+    });
+  }
+
   it("keeps every forbidden React import fixture load-bearing", async () => {
     const fixtures = [
       { file: "react.txt", rule: "boundary/react-forbidden-framework" },
@@ -376,6 +437,10 @@ describe("package boundaries", () => {
       { file: "otlp.txt", rule: "boundary/react-forbidden-otlp" },
       {
         file: "runtime-platform.txt",
+        rule: "boundary/react-forbidden-runtime-platform",
+      },
+      {
+        file: "node.txt",
         rule: "boundary/react-forbidden-runtime-platform",
       },
     ];
@@ -447,8 +512,10 @@ describe("package boundaries", () => {
     assert.equal(sourceRole("packages/sentry/src/node/SentryDefectAdapter.ts"), "adapter");
     assert.equal(sourceRole("packages/react/src/index.ts"), "react");
     assert.equal(sourceRole("packages/telemetry/src/index.ts"), "core");
+    assert.equal(sourceRole("packages/telemetry/src/node/AuditDigest.ts"), "adapter");
     assert.equal(sourceRole("packages/telemetry/src/contract/EventName.ts"), "domain");
     assert.equal(sourceRole("packages/telemetry/src/trace/HttpServerOtlpTracer.ts"), "adapter");
+    assert.equal(sourceRole("packages/cli/src/CredentialsStore.ts"), "adapter");
     assert.equal(sourceRole("packages/cli/src/main.ts"), "bootstrap");
   });
 

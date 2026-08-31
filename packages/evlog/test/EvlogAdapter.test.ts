@@ -22,7 +22,7 @@ import {
 import { parseNodeObservabilityConfig } from "@equipe-tech/observability";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { audit, initLogger, isEnabled, log, type DrainContext } from "evlog";
+import { audit, initLogger, isEnabled, log, type DrainContext, type DrainFn } from "evlog";
 import { Effect, Option, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vite-plus/test";
@@ -124,7 +124,10 @@ type ReceiverRequest = {
   readonly receivedAt: number;
 };
 
-const startReceiver = async (responseDelayMillis = 0, status = 200) => {
+const startReceiver = async (
+  responseDelayMillis = 0,
+  statusForRequest: (requestNumber: number) => number = () => 200,
+) => {
   const bodies: Array<string> = [];
   const requests: Array<ReceiverRequest> = [];
   const server = createServer((request, response) => {
@@ -135,8 +138,11 @@ const startReceiver = async (responseDelayMillis = 0, status = 200) => {
       const body = Buffer.concat(chunks).toString("utf8");
       bodies.push(body);
       requests.push({ path: request.url ?? "", body, receivedAt });
+      const requestNumber = requests.length;
       setTimeout(() => {
-        response.writeHead(status, { "content-type": "application/json" });
+        response.writeHead(statusForRequest(requestNumber), {
+          "content-type": "application/json",
+        });
         response.end("{}");
       }, responseDelayMillis);
     });
@@ -285,6 +291,24 @@ describe("evlogAdapter", () => {
       ),
     );
     expect(await Effect.runPromise(publisher.publish(queueDropCommitted.record))).toEqual({
+      kind: "published",
+    });
+    const terminalQueueDropRecord = await Effect.runPromise(
+      parseAuditRecord(contract, {
+        recordId: "audit-record-terminal-queue-drop",
+        action: "invoice.refunded",
+        actor: { kind: "system" },
+        resource: { id: "invoice-terminal-queue-drop" },
+        outcome: "success",
+        occurredAt: "2026-01-02T03:04:05.000Z",
+      }),
+    );
+    const terminalQueueDropCommitted = await Effect.runPromise(
+      commitAuditRecord(terminalQueueDropRecord, () => Effect.void).pipe(
+        Effect.provide(layerNodeAuditDigest),
+      ),
+    );
+    expect(await Effect.runPromise(publisher.publish(terminalQueueDropCommitted.record))).toEqual({
       kind: "dropped",
       reason: "queue-overflow",
     });
@@ -528,7 +552,7 @@ describe("evlogAdapter", () => {
   });
 
   it("keeps audit drop timestamps monotonic across pipeline and publish callbacks", async () => {
-    const receiver = await startReceiver(0, 503);
+    const receiver = await startReceiver(0, () => 503);
     const { contract, config } = await makeConfig(receiver.endpoint);
     const adapter = evlogAdapter({
       installGlobalLogger: false,
@@ -555,6 +579,12 @@ describe("evlogAdapter", () => {
         expect(yield* publisher.publish(committed.record)).toEqual({ kind: "published" });
         yield* Effect.promise(() => observability.flush());
         expect(publisher.report().reasons.transport).toBe(1);
+        expect(Option.getOrThrow(adapter.drops().firstDroppedAt)).toBe(
+          Option.getOrThrow(publisher.report().firstDroppedAt),
+        );
+        expect(Option.getOrThrow(adapter.drops().lastDroppedAt)).toBe(
+          Option.getOrThrow(publisher.report().lastDroppedAt),
+        );
         yield* TestClock.adjust("1 second");
         yield* Effect.promise(() => observability.close());
         expect(yield* publisher.publish(committed.record)).toEqual({
@@ -569,8 +599,118 @@ describe("evlogAdapter", () => {
     await receiver.close();
   });
 
+  it("retries a concurrent duplicate after integrity rejection", async () => {
+    const receiver = await startReceiver();
+    const { contract, config } = await makeConfig(receiver.endpoint);
+    const firstIntegrityStarted = Promise.withResolvers<void>();
+    const releaseFirstIntegrity = Promise.withResolvers<void>();
+    let integrityAttempts = 0;
+    const signAudit =
+      (drain: DrainFn): DrainFn =>
+      async (context) => {
+        integrityAttempts += 1;
+        if (integrityAttempts === 1) {
+          firstIntegrityStarted.resolve();
+          await releaseFirstIntegrity.promise;
+          throw new Error("integrity rejected");
+        }
+        await drain(context);
+      };
+    const adapter = makeEvlogAdapter(
+      {
+        installGlobalLogger: false,
+        batchSize: 1,
+        maximumAttempts: 1,
+        transportRetries: 0,
+        auditIntegrity: { strategy: "hash-chain" },
+      },
+      initLogger,
+      signAudit,
+    );
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    const record = await Effect.runPromise(
+      parseAuditRecord(contract, {
+        recordId: "audit-concurrent-integrity",
+        action: "access.reviewed",
+        actor: { kind: "system" },
+        resource: { id: "account-integrity" },
+        outcome: "denied",
+        occurredAt: "2026-01-02T03:04:05.000Z",
+      }),
+    );
+    const committed = await Effect.runPromise(
+      commitAuditRecord(record, () => Effect.void).pipe(Effect.provide(layerNodeAuditDigest)),
+    );
+    const publisher = await Effect.runPromise(
+      AuditPublisher.pipe(Effect.provide(observability.auditLayer)),
+    );
+    const first = Effect.runPromise(publisher.publish(committed.record));
+    await firstIntegrityStarted.promise;
+    let secondSettled = false;
+    const second = Effect.runPromise(publisher.publish(committed.record)).finally(() => {
+      secondSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(secondSettled).toBe(false);
+    releaseFirstIntegrity.resolve();
+    expect(await first).toEqual({ kind: "dropped", reason: "transport" });
+    expect(await second).toEqual({ kind: "published" });
+    await observability.close();
+    await receiver.close();
+    expect(integrityAttempts).toBe(2);
+    expect(publisher.report().deduplicated).toBe(0);
+    expect(publisher.report().reasons.transport).toBe(1);
+  });
+
+  it("retries a concurrent duplicate after terminal transport rejection", async () => {
+    const receiver = await startReceiver(100, (requestNumber) => (requestNumber === 1 ? 503 : 200));
+    const { contract, config } = await makeConfig(receiver.endpoint);
+    const adapter = evlogAdapter({
+      installGlobalLogger: false,
+      batchSize: 1,
+      maximumAttempts: 1,
+      transportRetries: 0,
+    });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    const record = await Effect.runPromise(
+      parseAuditRecord(contract, {
+        recordId: "audit-concurrent-transport",
+        action: "access.reviewed",
+        actor: { kind: "system" },
+        resource: { id: "account-transport" },
+        outcome: "denied",
+        occurredAt: "2026-01-02T03:04:05.000Z",
+      }),
+    );
+    const committed = await Effect.runPromise(
+      commitAuditRecord(record, () => Effect.void).pipe(Effect.provide(layerNodeAuditDigest)),
+    );
+    const publisher = await Effect.runPromise(
+      AuditPublisher.pipe(Effect.provide(observability.auditLayer)),
+    );
+    expect(await Effect.runPromise(publisher.publish(committed.record))).toEqual({
+      kind: "published",
+    });
+    let duplicateSettled = false;
+    const duplicate = Effect.runPromise(publisher.publish(committed.record)).finally(() => {
+      duplicateSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(duplicateSettled).toBe(false);
+    expect(await duplicate).toEqual({ kind: "published" });
+    await observability.close();
+    await receiver.close();
+    expect(
+      receiver.requests.filter((request) => request.body.includes("audit-concurrent-transport")),
+    ).toHaveLength(2);
+    expect(publisher.report().deduplicated).toBe(0);
+    expect(publisher.report().reasons.transport).toBe(1);
+  });
+
   it("reports audit transport drops after blackhole exhaustion", async () => {
-    const receiver = await startReceiver(0, 503);
+    const receiver = await startReceiver(0, () => 503);
     const { contract, config } = await makeConfig(receiver.endpoint);
     const adapter = evlogAdapter({
       installGlobalLogger: false,
@@ -1606,7 +1746,7 @@ describe("evlogAdapter", () => {
 
   it("uses retry delays, maximum attempts, and transport deadlines", async () => {
     const runRetryScenario = async (maximumAttempts: number) => {
-      const receiver = await startReceiver(50, 503);
+      const receiver = await startReceiver(50, () => 503);
       const { contract, config } = await makeConfig(receiver.endpoint);
       const lines: Array<string> = [];
       const adapter = evlogAdapter({

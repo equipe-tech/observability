@@ -111,11 +111,26 @@ type ResolvedOptions = {
   readonly stdout: EvlogOutput;
 };
 
+type AuditReservationTerminal = "delivered" | "retry";
+
+type OfferResult =
+  | { readonly kind: "queued" }
+  | {
+      readonly kind: "closed" | "queue-overflow";
+      readonly droppedAt: string;
+    };
+
+type AuditReservation = {
+  readonly terminal: Promise<AuditReservationTerminal>;
+  readonly resolve: (terminal: AuditReservationTerminal) => void;
+};
+
 type AdmittedRecord = {
   readonly event: WideEvent;
   readonly serialized: string;
   readonly serializedBytes: number;
   readonly auditRecordId?: string;
+  readonly auditReservation?: AuditReservation;
 };
 
 type MutableDropState = {
@@ -310,7 +325,7 @@ type DropReason =
   | "contract-rejected"
   | "closed";
 
-const incrementReason = (state: MutableDropState, reason: DropReason): void => {
+const incrementReason = (state: MutableDropState, reason: DropReason, droppedAt: string): void => {
   switch (reason) {
     case "count-overflow":
       state.countOverflow += 1;
@@ -331,7 +346,6 @@ const incrementReason = (state: MutableDropState, reason: DropReason): void => {
       state.closed += 1;
       break;
   }
-  const droppedAt = new Date().toISOString();
   state.total += 1;
   if (Option.isNone(state.firstDroppedAt)) state.firstDroppedAt = Option.some(droppedAt);
   state.lastDroppedAt = Option.some(droppedAt);
@@ -464,10 +478,16 @@ const finalCanonicalFields = (
   };
 };
 
-const admittedRecord = (event: WideEvent, auditRecordId?: string): AdmittedRecord => {
+const admittedRecord = (
+  event: WideEvent,
+  auditRecordId?: string,
+  auditReservation?: AuditReservation,
+): AdmittedRecord => {
   const serialized = JSON.stringify(event);
   const record = { event, serialized, serializedBytes: textEncoder.encode(serialized).byteLength };
-  return auditRecordId === undefined ? record : { ...record, auditRecordId };
+  if (auditRecordId === undefined) return record;
+  if (auditReservation === undefined) return { ...record, auditRecordId };
+  return { ...record, auditRecordId, auditReservation };
 };
 
 type MutableAuditPublishState = {
@@ -564,11 +584,12 @@ const safeAdapterFailure = (message: string, cause: EvlogAdapterError): AdapterF
 export const makeEvlogAdapter = (
   options: EvlogAdapterOptions,
   initializeLogger: typeof initLogger = initLogger,
+  signAudit: typeof signed = signed,
 ): EvlogAdapter => {
   const dropState = emptyDropState();
   const auditState = emptyAuditPublishState();
   const deliveredAuditRecords = new Map<string, number>();
-  const reservedAuditRecords = new Set<string>();
+  const auditReservations = new Map<string, AuditReservation>();
   const loggerOwner = Symbol("evlog-adapter");
   let pendingBytes = 0;
   let pipeline: PipelineDrainFn<AdmittedRecord> | undefined;
@@ -590,8 +611,22 @@ export const makeEvlogAdapter = (
           ),
         );
         const clock = yield* Clock.Clock;
-        const auditDropTimestamp = (): string =>
+        const dropTimestamp = (): string =>
           DateTime.formatIso(DateTime.makeUnsafe(clock.currentTimeMillisUnsafe()));
+        const makeAuditReservation = (): AuditReservation => {
+          const terminal = Promise.withResolvers<AuditReservationTerminal>();
+          return { terminal: terminal.promise, resolve: terminal.resolve };
+        };
+        const completeAuditReservation = (
+          recordId: string,
+          reservation: AuditReservation,
+          terminal: AuditReservationTerminal,
+        ): void => {
+          if (auditReservations.get(recordId) === reservation) {
+            auditReservations.delete(recordId);
+          }
+          reservation.resolve(terminal);
+        };
         if (context.contract.auditActionByName.size > 0) {
           const auditEventName = context.contract.eventNames.find(
             (candidate) => candidate === "audit.recorded",
@@ -666,7 +701,7 @@ export const makeEvlogAdapter = (
           onNone: () => undefined,
           onSome: (integrity) =>
             auditOnly(
-              signed((drainContext) => {
+              signAudit((drainContext) => {
                 integrityResult = drainContext.event;
               }, integrity),
               { await: true },
@@ -689,10 +724,10 @@ export const makeEvlogAdapter = (
         const fallback = (record: AdmittedRecord): void => {
           try {
             if (!resolvedOptions.stdout.write(`${record.serialized}\n`)) {
-              incrementReason(dropState, "stdout-unavailable");
+              incrementReason(dropState, "stdout-unavailable", dropTimestamp());
             }
           } catch {
-            incrementReason(dropState, "stdout-unavailable");
+            incrementReason(dropState, "stdout-unavailable", dropTimestamp());
           }
         };
 
@@ -716,13 +751,18 @@ export const makeEvlogAdapter = (
           onDropped: (records, error) => {
             release(records);
             for (const record of records) {
-              incrementReason(dropState, error === undefined ? "count-overflow" : "transport");
-              if (record.auditRecordId !== undefined) {
-                reservedAuditRecords.delete(record.auditRecordId);
+              const droppedAt = dropTimestamp();
+              incrementReason(
+                dropState,
+                error === undefined ? "count-overflow" : "transport",
+                droppedAt,
+              );
+              if (record.auditRecordId !== undefined && record.auditReservation !== undefined) {
+                completeAuditReservation(record.auditRecordId, record.auditReservation, "retry");
                 incrementAuditDrop(
                   auditState,
                   error === undefined ? "queue-overflow" : "transport",
-                  auditDropTimestamp(),
+                  droppedAt,
                 );
               }
               fallback(record);
@@ -741,14 +781,18 @@ export const makeEvlogAdapter = (
               },
             );
             for (const record of records) {
-              if (record.auditRecordId !== undefined) {
-                reservedAuditRecords.delete(record.auditRecordId);
+              if (record.auditRecordId !== undefined && record.auditReservation !== undefined) {
                 deliveredAuditRecords.set(record.auditRecordId, clock.currentTimeMillisUnsafe());
                 while (deliveredAuditRecords.size > resolvedOptions.auditDedupeCapacity) {
                   const oldest = deliveredAuditRecords.keys().next().value;
                   if (oldest === undefined) break;
                   deliveredAuditRecords.delete(oldest);
                 }
+                completeAuditReservation(
+                  record.auditRecordId,
+                  record.auditReservation,
+                  "delivered",
+                );
               }
             }
             release(records);
@@ -757,28 +801,31 @@ export const makeEvlogAdapter = (
           }
         });
 
-        const offer = (record: AdmittedRecord): "queued" | "closed" | "queue-overflow" => {
+        const offer = (record: AdmittedRecord): OfferResult => {
           if (!accepting) {
-            incrementReason(dropState, "closed");
+            const droppedAt = dropTimestamp();
+            incrementReason(dropState, "closed", droppedAt);
             fallback(record);
-            return "closed";
+            return { kind: "closed", droppedAt };
           }
           if (pendingBytes + record.serializedBytes > resolvedOptions.maximumBufferedBytes) {
-            incrementReason(dropState, "byte-overflow");
+            const droppedAt = dropTimestamp();
+            incrementReason(dropState, "byte-overflow", droppedAt);
             fallback(record);
-            return "queue-overflow";
+            return { kind: "queue-overflow", droppedAt };
           }
           if (
             record.auditRecordId !== undefined &&
             (pipeline?.pending ?? 0) >= resolvedOptions.maximumBufferedEvents
           ) {
-            incrementReason(dropState, "count-overflow");
+            const droppedAt = dropTimestamp();
+            incrementReason(dropState, "count-overflow", droppedAt);
             fallback(record);
-            return "queue-overflow";
+            return { kind: "queue-overflow", droppedAt };
           }
           pendingBytes += record.serializedBytes;
           pipeline?.(record);
-          return "queued";
+          return { kind: "queued" };
         };
 
         const admitContract = (event: TelemetryEvent, admission: EventAdmissionMetadata) =>
@@ -901,12 +948,12 @@ export const makeEvlogAdapter = (
 
         const admitGlobal = (drainContext: DrainContext): void => {
           if (drainContext.event.audit !== undefined) {
-            incrementReason(dropState, "contract-rejected");
+            incrementReason(dropState, "contract-rejected", dropTimestamp());
             return;
           }
           const timestamp = normalizeGlobalTimestamp(drainContext.event.timestamp);
           if (Option.isNone(timestamp)) {
-            incrementReason(dropState, "contract-rejected");
+            incrementReason(dropState, "contract-rejected", dropTimestamp());
             return;
           }
           drainContext.event.timestamp = timestamp.value;
@@ -920,7 +967,7 @@ export const makeEvlogAdapter = (
             rawName = resolvedOptions.requestEventName;
           }
           if (Option.isNone(rawName)) {
-            incrementReason(dropState, "contract-rejected");
+            incrementReason(dropState, "contract-rejected", dropTimestamp());
             return;
           }
           const eventName = context.contract.eventNames.find(
@@ -929,7 +976,7 @@ export const makeEvlogAdapter = (
           const definition =
             eventName === undefined ? undefined : context.contract.eventByName.get(eventName);
           if (definition === undefined) {
-            incrementReason(dropState, "contract-rejected");
+            incrementReason(dropState, "contract-rejected", dropTimestamp());
             return;
           }
           const traceId = decodeTraceId(drainContext.event.traceId);
@@ -938,7 +985,7 @@ export const makeEvlogAdapter = (
             (drainContext.event.traceId !== undefined && Option.isNone(traceId)) ||
             (drainContext.event.spanId !== undefined && Option.isNone(spanId))
           ) {
-            incrementReason(dropState, "contract-rejected");
+            incrementReason(dropState, "contract-rejected", dropTimestamp());
             return;
           }
           const attributes: { [attributeName: string]: Contract.AttributeValue } = {};
@@ -946,14 +993,14 @@ export const makeEvlogAdapter = (
             if (globalEnvelopeFields.has(name)) continue;
             const scalar = decodeScalar(value);
             if (Option.isNone(scalar)) {
-              incrementReason(dropState, "contract-rejected");
+              incrementReason(dropState, "contract-rejected", dropTimestamp());
               return;
             }
             attributes[name] = scalar.value;
           }
           const validation = validateContractEvent(context.contract, rawName.value, attributes);
           if (validation instanceof Contract.InvalidTelemetryEvent) {
-            incrementReason(dropState, "contract-rejected");
+            incrementReason(dropState, "contract-rejected", dropTimestamp());
             return;
           }
           const fields: { [attributeName: string]: Contract.AttributeValue } = {
@@ -1035,22 +1082,26 @@ export const makeEvlogAdapter = (
         }
 
         const admitAudit = (record: CommittedAuditRecord): Effect.Effect<AuditPublishReceipt> =>
-          Effect.suspend(() => {
-            const now = clock.currentTimeMillisUnsafe();
-            const effectTimestamp = auditDropTimestamp();
-            return Effect.promise<AuditPublishReceipt>(async () => {
+          Effect.promise<AuditPublishReceipt>(async () => {
+            while (true) {
+              const now = clock.currentTimeMillisUnsafe();
               for (const [recordId, deliveredAt] of deliveredAuditRecords) {
                 if (now - deliveredAt > resolvedOptions.auditDedupeWindowMillis) {
                   deliveredAuditRecords.delete(recordId);
                 }
               }
-              if (
-                accepting &&
-                (deliveredAuditRecords.has(record.recordId) ||
-                  reservedAuditRecords.has(record.recordId))
-              ) {
+              if (accepting && deliveredAuditRecords.has(record.recordId)) {
                 auditState.deduplicated += 1;
                 return { kind: "deduplicated" };
+              }
+              const existingReservation = auditReservations.get(record.recordId);
+              if (existingReservation !== undefined) {
+                const terminal = await existingReservation.terminal;
+                if (terminal === "delivered" && accepting) {
+                  auditState.deduplicated += 1;
+                  return { kind: "deduplicated" };
+                }
+                continue;
               }
               const recordId = record.recordId;
               const fields: { [attributeName: string]: Contract.AttributeValue } = {
@@ -1114,9 +1165,10 @@ export const makeEvlogAdapter = (
                 requiredFieldNames.some((name) => decision.value[name] === undefined) ||
                 immutableAnchorNames.some((name) => decision.value[name] !== fields[name])
               ) {
-                return incrementAuditDrop(auditState, "policy-rejected", effectTimestamp);
+                return incrementAuditDrop(auditState, "policy-rejected", dropTimestamp());
               }
-              reservedAuditRecords.add(recordId);
+              const reservation = makeAuditReservation();
+              auditReservations.set(recordId, reservation);
               const native = {
                 ...buildAuditFields(nativeAuditInput(admittedFields)),
                 idempotencyKey: String(admittedFields["audit.record.id"]),
@@ -1149,21 +1201,17 @@ export const makeEvlogAdapter = (
               try {
                 integrityEvent = await applyAuditIntegrity(event);
               } catch {
-                reservedAuditRecords.delete(recordId);
-                return incrementAuditDrop(auditState, "transport", effectTimestamp);
+                completeAuditReservation(recordId, reservation, "retry");
+                return incrementAuditDrop(auditState, "transport", dropTimestamp());
               }
-              const admission = offer(admittedRecord(integrityEvent, recordId));
-              if (admission !== "queued") {
-                reservedAuditRecords.delete(recordId);
-                return incrementAuditDrop(
-                  auditState,
-                  admission === "closed" ? "closed" : "queue-overflow",
-                  effectTimestamp,
-                );
+              const admission = offer(admittedRecord(integrityEvent, recordId, reservation));
+              if (admission.kind !== "queued") {
+                completeAuditReservation(recordId, reservation, "retry");
+                return incrementAuditDrop(auditState, admission.kind, admission.droppedAt);
               }
               auditState.published += 1;
               return { kind: "published" };
-            });
+            }
           });
 
         const auditLayer = Layer.succeed(

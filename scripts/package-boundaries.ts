@@ -51,6 +51,10 @@ export const defineOwnership = (
 };
 
 const ownership = defineOwnership([
+  { kind: "exact", path: "packages/cli/src/CredentialsStore.ts", role: "adapter" },
+  { kind: "exact", path: "packages/cli/src/PackageVersion.ts", role: "adapter" },
+  { kind: "exact", path: "packages/cli/src/ProvisionAssets.ts", role: "adapter" },
+  { kind: "exact", path: "packages/cli/src/StackAssets.ts", role: "adapter" },
   { kind: "exact", path: "packages/cli/src/main.ts", role: "bootstrap" },
   { kind: "prefix", path: "packages/sentry/src/policy/", role: "domain" },
   { kind: "prefix", path: "packages/sentry/src/", role: "adapter" },
@@ -60,6 +64,7 @@ const ownership = defineOwnership([
   { kind: "exact", path: "packages/telemetry/src/MetricsRuntime.ts", role: "adapter" },
   { kind: "exact", path: "packages/telemetry/src/PolicyOtlpLogger.ts", role: "adapter" },
   { kind: "exact", path: "packages/telemetry/src/Telemetry.ts", role: "adapter" },
+  { kind: "exact", path: "packages/telemetry/src/node/AuditDigest.ts", role: "adapter" },
   { kind: "exact", path: "packages/telemetry/src/node/Observability.ts", role: "adapter" },
   {
     kind: "exact",
@@ -131,6 +136,7 @@ const dependencyKind = (specifier: string): DependencyKind | undefined => {
   ) {
     return "database";
   }
+  if (specifier.startsWith("node:")) return "runtime-platform";
   if (dependency.startsWith("@effect/platform-")) return "runtime-platform";
   if (
     specifier === "effect/Metric" ||

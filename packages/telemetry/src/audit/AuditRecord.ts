@@ -57,8 +57,8 @@ export const AuditOutcome = Schema.Literals(["success", "failure", "cancelled", 
 export type AuditOutcome = typeof AuditOutcome.Type;
 
 export const AuditActor = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("user"), id: boundedIdentifier }),
-  Schema.Struct({ kind: Schema.Literal("service"), id: boundedIdentifier }),
+  Schema.Struct({ kind: Schema.Literal("user"), id: AuditActorId }),
+  Schema.Struct({ kind: Schema.Literal("service"), id: AuditActorId }),
   Schema.Struct({ kind: Schema.Literal("system") }),
 ]);
 export type AuditActor = typeof AuditActor.Type;
@@ -126,7 +126,29 @@ export type AuditRecordInput = {
   readonly correlation?: CorrelationContext;
 };
 
+const AuditRecordInputDocument = Schema.Struct({
+  recordId: Schema.Any,
+  action: Schema.Any,
+  actor: Schema.Any,
+  resource: Schema.Any,
+  outcome: Schema.Any,
+  reasonCode: Schema.optional(Schema.Any),
+  tenantId: Schema.optional(Schema.Any),
+  occurredAt: Schema.Any,
+  correlation: Schema.optional(Schema.Any),
+});
+const AuditResourceInputDocument = Schema.Struct({ id: Schema.Any });
+const AuditOptionalStringInput = Schema.Union([
+  Schema.String,
+  Schema.Option(Schema.String),
+  Schema.Undefined,
+]);
+
+const decodeAuditRecordInput = Schema.decodeUnknownEffect(AuditRecordInputDocument);
+const decodeAuditResourceInput = Schema.decodeUnknownEffect(AuditResourceInputDocument);
+const decodeOptionalStringInput = Schema.decodeUnknownEffect(AuditOptionalStringInput);
 const decodeSchemaVersion = Schema.decodeUnknownEffect(Schema.Literal(1));
+const decodeAction = Schema.decodeUnknownEffect(AuditAction);
 const decodeRecordId = Schema.decodeUnknownEffect(AuditRecordId);
 const decodeActor = Schema.decodeUnknownEffect(AuditActor);
 const decodeResourceId = Schema.decodeUnknownEffect(AuditResourceId);
@@ -213,90 +235,139 @@ export const parseAuditRecord = Effect.fn("parseAuditRecord")(function* <
   contract: TelemetryContract<Definition>,
   input: AuditRecordInput,
 ): Effect.fn.Return<AuditRecord, InvalidAuditRecord> {
-  const action = contract.auditActionByName.get(input.action);
+  const document = yield* decodeAuditRecordInput(input).pipe(
+    Effect.mapError(() =>
+      invalid(
+        "OBS_AUDIT_INVALID_FIELD",
+        "Audit record input is malformed. Provide every required audit field with its documented type.",
+        "record",
+      ),
+    ),
+  );
+  const parsedAction = yield* decodeAction(document.action).pipe(
+    Effect.mapError(() =>
+      invalid(
+        "OBS_AUDIT_UNKNOWN_ACTION",
+        "Audit action is malformed. Use a declared dotted lowercase action up to 128 characters.",
+        "action",
+      ),
+    ),
+  );
+  const action = contract.auditActionByName.get(parsedAction);
   if (action === undefined) {
     return yield* invalid(
       "OBS_AUDIT_UNKNOWN_ACTION",
-      `Audit action "${input.action}" is not declared by the telemetry contract. Use a declared action.`,
+      "Audit action is not declared by the telemetry contract. Use a declared action.",
       "action",
-      input.action,
+      parsedAction,
     );
   }
-  const recordId = yield* decodeRecordId(input.recordId).pipe(
+  const recordId = yield* decodeRecordId(document.recordId).pipe(
     Effect.mapError(() =>
       invalid(
         "OBS_AUDIT_INVALID_FIELD",
         "Audit record ID is invalid. Use 1 to 128 characters without control characters.",
         "recordId",
-        input.action,
+        parsedAction,
       ),
     ),
   );
-  const actor = yield* decodeActor(input.actor).pipe(
+  const actor = yield* decodeActor(document.actor).pipe(
     Effect.mapError(() =>
       invalid(
         "OBS_AUDIT_INVALID_ACTOR",
         "Audit actor is invalid. Use a bounded user or service snapshot, or the system actor.",
         "actor",
-        input.action,
+        parsedAction,
       ),
     ),
   );
-  const resourceId = yield* decodeResourceId(input.resource.id).pipe(
+  const resource = yield* decodeAuditResourceInput(document.resource).pipe(
+    Effect.mapError(() =>
+      invalid(
+        "OBS_AUDIT_INVALID_RESOURCE",
+        "Audit resource is malformed. Provide an object with a bounded ID.",
+        "resource",
+        parsedAction,
+      ),
+    ),
+  );
+  const resourceId = yield* decodeResourceId(resource.id).pipe(
     Effect.mapError(() =>
       invalid(
         "OBS_AUDIT_INVALID_RESOURCE",
         "Audit resource ID is invalid. Use 1 to 128 characters without control characters.",
         "resource.id",
-        input.action,
+        parsedAction,
       ),
     ),
   );
   const resourceType = yield* decodeResourceType(action.resourceType).pipe(Effect.orDie);
-  const outcome = yield* decodeOutcome(input.outcome).pipe(
+  const outcome = yield* decodeOutcome(document.outcome).pipe(
     Effect.mapError(() =>
       invalid(
         "OBS_AUDIT_INVALID_OUTCOME",
         "Audit outcome is invalid. Use success, failure, cancelled, or denied.",
         "outcome",
-        input.action,
+        parsedAction,
       ),
     ),
   );
   if (!action.allowedOutcomes.includes(outcome)) {
     return yield* invalid(
       "OBS_AUDIT_INVALID_OUTCOME",
-      `Audit action "${input.action}" does not allow outcome "${outcome}". Use a declared outcome.`,
+      "Audit outcome is not declared for this action. Use an allowed outcome.",
       "outcome",
-      input.action,
+      parsedAction,
     );
   }
-  const rawReasonCode = optionalString(input.reasonCode);
+  const reasonCodeInput = yield* decodeOptionalStringInput(document.reasonCode).pipe(
+    Effect.mapError(() =>
+      invalid(
+        "OBS_AUDIT_UNKNOWN_REASON_CODE",
+        "Audit reason code is malformed. Use a dotted lowercase code up to 64 characters.",
+        "reasonCode",
+        parsedAction,
+      ),
+    ),
+  );
+  const rawReasonCode = optionalString(reasonCodeInput);
   const reasonCode = yield* Option.match(rawReasonCode, {
     onNone: () => Effect.succeed(Option.none<AuditReasonCode>()),
     onSome: (value) =>
-      decodeReasonCode(value).pipe(
-        Effect.flatMap((parsed) =>
-          action.reasonCodes.includes(parsed)
-            ? Effect.succeed(Option.some(parsed))
-            : invalid(
-                "OBS_AUDIT_UNKNOWN_REASON_CODE",
-                `Audit reason code "${value}" is not declared for action "${input.action}". Use a declared reason code or omit it.`,
-                "reasonCode",
-                input.action,
-              ),
-        ),
-        Effect.mapError(() =>
-          invalid(
-            "OBS_AUDIT_UNKNOWN_REASON_CODE",
-            "Audit reason code is invalid. Use a declared dotted lowercase code, not free text.",
-            "reasonCode",
-            input.action,
+      Effect.gen(function* () {
+        const parsed = yield* decodeReasonCode(value).pipe(
+          Effect.mapError(() =>
+            invalid(
+              "OBS_AUDIT_UNKNOWN_REASON_CODE",
+              "Audit reason code is malformed. Use a dotted lowercase code up to 64 characters.",
+              "reasonCode",
+              parsedAction,
+            ),
           ),
-        ),
-      ),
+        );
+        if (!action.reasonCodes.includes(parsed)) {
+          return yield* invalid(
+            "OBS_AUDIT_UNKNOWN_REASON_CODE",
+            "Audit reason code is not declared for this action. Use a declared reason code or omit it.",
+            "reasonCode",
+            parsedAction,
+          );
+        }
+        return Option.some(parsed);
+      }),
   });
-  const rawTenantId = optionalString(input.tenantId);
+  const tenantIdInput = yield* decodeOptionalStringInput(document.tenantId).pipe(
+    Effect.mapError(() =>
+      invalid(
+        "OBS_AUDIT_INVALID_FIELD",
+        "Audit tenant ID is invalid. Use 1 to 128 characters without control characters.",
+        "tenantId",
+        parsedAction,
+      ),
+    ),
+  );
+  const rawTenantId = optionalString(tenantIdInput);
   const tenantId = yield* Option.match(rawTenantId, {
     onNone: () => Effect.succeed(Option.none<AuditTenantId>()),
     onSome: (value) =>
@@ -307,31 +378,31 @@ export const parseAuditRecord = Effect.fn("parseAuditRecord")(function* <
             "OBS_AUDIT_INVALID_FIELD",
             "Audit tenant ID is invalid. Use 1 to 128 characters without control characters.",
             "tenantId",
-            input.action,
+            parsedAction,
           ),
         ),
       ),
   });
-  const occurredAt = yield* decodeOccurredAt(input.occurredAt).pipe(
+  const occurredAt = yield* decodeOccurredAt(document.occurredAt).pipe(
     Effect.mapError(() =>
       invalid(
         "OBS_AUDIT_INVALID_FIELD",
         "Audit occurrence time is invalid. Use an RFC 3339 UTC timestamp.",
         "occurredAt",
-        input.action,
+        parsedAction,
       ),
     ),
   );
   const correlation =
-    input.correlation === undefined
+    document.correlation === undefined
       ? yield* CurrentCorrelation
-      : yield* decodeCorrelation(input.correlation).pipe(
+      : yield* decodeCorrelation(document.correlation).pipe(
           Effect.mapError(() =>
             invalid(
               "OBS_AUDIT_INVALID_FIELD",
               "Audit correlation is invalid. Use a canonical traced or untraced correlation context.",
               "correlation",
-              input.action,
+              parsedAction,
             ),
           ),
         );

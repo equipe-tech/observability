@@ -37,7 +37,40 @@ const parsedRecord = () =>
     }),
   );
 
-describe("audit commit JavaScript boundary", () => {
+describe("audit JavaScript boundaries", () => {
+  it("returns typed failures for malformed parse inputs", async () => {
+    const valid = {
+      recordId: "audit-js-boundary",
+      action: "access.reviewed",
+      actor: { kind: "system" },
+      resource: { id: "account-1" },
+      outcome: "denied",
+      reasonCode: "approval.missing",
+      tenantId: "tenant-1",
+      occurredAt: "2026-01-02T03:04:05.000Z",
+    };
+    const cases = [
+      null,
+      {},
+      { ...valid, action: 5 },
+      { ...valid, actor: null },
+      { ...valid, actor: { kind: "service", id: "bad\nactor" } },
+      { ...valid, resource: null },
+      { ...valid, resource: {} },
+      { ...valid, reasonCode: null },
+      { ...valid, tenantId: null },
+      { ...valid, tenantId: { _tag: "Some", value: null } },
+      { ...valid, correlation: null },
+      { ...valid, correlation: { trace: null } },
+    ];
+    for (const candidate of cases) {
+      const failure = await Effect.runPromise(
+        parseAuditRecord(contract, candidate).pipe(Effect.flip),
+      );
+      expect(failure).toMatchObject({ _tag: "InvalidAuditRecord" });
+    }
+  });
+
   it("rejects every forged structural field before hashing or durable write", async () => {
     const record = await parsedRecord();
     const cases = [

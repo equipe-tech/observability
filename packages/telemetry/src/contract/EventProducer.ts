@@ -1,5 +1,5 @@
 import { Clock, Context, DateTime, Effect, Predicate, Random, Schema } from "effect";
-import { AuditContext, AuditOutcome, type AuditActor } from "../audit/AuditRecord.ts";
+import { AuditContext, AuditOutcome, type AuditActorInput } from "../audit/AuditRecord.ts";
 import { CorrelationContext, CurrentCorrelation } from "../Correlation.ts";
 import {
   type AttributeDefinitionsInput,
@@ -74,7 +74,7 @@ type AuditPayloadForAction<Action extends AuditActionDefinitionInput> = {
   readonly outcome: Action["allowedOutcomes"][number];
   readonly audit: {
     readonly action: Action["action"];
-    readonly actor: AuditActor;
+    readonly actor: AuditActorInput;
     readonly resourceType: Action["resourceType"];
     readonly resourceId: string;
     readonly reasonCode?: string;
@@ -296,7 +296,7 @@ const parseError = (eventName: string, error: ErrorContext) =>
 
 type AuditContextInput = {
   readonly action: string;
-  readonly actor: AuditActor;
+  readonly actor: AuditActorInput;
   readonly resourceType: string;
   readonly resourceId: string;
   readonly reasonCode?: string;

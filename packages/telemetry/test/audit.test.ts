@@ -12,6 +12,7 @@ import {
   parseAuditRecord,
   recordAudit,
   unboundAuditPublisher,
+  type AuditActorId,
   type AuditRecordInput,
 } from "../src/index.ts";
 import { layerNodeAuditDigest } from "../src/node/index.ts";
@@ -50,6 +51,9 @@ describe("audit contracts", () => {
   it("binds action-owned resource, outcome, reason, and immutable snapshots", async () => {
     const record = await Effect.runPromise(parsedRecord);
     expect(record.resource.type).toBe("invoice");
+    if (record.actor.kind === "system") throw new Error("Expected a user actor.");
+    const actorId: AuditActorId = record.actor.id;
+    expect(actorId).toBe("user-1");
     expect(Option.getOrUndefined(record.reasonCode)).toBe("approval.missing");
     expect(Object.isFrozen(record)).toBe(true);
     expect(Object.isFrozen(record.actor)).toBe(true);
@@ -73,6 +77,36 @@ describe("audit contracts", () => {
       expect(error).toBeInstanceOf(InvalidAuditRecord);
       expect(error.code).toBe(code);
     }
+  });
+
+  it("returns truthful fixed reason-code messages", async () => {
+    const contract = await Effect.runPromise(contractEffect);
+    const malformed = await Effect.runPromise(
+      parseAuditRecord(contract, { ...input, reasonCode: "NOT VALID" }).pipe(Effect.flip),
+    );
+    const undeclared = await Effect.runPromise(
+      parseAuditRecord(contract, { ...input, reasonCode: "policy.other" }).pipe(Effect.flip),
+    );
+    expect(malformed.message).toBe(
+      "Audit reason code is malformed. Use a dotted lowercase code up to 64 characters.",
+    );
+    expect(undeclared.message).toBe(
+      "Audit reason code is not declared for this action. Use a declared reason code or omit it.",
+    );
+  });
+
+  it("does not echo malformed action input", async () => {
+    const contract = await Effect.runPromise(contractEffect);
+    const action = `${"private".repeat(20_000)}\nforged`;
+    const error = await Effect.runPromise(
+      parseAuditRecord(contract, { ...input, action }).pipe(Effect.flip),
+    );
+    expect(error.message).toBe(
+      "Audit action is malformed. Use a declared dotted lowercase action up to 128 characters.",
+    );
+    expect(error.action).toBeUndefined();
+    expect(JSON.stringify(error)).not.toContain(action);
+    expect(error.message.length).toBeLessThan(128);
   });
 
   it("accepts only canonical UTC occurrence timestamps", async () => {
