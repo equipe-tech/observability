@@ -28,6 +28,7 @@ export class MutationIntent extends Schema.Class<MutationIntent>(
   id: Schema.NonEmptyString,
   operation: Schema.NonEmptyString,
   resource: Schema.NonEmptyString,
+  environment: Schema.NonEmptyString.pipe(Schema.optionalKey),
   desiredFingerprint: Schema.NonEmptyString,
   status: Schema.Literals(["pending", "resolved", "outcome-unknown"]),
   updatedAt: Schema.NonEmptyString,

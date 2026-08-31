@@ -55,6 +55,7 @@ export class OperationsError extends Schema.TaggedError<OperationsError>()("Oper
     "OBS_CLI_MANUAL_ACTION_PENDING",
     "OBS_CLI_DRIFT_DETECTED",
     "OBS_CLI_APPLY_OUTCOME_UNKNOWN",
+    "OBS_CLI_MUTATION_UNRESOLVED",
   ]),
   message: Schema.String,
   attempts: Schema.Int.pipe(Schema.optionalKey),
@@ -69,6 +70,32 @@ const OperationsPlanEnvironment = Schema.Struct({
   NODE_ENV: Schema.NonEmptyString.pipe(Schema.optionalKey),
 });
 const operationsPlanEnvironment = Schema.decodeUnknownSync(OperationsPlanEnvironment)(process.env);
+
+const mutationWithStatus = (
+  mutation: MutationIntent,
+  status: MutationIntent["status"],
+  updatedAt: string,
+): MutationIntent => {
+  if (mutation.environment === undefined) {
+    return new MutationIntent({
+      id: mutation.id,
+      operation: mutation.operation,
+      resource: mutation.resource,
+      desiredFingerprint: mutation.desiredFingerprint,
+      status,
+      updatedAt,
+    });
+  }
+  return new MutationIntent({
+    id: mutation.id,
+    operation: mutation.operation,
+    resource: mutation.resource,
+    environment: mutation.environment,
+    desiredFingerprint: mutation.desiredFingerprint,
+    status,
+    updatedAt,
+  });
+};
 
 const fingerprint = (value: string): string => {
   const hasher = new Bun.CryptoHasher("sha256");
@@ -578,14 +605,7 @@ export class OperationsPlanner extends Context.Service<
                 manualActions: state.manualActions,
                 mutations: state.mutations.map((entry) =>
                   entry.id === unresolved.id
-                    ? new MutationIntent({
-                        id: entry.id,
-                        operation: entry.operation,
-                        resource: entry.resource,
-                        desiredFingerprint: entry.desiredFingerprint,
-                        status: "resolved",
-                        updatedAt: entry.updatedAt,
-                      })
+                    ? mutationWithStatus(entry, "resolved", entry.updatedAt)
                     : entry,
                 ),
               }),
@@ -690,6 +710,7 @@ export class OperationsPlanner extends Context.Service<
                     id: action.id,
                     operation: action.kind,
                     resource: action.resource,
+                    environment: action.environment,
                     desiredFingerprint: action.desiredFingerprint,
                     status: "pending",
                     updatedAt,
@@ -711,14 +732,7 @@ export class OperationsPlanner extends Context.Service<
                     manualActions: state.manualActions,
                     mutations: state.mutations.map((entry) =>
                       entry.id === action.id
-                        ? new MutationIntent({
-                            id: entry.id,
-                            operation: entry.operation,
-                            resource: entry.resource,
-                            desiredFingerprint: entry.desiredFingerprint,
-                            status: "outcome-unknown",
-                            updatedAt,
-                          })
+                        ? mutationWithStatus(entry, "outcome-unknown", updatedAt)
                         : entry,
                     ),
                   }),
@@ -746,14 +760,7 @@ export class OperationsPlanner extends Context.Service<
                       manualActions: state.manualActions,
                       mutations: state.mutations.map((entry) =>
                         entry.id === action.id
-                          ? new MutationIntent({
-                              id: entry.id,
-                              operation: entry.operation,
-                              resource: entry.resource,
-                              desiredFingerprint: entry.desiredFingerprint,
-                              status: "resolved",
-                              updatedAt,
-                            })
+                          ? mutationWithStatus(entry, "resolved", updatedAt)
                           : entry,
                       ),
                     }),
@@ -774,14 +781,7 @@ export class OperationsPlanner extends Context.Service<
                     manualActions: state.manualActions,
                     mutations: state.mutations.map((entry) =>
                       entry.id === action.id
-                        ? new MutationIntent({
-                            id: entry.id,
-                            operation: entry.operation,
-                            resource: entry.resource,
-                            desiredFingerprint: entry.desiredFingerprint,
-                            status: "outcome-unknown",
-                            updatedAt,
-                          })
+                        ? mutationWithStatus(entry, "outcome-unknown", updatedAt)
                         : entry,
                     ),
                   }),
@@ -849,14 +849,7 @@ export class OperationsPlanner extends Context.Service<
                   manualActions: state.manualActions,
                   mutations: state.mutations.map((entry) =>
                     entry.id === action.id
-                      ? new MutationIntent({
-                          id: entry.id,
-                          operation: entry.operation,
-                          resource: entry.resource,
-                          desiredFingerprint: entry.desiredFingerprint,
-                          status: "outcome-unknown",
-                          updatedAt,
-                        })
+                      ? mutationWithStatus(entry, "outcome-unknown", updatedAt)
                       : entry,
                   ),
                 }),
@@ -881,14 +874,7 @@ export class OperationsPlanner extends Context.Service<
                 manualActions: state.manualActions,
                 mutations: state.mutations.map((mutation) =>
                   mutation.id === action.id
-                    ? new MutationIntent({
-                        id: mutation.id,
-                        operation: mutation.operation,
-                        resource: mutation.resource,
-                        desiredFingerprint: mutation.desiredFingerprint,
-                        status: "resolved",
-                        updatedAt,
-                      })
+                    ? mutationWithStatus(mutation, "resolved", updatedAt)
                     : mutation,
                 ),
               }),
@@ -900,6 +886,20 @@ export class OperationsPlanner extends Context.Service<
 
       const verify = Effect.fn("OperationsPlanner.verify")(function* (request: PlanRequest) {
         const current = yield* plan(request);
+        const state = yield* stateStore.load(current.service);
+        const unresolved = state.mutations.find(
+          (mutation) =>
+            (mutation.environment === undefined ||
+              current.environments.includes(mutation.environment)) &&
+            (mutation.status === "pending" || mutation.status === "outcome-unknown"),
+        );
+        if (unresolved !== undefined) {
+          return yield* new OperationsError({
+            code: "OBS_CLI_MUTATION_UNRESOLVED",
+            message: `Mutation ${unresolved.id} is ${unresolved.status}. Reconcile it before verification.`,
+            cause: unresolved.id,
+          });
+        }
         if (current.actions.length > 0) {
           return yield* new OperationsError({
             code: "OBS_CLI_DRIFT_DETECTED",

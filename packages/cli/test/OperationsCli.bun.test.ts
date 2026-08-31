@@ -120,6 +120,7 @@ describe("operations CLI", () => {
     const baseUrl = `http://127.0.0.1:${server.port}`;
     try {
       const first = await runCli(["ops", "plan", "--dir", project, "--json"], home, baseUrl);
+      expect(first.stderr).toBe("");
       expect(first.exitCode).toBe(0);
       expect(mutations).toBe(0);
       const firstPlan = JSON.parse(first.stdout);
@@ -187,7 +188,65 @@ describe("operations CLI", () => {
         baseUrl,
       );
       expect(confirmed.exitCode).toBe(0);
+      const baselineState = await readFile(statePath, "utf8");
+      const baselineMutationCalls = mutations;
       expect((await runCli(["ops", "verify", "--dir", project], home, baseUrl)).exitCode).toBe(0);
+      expect(await readFile(statePath, "utf8")).toBe(baselineState);
+      expect(mutations).toBe(baselineMutationCalls);
+
+      for (const status of ["pending", "outcome-unknown"]) {
+        const unresolvedState = JSON.parse(baselineState);
+        unresolvedState.mutations.push({
+          id: `axiom.dataset.unresolved-${status}`,
+          operation: "create",
+          resource: `checkout-prod-unresolved-${status}`,
+          environment: "prod",
+          desiredFingerprint: "unresolved-fingerprint",
+          status,
+          updatedAt: new Date().toISOString(),
+        });
+        const unresolvedContent = `${JSON.stringify(unresolvedState, null, 2)}\n`;
+        await writeFile(statePath, unresolvedContent, { mode: 0o600 });
+        const verified = await runCli(
+          ["ops", "verify", "--dir", project, "--environment", "prod"],
+          home,
+          baseUrl,
+        );
+        expect(verified.exitCode).not.toBe(0);
+        expect(verified.stderr).toContain("OBS_CLI_MUTATION_UNRESOLVED");
+        expect(await readFile(statePath, "utf8")).toBe(unresolvedContent);
+        expect(mutations).toBe(baselineMutationCalls);
+      }
+
+      for (const [status, environment] of [
+        ["resolved", "prod"],
+        ["pending", "staging"],
+      ]) {
+        const scopedState = JSON.parse(baselineState);
+        scopedState.mutations.push({
+          id: `axiom.dataset.${environment}-${status}`,
+          operation: "create",
+          resource: `checkout-${environment}-${status}`,
+          environment,
+          desiredFingerprint: "scoped-fingerprint",
+          status,
+          updatedAt: new Date().toISOString(),
+        });
+        const scopedContent = `${JSON.stringify(scopedState, null, 2)}\n`;
+        await writeFile(statePath, scopedContent, { mode: 0o600 });
+        expect(
+          (
+            await runCli(
+              ["ops", "verify", "--dir", project, "--environment", "prod"],
+              home,
+              baseUrl,
+            )
+          ).exitCode,
+        ).toBe(0);
+        expect(await readFile(statePath, "utf8")).toBe(scopedContent);
+        expect(mutations).toBe(baselineMutationCalls);
+      }
+      await writeFile(statePath, baselineState, { mode: 0o600 });
 
       await writeFile(
         manifestPath,

@@ -67,7 +67,7 @@ describe("contract index", () => {
     expect(Contract.encodeContractIndex(index)).toBe(`${JSON.stringify(index, null, 2)}\n`);
   });
 
-  it("indexes 1000 alias sources within a bounded runtime", async () => {
+  it("rejects over-limit alias counts, depths and target expansions quickly", async () => {
     const contract = await Effect.runPromise(
       defineTelemetryContract({
         version: 1,
@@ -85,17 +85,47 @@ describe("contract index", () => {
         auditActions: {},
       }),
     );
-    const aliases: Array<Contract.ContractSignalAliasDefinition> = Array.from(
-      { length: 1_000 },
-      (_, index) => ({
-        source: { kind: "event", name: `legacy.node_${String(index).padStart(4, "0")}` },
-        target: { kind: "event", name: "graph.target" },
-      }),
-    );
-    const startedAt = performance.now();
-    const index = Contract.contractIndex(contract, "graph", { version: 1, aliases });
-    expect(index.aliases).toHaveLength(1_000);
-    expect(performance.now() - startedAt).toBeLessThan(2_000);
+    const alias = (source: string, target: string): Contract.ContractSignalAliasDefinition => ({
+      source: { kind: "event", name: source },
+      target: { kind: "event", name: target },
+    });
+    const cases: ReadonlyArray<
+      readonly [ReadonlyArray<Contract.ContractSignalAliasDefinition>, string]
+    > = [
+      [
+        Array.from({ length: Contract.maximumContractAliasCount + 1 }, (_, index) =>
+          alias(`legacy.node_${String(index).padStart(4, "0")}`, "graph.target"),
+        ),
+        "OBS_CONTRACT_ALIAS_COUNT_EXCEEDED",
+      ],
+      [
+        Array.from({ length: Contract.maximumContractAliasCount }, (_, index) =>
+          alias(
+            `graph.node_${String(index).padStart(4, "0")}`,
+            `graph.node_${String(index + 1).padStart(4, "0")}`,
+          ),
+        ),
+        "OBS_CONTRACT_ALIAS_DEPTH_EXCEEDED",
+      ],
+      [
+        Array.from({ length: Contract.maximumContractAliasTargets }, (_, index) =>
+          alias("graph.root", `graph.target_${String(index).padStart(4, "0")}`),
+        ),
+        "OBS_CONTRACT_ALIAS_TARGETS_EXCEEDED",
+      ],
+    ];
+    for (const [aliases, code] of cases) {
+      const startedAt = performance.now();
+      let error: Contract.ContractIndexAliasError | undefined;
+      try {
+        Contract.contractIndex(contract, "graph", { version: 1, aliases });
+      } catch (cause) {
+        if (cause instanceof Contract.ContractIndexAliasError) error = cause;
+        else throw cause;
+      }
+      expect(error?.code).toBe(code);
+      expect(performance.now() - startedAt).toBeLessThan(2_000);
+    }
   });
 
   it("expands compatible sources and rejects invalid, incompatible and cyclic aliases", async () => {

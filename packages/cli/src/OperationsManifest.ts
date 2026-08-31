@@ -82,13 +82,16 @@ const ContractIndexAlias = Schema.Struct({
   from: Schema.NonEmptyString,
   to: Schema.NonEmptyString,
 });
+export const maximumContractAliasCount = 4_096;
+export const maximumContractAliasDepth = 128;
+export const maximumContractAliasTargets = 256;
 export const OperationsContractIndex = Schema.Struct({
   index: Schema.Literal(1),
   contractVersion: Schema.Int.check(Schema.isGreaterThan(0)),
   service: ServiceName,
   events: Schema.Array(ContractIndexEvent),
   metrics: Schema.Array(ContractIndexMetric),
-  aliases: Schema.Array(ContractIndexAlias),
+  aliases: Schema.Array(ContractIndexAlias).check(Schema.isMaxLength(maximumContractAliasCount)),
 });
 export type OperationsContractIndex = typeof OperationsContractIndex.Type;
 
@@ -218,17 +221,20 @@ const duplicates = (values: ReadonlyArray<string>): ReadonlyArray<string> => {
 };
 
 type AliasKind = SignalReference["kind"];
-type AliasExpansion = {
-  readonly targets: ReadonlySet<string>;
-  readonly cyclic: boolean;
-};
 type AliasGraph = {
-  expand(kind: AliasKind, source: string): AliasExpansion;
+  readonly issues: ReadonlyArray<string>;
+  expand(kind: AliasKind, source: string): ReadonlySet<string>;
 };
 
 const aliasKey = (kind: AliasKind, name: string): string => `${kind}\u0000${name}`;
 
 const buildAliasGraph = (aliases: OperationsContractIndex["aliases"]): AliasGraph => {
+  if (aliases.length > maximumContractAliasCount) {
+    return {
+      issues: [`alias count exceeds ${maximumContractAliasCount}`],
+      expand: (_kind, source) => new Set([source]),
+    };
+  }
   const adjacency = new Map<string, Set<string>>();
   for (const alias of aliases) {
     const key = aliasKey(alias.kind, alias.from);
@@ -236,28 +242,70 @@ const buildAliasGraph = (aliases: OperationsContractIndex["aliases"]): AliasGrap
     targets.add(alias.to);
     adjacency.set(key, targets);
   }
+  const issues: Array<string> = [];
   const colors = new Map<string, "gray" | "black">();
-  const expansions = new Map<string, AliasExpansion>();
-  const expand = (kind: AliasKind, source: string): AliasExpansion => {
+  const depths = new Map<string, number>();
+  const cycleKeys = new Set<string>();
+  let depthExceeded = false;
+  const depth = (kind: AliasKind, source: string, traversed: number): number => {
+    if (traversed > maximumContractAliasDepth) {
+      if (!depthExceeded) issues.push(`alias graph depth exceeds ${maximumContractAliasDepth}`);
+      depthExceeded = true;
+      return 0;
+    }
+    const key = aliasKey(kind, source);
+    const cached = depths.get(key);
+    if (cached !== undefined) return cached;
+    if (colors.get(key) === "gray") {
+      if (!cycleKeys.has(key)) issues.push(`cyclic alias ${kind} ${source}`);
+      cycleKeys.add(key);
+      return 0;
+    }
+    colors.set(key, "gray");
+    let value = 0;
+    for (const target of adjacency.get(key) ?? []) {
+      value = Math.max(value, 1 + depth(kind, target, traversed + 1));
+      if (value > maximumContractAliasDepth && !depthExceeded) {
+        issues.push(`alias graph depth exceeds ${maximumContractAliasDepth}`);
+        depthExceeded = true;
+      }
+    }
+    colors.set(key, "black");
+    depths.set(key, value);
+    return value;
+  };
+  for (const alias of aliases) depth(alias.kind, alias.from, 0);
+  if (issues.length > 0) {
+    return { issues, expand: (_kind, source) => new Set([source]) };
+  }
+
+  const expansions = new Map<string, ReadonlySet<string>>();
+  const oversizedExpansions = new Set<string>();
+  const expand = (kind: AliasKind, source: string): ReadonlySet<string> => {
     const key = aliasKey(kind, source);
     const cached = expansions.get(key);
     if (cached !== undefined) return cached;
-    if (colors.get(key) === "gray") return { targets: new Set([source]), cyclic: true };
-    colors.set(key, "gray");
     const targets = new Set([source]);
-    let cyclic = false;
     for (const target of adjacency.get(key) ?? []) {
-      const nested = expand(kind, target);
-      for (const nestedTarget of nested.targets) targets.add(nestedTarget);
-      if (nested.cyclic) cyclic = true;
+      for (const nestedTarget of expand(kind, target)) {
+        targets.add(nestedTarget);
+        if (targets.size > maximumContractAliasTargets) {
+          if (!oversizedExpansions.has(key)) {
+            issues.push(
+              `alias expansion exceeds ${maximumContractAliasTargets} targets ${kind} ${source}`,
+            );
+            oversizedExpansions.add(key);
+          }
+          expansions.set(key, targets);
+          return targets;
+        }
+      }
     }
-    const expansion = { targets, cyclic };
-    colors.set(key, "black");
-    expansions.set(key, expansion);
-    return expansion;
+    expansions.set(key, targets);
+    return targets;
   };
   for (const alias of aliases) expand(alias.kind, alias.from);
-  return { expand };
+  return { issues, expand };
 };
 
 const validateQuery = Effect.fn("validateManagedSource")(function* (
@@ -288,7 +336,7 @@ const validateQuery = Effect.fn("validateManagedSource")(function* (
     });
   }
   const expected = [
-    ...new Set(sources.flatMap((source) => [...aliases.expand(source.kind, source.name).targets])),
+    ...new Set(sources.flatMap((source) => [...aliases.expand(source.kind, source.name)])),
   ].sort();
   const actual = [...query.binding.identifiers].sort();
   if (expected.join("\u0000") !== actual.join("\u0000")) {
@@ -299,10 +347,10 @@ const validateQuery = Effect.fn("validateManagedSource")(function* (
     });
   }
   const expandedSourceNames = sources.flatMap((source) => [
-    ...aliases.expand(source.kind, source.name).targets,
+    ...aliases.expand(source.kind, source.name),
   ]);
   const targetAttributeSets = sources.flatMap((source) => {
-    const names = aliases.expand(source.kind, source.name).targets;
+    const names = aliases.expand(source.kind, source.name);
     return source.kind === "event"
       ? contract.events
           .filter((event) => names.has(event.name))
@@ -435,18 +483,17 @@ export const validateOperationsManifest = Effect.fn("validateOperationsManifest"
     }
   }
   const aliasGraph = buildAliasGraph(contract.aliases);
+  issues.push(...aliasGraph.issues);
+  if (aliasGraph.issues.length > 0) return yield* manifestInvalid(issues, issues.join(";"));
   for (const alias of contract.aliases) {
     const names = alias.kind === "event" ? eventNames : metricNames;
     if (!names.has(alias.to)) issues.push(`unknown alias target ${alias.kind} ${alias.to}`);
-    if (aliasGraph.expand(alias.kind, alias.from).cyclic) {
-      issues.push(`cyclic alias ${alias.kind} ${alias.from}`);
-    }
   }
   const eventAliasSources = new Set(
     contract.aliases.filter((alias) => alias.kind === "event").map((alias) => alias.from),
   );
   for (const source of eventAliasSources) {
-    const names = aliasGraph.expand("event", source).targets;
+    const names = aliasGraph.expand("event", source);
     const targets = [...names].flatMap((name) => {
       const event = eventsByName.get(name);
       return event === undefined ? [] : [event];
@@ -472,7 +519,7 @@ export const validateOperationsManifest = Effect.fn("validateOperationsManifest"
     contract.aliases.filter((alias) => alias.kind === "metric").map((alias) => alias.from),
   );
   for (const source of metricAliasSources) {
-    const names = aliasGraph.expand("metric", source).targets;
+    const names = aliasGraph.expand("metric", source);
     const targets = [...names].flatMap((name) => {
       const metric = metricsByName.get(name);
       return metric === undefined ? [] : [metric];

@@ -150,18 +150,21 @@ const ManagedQueryCompilationInput = Schema.Struct({
     stages: Schema.Array(ManagedQueryStageInput),
     binding: Schema.Struct({
       field: Schema.Literals(["event.name", "metric.name"]),
-      identifiers: Schema.Array(Schema.String),
+      identifiers: Schema.Array(Schema.NonEmptyString).check(Schema.isMinLength(1)),
     }),
   }),
   target: Schema.Struct({
-    dataset: Schema.String,
+    dataset: Schema.NonEmptyString,
     language: Schema.Literals(["apl", "mpl"]),
-    signals: Schema.Array(Schema.String).check(Schema.isMinLength(1)),
+    signals: Schema.Array(Schema.NonEmptyString).check(Schema.isMinLength(1)),
   }),
 });
-const decodeManagedQueryCompilationInput = Schema.decodeUnknownSync(ManagedQueryCompilationInput, {
-  onExcessProperty: "error",
-});
+const decodeManagedQueryCompilationInput = Schema.decodeUnknownEffect(
+  ManagedQueryCompilationInput,
+  {
+    onExcessProperty: "error",
+  },
+);
 
 const splitOutsideStrings = (
   input: string,
@@ -199,19 +202,23 @@ const splitOutsideStrings = (
 };
 
 const decodeString = (input: string): string | ManagedQueryError => {
-  if (!input.startsWith('"') || !input.endsWith('"') || input.length < 2) {
+  if (!input.startsWith('"')) {
     return invalidQuery("Managed query strings must use double quotes.", input);
   }
-  const body = input.slice(1, -1);
   let value = "";
-  for (let index = 0; index < body.length; index += 1) {
-    const character = body[index];
+  for (let index = 1; index < input.length; index += 1) {
+    const character = input[index];
     if (character === undefined) continue;
+    if (character === '"') {
+      return input.slice(index + 1).trim().length === 0
+        ? value
+        : invalidQuery("Managed query strings cannot contain trailing predicate text.", input);
+    }
     if (character !== "\\") {
       value += character;
       continue;
     }
-    const escaped = body[index + 1];
+    const escaped = input[index + 1];
     if (escaped !== '"' && escaped !== "\\") {
       return invalidQuery(
         "Managed query strings only support escaped quotes and backslashes.",
@@ -221,7 +228,7 @@ const decodeString = (input: string): string | ManagedQueryError => {
     value += escaped;
     index += 1;
   }
-  return value;
+  return invalidQuery("Managed query strings must be terminated.", input);
 };
 
 const parseLiteral = (input: string): ManagedQueryLiteral | ManagedQueryError => {
@@ -300,6 +307,71 @@ const textOutsideStrings = (input: string): string => {
   return output;
 };
 
+const maximumBooleanSeparatorWhitespace = 32;
+const splitBooleanAndOutsideStrings = (
+  input: string,
+): ReadonlyArray<string> | ManagedQueryError => {
+  const parts: Array<string> = [];
+  let start = 0;
+  let quoted = false;
+  let escaped = false;
+  let depth = 0;
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input[index];
+    if (character === undefined) continue;
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') {
+      quoted = true;
+      continue;
+    }
+    if (character === "(") {
+      depth += 1;
+      continue;
+    }
+    if (character === ")") {
+      depth -= 1;
+      if (depth < 0) return invalidQuery("The managed query has an unmatched parenthesis.", input);
+      continue;
+    }
+    if (depth !== 0 || !/\s/.test(character)) continue;
+    const separatorStart = index;
+    while (/\s/.test(input[index] ?? "")) index += 1;
+    const leadingWhitespace = index - separatorStart;
+    if (input.slice(index, index + 3).toLowerCase() !== "and") {
+      index -= 1;
+      continue;
+    }
+    const wordEnd = index + 3;
+    if (!/\s/.test(input[wordEnd] ?? "")) {
+      index -= 1;
+      continue;
+    }
+    index = wordEnd;
+    while (/\s/.test(input[index] ?? "")) index += 1;
+    const trailingWhitespace = index - wordEnd;
+    if (
+      leadingWhitespace > maximumBooleanSeparatorWhitespace ||
+      trailingWhitespace > maximumBooleanSeparatorWhitespace
+    ) {
+      index -= 1;
+      continue;
+    }
+    parts.push(input.slice(start, separatorStart).trim());
+    start = index;
+    index -= 1;
+  }
+  if (quoted || depth !== 0) {
+    return invalidQuery("The managed query has an unterminated string or parenthesis.", input);
+  }
+  parts.push(input.slice(start).trim());
+  return parts;
+};
+
 const parseWhere = (input: string): ManagedQueryStage | ManagedQueryError => {
   if (/\bor\b/i.test(textOutsideStrings(input))) {
     return new ManagedQueryError({
@@ -308,7 +380,7 @@ const parseWhere = (input: string): ManagedQueryStage | ManagedQueryError => {
       cause: input,
     });
   }
-  const parts = splitOutsideStrings(input, " and ");
+  const parts = splitBooleanAndOutsideStrings(input);
   if (parts instanceof ManagedQueryError || parts.length === 0) {
     return invalidQuery("The managed query has an invalid where stage.", input);
   }
@@ -453,10 +525,15 @@ const parseManagedQuerySync = (text: string): ManagedQuery | ManagedQueryError =
   return { stream, stages, binding: { field: bindingField, identifiers } };
 };
 
-export const parseManagedQuery = (text: string): Effect.Effect<ManagedQuery, ManagedQueryError> => {
-  const result = parseManagedQuerySync(text);
-  return result instanceof ManagedQueryError ? Effect.fail(result) : Effect.succeed(result);
-};
+export const parseManagedQuery = Effect.fn("parseManagedQuery")(function* (
+  text: string,
+): Effect.fn.Return<ManagedQuery, ManagedQueryError> {
+  const result = yield* Effect.try({
+    try: () => parseManagedQuerySync(text),
+    catch: (cause) => invalidQuery("The managed query could not be parsed safely.", String(cause)),
+  });
+  return result instanceof ManagedQueryError ? yield* result : result;
+});
 
 const quote = (value: string): string => {
   let escaped = "";
@@ -486,13 +563,42 @@ const renderLiteral = (literal: ManagedQueryLiteral): string => {
 
 const renderIdentifier = (identifier: string): string => `[${quote(identifier)}]`;
 
-const compilationInput = (query: ManagedQuery, target: ManagedQueryTarget) => {
-  try {
-    return decodeManagedQueryCompilationInput({ query, target });
-  } catch (cause) {
-    throw invalidQuery("The managed query cannot be compiled safely.", String(cause));
+const compilationInput = Effect.fn("managedQueryCompilationInput")(function* (
+  query: ManagedQuery,
+  target: ManagedQueryTarget,
+): Effect.fn.Return<typeof ManagedQueryCompilationInput.Type, ManagedQueryError> {
+  const input = yield* decodeManagedQueryCompilationInput({ query, target }).pipe(
+    Effect.mapError((cause) =>
+      invalidQuery("The managed query cannot be compiled safely.", String(cause)),
+    ),
+  );
+  const expectedBindingField = input.query.stream === "metrics" ? "metric.name" : "event.name";
+  const bindings = input.query.stages.flatMap((stage) =>
+    stage.kind === "where"
+      ? stage.comparisons.filter((comparison) => comparison.field === input.query.binding.field)
+      : [],
+  );
+  const binding = bindings[0];
+  const identifiers = binding?.values.flatMap((value) =>
+    value.kind === "string" ? [value.value] : [],
+  );
+  if (
+    input.query.binding.field !== expectedBindingField ||
+    bindings.length !== 1 ||
+    binding === undefined ||
+    (binding.operator !== "==" && binding.operator !== "in") ||
+    identifiers === undefined ||
+    identifiers.length !== binding.values.length ||
+    identifiers.length !== input.query.binding.identifiers.length ||
+    identifiers.some((identifier, index) => identifier !== input.query.binding.identifiers[index])
+  ) {
+    return yield* invalidQuery(
+      "The managed query binding cannot be compiled safely.",
+      input.query.binding.field,
+    );
   }
-};
+  return input;
+});
 
 const renderAggregation = (aggregation: ManagedQueryAggregation): string => {
   if (aggregation.kind === "count") return "count()";
@@ -507,11 +613,11 @@ const renderGroup = (group: ManagedQueryGroup): string =>
     ? `bin(${renderIdentifier(group.field)}, ${group.duration})`
     : renderIdentifier(group.field);
 
-export const compileManagedQuery = (
+export const compileManagedQuery = Effect.fn("compileManagedQuery")(function* (
   query: ManagedQuery,
   target: ManagedQueryTarget,
-): CompiledManagedQuery => {
-  const input = compilationInput(query, target);
+): Effect.fn.Return<CompiledManagedQuery, ManagedQueryError> {
+  const input = yield* compilationInput(query, target);
   const renderedStages = input.query.stages.map((stage) => {
     if (stage.kind === "summarize") {
       const groups = stage.groups.map(renderGroup);
@@ -533,4 +639,4 @@ export const compileManagedQuery = (
   });
   const text = [renderIdentifier(input.target.dataset), ...renderedStages].join(" | ");
   return { dataset: input.target.dataset, language: input.target.language, text };
-};
+});

@@ -55,23 +55,44 @@ export type ContractIndex = {
   readonly aliases: ReadonlyArray<ContractSignalAlias>;
 };
 
+export const maximumContractAliasCount = 4_096;
+export const maximumContractAliasDepth = 128;
+export const maximumContractAliasTargets = 256;
+
+export class ContractIndexAliasError extends Error {
+  override readonly name = "ContractIndexAliasError";
+
+  constructor(
+    readonly code:
+      | "OBS_CONTRACT_ALIAS_COUNT_EXCEEDED"
+      | "OBS_CONTRACT_ALIAS_DEPTH_EXCEEDED"
+      | "OBS_CONTRACT_ALIAS_TARGETS_EXCEEDED"
+      | "OBS_CONTRACT_ALIAS_CYCLE",
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 const byName = <Entry extends { readonly name: string }>(left: Entry, right: Entry): number =>
   left.name.localeCompare(right.name);
 
 const signalNamePattern = /^[a-z][a-z0-9_]*(?:[.][a-z][a-z0-9_]*)+$/;
 
-type AliasExpansion = {
-  readonly targets: ReadonlySet<string>;
-  readonly cyclic: boolean;
-};
 type AliasGraph = {
-  expand(kind: ContractSignalAlias["kind"], source: string): AliasExpansion;
+  expand(kind: ContractSignalAlias["kind"], source: string): ReadonlySet<string>;
 };
 
 const aliasKey = (kind: ContractSignalAlias["kind"], name: string): string =>
   `${kind}\u0000${name}`;
 
 const buildAliasGraph = (aliases: ReadonlyArray<ContractSignalAlias>): AliasGraph => {
+  if (aliases.length > maximumContractAliasCount) {
+    throw new ContractIndexAliasError(
+      "OBS_CONTRACT_ALIAS_COUNT_EXCEEDED",
+      `Contract aliases exceed the maximum count of ${maximumContractAliasCount}.`,
+    );
+  }
   const adjacency = new Map<string, Set<string>>();
   for (const alias of aliases) {
     const key = aliasKey(alias.kind, alias.from);
@@ -80,26 +101,60 @@ const buildAliasGraph = (aliases: ReadonlyArray<ContractSignalAlias>): AliasGrap
     adjacency.set(key, targets);
   }
   const colors = new Map<string, "gray" | "black">();
-  const expansions = new Map<string, AliasExpansion>();
-  const expand = (kind: ContractSignalAlias["kind"], source: string): AliasExpansion => {
+  const depths = new Map<string, number>();
+  const depth = (kind: ContractSignalAlias["kind"], source: string, traversed: number): number => {
+    if (traversed > maximumContractAliasDepth) {
+      throw new ContractIndexAliasError(
+        "OBS_CONTRACT_ALIAS_DEPTH_EXCEEDED",
+        `Contract alias depth exceeds the maximum of ${maximumContractAliasDepth}.`,
+      );
+    }
+    const key = aliasKey(kind, source);
+    const cached = depths.get(key);
+    if (cached !== undefined) return cached;
+    if (colors.get(key) === "gray") {
+      throw new ContractIndexAliasError(
+        "OBS_CONTRACT_ALIAS_CYCLE",
+        "Contract aliases contain a cycle.",
+      );
+    }
+    colors.set(key, "gray");
+    let value = 0;
+    for (const target of adjacency.get(key) ?? []) {
+      value = Math.max(value, 1 + depth(kind, target, traversed + 1));
+      if (value > maximumContractAliasDepth) {
+        throw new ContractIndexAliasError(
+          "OBS_CONTRACT_ALIAS_DEPTH_EXCEEDED",
+          `Contract alias depth exceeds the maximum of ${maximumContractAliasDepth}.`,
+        );
+      }
+    }
+    colors.set(key, "black");
+    depths.set(key, value);
+    return value;
+  };
+  for (const alias of aliases) depth(alias.kind, alias.from, 0);
+
+  const expansions = new Map<string, ReadonlySet<string>>();
+  const expand = (kind: ContractSignalAlias["kind"], source: string): ReadonlySet<string> => {
     const key = aliasKey(kind, source);
     const cached = expansions.get(key);
     if (cached !== undefined) return cached;
-    if (colors.get(key) === "gray") return { targets: new Set([source]), cyclic: true };
-    colors.set(key, "gray");
     const targets = new Set([source]);
-    let cyclic = false;
     for (const target of adjacency.get(key) ?? []) {
-      const nested = expand(kind, target);
-      for (const nestedTarget of nested.targets) targets.add(nestedTarget);
-      if (nested.cyclic) cyclic = true;
+      for (const nestedTarget of expand(kind, target)) {
+        targets.add(nestedTarget);
+        if (targets.size > maximumContractAliasTargets) {
+          throw new ContractIndexAliasError(
+            "OBS_CONTRACT_ALIAS_TARGETS_EXCEEDED",
+            `Contract alias expansion exceeds the maximum of ${maximumContractAliasTargets} targets.`,
+          );
+        }
+      }
     }
-    const expansion = { targets, cyclic };
-    colors.set(key, "black");
-    expansions.set(key, expansion);
-    return expansion;
+    expansions.set(key, targets);
+    return targets;
   };
-  for (const alias of aliases) expand(alias.kind, alias.from);
   return { expand };
 };
 
@@ -113,19 +168,18 @@ const validatedAliases = <Definition extends TelemetryContractInput>(
   const metrics = new Map<string, (typeof metricEntries)[number]>();
   for (const event of eventEntries) events.set(event.name, event);
   for (const metric of metricEntries) metrics.set(metric.name, metric);
+  if (metadata.aliases.length > maximumContractAliasCount) {
+    throw new ContractIndexAliasError(
+      "OBS_CONTRACT_ALIAS_COUNT_EXCEEDED",
+      `Contract aliases exceed the maximum count of ${maximumContractAliasCount}.`,
+    );
+  }
   const aliases = metadata.aliases.map((alias) => {
     if (alias.source.kind !== alias.target.kind) {
       throw new TypeError("Contract alias source and target kinds must match.");
     }
     if (!signalNamePattern.test(alias.source.name) || !signalNamePattern.test(alias.target.name)) {
       throw new TypeError("Contract alias names must use the telemetry signal grammar.");
-    }
-    const targetExists =
-      alias.target.kind === "event"
-        ? events.has(alias.target.name)
-        : metrics.has(alias.target.name);
-    if (!targetExists) {
-      throw new TypeError(`Contract alias target ${alias.target.name} is not declared.`);
     }
     if (alias.source.name === alias.target.name) {
       throw new TypeError("Contract alias source and target must differ.");
@@ -137,16 +191,18 @@ const validatedAliases = <Definition extends TelemetryContractInput>(
     };
   });
   const aliasGraph = buildAliasGraph(aliases);
+  for (const alias of aliases) aliasGraph.expand(alias.kind, alias.from);
   for (const alias of aliases) {
-    if (aliasGraph.expand(alias.kind, alias.from).cyclic) {
-      throw new TypeError("Contract aliases contain a cycle.");
+    const targetExists = alias.kind === "event" ? events.has(alias.to) : metrics.has(alias.to);
+    if (!targetExists) {
+      throw new TypeError(`Contract alias target ${alias.to} is not declared.`);
     }
   }
   const metricSources = new Set(
     aliases.filter((alias) => alias.kind === "metric").map((alias) => alias.from),
   );
   for (const source of metricSources) {
-    const names = aliasGraph.expand("metric", source).targets;
+    const names = aliasGraph.expand("metric", source);
     const targets = [...names].flatMap((name) => {
       const metric = metrics.get(name);
       return metric === undefined ? [] : [metric];
@@ -171,7 +227,7 @@ const validatedAliases = <Definition extends TelemetryContractInput>(
     aliases.filter((alias) => alias.kind === "event").map((alias) => alias.from),
   );
   for (const source of eventSources) {
-    const names = aliasGraph.expand("event", source).targets;
+    const names = aliasGraph.expand("event", source);
     const targets = [...names].flatMap((name) => {
       const event = events.get(name);
       return event === undefined ? [] : [event];

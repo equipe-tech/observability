@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import {
+  maximumContractAliasCount,
+  maximumContractAliasTargets,
   parseOperationsContractIndex,
   parseOperationsManifest,
   validateOperationsManifest,
@@ -71,25 +73,10 @@ const validate = Effect.gen(function* () {
   return yield* validateOperationsManifest(manifest, index);
 });
 
-const diamondContract = (layers: number): string => {
-  const names = ["graph.node_0000"];
-  const aliases: Array<{ readonly kind: "event"; readonly from: string; readonly to: string }> = [];
-  let current = names[0] ?? "graph.node_0000";
-  for (let layer = 0; layer < layers; layer += 1) {
-    const offset = layer * 3 + 1;
-    const left = `graph.node_${String(offset).padStart(4, "0")}`;
-    const right = `graph.node_${String(offset + 1).padStart(4, "0")}`;
-    const next = `graph.node_${String(offset + 2).padStart(4, "0")}`;
-    names.push(left, right, next);
-    aliases.push(
-      { kind: "event", from: current, to: left },
-      { kind: "event", from: current, to: right },
-      { kind: "event", from: left, to: next },
-      { kind: "event", from: right, to: next },
-    );
-    current = next;
-  }
-  return JSON.stringify({
+type TestAlias = { readonly kind: "event"; readonly from: string; readonly to: string };
+
+const contractWithAliases = (aliases: ReadonlyArray<TestAlias>): string =>
+  JSON.stringify({
     index: 1,
     contractVersion: 1,
     service: "checkout",
@@ -100,12 +87,6 @@ const diamondContract = (layers: number): string => {
         attributes: ["payment.provider"],
         attributeClassifications: [{ name: "payment.provider", classification: "public" }],
       },
-      ...names.map((name) => ({
-        name,
-        kind: "operation",
-        attributes: [],
-        attributeClassifications: [],
-      })),
     ],
     metrics: [
       {
@@ -117,7 +98,20 @@ const diamondContract = (layers: number): string => {
     ],
     aliases,
   });
-};
+
+const chainAliases = (length: number): ReadonlyArray<TestAlias> =>
+  Array.from({ length }, (_, index) => ({
+    kind: "event",
+    from: `graph.node_${String(index).padStart(4, "0")}`,
+    to: `graph.node_${String(index + 1).padStart(4, "0")}`,
+  }));
+
+const branchingAliases = (targets: number): ReadonlyArray<TestAlias> =>
+  Array.from({ length: targets }, (_, index) => ({
+    kind: "event",
+    from: "graph.root",
+    to: `graph.target_${String(index).padStart(4, "0")}`,
+  }));
 
 describe("operations manifest", () => {
   test("parses YAML, contract index and exact query sources", async () => {
@@ -184,6 +178,28 @@ describe("operations manifest", () => {
       throw new Error("Expected source error.");
     }
     expect(aggregationError.issues).toContain("illegal metric aggregation");
+  });
+
+  test("rejects uppercase, tab and newline AND undeclared-field smuggling", async () => {
+    const index = await Effect.runPromise(parseOperationsContractIndex(contract));
+    for (const separator of [" AND ", "\tAnD\t", "\nand\n"]) {
+      const query = `signal(logs) | where event.name == "payment.attempt" and payment.provider == "stripe"${separator}payment.secret == "x" | summarize count()`;
+      const manifest = await Effect.runPromise(
+        parseOperationsManifest(
+          validManifest.replace(
+            'query: signal(logs) | where event.name == "payment.attempt" | summarize count()',
+            `query: ${JSON.stringify(query)}`,
+          ),
+        ),
+      );
+      const error = await Effect.runPromise(
+        Effect.flip(validateOperationsManifest(manifest, index)),
+      );
+      if (error._tag !== "OperationsManifestError") {
+        throw new Error("Expected source error.");
+      }
+      expect(error.issues).toContain("undeclared query field payment.secret");
+    }
   });
 
   test("rejects stale contract, source mismatch and cross-kind predicates", async () => {
@@ -277,12 +293,37 @@ describe("operations manifest", () => {
     await Effect.runPromise(validateOperationsManifest(counterManifest, index));
   });
 
-  test("validates a 1000-node diamond graph within a bounded runtime", async () => {
+  test("rejects alias counts above the decoder limit", async () => {
+    const error = await Effect.runPromise(
+      Effect.flip(
+        parseOperationsContractIndex(
+          contractWithAliases(branchingAliases(maximumContractAliasCount + 1)),
+        ),
+      ),
+    );
+    expect(error.code).toBe("OBS_CLI_CONTRACT_INDEX_INVALID");
+  });
+
+  test("rejects deep and branching alias graphs within a bounded runtime", async () => {
     const manifest = await Effect.runPromise(parseOperationsManifest(validManifest));
-    const index = await Effect.runPromise(parseOperationsContractIndex(diamondContract(333)));
-    const startedAt = performance.now();
-    await Effect.runPromise(validateOperationsManifest(manifest, index));
-    expect(performance.now() - startedAt).toBeLessThan(2_000);
+    const cases: ReadonlyArray<readonly [ReadonlyArray<TestAlias>, string]> = [
+      [chainAliases(maximumContractAliasCount), "alias graph depth exceeds"],
+      [branchingAliases(maximumContractAliasTargets), "alias expansion exceeds"],
+    ];
+    for (const [aliases, issue] of cases) {
+      const index = await Effect.runPromise(
+        parseOperationsContractIndex(contractWithAliases(aliases)),
+      );
+      const startedAt = performance.now();
+      const error = await Effect.runPromise(
+        Effect.flip(validateOperationsManifest(manifest, index)),
+      );
+      expect(performance.now() - startedAt).toBeLessThan(2_000);
+      if (error._tag !== "OperationsManifestError") {
+        throw new Error("Expected alias limit error.");
+      }
+      expect(error.issues.some((entry) => entry.includes(issue))).toBeTrue();
+    }
   });
 
   test("rejects incompatible transitive aliases and alias cycles", async () => {

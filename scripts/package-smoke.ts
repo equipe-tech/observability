@@ -551,7 +551,7 @@ try {
         "node",
         "--input-type=module",
         "--eval",
-        "const [root, query, manifest, effect] = await Promise.all([import('@equipe-tech/observability-cli'), import('@equipe-tech/observability-cli/query'), import('@equipe-tech/observability-cli/package.json', { with: { type: 'json' } }), import('effect')]); const parsed = await effect.Effect.runPromise(root.parseManagedQuery('signal(logs) | where event.name == \"payment.attempt\" | summarize count()')); const compiled = query.compileManagedQuery(parsed, { dataset: 'checkout-production-logs', language: 'apl', signals: ['payment.attempt'] }); if (root.compileManagedQuery !== query.compileManagedQuery || manifest.default.name !== '@equipe-tech/observability-cli' || !compiled.text.includes(`['checkout-production-logs']`) || !compiled.text.includes(`['event.name'] == 'payment.attempt'`)) process.exit(1);",
+        "const [root, query, manifest, effect] = await Promise.all([import('@equipe-tech/observability-cli'), import('@equipe-tech/observability-cli/query'), import('@equipe-tech/observability-cli/package.json', { with: { type: 'json' } }), import('effect')]); const parsed = await effect.Effect.runPromise(root.parseManagedQuery('signal(logs) | where event.name == \"payment.attempt\" | summarize count()')); const compiled = await effect.Effect.runPromise(query.compileManagedQuery(parsed, { dataset: 'checkout-production-logs', language: 'apl', signals: ['payment.attempt'] })); if (root.compileManagedQuery !== query.compileManagedQuery || manifest.default.name !== '@equipe-tech/observability-cli' || !compiled.text.includes(`['checkout-production-logs']`) || !compiled.text.includes(`['event.name'] == 'payment.attempt'`)) process.exit(1);",
       ],
       nodeConsumer,
     ),

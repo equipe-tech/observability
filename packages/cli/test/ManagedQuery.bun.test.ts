@@ -1,8 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { Effect, Exit } from "effect";
-import { compileManagedQuery, parseManagedQuery, type ManagedQuery } from "../src/ManagedQuery.ts";
+import {
+  compileManagedQuery,
+  ManagedQueryError,
+  parseManagedQuery,
+  type ManagedQuery,
+} from "../src/ManagedQuery.ts";
 
 const parse = (query: string) => Effect.runPromise(parseManagedQuery(query));
+const compile = (query: ManagedQuery, target: Parameters<typeof compileManagedQuery>[1]) =>
+  Effect.runPromise(compileManagedQuery(query, target));
 
 describe("managed query", () => {
   test("parses a bounded query and compiles aliases from the AST", async () => {
@@ -11,11 +18,13 @@ describe("managed query", () => {
     );
     expect(query.binding.identifiers).toEqual(["payment.attempt"]);
     expect(
-      compileManagedQuery(query, {
-        dataset: "checkout-production-logs",
-        language: "apl",
-        signals: ["payment.attempt", "payment.charge"],
-      }).text,
+      (
+        await compile(query, {
+          dataset: "checkout-production-logs",
+          language: "apl",
+          signals: ["payment.attempt", "payment.charge"],
+        })
+      ).text,
     ).toBe(
       "['checkout-production-logs'] | where ['event.name'] in ('payment.attempt', 'payment.charge') and ['event.outcome'] == 'failure' | summarize count() by ['payment.provider'], bin(['event.timestamp'], 5m)",
     );
@@ -34,15 +43,37 @@ describe("managed query", () => {
     }
   });
 
-  test("keeps quoted comment and OR text while rejecting syntax outside strings", async () => {
+  test("tokenizes case-insensitive boolean separators outside strings", async () => {
+    for (const separator of [" AND ", "\tAnD\t", "\nand\n"]) {
+      const query = await parse(
+        `signal(logs) | where event.name == "payment.attempt"${separator}note == "x AND y"`,
+      );
+      expect(query.stages[0]?.kind === "where" ? query.stages[0].comparisons : []).toHaveLength(2);
+    }
+  });
+
+  test("keeps quoted comments and OR text while rejecting syntax outside strings", async () => {
     await parse(
-      'signal(logs) | where event.name == "payment.attempt" and note == "x -- y" and category == "cats or dogs"',
+      'signal(logs) | where event.name == "payment.attempt" and note == "x -- y // z /* q */" and category == "cats OR dogs"',
     );
     for (const query of [
       'signal(logs) | where event.name == "payment.attempt" -- comment',
-      'signal(logs) | where event.name == "payment.attempt" or note == "accepted"',
+      'signal(logs) | where event.name == "payment.attempt" // comment',
+      'signal(logs) | where event.name == "payment.attempt" /* comment */',
+      'signal(logs) | where event.name == "payment.attempt" OR note == "accepted"',
     ]) {
       expect(Exit.isFailure(await Effect.runPromiseExit(parseManagedQuery(query)))).toBe(true);
+    }
+  });
+
+  test("rejects interior quotes, trailing predicates, malformed escapes and unterminated strings", async () => {
+    for (const literal of ['"x" undeclared == "y"', '"x""', '"x\\n"', '"x\\"', '"x']) {
+      const exit = await Effect.runPromiseExit(
+        parseManagedQuery(
+          `signal(logs) | where event.name == "payment.attempt" and note == ${literal}`,
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
     }
   });
 
@@ -57,22 +88,26 @@ describe("managed query", () => {
         `signal(metrics) | where metric.name == "payment.latency" | summarize quantile(value, ${quantile})`,
       );
       expect(
-        compileManagedQuery(query, {
-          dataset: "metrics",
-          language: "apl",
-          signals: ["payment.latency"],
-        }).text,
+        (
+          await compile(query, {
+            dataset: "metrics",
+            language: "apl",
+            signals: ["payment.latency"],
+          })
+        ).text,
       ).toContain(`percentile(['value'], ${percentile})`);
     }
     const query = await parse(
       `signal(logs) | where event.name == "payment.attempt" and note == "quote' slash\\\\ newline\nnext"`,
     );
     expect(
-      compileManagedQuery(query, {
-        dataset: "logs",
-        language: "apl",
-        signals: ["payment.attempt"],
-      }).text,
+      (
+        await compile(query, {
+          dataset: "logs",
+          language: "apl",
+          signals: ["payment.attempt"],
+        })
+      ).text,
     ).toContain(String.raw`['note'] == 'quote\' slash\\ newline\nnext'`);
   });
 
@@ -113,24 +148,27 @@ describe("managed query", () => {
             : stage,
         ),
       };
-      expect(() =>
+      const exit = await Effect.runPromiseExit(
         compileManagedQuery(unsafe, {
           dataset: "logs",
           language: "apl",
           signals: ["payment.attempt"],
         }),
-      ).toThrow("cannot be compiled safely");
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
     }
   });
 
   test("escapes datasets and signals and rejects executable AST text", async () => {
     const query = await parse('signal(logs) | where event.name == "payment.attempt"');
     expect(
-      compileManagedQuery(query, {
-        dataset: "logs'] | take 1 | ['x",
-        language: "apl",
-        signals: ["payment' | take 1"],
-      }).text,
+      (
+        await compile(query, {
+          dataset: "logs'] | take 1 | ['x",
+          language: "apl",
+          signals: ["payment' | take 1"],
+        })
+      ).text,
     ).toBe(String.raw`['logs\'] | take 1 | [\'x'] | where ['event.name'] == 'payment\' | take 1'`);
 
     const comparisonField: ManagedQuery = {
@@ -191,14 +229,63 @@ describe("managed query", () => {
       ],
     };
     for (const unsafe of [comparisonField, aggregationField, groupDuration, percentile]) {
-      expect(() =>
+      const exit = await Effect.runPromiseExit(
         compileManagedQuery(unsafe, {
           dataset: "logs",
           language: "apl",
           signals: ["payment.attempt"],
         }),
-      ).toThrow("cannot be compiled safely");
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
     }
+  });
+
+  test("fails typed when hand-built bindings or targets violate the compiler contract", async () => {
+    const query = await parse('signal(logs) | where event.name == "payment.attempt"');
+    const invalidBindings: ReadonlyArray<ManagedQuery> = [
+      {
+        ...query,
+        stages: [
+          {
+            kind: "where",
+            comparisons: [
+              {
+                kind: "comparison",
+                field: "event.name",
+                operator: "!=",
+                values: [{ kind: "string", value: "payment.attempt" }],
+              },
+            ],
+          },
+        ],
+      },
+      { ...query, binding: { field: "event.name", identifiers: ["payment.other"] } },
+      { ...query, binding: { field: "metric.name", identifiers: ["payment.attempt"] } },
+    ];
+    for (const invalid of invalidBindings) {
+      const error = await Effect.runPromise(
+        Effect.flip(
+          compileManagedQuery(invalid, {
+            dataset: "logs",
+            language: "apl",
+            signals: ["payment.attempt"],
+          }),
+        ),
+      );
+      expect(error).toBeInstanceOf(ManagedQueryError);
+      expect(error.code).toBe("OBS_CLI_QUERY_INVALID");
+    }
+    const targetError = await Effect.runPromise(
+      Effect.flip(
+        compileManagedQuery(query, {
+          dataset: "",
+          language: "apl",
+          signals: [""],
+        }),
+      ),
+    );
+    expect(targetError).toBeInstanceOf(ManagedQueryError);
+    expect(targetError.code).toBe("OBS_CLI_QUERY_INVALID");
   });
 
   test("rejects oversized and unterminated input", async () => {
