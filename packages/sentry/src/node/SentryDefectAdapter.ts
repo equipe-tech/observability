@@ -123,6 +123,7 @@ const terminalSettlementDeadlineMillis = 5_000;
 const acceptedStatus = (statusCode: number | undefined): boolean =>
   statusCode !== undefined && statusCode >= 200 && statusCode < 300;
 const decodeEventId = Schema.decodeUnknownOption(Schema.String);
+const decodeSentAt = Schema.decodeUnknownOption(Schema.String);
 
 export const sentryDefectAdapter = (
   options: SentryDefectAdapterOptions = {},
@@ -133,6 +134,7 @@ export const sentryDefectAdapter = (
   let flushInFlight: Promise<boolean> | undefined;
   let closeInFlight: Promise<boolean> | undefined;
   let closeResult: boolean | undefined;
+  let verificationTail: Promise<void> = Promise.resolve();
 
   const captureNow = (input: SentryDefectCapture): CaptureResult => {
     const current = active;
@@ -168,26 +170,26 @@ export const sentryDefectAdapter = (
     return flushInFlight;
   };
 
-  const close = async (): Promise<boolean> => {
-    if (closed) return closeResult ?? true;
+  const close = (): Promise<boolean> => {
+    if (closeInFlight !== undefined) return closeInFlight;
+    if (closed) return Promise.resolve(closeResult ?? true);
     const current = active;
     if (current === undefined) {
       closed = true;
       closeResult = true;
-      return true;
+      closeInFlight = Promise.resolve(true);
+      return closeInFlight;
     }
-    if (closeInFlight === undefined) {
-      closed = true;
-      closeInFlight = Promise.resolve(current.client.close(current.options.closeDeadlineMillis))
-        .catch(() => false)
-        .then((completed) => {
-          current.settlements.clear();
-          active = undefined;
-          closed = true;
-          closeResult = completed;
-          return completed;
-        });
-    }
+    closed = true;
+    closeInFlight = Promise.resolve(current.client.close(current.options.closeDeadlineMillis))
+      .catch(() => false)
+      .then((completed) => {
+        current.settlements.clear();
+        active = undefined;
+        closed = true;
+        closeResult = completed;
+        return completed;
+      });
     return closeInFlight;
   };
 
@@ -237,8 +239,12 @@ export const sentryDefectAdapter = (
                 if (accepted === undefined || item === undefined) {
                   return Promise.resolve({ statusCode: 400 });
                 }
+                const sentAt = decodeSentAt(envelope[0].sent_at);
+                envelope[0] = Option.isSome(sentAt)
+                  ? { event_id: id.value, sent_at: sentAt.value }
+                  : { event_id: id.value };
+                envelope[1].length = 0;
                 envelope[1][0] = [{ type: "event" }, projectFinalEvent(accepted)];
-                delete envelope[0].sdk;
                 return Promise.resolve(transport.send(envelope)).then(
                   (response) => {
                     settlements.settle(id.value, acceptedStatus(response.statusCode));
@@ -298,19 +304,30 @@ export const sentryDefectAdapter = (
     Effect.sync(() => captureNow(input).outcome);
   const captureAsync = (input: SentryDefectCapture): Promise<SentryCaptureOutcome> =>
     Promise.resolve(captureNow(input).outcome);
-  const sendVerificationDefect = async (
+  const sendVerificationDefect = (
     input: SentryDefectCapture,
   ): Promise<SentryVerificationReceipt | SentryCaptureOutcome> => {
-    const result = captureNow(input);
-    if (result.outcome.kind !== "queued" || result.completion === undefined) return result.outcome;
-    const completed = await flush();
-    if (!completed) return { kind: "failed", reason: "transport" };
-    if (active?.settlements.pending(result.outcome.eventId) === true) {
-      active.settlements.reject(result.outcome.eventId);
-    }
-    const accepted = await result.completion;
-    if (!accepted) return { kind: "failed", reason: "transport" };
-    return { eventId: result.outcome.eventId, flushed: true };
+    const operation = verificationTail.then(
+      async (): Promise<SentryVerificationReceipt | SentryCaptureOutcome> => {
+        const result = captureNow(input);
+        if (result.outcome.kind !== "queued" || result.completion === undefined) {
+          return result.outcome;
+        }
+        const completed = await flush();
+        if (!completed) return { kind: "failed", reason: "transport" };
+        if (active?.settlements.pending(result.outcome.eventId) === true) {
+          active.settlements.reject(result.outcome.eventId);
+        }
+        const accepted = await result.completion;
+        if (!accepted) return { kind: "failed", reason: "transport" };
+        return { eventId: result.outcome.eventId, flushed: true };
+      },
+    );
+    verificationTail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
   };
   return {
     registration,

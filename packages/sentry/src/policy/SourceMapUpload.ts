@@ -29,8 +29,17 @@ const SafeArgument = Schema.NonEmptyString.check(
 );
 const Name = SafeArgument.check(Schema.isPattern(/^[a-zA-Z0-9._-]+$/));
 const Path = SafeArgument;
-const decodeName = Schema.decodeUnknownOption(Name);
-const decodePath = Schema.decodeUnknownOption(Path);
+const SourceMapInputDocument = Schema.Struct({
+  organization: Name,
+  project: Name,
+  release: Name,
+  includePaths: Schema.Array(Path),
+  urlPrefix: Schema.optional(Path),
+  deleteAfterUpload: Schema.optional(Schema.Boolean),
+});
+const decodeInput = Schema.decodeUnknownOption(SourceMapInputDocument, {
+  onExcessProperty: "error",
+});
 
 const invalid = (): never => {
   throw new SentryAdapterError({
@@ -42,29 +51,22 @@ const invalid = (): never => {
 };
 
 export const sentrySourceMapUpload = (input: SentrySourceMapInput): SentrySourceMapPlan => {
-  if (
-    Option.isNone(decodeName(input.organization)) ||
-    Option.isNone(decodeName(input.project)) ||
-    Option.isNone(decodeName(input.release)) ||
-    input.includePaths.length === 0 ||
-    input.includePaths.some((path) => Option.isNone(decodePath(path))) ||
-    (input.urlPrefix !== undefined && Option.isNone(decodePath(input.urlPrefix)))
-  ) {
-    return invalid();
-  }
+  const decoded = decodeInput(input);
+  if (Option.isNone(decoded) || decoded.value.includePaths.length === 0) return invalid();
+  const config = decoded.value;
   const args = [
     "sourcemaps",
     "upload",
     "--org",
-    input.organization,
+    config.organization,
     "--project",
-    input.project,
+    config.project,
     "--release",
-    input.release,
+    config.release,
   ];
-  if (input.urlPrefix !== undefined) args.push("--url-prefix", input.urlPrefix);
-  if (input.deleteAfterUpload === true) args.push("--delete-after-upload");
-  args.push("--", ...input.includePaths);
+  if (config.urlPrefix !== undefined) args.push("--url-prefix", config.urlPrefix);
+  if (config.deleteAfterUpload === true) args.push("--delete-after-upload");
+  args.push("--", ...config.includePaths);
   return {
     command: "sentry-cli",
     args,

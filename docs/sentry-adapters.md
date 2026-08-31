@@ -25,7 +25,7 @@ A deduplicação combina identidade do envelope e fingerprint normalizado. A mes
 
 `capture` retorna `queued` quando o SDK aceitou o evento na fila local. Isso não confirma entrega. `reports().reasons.captured` cresce somente após uma resposta HTTP 2xx para o evento exato. `reports()` contém contagens, horários e motivos. Esses dados descrevem decisões desta instância e não substituem recibos do servidor.
 
-`sendVerificationDefect` retorna o `eventId` gravado no envelope e só emite `flushed: true` quando esse evento recebeu uma resposta HTTP 2xx e o flush terminou dentro do prazo. Supressão retorna `suppressed` ou `deduplicated`. Respostas não 2xx, drop do SDK, falha de rede e timeout retornam `{ kind: "failed", reason: "transport" }`. Um timeout de verificação não declara rejeição do transporte. O adapter continua acompanhando a resposta até o prazo terminal sem manter timers ativos depois do assentamento.
+`sendVerificationDefect` retorna o `eventId` gravado no envelope e só emite `flushed: true` quando esse evento recebeu uma resposta HTTP 2xx e o flush terminou dentro do prazo. Cada reporter serializa essas verificações para que uma chamada aguarde o flush iniciado pelo próprio evento. Supressão retorna `suppressed` ou `deduplicated`. Respostas não 2xx, drop do SDK, falha de rede e timeout retornam `{ kind: "failed", reason: "transport" }`. Um timeout de verificação não declara rejeição do transporte. O adapter continua acompanhando a resposta até o prazo terminal sem manter timers ativos depois do assentamento.
 
 No browser, DSN ausente ou inválido é erro, exceto com `disabled: true`. O modo desabilitado retorna supressão `disabled` e não cria cliente. `flush` pode ser repetido antes do fechamento. `close` e `dispose` são idempotentes. A instância entra no estado fechado antes de aguardar o SDK. Capturas feitas durante o hook de fechamento do adapter retornam supressão `closed` e não enviam eventos. No runtime Node, estágios ordenados anteriores podem executar antes do início desse hook.
 
@@ -33,7 +33,7 @@ As definições compiladas não referenciam tipos de provider. Instale somente o
 
 ## Source maps
 
-`sentrySourceMapUpload` produz a lista exata de argumentos de `sentry-cli sourcemaps upload`. O plano rejeita valores que começam com `-` ou contêm caracteres de controle. Ele insere `--` antes dos caminhos. O plano nunca contém token. Defina `SENTRY_AUTH_TOKEN` somente no ambiente do processo do CLI.
+`sentrySourceMapUpload` produz a lista exata de argumentos de `sentry-cli sourcemaps upload`. O plano rejeita documentos malformados, chaves desconhecidas, valores que começam com `-` e caracteres de controle. `authToken` não pertence ao documento. O plano insere `--` antes dos caminhos e nunca contém token. Defina `SENTRY_AUTH_TOKEN` somente no ambiente do processo do CLI.
 
 ## Migração
 

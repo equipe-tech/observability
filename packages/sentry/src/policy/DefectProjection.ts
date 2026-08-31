@@ -118,18 +118,26 @@ const tagsFor = (
   return tags;
 };
 
+const projectFrame = (frame: ProjectedFrame): ProjectedFrame => {
+  const projected: ProjectedFrame = {};
+  if (frame.filename !== undefined) Object.assign(projected, { filename: frame.filename });
+  const absolutePath = frame.filename ?? frame.abs_path;
+  if (absolutePath !== undefined) Object.assign(projected, { abs_path: absolutePath });
+  if (frame.function !== undefined) Object.assign(projected, { function: frame.function });
+  if (frame.module !== undefined) Object.assign(projected, { module: frame.module });
+  if (frame.lineno !== undefined) Object.assign(projected, { lineno: frame.lineno });
+  if (frame.colno !== undefined) Object.assign(projected, { colno: frame.colno });
+  if (frame.in_app !== undefined) Object.assign(projected, { in_app: frame.in_app });
+  return projected;
+};
+
 const framesFor = (
   stack: Option.Option<string>,
   stackParser: PublicStackParser,
 ): Array<ProjectedFrame> =>
   Option.match(stack, {
     onNone: () => [],
-    onSome: (value) =>
-      stackParser(value)
-        .slice(-20)
-        .map((frame) =>
-          frame.filename === undefined ? { ...frame } : { ...frame, abs_path: frame.filename },
-        ),
+    onSome: (value) => stackParser(value).slice(-20).map(projectFrame),
   });
 
 export const projectDefect = (
@@ -172,7 +180,7 @@ const projectFinalException = (exception: ProjectedException): ProjectedExceptio
   };
   if (exception.stacktrace !== undefined) {
     Object.assign(projected, {
-      stacktrace: { frames: exception.stacktrace.frames.map((frame) => ({ ...frame })) },
+      stacktrace: { frames: exception.stacktrace.frames.map(projectFrame) },
     });
   }
   return projected;

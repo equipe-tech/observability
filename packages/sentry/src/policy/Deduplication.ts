@@ -15,32 +15,37 @@ type Reservation = {
   readonly fingerprint: string;
 };
 
+type FingerprintReservation = {
+  readonly eventId: string;
+  readonly admittedAt: number;
+};
+
 const normalizedFingerprint = (envelope: DefectEnvelope): string =>
-  envelope.fingerprint
-    .map((part) =>
+  JSON.stringify(
+    envelope.fingerprint.map((part) =>
       part
         .toLowerCase()
         .replaceAll(/[?#].*$/g, "")
         .replaceAll(/\b[0-9a-f]{8,}\b/g, "<hash>")
         .replaceAll(/\d{4,}/g, "<number>"),
-    )
-    .join("|");
+    ),
+  );
 
 export const defectDeduplicator = (windowMillis: number, capacity: number): DefectDeduplicator => {
   const identities = new WeakSet<DefectEnvelope>();
-  const fingerprints = new Map<string, number>();
+  const fingerprints = new Map<string, FingerprintReservation>();
   const reservations = new Map<string, Reservation>();
   return {
     admit: (eventId, envelope, now) => {
       if (identities.has(envelope)) return { kind: "deduplicated", reason: "identity" };
       const fingerprint = normalizedFingerprint(envelope);
       const previous = fingerprints.get(fingerprint);
-      if (previous !== undefined && now - previous <= windowMillis) {
+      if (previous !== undefined && now - previous.admittedAt <= windowMillis) {
         return { kind: "deduplicated", reason: "fingerprint" };
       }
       identities.add(envelope);
       fingerprints.delete(fingerprint);
-      fingerprints.set(fingerprint, now);
+      fingerprints.set(fingerprint, { eventId, admittedAt: now });
       reservations.set(eventId, { envelope, fingerprint });
       while (fingerprints.size > capacity) {
         const oldest = fingerprints.keys().next().value;
@@ -53,7 +58,9 @@ export const defectDeduplicator = (windowMillis: number, capacity: number): Defe
       if (reservation === undefined) return;
       reservations.delete(eventId);
       identities.delete(reservation.envelope);
-      fingerprints.delete(reservation.fingerprint);
+      if (fingerprints.get(reservation.fingerprint)?.eventId === eventId) {
+        fingerprints.delete(reservation.fingerprint);
+      }
     },
     release: (eventId) => {
       reservations.delete(eventId);
