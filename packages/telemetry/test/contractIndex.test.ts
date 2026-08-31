@@ -36,13 +36,93 @@ describe("contract index", () => {
         auditActions: {},
       }),
     );
-    const index = Contract.contractIndex(contract, "checkout");
+    const index = Contract.contractIndex(contract, "checkout", {
+      version: 1,
+      aliases: [
+        {
+          source: { kind: "event", name: "payment.charge" },
+          target: { kind: "event", name: "payment.attempt" },
+        },
+      ],
+    });
     expect(index.events).toEqual([
       { name: "payment.attempt", kind: "operation", attributes: ["payment.provider"] },
     ]);
     expect(index.metrics).toEqual([
       { name: "payment.latency", kind: "histogram", unit: "ms", attributes: [] },
     ]);
+    expect(index.aliases).toEqual([
+      { kind: "event", from: "payment.charge", to: "payment.attempt" },
+    ]);
     expect(Contract.encodeContractIndex(index)).toBe(`${JSON.stringify(index, null, 2)}\n`);
+  });
+
+  it("rejects invalid, duplicate and cyclic aliases", async () => {
+    const contract = await Effect.runPromise(
+      defineTelemetryContract({
+        version: 1,
+        events: {
+          First: {
+            name: "payment.first",
+            kind: "operation",
+            defaultSeverity: "info",
+            mandatory: true,
+            sampling: { kind: "always" },
+            attributes: {},
+          },
+          Second: {
+            name: "payment.second",
+            kind: "operation",
+            defaultSeverity: "info",
+            mandatory: true,
+            sampling: { kind: "always" },
+            attributes: {},
+          },
+        },
+        metrics: {},
+        auditActions: {},
+      }),
+    );
+    expect(() =>
+      Contract.contractIndex(contract, "checkout", {
+        version: 1,
+        aliases: [
+          {
+            source: { kind: "metric", name: "payment.old" },
+            target: { kind: "event", name: "payment.first" },
+          },
+        ],
+      }),
+    ).toThrow("kinds must match");
+    expect(() =>
+      Contract.contractIndex(contract, "checkout", {
+        version: 1,
+        aliases: [
+          {
+            source: { kind: "event", name: "payment.old" },
+            target: { kind: "event", name: "payment.first" },
+          },
+          {
+            source: { kind: "event", name: "payment.old" },
+            target: { kind: "event", name: "payment.second" },
+          },
+        ],
+      }),
+    ).toThrow("duplicate source");
+    expect(() =>
+      Contract.contractIndex(contract, "checkout", {
+        version: 1,
+        aliases: [
+          {
+            source: { kind: "event", name: "payment.first" },
+            target: { kind: "event", name: "payment.second" },
+          },
+          {
+            source: { kind: "event", name: "payment.second" },
+            target: { kind: "event", name: "payment.first" },
+          },
+        ],
+      }),
+    ).toThrow("cycle");
   });
 });

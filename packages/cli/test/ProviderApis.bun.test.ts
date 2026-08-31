@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
-import { AxiomCredentials } from "../src/CredentialsStore.ts";
-import { AxiomApi, AxiomToken } from "../src/ProviderApis.ts";
+import { AxiomCredentials, SentryCredentials } from "../src/CredentialsStore.ts";
+import { AxiomApi, AxiomToken, SentryApi } from "../src/ProviderApis.ts";
 
 const credentials = new AxiomCredentials({ token: "test-token", organizationId: "test-org" });
 
@@ -69,6 +69,63 @@ const startTruncatedResponseServer = (status: number, statusText: string) => {
 };
 
 describe("provider HTTP boundary", () => {
+  test.serial("bounds a provider transport that never settles", async () => {
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Promise<Response>(() => {}),
+    });
+    const startedAt = Date.now();
+    try {
+      const error = await identityError(`http://127.0.0.1:${server.port}`);
+      expect(error.code).toBe("OBS_CLI_REMOTE_FAILED");
+      expect(error.message).toContain("deadline");
+      expect(Date.now() - startedAt).toBeLessThan(3_000);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("reads Sentry project and client key existence without mutation", async () => {
+    const requests: Array<string> = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const path = new URL(request.url).pathname;
+        requests.push(`${request.method} ${path}`);
+        if (path.endsWith("/keys/")) {
+          return Response.json([{ dsn: { public: "https://public@sentry.example/1" } }]);
+        }
+        return Response.json({ slug: "checkout-prod", name: "Checkout" });
+      },
+    });
+    try {
+      const credentials = new SentryCredentials({
+        token: "token",
+        organization: "equipe",
+        team: "platform",
+        baseUrl: new URL(`http://127.0.0.1:${server.port}`),
+      });
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const api = yield* SentryApi;
+          return {
+            project: yield* api.project(credentials, "checkout-prod"),
+            clientKey: yield* api.clientKeyExists(credentials, "checkout-prod"),
+          };
+        }).pipe(Effect.provide(SentryApi.layer)),
+      );
+      expect(result).toEqual({ project: true, clientKey: true });
+      expect(requests).toEqual([
+        "GET /api/0/projects/equipe/checkout-prod/",
+        "GET /api/0/projects/equipe/checkout-prod/keys/",
+      ]);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test.serial("creates signal datasets with exact kinds and optional configuration", async () => {
     const requests: Array<{ readonly path: string; readonly body: string }> = [];
     const server = Bun.serve({

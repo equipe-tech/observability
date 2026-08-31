@@ -251,10 +251,9 @@ const validateQuery = Effect.fn("validateManagedSource")(function* (
   ].sort();
   const actual = [...query.binding.identifiers].sort();
   if (expected.join("\u0000") !== actual.join("\u0000")) {
-    return yield* new OperationsManifestError({
-      code: "OBS_CLI_SOURCE_INVALID",
-      message: `The managed query signal predicate does not match declared source ${expected.join(", ")}.`,
-      issues: [`expected ${expected.join(", ")}`],
+    return yield* new ManagedQueryError({
+      code: "OBS_CLI_QUERY_SIGNAL_MISMATCH",
+      message: `The managed query signal predicate must exactly match ${expected.join(", ")}.`,
       cause: actual.join(","),
     });
   }
@@ -357,6 +356,26 @@ export const validateOperationsManifest = Effect.fn("validateOperationsManifest"
   }
   const eventNames = new Set(contract.events.map((event) => event.name));
   const metricNames = new Set(contract.metrics.map((metric) => metric.name));
+  const aliasKeys = contract.aliases.map((alias) => `${alias.kind}\u0000${alias.from}`);
+  for (const duplicate of duplicates(aliasKeys)) issues.push(`duplicate alias ${duplicate}`);
+  for (const alias of contract.aliases) {
+    const names = alias.kind === "event" ? eventNames : metricNames;
+    if (!names.has(alias.to)) issues.push(`unknown alias target ${alias.kind} ${alias.to}`);
+    const visited = new Set([alias.from]);
+    let target = alias.to;
+    while (true) {
+      if (visited.has(target)) {
+        issues.push(`cyclic alias ${alias.kind} ${alias.from}`);
+        break;
+      }
+      visited.add(target);
+      const next = contract.aliases.find(
+        (candidate) => candidate.kind === alias.kind && candidate.from === target,
+      );
+      if (next === undefined) break;
+      target = next.to;
+    }
+  }
   const references = [
     ...manifest.dashboards.flatMap((dashboard) =>
       dashboard.panels.flatMap((panel) => panel.sources),

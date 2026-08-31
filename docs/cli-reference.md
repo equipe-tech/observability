@@ -183,3 +183,21 @@ O nome do token Axiom segue este formato:
 | `OBS_CLI_READ_BACK_TIMEOUT`                    | A leitura limitada não convergiu para o estado desejado.                    |
 | `OBS_CLI_MANUAL_ACTION_PENDING`                | Uma ação manual ainda requer confirmação do operador.                       |
 | `OBS_CLI_APPLY_OUTCOME_UNKNOWN`                | Uma mutação pode ter ocorrido e bloqueia novo trabalho.                     |
+| `OBS_CLI_MANIFEST_NOT_FOUND`                   | O manifesto de operações não existe.                                        |
+| `OBS_CLI_MANIFEST_UNREADABLE`                  | O manifesto de operações não pode ser lido.                                 |
+| `OBS_CLI_MANIFEST_VERSION_UNSUPPORTED`         | A versão do manifesto não é suportada.                                      |
+| `OBS_CLI_CONTRACT_INDEX_NOT_FOUND`             | O índice de contrato não existe.                                            |
+| `OBS_CLI_CONTRACT_INDEX_INVALID`               | O índice de contrato não passa no parse.                                    |
+| `OBS_CLI_PLAN_REQUIRED`                        | `apply` não recebeu um plano legível.                                       |
+| `OBS_CLI_PLAN_INVALID`                         | O plano, digest, ambiente ou confirmação é inválido.                        |
+| `OBS_CLI_PROVIDER_CAPABILITY_UNAVAILABLE`      | Uma credencial necessária para observar o provider não existe.              |
+| `OBS_CLI_DRIFT_DETECTED`                       | O estado observado diverge do manifesto.                                    |
+| `OBS_CLI_QUERY_INVALID`                        | A query gerenciada não passa na gramática limitada.                         |
+| `OBS_CLI_QUERY_SIGNAL_UNBOUND`                 | A query não vincula o nome do sinal.                                        |
+| `OBS_CLI_QUERY_SIGNAL_AMBIGUOUS`               | A query vincula o sinal de forma ambígua.                                   |
+| `OBS_CLI_QUERY_SIGNAL_MISMATCH`                | O predicado diverge exatamente das fontes e aliases declarados.             |
+| `OBS_CLI_OPERATIONS_STATE_INVALID`             | O estado de operações não passa no parse.                                   |
+| `OBS_CLI_OPERATIONS_STATE_FAILED`              | O arquivo de estado não pode ser acessado.                                  |
+| `OBS_CLI_OPERATIONS_STATE_BUSY`                | O lock está ocupado ou a geração esperada mudou.                            |
+| `OBS_CLI_AXIOM_DATASET_CONFLICT`               | O dataset observado diverge da criação solicitada.                          |
+| `OBS_CLI_AXIOM_DATASET_OUTCOME_UNKNOWN`        | O resultado da criação do dataset não pôde ser provado.                     |

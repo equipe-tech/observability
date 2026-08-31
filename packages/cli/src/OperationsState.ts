@@ -82,6 +82,7 @@ export type OperationsStateAccess = {
   load(service: string): Effect.Effect<OperationsStateDocument, OperationsStateError>;
   update(
     service: string,
+    expectedGeneration: number,
     transform: (state: OperationsStateDocument) => OperationsStateDocument,
   ): Effect.Effect<OperationsStateDocument, OperationsStateError>;
 };
@@ -106,7 +107,15 @@ export class OperationsState extends Context.Service<OperationsState, Operations
         const content = yield* Effect.tryPromise({
           try: () => readFile(statePath(service), "utf8"),
           catch: (cause) => cause,
-        }).pipe(Effect.option);
+        }).pipe(
+          Effect.map(Option.some),
+          Effect.catch((cause) => {
+            const failure = decodeLockFailure(cause);
+            return Option.isSome(failure) && failure.value.code === "ENOENT"
+              ? Effect.succeed(Option.none<string>())
+              : Effect.fail(stateFailure(cause));
+          }),
+        );
         if (content._tag === "None") return initialState(service);
         const document = yield* Effect.try({
           try: () => JSON.parse(content.value),
@@ -139,6 +148,7 @@ export class OperationsState extends Context.Service<OperationsState, Operations
 
       const update = Effect.fn("OperationsState.update")(function* (
         service: string,
+        expectedGeneration: number,
         transform: (state: OperationsStateDocument) => OperationsStateDocument,
       ) {
         yield* Effect.tryPromise({
@@ -185,6 +195,13 @@ export class OperationsState extends Context.Service<OperationsState, Operations
         });
         return yield* Effect.gen(function* () {
           const current = yield* load(service);
+          if (current.generation !== expectedGeneration) {
+            return yield* new OperationsStateError({
+              code: "OBS_CLI_OPERATIONS_STATE_BUSY",
+              message: `Operations state for ${service} changed from generation ${expectedGeneration} to ${current.generation}. Retry with a fresh plan.`,
+              cause: current.generation,
+            });
+          }
           const transformed = transform(current);
           const next = new OperationsStateDocument({
             version: transformed.version,

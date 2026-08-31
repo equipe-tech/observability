@@ -160,43 +160,58 @@ type RemoteResponse = {
   readonly content: string;
 };
 
-const remoteRequest = Effect.fn("remoteRequest")(function* (
+const remoteRequest = Effect.fn("remoteRequest")(function (
   provider: Provider,
   url: string,
   init: RequestInit,
-): Effect.fn.Return<RemoteResponse, RemoteApiError> {
-  const response = yield* Effect.tryPromise({
-    try: (signal) => fetch(url, { ...init, redirect: "error", signal }),
-    catch: (cause) =>
-      new RemoteApiError({
-        code: "OBS_CLI_REMOTE_FAILED",
-        message: `${provider} could not be reached. Check the network connection and retry.`,
-        provider,
-        status: 0,
-        cause,
-      }),
-  });
-  if (response.status === 401 || response.status === 403) {
-    return yield* new RemoteApiError({
-      code: "OBS_CLI_REMOTE_UNAUTHORIZED",
-      message: `${provider} rejected the stored credentials. Run observability auth login again.`,
-      provider,
-      status: response.status,
-      cause: response.status,
+) {
+  return Effect.gen(function* () {
+    const response = yield* Effect.tryPromise({
+      try: (signal) => fetch(url, { ...init, redirect: "error", signal }),
+      catch: (cause) =>
+        new RemoteApiError({
+          code: "OBS_CLI_REMOTE_FAILED",
+          message: `${provider} could not be reached. Check the network connection and retry.`,
+          provider,
+          status: 0,
+          cause,
+        }),
     });
-  }
-  const content = yield* Effect.tryPromise({
-    try: () => response.text(),
-    catch: (cause) =>
-      new RemoteApiError({
-        code: "OBS_CLI_REMOTE_FAILED",
-        message: `${provider} returned an unreadable response. Retry the command.`,
+    if (response.status === 401 || response.status === 403) {
+      return yield* new RemoteApiError({
+        code: "OBS_CLI_REMOTE_UNAUTHORIZED",
+        message: `${provider} rejected the stored credentials. Run observability auth login again.`,
         provider,
         status: response.status,
-        cause,
-      }),
-  });
-  return { status: response.status, content };
+        cause: response.status,
+      });
+    }
+    const content = yield* Effect.tryPromise({
+      try: () => response.text(),
+      catch: (cause) =>
+        new RemoteApiError({
+          code: "OBS_CLI_REMOTE_FAILED",
+          message: `${provider} returned an unreadable response. Retry the command.`,
+          provider,
+          status: response.status,
+          cause,
+        }),
+    });
+    return { status: response.status, content };
+  }).pipe(
+    Effect.timeout("2 seconds"),
+    Effect.catchTag(
+      "TimeoutError",
+      (cause) =>
+        new RemoteApiError({
+          code: "OBS_CLI_REMOTE_FAILED",
+          message: `${provider} request exceeded its 2 second deadline. Retry the command.`,
+          provider,
+          status: 0,
+          cause,
+        }),
+    ),
+  );
 });
 
 const parseRemoteJson = Effect.fn("parseRemoteJson")(function* (
@@ -493,6 +508,11 @@ export class SentryApi extends Context.Service<
   SentryApi,
   {
     identity(credentials: SentryCredentials): Effect.Effect<string, RemoteApiError>;
+    project(credentials: SentryCredentials, slug: string): Effect.Effect<boolean, RemoteApiError>;
+    clientKeyExists(
+      credentials: SentryCredentials,
+      project: string,
+    ): Effect.Effect<boolean, RemoteApiError>;
     ensureProject(
       credentials: SentryCredentials,
       slug: string,
@@ -515,6 +535,32 @@ export class SentryApi extends Context.Service<
           Effect.mapError((cause) => invalidResponse("Sentry", response.status, cause)),
         );
         return organization.name;
+      }),
+      project: Effect.fn("SentryApi.project")(function* (credentials, slug) {
+        const projectPath = `/api/0/projects/${encodeURIComponent(credentials.organization)}/${encodeURIComponent(slug)}/`;
+        const response = yield* remoteRequest("Sentry", sentryUrl(credentials, projectPath), {
+          headers: sentryHeaders(credentials),
+        });
+        if (response.status === 404) return false;
+        yield* expectStatus("Sentry", response, [200]);
+        const value = yield* parseRemoteJson("Sentry", response);
+        const project = yield* decodeSentryProject(value).pipe(
+          Effect.mapError((cause) => invalidResponse("Sentry", response.status, cause)),
+        );
+        return project.slug === slug;
+      }),
+      clientKeyExists: Effect.fn("SentryApi.clientKeyExists")(function* (credentials, project) {
+        const keysPath = `/api/0/projects/${encodeURIComponent(credentials.organization)}/${encodeURIComponent(project)}/keys/`;
+        const response = yield* remoteRequest("Sentry", sentryUrl(credentials, keysPath), {
+          headers: sentryHeaders(credentials),
+        });
+        if (response.status === 404) return false;
+        yield* expectStatus("Sentry", response, [200]);
+        const value = yield* parseRemoteJson("Sentry", response);
+        const keys = yield* decodeSentryClientKeys(value).pipe(
+          Effect.mapError((cause) => invalidResponse("Sentry", response.status, cause)),
+        );
+        return keys.length > 0;
       }),
       ensureProject: Effect.fn("SentryApi.ensureProject")(function* (credentials, slug, platform) {
         const projectPath = `/api/0/projects/${encodeURIComponent(credentials.organization)}/${encodeURIComponent(slug)}/`;

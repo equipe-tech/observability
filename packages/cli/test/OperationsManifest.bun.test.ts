@@ -150,6 +150,39 @@ describe("operations manifest", () => {
           ),
         )
       ).code,
-    ).toBe("OBS_CLI_SOURCE_INVALID");
+    ).toBe("OBS_CLI_QUERY_SIGNAL_MISMATCH");
+  });
+
+  test("expands generated aliases and rejects alias cycles", async () => {
+    const aliasedContract = contract.replace(
+      '"aliases":[]',
+      '"aliases":[{"kind":"event","from":"payment.charge","to":"payment.attempt"}]',
+    );
+    const manifest = await Effect.runPromise(
+      parseOperationsManifest(
+        validManifest
+          .replace("name: payment.attempt", "name: payment.charge")
+          .replace(
+            'event.name == "payment.attempt"',
+            'event.name in ("payment.attempt", "payment.charge")',
+          ),
+      ),
+    );
+    const index = await Effect.runPromise(parseOperationsContractIndex(aliasedContract));
+    const validated = await Effect.runPromise(validateOperationsManifest(manifest, index));
+    expect(validated.dashboards[0]?.panels[0]?.query.binding.identifiers).toEqual([
+      "payment.attempt",
+      "payment.charge",
+    ]);
+
+    const cyclic = aliasedContract.replace(
+      '"aliases":[{"kind":"event","from":"payment.charge","to":"payment.attempt"}]',
+      '"aliases":[{"kind":"event","from":"payment.charge","to":"payment.attempt"},{"kind":"event","from":"payment.attempt","to":"payment.charge"}]',
+    );
+    const cyclicIndex = await Effect.runPromise(parseOperationsContractIndex(cyclic));
+    const error = await Effect.runPromise(
+      Effect.flip(validateOperationsManifest(manifest, cyclicIndex)),
+    );
+    expect(error.code).toBe("OBS_CLI_MANIFEST_INVALID");
   });
 });

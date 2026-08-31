@@ -2,9 +2,33 @@ import { Contract, defineTelemetryContract } from "../packages/telemetry/src/ind
 import { Effect } from "effect";
 
 const contract = await Effect.runPromise(
-  defineTelemetryContract({ version: 1, events: {}, metrics: {}, auditActions: {} }),
+  defineTelemetryContract({
+    version: 1,
+    events: {
+      CliOperation: {
+        name: "cli.operation",
+        kind: "operation",
+        defaultSeverity: "info",
+        mandatory: true,
+        sampling: { kind: "always" },
+        attributes: {},
+      },
+    },
+    metrics: {},
+    auditActions: {},
+  }),
 );
 await Bun.write(
   new URL("contract.json", import.meta.url),
-  Contract.encodeContractIndex(Contract.contractIndex(contract, "observability")),
+  Contract.encodeContractIndex(
+    Contract.contractIndex(contract, "observability", {
+      version: 1,
+      aliases: [
+        {
+          source: { kind: "event", name: "cli.command" },
+          target: { kind: "event", name: "cli.operation" },
+        },
+      ],
+    }),
+  ),
 );

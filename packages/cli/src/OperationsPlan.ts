@@ -5,6 +5,7 @@ import {
   type AxiomDatasetKind,
   AxiomApi,
   RemoteApiError,
+  SentryApi,
 } from "./ProviderApis.ts";
 import { environmentDatasets } from "./RemoteEnvironment.ts";
 import { type ValidatedOperationsManifest } from "./OperationsManifest.ts";
@@ -113,10 +114,17 @@ const observedDatasetFingerprint = (dataset: AxiomDataset): string =>
     }),
   );
 
+type SentryPrerequisite = {
+  readonly environment: string;
+  readonly projectExists: boolean;
+  readonly dsnExists: boolean;
+};
+
 const makePlan = (
   validated: ValidatedOperationsManifest,
   selectedEnvironments: ReadonlyArray<string>,
   datasets: ReadonlyArray<AxiomDataset>,
+  sentryPrerequisites: ReadonlyArray<SentryPrerequisite>,
   state: OperationsStateDocument,
 ): Effect.Effect<OperationsPlanDocument, never, never> =>
   Effect.gen(function* () {
@@ -163,6 +171,7 @@ const makePlan = (
         );
       }
     }
+    const desiredDatasetNames = new Set(desiredDatasets.map((entry) => entry.name));
     const manualDefinitions: Array<{
       readonly id: string;
       readonly provider: "Axiom" | "Sentry";
@@ -170,25 +179,36 @@ const makePlan = (
       readonly environment: string;
       readonly desiredFingerprint: string;
       readonly kind: "manual" | "destructive";
+      readonly publiclySatisfied: boolean;
     }> = [];
     for (const environment of selectedEnvironments) {
       const retention = manifest.retention.find((entry) => entry.environment === environment);
       if (retention !== undefined) {
+        const environmentNames = desiredDatasets
+          .filter((entry) => entry.environment === environment)
+          .map((entry) => entry.name);
+        const environmentDatasets = environmentNames.flatMap((name) =>
+          datasets.filter((dataset) => dataset.name === name),
+        );
         manualDefinitions.push({
           id: `axiom.retention.${environment}`,
           provider: "Axiom",
           capability: "retention",
           environment,
           desiredFingerprint: fingerprint(JSON.stringify({ days: retention.days })),
-          kind: datasets.some(
+          kind: environmentDatasets.some(
             (dataset) =>
-              dataset.name.startsWith(`${manifest.service}-${environment}-`) &&
               dataset.useRetentionPeriod &&
               dataset.retentionDays !== undefined &&
               dataset.retentionDays > retention.days,
           )
             ? "destructive"
             : "manual",
+          publiclySatisfied:
+            environmentDatasets.length === environmentNames.length &&
+            environmentDatasets.every(
+              (dataset) => dataset.useRetentionPeriod && dataset.retentionDays === retention.days,
+            ),
         });
       }
       manualDefinitions.push({
@@ -198,6 +218,7 @@ const makePlan = (
         environment,
         desiredFingerprint: fingerprint(JSON.stringify({ service: manifest.service, environment })),
         kind: "manual",
+        publiclySatisfied: true,
       });
       for (const dashboard of validated.dashboards) {
         manualDefinitions.push({
@@ -207,6 +228,7 @@ const makePlan = (
           environment,
           desiredFingerprint: fingerprint(JSON.stringify(dashboard.definition)),
           kind: "manual",
+          publiclySatisfied: true,
         });
       }
       for (const monitor of validated.monitors) {
@@ -217,6 +239,7 @@ const makePlan = (
           environment,
           desiredFingerprint: fingerprint(JSON.stringify(monitor.definition)),
           kind: "manual",
+          publiclySatisfied: true,
         });
       }
       if (manifest.sentry.enabled) {
@@ -229,6 +252,11 @@ const makePlan = (
             JSON.stringify({ project: `${manifest.service}-${environment}` }),
           ),
           kind: "manual",
+          publiclySatisfied:
+            sentryPrerequisites.find((entry) => entry.environment === environment)
+              ?.projectExists === true &&
+            sentryPrerequisites.find((entry) => entry.environment === environment)?.dsnExists ===
+              true,
         });
       }
     }
@@ -236,23 +264,29 @@ const makePlan = (
       const persisted = state.manualActions.find(
         (entry) => entry.id === manual.id && entry.desiredFingerprint === manual.desiredFingerprint,
       );
-      if (persisted === undefined) {
+      if (
+        persisted === undefined ||
+        (persisted.status === "operator-confirmed" && !manual.publiclySatisfied)
+      ) {
         actions.push(
           new OperationPlanAction({
-            ...manual,
+            id: manual.id,
+            kind: manual.kind,
+            provider: manual.provider,
+            capability: manual.capability,
             resource: manual.id,
-            observedFingerprint: fingerprint("unrecorded"),
+            environment: manual.environment,
+            desiredFingerprint: manual.desiredFingerprint,
+            observedFingerprint: fingerprint(
+              manual.publiclySatisfied ? "observed" : "prerequisite-drift",
+            ),
           }),
         );
       }
     }
     actions.sort((left, right) => left.id.localeCompare(right.id));
     const selectedDatasets = datasets
-      .filter((dataset) =>
-        selectedEnvironments.some((environment) =>
-          dataset.name.startsWith(`${manifest.service}-${environment}-`),
-        ),
-      )
+      .filter((dataset) => desiredDatasetNames.has(dataset.name))
       .map((dataset) => ({ name: dataset.name, fingerprint: observedDatasetFingerprint(dataset) }))
       .sort((left, right) => left.name.localeCompare(right.name));
     const observedFingerprint = fingerprint(JSON.stringify(selectedDatasets));
@@ -327,6 +361,7 @@ export class OperationsPlanner extends Context.Service<
     Effect.gen(function* () {
       const credentialsStore = yield* CredentialsStore;
       const axiom = yield* AxiomApi;
+      const sentry = yield* SentryApi;
       const stateStore = yield* OperationsState;
 
       const observe = Effect.fn("OperationsPlanner.observe")(function* (request: PlanRequest) {
@@ -341,10 +376,31 @@ export class OperationsPlanner extends Context.Service<
           });
         }
         const datasets = yield* axiom.datasets(credentials.value.axiom);
+        const sentryPrerequisites: Array<SentryPrerequisite> = [];
+        if (request.validated.manifest.sentry.enabled) {
+          const sentryCredentials = credentials.value.sentry;
+          if (sentryCredentials === undefined) {
+            return yield* new OperationsError({
+              code: "OBS_CLI_PROVIDER_CAPABILITY_UNAVAILABLE",
+              message:
+                "Sentry credentials are required after manifest validation. Run observability auth login sentry.",
+              cause: "Sentry",
+            });
+          }
+          for (const environment of environments) {
+            const project = `${request.validated.manifest.service}-${environment}`;
+            const projectExists = yield* sentry.project(sentryCredentials, project);
+            const dsnExists = projectExists
+              ? yield* sentry.clientKeyExists(sentryCredentials, project)
+              : false;
+            sentryPrerequisites.push({ environment, projectExists, dsnExists });
+          }
+        }
         const state = yield* stateStore.load(request.validated.manifest.service);
         return {
           environments,
           datasets,
+          sentryPrerequisites,
           state,
           axiomCredentials: credentials.value.axiom,
           credentials: credentials.value,
@@ -357,6 +413,7 @@ export class OperationsPlanner extends Context.Service<
           request.validated,
           observed.environments,
           observed.datasets,
+          observed.sentryPrerequisites,
           observed.state,
         );
       });
@@ -421,6 +478,7 @@ export class OperationsPlanner extends Context.Service<
           request.validated,
           observed.environments,
           observed.datasets,
+          observed.sentryPrerequisites,
           observed.state,
         );
         if (current.digest !== supplied.digest) {
@@ -437,9 +495,12 @@ export class OperationsPlanner extends Context.Service<
             cause: current.digest,
           });
         }
-        const manualActionIds = new Set(
-          current.actions.filter((action) => action.kind === "manual").map((action) => action.id),
-        );
+        const manualActionIds = new Set([
+          ...current.actions
+            .filter((action) => action.kind !== "create")
+            .map((action) => action.id),
+          ...current.pendingManualActions.map((action) => action.id),
+        ]);
         const invalidConfirmation = confirmedManualActions.find((id) => !manualActionIds.has(id));
         if (invalidConfirmation !== undefined) {
           return yield* new OperationsError({
@@ -448,15 +509,102 @@ export class OperationsPlanner extends Context.Service<
             cause: invalidConfirmation,
           });
         }
-        const unresolved = observed.state.mutations.find(
-          (mutation) => mutation.status === "outcome-unknown",
-        );
-        if (unresolved !== undefined) {
+        let stateGeneration = observed.state.generation;
+        for (const unresolved of observed.state.mutations.filter(
+          (mutation) => mutation.status === "pending" || mutation.status === "outcome-unknown",
+        )) {
+          const expectedKind: AxiomDatasetKind = unresolved.resource.endsWith("-metrics")
+            ? "otel:metrics:v1"
+            : "axiom:events:v1";
+          const reconciled = observed.datasets.some(
+            (dataset) => dataset.name === unresolved.resource && dataset.kind === expectedKind,
+          );
+          if (reconciled) {
+            const next = yield* stateStore.update(
+              current.service,
+              stateGeneration,
+              (state) =>
+                new OperationsStateDocument({
+                  version: state.version,
+                  generation: state.generation,
+                  service: state.service,
+                  manualActions: state.manualActions,
+                  mutations: state.mutations.map((entry) =>
+                    entry.id === unresolved.id
+                      ? new MutationIntent({
+                          id: entry.id,
+                          operation: entry.operation,
+                          resource: entry.resource,
+                          desiredFingerprint: entry.desiredFingerprint,
+                          status: "resolved",
+                          updatedAt: entry.updatedAt,
+                        })
+                      : entry,
+                  ),
+                }),
+            );
+            stateGeneration = next.generation;
+            continue;
+          }
+          if (unresolved.status === "pending") {
+            const next = yield* stateStore.update(
+              current.service,
+              stateGeneration,
+              (state) =>
+                new OperationsStateDocument({
+                  version: state.version,
+                  generation: state.generation,
+                  service: state.service,
+                  manualActions: state.manualActions,
+                  mutations: state.mutations.map((entry) =>
+                    entry.id === unresolved.id
+                      ? new MutationIntent({
+                          id: entry.id,
+                          operation: entry.operation,
+                          resource: entry.resource,
+                          desiredFingerprint: entry.desiredFingerprint,
+                          status: "outcome-unknown",
+                          updatedAt: entry.updatedAt,
+                        })
+                      : entry,
+                  ),
+                }),
+            );
+            stateGeneration = next.generation;
+          }
           return yield* new OperationsError({
             code: "OBS_CLI_APPLY_OUTCOME_UNKNOWN",
             message: `Mutation ${unresolved.id} has an unknown outcome. Reconcile it before applying more work.`,
             cause: unresolved.id,
           });
+        }
+        for (const confirmation of confirmedManualActions) {
+          const pending = current.pendingManualActions.find((action) => action.id === confirmation);
+          if (pending === undefined) continue;
+          const next = yield* stateStore.update(
+            current.service,
+            stateGeneration,
+            (state) =>
+              new OperationsStateDocument({
+                version: state.version,
+                generation: state.generation,
+                service: state.service,
+                mutations: state.mutations,
+                manualActions: state.manualActions.map((action) =>
+                  action.id === confirmation
+                    ? new ManualAction({
+                        id: action.id,
+                        provider: action.provider,
+                        capability: action.capability,
+                        environment: action.environment,
+                        desiredFingerprint: action.desiredFingerprint,
+                        status: "operator-confirmed",
+                      })
+                    : action,
+                ),
+              }),
+          );
+          stateGeneration = next.generation;
         }
         for (const action of current.actions) {
           if (action.kind === "manual" || action.kind === "destructive") {
@@ -494,8 +642,9 @@ export class OperationsPlanner extends Context.Service<
                     (yield* Clock.currentTimeMillis) + 30 * 24 * 60 * 60 * 1_000,
                   ).toISOString(),
                 });
-            yield* stateStore.update(
+            const next = yield* stateStore.update(
               current.service,
+              stateGeneration,
               (state) =>
                 new OperationsStateDocument({
                   version: state.version,
@@ -508,11 +657,13 @@ export class OperationsPlanner extends Context.Service<
                   ].sort((left, right) => left.id.localeCompare(right.id)),
                 }),
             );
+            stateGeneration = next.generation;
             continue;
           }
           const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-          yield* stateStore.update(
+          const pendingState = yield* stateStore.update(
             current.service,
+            stateGeneration,
             (state) =>
               new OperationsStateDocument({
                 version: state.version,
@@ -532,21 +683,12 @@ export class OperationsPlanner extends Context.Service<
                 ],
               }),
           );
-          const kind: AxiomDatasetKind = action.resource.endsWith("-metrics")
-            ? "otel:metrics:v1"
-            : "axiom:events:v1";
-          const mutation = axiom.createDataset(observed.axiomCredentials, action.resource, {
-            kind,
-          });
-          const handleMutationError = (
-            error: RemoteApiError,
-          ): Effect.Effect<never, OperationsServiceError> => {
-            if (error.code !== "OBS_CLI_AXIOM_DATASET_OUTCOME_UNKNOWN") {
-              return Effect.fail(error);
-            }
-            return stateStore
+          stateGeneration = pendingState.generation;
+          const persistInterruptedOutcome = () =>
+            stateStore
               .update(
                 current.service,
+                stateGeneration,
                 (state) =>
                   new OperationsStateDocument({
                     version: state.version,
@@ -567,25 +709,63 @@ export class OperationsPlanner extends Context.Service<
                     ),
                   }),
               )
-              .pipe(
-                Effect.andThen(
-                  Effect.fail(
-                    new OperationsError({
-                      code: "OBS_CLI_APPLY_OUTCOME_UNKNOWN",
-                      message: `The outcome of mutation ${action.id} is unknown. Reconcile it before retrying.`,
-                      cause: error,
-                    }),
-                  ),
-                ),
+              .pipe(Effect.asVoid);
+          const kind: AxiomDatasetKind = action.resource.endsWith("-metrics")
+            ? "otel:metrics:v1"
+            : "axiom:events:v1";
+          const mutation = axiom.createDataset(observed.axiomCredentials, action.resource, {
+            kind,
+          });
+          const handleMutationError = (
+            error: RemoteApiError,
+          ): Effect.Effect<never, OperationsServiceError> => {
+            if (error.code !== "OBS_CLI_AXIOM_DATASET_OUTCOME_UNKNOWN") {
+              return Effect.fail(error);
+            }
+            return Effect.gen(function* () {
+              const unknownState = yield* stateStore.update(
+                current.service,
+                stateGeneration,
+                (state) =>
+                  new OperationsStateDocument({
+                    version: state.version,
+                    generation: state.generation,
+                    service: state.service,
+                    manualActions: state.manualActions,
+                    mutations: state.mutations.map((entry) =>
+                      entry.id === action.id
+                        ? new MutationIntent({
+                            id: entry.id,
+                            operation: entry.operation,
+                            resource: entry.resource,
+                            desiredFingerprint: entry.desiredFingerprint,
+                            status: "outcome-unknown",
+                            updatedAt,
+                          })
+                        : entry,
+                    ),
+                  }),
               );
+              stateGeneration = unknownState.generation;
+              return yield* new OperationsError({
+                code: "OBS_CLI_APPLY_OUTCOME_UNKNOWN",
+                message: `The outcome of mutation ${action.id} is unknown. Reconcile it before retrying.`,
+                cause: error,
+              });
+            });
           };
-          const created = yield* mutation.pipe(Effect.catch(handleMutationError));
+          const created = yield* mutation.pipe(
+            Effect.onInterrupt(persistInterruptedOutcome),
+            Effect.catchTag("RemoteApiError", handleMutationError),
+          );
           let matched = false;
           let attempts = 0;
           let lastResponse = `status=200 name=${created.name} kind=${created.kind}`.slice(0, 512);
           while (!matched && attempts < 6) {
             attempts += 1;
-            const datasets = yield* axiom.datasets(observed.axiomCredentials);
+            const datasets = yield* axiom
+              .datasets(observed.axiomCredentials)
+              .pipe(Effect.onInterrupt(persistInterruptedOutcome));
             const readBack = datasets.find(
               (dataset) => dataset.name === action.resource && dataset.kind === kind,
             );
@@ -594,9 +774,37 @@ export class OperationsPlanner extends Context.Service<
               0,
               512,
             );
-            if (!matched) yield* Effect.sleep(`${Math.min(250 * 2 ** attempts, 4_000)} millis`);
+            if (!matched && attempts < 6) {
+              yield* Effect.sleep(`${Math.min(250 * 2 ** attempts, 4_000)} millis`).pipe(
+                Effect.onInterrupt(persistInterruptedOutcome),
+              );
+            }
           }
           if (!matched) {
+            const unknownState = yield* stateStore.update(
+              current.service,
+              stateGeneration,
+              (state) =>
+                new OperationsStateDocument({
+                  version: state.version,
+                  generation: state.generation,
+                  service: state.service,
+                  manualActions: state.manualActions,
+                  mutations: state.mutations.map((entry) =>
+                    entry.id === action.id
+                      ? new MutationIntent({
+                          id: entry.id,
+                          operation: entry.operation,
+                          resource: entry.resource,
+                          desiredFingerprint: entry.desiredFingerprint,
+                          status: "outcome-unknown",
+                          updatedAt,
+                        })
+                      : entry,
+                  ),
+                }),
+            );
+            stateGeneration = unknownState.generation;
             return yield* new OperationsError({
               code: "OBS_CLI_READ_BACK_TIMEOUT",
               message: `Read-back for ${action.resource} did not converge after ${attempts} attempts.`,
@@ -605,8 +813,9 @@ export class OperationsPlanner extends Context.Service<
               cause: action.id,
             });
           }
-          yield* stateStore.update(
+          const resolvedState = yield* stateStore.update(
             current.service,
+            stateGeneration,
             (state) =>
               new OperationsStateDocument({
                 version: state.version,
@@ -627,6 +836,7 @@ export class OperationsPlanner extends Context.Service<
                 ),
               }),
           );
+          stateGeneration = resolvedState.generation;
         }
         return yield* plan(request);
       });

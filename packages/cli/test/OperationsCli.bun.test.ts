@@ -49,7 +49,7 @@ describe("operations CLI", () => {
     await mkdir(home, { recursive: true });
     await writeFile(
       join(project, "observability", "operations.yaml"),
-      "version: 1\ncontractVersion: 1\nservice: checkout\nenvironments: [staging]\nretention:\n  - environment: staging\n    days: 30\ndashboards: []\nmonitors: []\nsentry:\n  enabled: false\n",
+      "version: 1\ncontractVersion: 1\nservice: checkout\nenvironments: [prod]\nretention:\n  - environment: prod\n    days: 30\ndashboards: []\nmonitors: []\nsentry:\n  enabled: false\n",
     );
     await writeFile(
       join(project, "observability", "contract.json"),
@@ -70,9 +70,18 @@ describe("operations CLI", () => {
       kind: string;
       retentionDays: number;
       useRetentionPeriod: boolean;
-    }> = [];
+    }> = [
+      {
+        id: "prod-eu-isolation",
+        name: "checkout-prod-eu-logs",
+        description: "unrelated environment",
+        kind: "axiom:events:v1",
+        retentionDays: 90,
+        useRetentionPeriod: true,
+      },
+    ];
     let mutations = 0;
-    let failMutation = false;
+    let skipReadBack = false;
     const server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
@@ -81,8 +90,6 @@ describe("operations CLI", () => {
         if (url.pathname !== "/v2/datasets") return new Response("missing", { status: 404 });
         if (request.method === "GET") return Response.json(datasets);
         mutations += 1;
-        if (failMutation)
-          return new Response("provider failure with secret-token", { status: 500 });
         const body = await request.json();
         const document = JSON.stringify(body);
         const name = /"name":"([^"]+)"/.exec(document)?.[1] ?? "invalid";
@@ -95,7 +102,7 @@ describe("operations CLI", () => {
           retentionDays: 0,
           useRetentionPeriod: false,
         };
-        datasets.push(dataset);
+        if (!skipReadBack) datasets.push(dataset);
         return Response.json(dataset, { status: 201 });
       },
     });
@@ -104,6 +111,11 @@ describe("operations CLI", () => {
       const first = await runCli(["ops", "plan", "--dir", project, "--json"], home, baseUrl);
       expect(first.exitCode).toBe(0);
       expect(mutations).toBe(0);
+      const firstPlan = JSON.parse(first.stdout);
+      expect(
+        firstPlan.actions.find((action: { id: string }) => action.id === "axiom.retention.prod")
+          ?.kind,
+      ).toBe("manual");
       expect(first.stdout).not.toContain("secret-token");
       const plans = await readdir(join(project, ".observability"));
       const planName = plans.find((name) => name.startsWith("plan-"));
@@ -129,7 +141,7 @@ describe("operations CLI", () => {
 
       datasets.push({
         id: "stale-precondition",
-        name: "checkout-staging-logs",
+        name: "checkout-prod-logs",
         description: "stale",
         kind: "otel:logs:v1",
         retentionDays: 0,
@@ -151,7 +163,7 @@ describe("operations CLI", () => {
       );
       expect(applied.exitCode).toBe(0);
       expect(mutations).toBe(3);
-      expect(datasets).toHaveLength(3);
+      expect(datasets).toHaveLength(4);
 
       const second = await runCli(["ops", "plan", "--dir", project, "--json"], home, baseUrl);
       expect(second.exitCode).toBe(0);
@@ -166,7 +178,63 @@ describe("operations CLI", () => {
       expect(verified.exitCode).not.toBe(0);
       expect(verified.stderr).toContain("OBS_CLI_MANUAL_ACTION_PENDING");
 
-      const firstDataset = datasets[0];
+      for (const dataset of datasets) {
+        dataset.retentionDays = 30;
+        dataset.useRetentionPeriod = true;
+      }
+      const confirmationPlanResult = await runCli(
+        ["ops", "plan", "--dir", project, "--json"],
+        home,
+        baseUrl,
+      );
+      const confirmationPlan = JSON.parse(confirmationPlanResult.stdout);
+      const confirmationPath = join(
+        project,
+        ".observability",
+        `plan-${confirmationPlan.digest}.json`,
+      );
+      const invalidConfirmation = await runCli(
+        [
+          "ops",
+          "apply",
+          "--dir",
+          project,
+          "--plan",
+          confirmationPath,
+          "--confirm-manual",
+          "axiom.missing.prod",
+        ],
+        home,
+        baseUrl,
+      );
+      expect(invalidConfirmation.stderr).toContain("OBS_CLI_PLAN_INVALID");
+      const confirmed = await runCli(
+        [
+          "ops",
+          "apply",
+          "--dir",
+          project,
+          "--plan",
+          confirmationPath,
+          "--confirm-manual",
+          "axiom.retention.prod",
+          "--confirm-manual",
+          "axiom.correlation.prod",
+        ],
+        home,
+        baseUrl,
+      );
+      expect(confirmed.exitCode).toBe(0);
+      expect((await runCli(["ops", "verify", "--dir", project], home, baseUrl)).exitCode).toBe(0);
+
+      const retentionDrift = datasets.find((dataset) => dataset.name === "checkout-prod-logs");
+      if (retentionDrift === undefined) throw new Error("Created dataset is missing.");
+      retentionDrift.retentionDays = 7;
+      const drift = await runCli(["ops", "verify", "--dir", project], home, baseUrl);
+      expect(drift.stderr).toContain("OBS_CLI_DRIFT_DETECTED");
+      retentionDrift.retentionDays = 30;
+
+      const firstDataset = datasets.find((dataset) => dataset.name === "checkout-prod-traces");
       if (firstDataset === undefined) throw new Error("Created dataset is missing.");
       firstDataset.kind = "otel:logs:v1";
       const destructivePlanResult = await runCli(
@@ -188,6 +256,22 @@ describe("operations CLI", () => {
       );
       expect(refused.exitCode).not.toBe(0);
       expect(refused.stderr).toContain("OBS_CLI_PLAN_DESTRUCTIVE");
+      const authorized = await runCli(
+        [
+          "ops",
+          "apply",
+          "--dir",
+          project,
+          "--plan",
+          destructivePath,
+          "--allow-destructive",
+          "--confirm-manual",
+          "axiom.dataset.checkout-prod-traces",
+        ],
+        home,
+        baseUrl,
+      );
+      expect(authorized.exitCode).toBe(0);
 
       datasets.splice(0);
       const unknownPlanResult = await runCli(
@@ -197,21 +281,30 @@ describe("operations CLI", () => {
       );
       const unknownPlan = JSON.parse(unknownPlanResult.stdout);
       const unknownPath = join(project, ".observability", `plan-${unknownPlan.digest}.json`);
-      failMutation = true;
+      skipReadBack = true;
       const unknown = await runCli(
         ["ops", "apply", "--dir", project, "--plan", unknownPath],
         home,
         baseUrl,
       );
       expect(unknown.exitCode).not.toBe(0);
-      expect(unknown.stderr).toContain("OBS_CLI_APPLY_OUTCOME_UNKNOWN");
+      expect(unknown.stderr).toContain("OBS_CLI_READ_BACK_TIMEOUT");
       expect(unknown.stderr).not.toContain("secret-token");
+      await writeFile(
+        statePath,
+        (await readFile(statePath, "utf8")).replace(
+          '"status": "outcome-unknown"',
+          '"status": "pending"',
+        ),
+        { mode: 0o600 },
+      );
       const blocked = await runCli(
         ["ops", "apply", "--dir", project, "--plan", unknownPath],
         home,
         baseUrl,
       );
       expect(blocked.stderr).toContain("OBS_CLI_APPLY_OUTCOME_UNKNOWN");
+      expect(await readFile(statePath, "utf8")).toContain('"status": "outcome-unknown"');
     } finally {
       await server.stop(true);
     }

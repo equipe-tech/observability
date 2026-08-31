@@ -2,7 +2,7 @@
 
 `observability/operations.yaml` declara o estado desejado dos providers. A CLI aceita somente `version: 1`. Ela decodifica YAML, o índice de contrato e todas as queries antes de carregar credenciais ou chamar um provider.
 
-`observability/contract.json` é um artefato gerado e versionado. Gere-o com `Contract.contractIndex` e `Contract.encodeContractIndex`. O campo `contractVersion` do manifesto deve ser igual ao índice. A CLI mantém uma cópia pequena do schema do índice e da gramática de nomes para não depender do pacote de runtime.
+`observability/contract.json` é um artefato gerado e versionado. Gere-o com `Contract.contractIndex` e `Contract.encodeContractIndex`. O terceiro argumento de `contractIndex` aceita metadados de aliases na versão 1, com sinais `source` e `target`. O gerador valida tipos, nomes, destinos, duplicatas e ciclos, e ordena a saída. O campo `contractVersion` do manifesto deve ser igual ao índice. A CLI mantém uma cópia pequena do schema do índice e da gramática de nomes para não depender do pacote de runtime.
 
 ## Comandos
 
@@ -16,7 +16,7 @@ Todos aceitam `--json`. `plan` faz somente leituras remotas e grava um plano com
 
 `apply` exige o arquivo exato. A CLI recalcula o manifesto, o contrato e o estado remoto. Mudanças destrutivas exigem `--allow-destructive`, que autoriza somente o digest fornecido. Mudança de tipo de dataset e redução de retenção são destrutivas. A CLI nunca remove drift automaticamente.
 
-Cada mutação grava a intenção em `$OBSERVABILITY_HOME/operations/<service>.json` antes da chamada. O arquivo usa modo `0600`, escrita atômica e lock exclusivo. A CLI faz read-back com até seis tentativas. Um resultado não idempotente desconhecido bloqueia trabalho posterior até reconciliação.
+Cada mutação grava a intenção em `$OBSERVABILITY_HOME/operations/<service>.json` antes da chamada. O arquivo usa modo `0600`, escrita atômica, lock exclusivo e comparação da geração esperada sob o lock. A CLI trata uma intenção `pending` herdada de outro processo como resultado desconhecido. Timeout e interrupção preservam esse estado. Uma leitura remota que prove o resultado desejado conclui a reconciliação. A CLI faz read-back com até seis tentativas. Cada requisição HTTP tem prazo externo de dois segundos, inclusive quando o transporte ignora o cancelamento.
 
 ## Queries gerenciadas
 
@@ -42,4 +42,4 @@ O token Sentry é uma credencial de organização usada pela CLI. O recurso de p
 
 ## Ações manuais
 
-Recursos sem ciclo público verificado viram ações manuais persistidas. A conclusão é uma confirmação do operador, nunca uma afirmação de verificação pelo provider. `verify` falha enquanto houver ação pendente ou expirada e reconsulta pré-requisitos que tenham leitura pública.
+Recursos sem ciclo público verificado viram ações manuais persistidas. A conclusão é uma confirmação do operador, nunca uma afirmação de verificação pelo provider. `verify` falha enquanto houver ação pendente ou expirada. Retenção, projeto Sentry e client key são reconsultados em todo `plan` e `verify`. Drift de um pré-requisito legível invalida a confirmação anterior. Ações manuais destrutivas usam `--allow-destructive` e `--confirm-manual` no mesmo digest exato.
