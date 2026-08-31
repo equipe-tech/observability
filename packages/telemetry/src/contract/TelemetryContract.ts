@@ -3,7 +3,7 @@ import {
   AuditAction,
   AuditOutcome,
   AuditReasonCode,
-  isControlCharacterFree,
+  AuditResourceType,
 } from "../audit/AuditRecord.ts";
 import { EventName, isValidAttributeName, isValidEventName } from "./EventName.ts";
 import {
@@ -194,6 +194,7 @@ const isEventKind = Schema.is(EventKind);
 const isEventSeverity = Schema.is(EventSeverity);
 const isAuditOutcome = Schema.is(AuditOutcome);
 const isAuditReasonCode = Schema.is(AuditReasonCode);
+const isAuditResourceType = Schema.is(AuditResourceType);
 const auditActionPattern = /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/;
 const canonicalSinkFields = new Set([
   "event.name",
@@ -532,10 +533,7 @@ const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<Contra
     if (
       action.action.length > 128 ||
       !auditActionPattern.test(action.action) ||
-      action.resourceType.length === 0 ||
-      action.resourceType.length > 64 ||
-      !isControlCharacterFree(action.resourceType) ||
-      !/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$/.test(action.resourceType) ||
+      !isAuditResourceType(action.resourceType) ||
       action.allowedOutcomes.length === 0 ||
       action.allowedOutcomes.some((outcome) => !isAuditOutcome(outcome))
     ) {

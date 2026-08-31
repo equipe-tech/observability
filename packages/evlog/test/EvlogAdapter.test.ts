@@ -527,6 +527,48 @@ describe("evlogAdapter", () => {
     expect(receiver.bodies.join("\n")).toContain('\\"audit.actor.id\\":\\"system\\"');
   });
 
+  it("keeps audit drop timestamps monotonic across pipeline and publish callbacks", async () => {
+    const receiver = await startReceiver(0, 503);
+    const { contract, config } = await makeConfig(receiver.endpoint);
+    const adapter = evlogAdapter({
+      installGlobalLogger: false,
+      batchSize: 1,
+      maximumAttempts: 1,
+      transportRetries: 0,
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const observability = yield* makeNodeObservability(config, [adapter.registration]);
+        if (!observability.enabled) return yield* Effect.die("Expected enabled observability.");
+        const record = yield* parseAuditRecord(contract, {
+          recordId: "audit-drop-clock",
+          action: "access.reviewed",
+          actor: { kind: "system" },
+          resource: { id: "account-clock" },
+          outcome: "denied",
+          occurredAt: "2026-01-02T03:04:05.000Z",
+        });
+        const committed = yield* commitAuditRecord(record, () => Effect.void).pipe(
+          Effect.provide(layerNodeAuditDigest),
+        );
+        const publisher = yield* AuditPublisher.pipe(Effect.provide(observability.auditLayer));
+        expect(yield* publisher.publish(committed.record)).toEqual({ kind: "published" });
+        yield* Effect.promise(() => observability.flush());
+        expect(publisher.report().reasons.transport).toBe(1);
+        yield* TestClock.adjust("1 second");
+        yield* Effect.promise(() => observability.close());
+        expect(yield* publisher.publish(committed.record)).toEqual({
+          kind: "dropped",
+          reason: "closed",
+        });
+        const report = publisher.report();
+        expect(Option.getOrThrow(report.firstDroppedAt)).toBe("1970-01-01T00:00:00.000Z");
+        expect(Option.getOrThrow(report.lastDroppedAt)).toBe("1970-01-01T00:00:01.000Z");
+      }).pipe(Effect.provide(TestClock.layer())),
+    );
+    await receiver.close();
+  });
+
   it("reports audit transport drops after blackhole exhaustion", async () => {
     const receiver = await startReceiver(0, 503);
     const { contract, config } = await makeConfig(receiver.endpoint);

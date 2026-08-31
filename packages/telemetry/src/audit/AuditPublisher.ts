@@ -5,7 +5,7 @@ import {
   sealCommittedAuditRecord,
   type CommittedAuditRecord,
 } from "./CommittedAuditRecordInternal.ts";
-import { AuditAction, AuditOccurredAt, type AuditRecord } from "./AuditRecord.ts";
+import { AuditOccurredAt, reparseAuditRecord, type AuditRecord } from "./AuditRecord.ts";
 import { InvalidAuditRecord } from "./InvalidAuditRecord.ts";
 
 export type { CommittedAuditRecord } from "./CommittedAuditRecordInternal.ts";
@@ -96,25 +96,15 @@ export const commitAuditRecord = <A, E, R>(
   durableWrite: (document: AuditCommitDocument) => Effect.Effect<A, E, R>,
 ): Effect.Effect<CommitAuditResult<A>, E | InvalidAuditRecord, R | AuditDigest> =>
   Effect.gen(function* () {
-    yield* Schema.decodeUnknownEffect(AuditAction)(record.action).pipe(
-      Effect.mapError(
-        () =>
-          new InvalidAuditRecord({
-            code: "OBS_AUDIT_INVALID_FIELD",
-            message:
-              "Audit action is invalid. Parse the record through the telemetry contract before committing it.",
-            field: "action",
-          }),
-      ),
-    );
+    const reparsed = yield* reparseAuditRecord(record);
     const committedAt = Schema.decodeUnknownSync(AuditOccurredAt)(
       DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
     );
     const digest = yield* AuditDigest;
-    const ledgerHash = yield* digest.hash(canonicalAuditPayload(record, committedAt));
-    const document = auditCommitDocumentFor(record, committedAt, ledgerHash);
+    const ledgerHash = yield* digest.hash(canonicalAuditPayload(reparsed, committedAt));
+    const document = auditCommitDocumentFor(reparsed, committedAt, ledgerHash);
     const committed = yield* durableWrite(document);
-    const committedRecord = sealCommittedAuditRecord(record, committedAt, ledgerHash);
+    const committedRecord = sealCommittedAuditRecord(reparsed, committedAt, ledgerHash);
     return { committed, record: committedRecord };
   });
 

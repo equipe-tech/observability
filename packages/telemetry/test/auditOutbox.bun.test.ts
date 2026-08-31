@@ -3,9 +3,10 @@ import { describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Effect, Layer, Option, Schema } from "effect";
+import { Cause, Effect, Exit, Layer, Option, Schema } from "effect";
 import {
   AuditAction,
+  AuditDigest,
   AuditOccurredAt,
   AuditOutbox,
   AuditOutboxClaimKey,
@@ -72,6 +73,44 @@ const outboxFailure = (
     message,
     cause,
   });
+
+const committedDocument = async (): Promise<AuditOutboxDocument> => {
+  const definition = await Effect.runPromise(contract);
+  const record = await Effect.runPromise(
+    parseAuditRecord(definition, {
+      recordId: "private-document-record",
+      action: "access.reviewed",
+      actor: { kind: "system" },
+      resource: { id: "private-document-resource" },
+      outcome: "success",
+      occurredAt: "2026-01-02T03:04:05.000Z",
+    }),
+  );
+  const result = await Effect.runPromise(
+    commitAuditRecord(record, (document) => Effect.succeed(document)).pipe(
+      Effect.provide(layerNodeAuditDigest),
+    ),
+  );
+  return result.committed;
+};
+
+const claimedOutbox = (document: AuditOutboxDocument, settlements: Array<AuditOutboxSettlement>) =>
+  Layer.succeed(
+    AuditOutbox,
+    AuditOutbox.of({
+      claim: () =>
+        Effect.succeed([
+          {
+            claimKey: Schema.decodeUnknownSync(AuditOutboxClaimKey)("private-claim"),
+            document,
+          },
+        ]),
+      settle: (_claimKey, settlement) =>
+        Effect.sync(() => {
+          settlements.push(settlement);
+        }),
+    }),
+  );
 
 describe("audit outbox port", () => {
   it("persists the supplied document, quarantines poison, and continues after restart", async () => {
@@ -202,82 +241,115 @@ describe("audit outbox port", () => {
     }
   });
 
-  it("sanitizes publisher defects from outbox failures", async () => {
-    const definition = await Effect.runPromise(contract);
-    const record = await Effect.runPromise(
-      parseAuditRecord(definition, {
-        recordId: "private-document-record",
-        action: "access.reviewed",
-        actor: { kind: "system" },
-        resource: { id: "private-document-resource" },
-        outcome: "success",
-        occurredAt: "2026-01-02T03:04:05.000Z",
-      }),
-    );
-    let document: AuditOutboxDocument | undefined;
-    await Effect.runPromise(
-      commitAuditRecord(record, (candidate) =>
-        Effect.sync(() => {
-          document = candidate;
-        }),
-      ).pipe(Effect.provide(layerNodeAuditDigest)),
-    );
-    if (document === undefined) throw new Error("Expected a committed outbox document.");
-    const committedDocument = document;
-    const outbox = Layer.succeed(
-      AuditOutbox,
-      AuditOutbox.of({
-        claim: () =>
-          Effect.succeed([
-            {
-              claimKey: Schema.decodeUnknownSync(AuditOutboxClaimKey)("private-claim"),
-              document: committedDocument,
+  it("propagates digest defects and interruption without settling the valid row", async () => {
+    const document = await committedDocument();
+    const defect = new Error("digest defect");
+    const cases: ReadonlyArray<{
+      readonly interrupted: boolean;
+      readonly failure: Effect.Effect<never>;
+    }> = [
+      { interrupted: false, failure: Effect.die(defect) },
+      { interrupted: true, failure: Effect.interrupt },
+    ];
+    for (const testCase of cases) {
+      const settlements: Array<AuditOutboxSettlement> = [];
+      let publishes = 0;
+      const digest = Layer.succeed(AuditDigest, AuditDigest.of({ hash: () => testCase.failure }));
+      const publisher = Layer.succeed(
+        AuditPublisher,
+        AuditPublisher.of({
+          publish: () =>
+            Effect.sync(() => {
+              publishes += 1;
+              return { kind: "published" };
+            }),
+          report: () => ({
+            published: 0,
+            deduplicated: 0,
+            dropped: 0,
+            firstDroppedAt: Option.none(),
+            lastDroppedAt: Option.none(),
+            reasons: {
+              unbound: 0,
+              closed: 0,
+              queueOverflow: 0,
+              policyRejected: 0,
+              transport: 0,
             },
-          ]),
-        settle: () => Effect.void,
-      }),
-    );
-    const publisher = Layer.succeed(
-      AuditPublisher,
-      AuditPublisher.of({
-        publish: () =>
-          Effect.die(
-            "provider secret-payload document private-document-record body private-document-resource",
-          ),
-        report: () => ({
-          published: 0,
-          deduplicated: 0,
-          dropped: 0,
-          firstDroppedAt: Option.none(),
-          lastDroppedAt: Option.none(),
-          reasons: {
-            unbound: 0,
-            closed: 0,
-            queueOverflow: 0,
-            policyRejected: 0,
-            transport: 0,
-          },
+          }),
         }),
-      }),
-    );
-    const failure = await Effect.runPromise(
-      drainAuditOutbox(1).pipe(
-        Effect.provide(outbox),
-        Effect.provide(publisher),
-        Effect.provide(layerNodeAuditDigest),
-        Effect.flip,
-      ),
-    );
-    expect(failure).toBeInstanceOf(AuditOutboxFailure);
-    expect(failure).toMatchObject({
-      operation: "publish",
-      message: "The claimed audit outbox document could not be published.",
-      cause: "audit publisher failed",
-    });
-    const serialized = JSON.stringify(failure);
-    expect(serialized).not.toContain("secret-payload");
-    expect(serialized).not.toContain("private-document-record");
-    expect(serialized).not.toContain("private-document-resource");
+      );
+      const exit = await Effect.runPromiseExit(
+        drainAuditOutbox(1).pipe(
+          Effect.provide(claimedOutbox(document, settlements)),
+          Effect.provide(publisher),
+          Effect.provide(digest),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isSuccess(exit)) throw new Error("Expected digest failure.");
+      expect(Cause.hasInterrupts(exit.cause)).toBe(testCase.interrupted);
+      expect(Cause.hasDies(exit.cause)).toBe(!testCase.interrupted);
+      if (!testCase.interrupted) {
+        expect(
+          exit.cause.reasons.some((reason) => reason._tag === "Die" && reason.defect === defect),
+        ).toBe(true);
+      }
+      expect(settlements).toEqual([]);
+      expect(publishes).toBe(0);
+    }
+  });
+
+  it("propagates publisher defects and interruption without settling the valid row", async () => {
+    const document = await committedDocument();
+    const defect = new Error("publisher defect");
+    const cases: ReadonlyArray<{
+      readonly interrupted: boolean;
+      readonly failure: Effect.Effect<never>;
+    }> = [
+      { interrupted: false, failure: Effect.die(defect) },
+      { interrupted: true, failure: Effect.interrupt },
+    ];
+    for (const testCase of cases) {
+      const settlements: Array<AuditOutboxSettlement> = [];
+      const publisher = Layer.succeed(
+        AuditPublisher,
+        AuditPublisher.of({
+          publish: () => testCase.failure,
+          report: () => ({
+            published: 0,
+            deduplicated: 0,
+            dropped: 0,
+            firstDroppedAt: Option.none(),
+            lastDroppedAt: Option.none(),
+            reasons: {
+              unbound: 0,
+              closed: 0,
+              queueOverflow: 0,
+              policyRejected: 0,
+              transport: 0,
+            },
+          }),
+        }),
+      );
+      const exit = await Effect.runPromiseExit(
+        drainAuditOutbox(1).pipe(
+          Effect.provide(claimedOutbox(document, settlements)),
+          Effect.provide(publisher),
+          Effect.provide(layerNodeAuditDigest),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isSuccess(exit)) throw new Error("Expected publisher failure.");
+      expect(Cause.hasInterrupts(exit.cause)).toBe(testCase.interrupted);
+      expect(Cause.hasDies(exit.cause)).toBe(!testCase.interrupted);
+      if (!testCase.interrupted) {
+        expect(
+          exit.cause.reasons.some((reason) => reason._tag === "Die" && reason.defect === defect),
+        ).toBe(true);
+      }
+      expect(settlements).toEqual([]);
+    }
   });
 
   it("reports claim failures without publishing", async () => {
@@ -323,7 +395,49 @@ describe("audit outbox port", () => {
         Effect.flip,
       ),
     );
-    expect(failure).toBe(claimFailure);
+    expect(failure).toBeInstanceOf(AuditOutboxFailure);
+    expect(failure).toMatchObject({
+      operation: "claim",
+      message: "The audit outbox could not claim pending records.",
+      cause: "audit outbox claim failed",
+    });
+    expect(JSON.stringify(failure)).not.toContain("test claim failure");
     expect(publishes).toBe(0);
+  });
+
+  it("sanitizes typed settlement failures", async () => {
+    const document = await committedDocument();
+    const outbox = Layer.succeed(
+      AuditOutbox,
+      AuditOutbox.of({
+        claim: () =>
+          Effect.succeed([
+            {
+              claimKey: Schema.decodeUnknownSync(AuditOutboxClaimKey)("settle-claim"),
+              document,
+            },
+          ]),
+        settle: () =>
+          Effect.fail(
+            outboxFailure("settle", "private storage response", "private settlement failure"),
+          ),
+      }),
+    );
+    const failure = await Effect.runPromise(
+      drainAuditOutbox(1).pipe(
+        Effect.provide(outbox),
+        Effect.provide(publisherLayer(new Set())),
+        Effect.provide(layerNodeAuditDigest),
+        Effect.flip,
+      ),
+    );
+    expect(failure).toBeInstanceOf(AuditOutboxFailure);
+    expect(failure).toMatchObject({
+      operation: "settle",
+      message: "The audit outbox could not settle a claimed record.",
+      cause: "audit outbox settlement failed",
+    });
+    expect(JSON.stringify(failure)).not.toContain("private storage response");
+    expect(JSON.stringify(failure)).not.toContain("private settlement failure");
   });
 });

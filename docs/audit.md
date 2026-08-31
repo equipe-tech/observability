@@ -33,7 +33,9 @@ Use `recordId` como a única chave de idempotência. Uma repetição dentro da j
 
 O adapter evlog existente fornece `observability.auditLayer`. A cópia usa a mesma fila, os mesmos limites, retry, fallback, flush, close e contagem de perdas dos eventos.
 
-A política sanitiza todos os campos antes da fila e a projeção nativa lê somente o resultado transformado. A superfície `audit` aceita no máximo 64 campos e 4.096 caracteres por texto. Se a política remover ou alterar `audit.record.id`, `audit.record.hash`, `audit.action`, `audit.resource.type`, `audit.outcome` ou `audit.schema_version`, o adapter descarta a cópia inteira como `policy-rejected`. A política pode mascarar `audit.actor.id`, inclusive emails, e remover campos opcionais de contexto. O envelope nativo recebe o mesmo valor mascarado ou removido do campo canônico.
+Um contrato que declara `auditActions` também deve registrar `Contract.organizationEvents.AuditRecorded` em `events` antes de iniciar o adapter. Sem esse evento obrigatório, sem amostragem e com severidade `info`, o startup falha com `OBS_EVLOG_AUDIT_CONTRACT_INVALID`.
+
+A política sanitiza todos os campos antes da fila e a projeção nativa lê somente o resultado transformado. A superfície `audit` aceita no máximo 64 campos e 4.096 caracteres por texto. Nove âncoras são imutáveis: `event.outcome`, `event.timestamp`, `audit.record.id`, `audit.record.hash`, `audit.action`, `audit.actor.kind`, `audit.resource.type`, `audit.outcome` e `audit.schema_version`. Se a política remover ou alterar uma dessas âncoras, o adapter descarta a cópia inteira como `policy-rejected`. A política pode mascarar `audit.actor.id`, inclusive emails, e remover campos opcionais de contexto. O envelope nativo recebe o mesmo valor mascarado ou removido do campo canônico.
 
 A projeção nativa usa estes mapeamentos:
 

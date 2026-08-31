@@ -514,9 +514,8 @@ const auditPublishReport = (state: MutableAuditPublishState): AuditPublishReport
 const incrementAuditDrop = (
   state: MutableAuditPublishState,
   reason: "closed" | "queue-overflow" | "policy-rejected" | "transport",
-  effectTimestamp?: string,
+  droppedAt: string,
 ): AuditPublishReceipt => {
-  const droppedAt = effectTimestamp ?? new Date().toISOString();
   state.dropped += 1;
   if (Option.isNone(state.firstDroppedAt)) state.firstDroppedAt = Option.some(droppedAt);
   state.lastDroppedAt = Option.some(droppedAt);
@@ -591,6 +590,8 @@ export const makeEvlogAdapter = (
           ),
         );
         const clock = yield* Clock.Clock;
+        const auditDropTimestamp = (): string =>
+          DateTime.formatIso(DateTime.makeUnsafe(clock.currentTimeMillisUnsafe()));
         if (context.contract.auditActionByName.size > 0) {
           const auditEventName = context.contract.eventNames.find(
             (candidate) => candidate === "audit.recorded",
@@ -721,6 +722,7 @@ export const makeEvlogAdapter = (
                 incrementAuditDrop(
                   auditState,
                   error === undefined ? "queue-overflow" : "transport",
+                  auditDropTimestamp(),
                 );
               }
               fallback(record);
@@ -1035,7 +1037,7 @@ export const makeEvlogAdapter = (
         const admitAudit = (record: CommittedAuditRecord): Effect.Effect<AuditPublishReceipt> =>
           Effect.suspend(() => {
             const now = clock.currentTimeMillisUnsafe();
-            const effectTimestamp = DateTime.formatIso(DateTime.makeUnsafe(now));
+            const effectTimestamp = auditDropTimestamp();
             return Effect.promise<AuditPublishReceipt>(async () => {
               for (const [recordId, deliveredAt] of deliveredAuditRecords) {
                 if (now - deliveredAt > resolvedOptions.auditDedupeWindowMillis) {

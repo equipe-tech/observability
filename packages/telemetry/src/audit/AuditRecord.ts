@@ -3,7 +3,7 @@ import { CorrelationContext, CurrentCorrelation } from "../Correlation.ts";
 import type { TelemetryContract, TelemetryContractInput } from "../contract/TelemetryContract.ts";
 import { InvalidAuditRecord } from "./InvalidAuditRecord.ts";
 
-export const isControlCharacterFree = (value: string): boolean => {
+const isControlCharacterFree = (value: string): boolean => {
   for (const character of value) {
     const codePoint = character.codePointAt(0);
     if (codePoint !== undefined && (codePoint <= 31 || codePoint === 127)) return false;
@@ -96,18 +96,23 @@ export const AuditOccurredAt = Schema.String.check(
 ).pipe(Schema.brand("AuditOccurredAt"));
 export type AuditOccurredAt = typeof AuditOccurredAt.Type;
 
-export type AuditRecord = {
-  readonly schemaVersion: 1;
-  readonly recordId: AuditRecordId;
-  readonly action: AuditAction;
-  readonly actor: AuditActor;
-  readonly resource: AuditResource;
-  readonly outcome: AuditOutcome;
-  readonly reasonCode: Option.Option<AuditReasonCode>;
-  readonly tenantId: Option.Option<AuditTenantId>;
-  readonly occurredAt: AuditOccurredAt;
-  readonly correlation: CorrelationContext;
-};
+const AuditRecordFields = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  recordId: AuditRecordId,
+  action: AuditAction,
+  actor: AuditActor,
+  resource: AuditResource,
+  outcome: AuditOutcome,
+  reasonCode: Schema.Option(AuditReasonCode),
+  tenantId: Schema.Option(AuditTenantId),
+  occurredAt: AuditOccurredAt,
+  correlation: CorrelationContext,
+});
+type AuditRecordFields = typeof AuditRecordFields.Type;
+const parsedAuditRecordBrand: unique symbol = Symbol(
+  "@equipe-tech/observability/ParsedAuditRecord",
+);
+export type AuditRecord = AuditRecordFields & { readonly [parsedAuditRecordBrand]: true };
 
 export type AuditRecordInput = {
   readonly recordId: string;
@@ -121,6 +126,7 @@ export type AuditRecordInput = {
   readonly correlation?: CorrelationContext;
 };
 
+const decodeSchemaVersion = Schema.decodeUnknownEffect(Schema.Literal(1));
 const decodeRecordId = Schema.decodeUnknownEffect(AuditRecordId);
 const decodeActor = Schema.decodeUnknownEffect(AuditActor);
 const decodeResourceId = Schema.decodeUnknownEffect(AuditResourceId);
@@ -130,6 +136,8 @@ const decodeReasonCode = Schema.decodeUnknownEffect(AuditReasonCode);
 const decodeTenantId = Schema.decodeUnknownEffect(AuditTenantId);
 const decodeOccurredAt = Schema.decodeUnknownEffect(AuditOccurredAt);
 const decodeCorrelation = Schema.decodeUnknownEffect(CorrelationContext);
+const decodeReasonCodeOption = Schema.decodeUnknownEffect(Schema.Option(AuditReasonCode));
+const decodeTenantIdOption = Schema.decodeUnknownEffect(Schema.Option(AuditTenantId));
 
 const invalid = (
   code: InvalidAuditRecord["code"],
@@ -145,6 +153,59 @@ const optionalString = (
   value: string | Option.Option<string> | undefined,
 ): Option.Option<string> =>
   value === undefined ? Option.none() : Predicate.isString(value) ? Option.some(value) : value;
+
+export const reparseAuditRecord = Effect.fn("reparseAuditRecord")(function* (
+  record: AuditRecordFields,
+): Effect.fn.Return<AuditRecord, InvalidAuditRecord> {
+  const invalidField = (field: string): InvalidAuditRecord =>
+    invalid(
+      "OBS_AUDIT_INVALID_FIELD",
+      `Audit record field ${field} is invalid. Parse the record before committing it.`,
+      field,
+    );
+  const schemaVersion = yield* decodeSchemaVersion(record.schemaVersion).pipe(
+    Effect.mapError(() => invalidField("schemaVersion")),
+  );
+  const recordId = yield* decodeRecordId(record.recordId).pipe(
+    Effect.mapError(() => invalidField("recordId")),
+  );
+  const action = yield* Schema.decodeUnknownEffect(AuditAction)(record.action).pipe(
+    Effect.mapError(() => invalidField("action")),
+  );
+  const actor = yield* decodeActor(record.actor).pipe(Effect.mapError(() => invalidField("actor")));
+  const resource = yield* Schema.decodeUnknownEffect(AuditResource)(record.resource).pipe(
+    Effect.mapError(() => invalidField("resource")),
+  );
+  const outcome = yield* decodeOutcome(record.outcome).pipe(
+    Effect.mapError(() => invalidField("outcome")),
+  );
+  const reasonCode = yield* decodeReasonCodeOption(record.reasonCode).pipe(
+    Effect.mapError(() => invalidField("reasonCode")),
+  );
+  const tenantId = yield* decodeTenantIdOption(record.tenantId).pipe(
+    Effect.mapError(() => invalidField("tenantId")),
+  );
+  const occurredAt = yield* decodeOccurredAt(record.occurredAt).pipe(
+    Effect.mapError(() => invalidField("occurredAt")),
+  );
+  const correlation = yield* decodeCorrelation(record.correlation).pipe(
+    Effect.mapError(() => invalidField("correlation")),
+  );
+  const parsed: AuditRecord = {
+    schemaVersion,
+    recordId,
+    action,
+    actor: Object.freeze(actor),
+    resource: Object.freeze(resource),
+    outcome,
+    reasonCode,
+    tenantId,
+    occurredAt,
+    correlation,
+    [parsedAuditRecordBrand]: true,
+  };
+  return Object.freeze(parsed);
+});
 
 export const parseAuditRecord = Effect.fn("parseAuditRecord")(function* <
   Definition extends TelemetryContractInput,
@@ -274,14 +335,12 @@ export const parseAuditRecord = Effect.fn("parseAuditRecord")(function* <
             ),
           ),
         );
-  const frozenActor = Object.freeze(actor);
-  const resource = Object.freeze({ type: resourceType, id: resourceId });
-  return Object.freeze({
+  return yield* reparseAuditRecord({
     schemaVersion: 1,
     recordId,
     action: action.action,
-    actor: frozenActor,
-    resource,
+    actor,
+    resource: { type: resourceType, id: resourceId },
     outcome,
     reasonCode,
     tenantId,
