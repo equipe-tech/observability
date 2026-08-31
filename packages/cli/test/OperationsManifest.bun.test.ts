@@ -71,6 +71,54 @@ const validate = Effect.gen(function* () {
   return yield* validateOperationsManifest(manifest, index);
 });
 
+const diamondContract = (layers: number): string => {
+  const names = ["graph.node_0000"];
+  const aliases: Array<{ readonly kind: "event"; readonly from: string; readonly to: string }> = [];
+  let current = names[0] ?? "graph.node_0000";
+  for (let layer = 0; layer < layers; layer += 1) {
+    const offset = layer * 3 + 1;
+    const left = `graph.node_${String(offset).padStart(4, "0")}`;
+    const right = `graph.node_${String(offset + 1).padStart(4, "0")}`;
+    const next = `graph.node_${String(offset + 2).padStart(4, "0")}`;
+    names.push(left, right, next);
+    aliases.push(
+      { kind: "event", from: current, to: left },
+      { kind: "event", from: current, to: right },
+      { kind: "event", from: left, to: next },
+      { kind: "event", from: right, to: next },
+    );
+    current = next;
+  }
+  return JSON.stringify({
+    index: 1,
+    contractVersion: 1,
+    service: "checkout",
+    events: [
+      {
+        name: "payment.attempt",
+        kind: "operation",
+        attributes: ["payment.provider"],
+        attributeClassifications: [{ name: "payment.provider", classification: "public" }],
+      },
+      ...names.map((name) => ({
+        name,
+        kind: "operation",
+        attributes: [],
+        attributeClassifications: [],
+      })),
+    ],
+    metrics: [
+      {
+        name: "payment.latency",
+        kind: "histogram",
+        unit: "ms",
+        attributes: ["payment.provider"],
+      },
+    ],
+    aliases,
+  });
+};
+
 describe("operations manifest", () => {
   test("parses YAML, contract index and exact query sources", async () => {
     const validated = await Effect.runPromise(validate);
@@ -227,6 +275,14 @@ describe("operations manifest", () => {
       ),
     );
     await Effect.runPromise(validateOperationsManifest(counterManifest, index));
+  });
+
+  test("validates a 1000-node diamond graph within a bounded runtime", async () => {
+    const manifest = await Effect.runPromise(parseOperationsManifest(validManifest));
+    const index = await Effect.runPromise(parseOperationsContractIndex(diamondContract(333)));
+    const startedAt = performance.now();
+    await Effect.runPromise(validateOperationsManifest(manifest, index));
+    expect(performance.now() - startedAt).toBeLessThan(2_000);
   });
 
   test("rejects incompatible transitive aliases and alias cycles", async () => {

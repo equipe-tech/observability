@@ -116,4 +116,69 @@ describe("operations state", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
+
+  test.serial("rejects negative and unsafe hand-edited generations", async () => {
+    const home = await mkdtemp(join(tmpdir(), "observability-state-generation-"));
+    const previous = process.env.OBSERVABILITY_HOME;
+    process.env.OBSERVABILITY_HOME = home;
+    const operations = join(home, "operations");
+    const statePath = join(operations, "checkout.json");
+    await mkdir(operations, { recursive: true });
+    try {
+      for (const generation of [-1, Number.MAX_SAFE_INTEGER + 1]) {
+        await writeFile(
+          statePath,
+          `${JSON.stringify({
+            version: 1,
+            generation,
+            service: "checkout",
+            manualActions: [],
+            mutations: [],
+          })}\n`,
+        );
+        const error = await Effect.runPromise(
+          Effect.gen(function* () {
+            const store = yield* OperationsState;
+            return yield* Effect.flip(store.load("checkout"));
+          }).pipe(Effect.provide(OperationsState.layer)),
+        );
+        expect(error.code).toBe("OBS_CLI_OPERATIONS_STATE_INVALID");
+      }
+    } finally {
+      if (previous === undefined) delete process.env.OBSERVABILITY_HOME;
+      else process.env.OBSERVABILITY_HOME = previous;
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test.serial("rejects generation increment overflow", async () => {
+    const home = await mkdtemp(join(tmpdir(), "observability-state-overflow-"));
+    const previous = process.env.OBSERVABILITY_HOME;
+    process.env.OBSERVABILITY_HOME = home;
+    const operations = join(home, "operations");
+    await mkdir(operations, { recursive: true });
+    await writeFile(
+      join(operations, "checkout.json"),
+      `${JSON.stringify({
+        version: 1,
+        generation: Number.MAX_SAFE_INTEGER,
+        service: "checkout",
+        manualActions: [],
+        mutations: [],
+      })}\n`,
+    );
+    try {
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* OperationsState;
+          return yield* Effect.flip(store.update("checkout", Number.MAX_SAFE_INTEGER, increment));
+        }).pipe(Effect.provide(OperationsState.layer)),
+      );
+      expect(error.code).toBe("OBS_CLI_OPERATIONS_STATE_INVALID");
+    } finally {
+      if (previous === undefined) delete process.env.OBSERVABILITY_HOME;
+      else process.env.OBSERVABILITY_HOME = previous;
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 });

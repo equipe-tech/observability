@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Effect, Exit } from "effect";
-import { compileManagedQuery, parseManagedQuery } from "../src/ManagedQuery.ts";
+import { compileManagedQuery, parseManagedQuery, type ManagedQuery } from "../src/ManagedQuery.ts";
 
 const parse = (query: string) => Effect.runPromise(parseManagedQuery(query));
 
@@ -74,6 +74,131 @@ describe("managed query", () => {
         signals: ["payment.attempt"],
       }).text,
     ).toContain(String.raw`['note'] == 'quote\' slash\\ newline\nnext'`);
+  });
+
+  test("rejects unsafe numeric representations", async () => {
+    for (const text of ["1e3", "0.0000001", "1000000000000000000000"]) {
+      expect(
+        Exit.isFailure(
+          await Effect.runPromiseExit(
+            parseManagedQuery(
+              `signal(logs) | where event.name == "payment.attempt" and value == ${text}`,
+            ),
+          ),
+        ),
+      ).toBe(true);
+    }
+    const query = await parse(
+      'signal(logs) | where event.name == "payment.attempt" and value == 1',
+    );
+    for (const value of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      1e-7,
+      Number.MAX_SAFE_INTEGER + 1,
+    ]) {
+      const unsafe: ManagedQuery = {
+        ...query,
+        stages: query.stages.map((stage) =>
+          stage.kind === "where"
+            ? {
+                ...stage,
+                comparisons: stage.comparisons.map((comparison) =>
+                  comparison.field === "value"
+                    ? { ...comparison, values: [{ kind: "number", value }] }
+                    : comparison,
+                ),
+              }
+            : stage,
+        ),
+      };
+      expect(() =>
+        compileManagedQuery(unsafe, {
+          dataset: "logs",
+          language: "apl",
+          signals: ["payment.attempt"],
+        }),
+      ).toThrow("cannot be compiled safely");
+    }
+  });
+
+  test("escapes datasets and signals and rejects executable AST text", async () => {
+    const query = await parse('signal(logs) | where event.name == "payment.attempt"');
+    expect(
+      compileManagedQuery(query, {
+        dataset: "logs'] | take 1 | ['x",
+        language: "apl",
+        signals: ["payment' | take 1"],
+      }).text,
+    ).toBe(String.raw`['logs\'] | take 1 | [\'x'] | where ['event.name'] == 'payment\' | take 1'`);
+
+    const comparisonField: ManagedQuery = {
+      ...query,
+      stages: [
+        {
+          kind: "where",
+          comparisons: [
+            {
+              kind: "comparison",
+              field: "event.name'] | take 1 | ['x",
+              operator: "==",
+              values: [{ kind: "string", value: "payment.attempt" }],
+            },
+          ],
+        },
+      ],
+    };
+    const aggregationField: ManagedQuery = {
+      ...query,
+      stages: [
+        ...query.stages,
+        {
+          kind: "summarize",
+          aggregation: {
+            kind: "field",
+            function: "sum",
+            field: "value'] | take 1 | ['x",
+          },
+          groups: [],
+        },
+      ],
+    };
+    const groupDuration: ManagedQuery = {
+      ...query,
+      stages: [
+        ...query.stages,
+        {
+          kind: "summarize",
+          aggregation: { kind: "count" },
+          groups: [{ kind: "bin", field: "timestamp", duration: "5m) | take 1" }],
+        },
+      ],
+    };
+    const percentile: ManagedQuery = {
+      ...query,
+      stages: [
+        ...query.stages,
+        {
+          kind: "summarize",
+          aggregation: {
+            kind: "quantile",
+            field: "value",
+            percentile: "95) | take 1",
+          },
+          groups: [],
+        },
+      ],
+    };
+    for (const unsafe of [comparisonField, aggregationField, groupDuration, percentile]) {
+      expect(() =>
+        compileManagedQuery(unsafe, {
+          dataset: "logs",
+          language: "apl",
+          signals: ["payment.attempt"],
+        }),
+      ).toThrow("cannot be compiled safely");
+    }
   });
 
   test("rejects oversized and unterminated input", async () => {

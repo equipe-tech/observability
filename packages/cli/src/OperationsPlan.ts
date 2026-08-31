@@ -567,40 +567,7 @@ export class OperationsPlanner extends Context.Service<
         for (const unresolved of observed.state.mutations.filter(
           (mutation) => mutation.status === "pending" || mutation.status === "outcome-unknown",
         )) {
-          const expectedKind: AxiomDatasetKind = unresolved.resource.endsWith("-metrics")
-            ? "otel:metrics:v1"
-            : "axiom:events:v1";
-          const reconciled = observed.datasets.some(
-            (dataset) => dataset.name === unresolved.resource && dataset.kind === expectedKind,
-          );
-          if (reconciled) {
-            const next = yield* stateStore.update(
-              current.service,
-              stateGeneration,
-              (state) =>
-                new OperationsStateDocument({
-                  version: state.version,
-                  generation: state.generation,
-                  service: state.service,
-                  manualActions: state.manualActions,
-                  mutations: state.mutations.map((entry) =>
-                    entry.id === unresolved.id
-                      ? new MutationIntent({
-                          id: entry.id,
-                          operation: entry.operation,
-                          resource: entry.resource,
-                          desiredFingerprint: entry.desiredFingerprint,
-                          status: "resolved",
-                          updatedAt: entry.updatedAt,
-                        })
-                      : entry,
-                  ),
-                }),
-            );
-            stateGeneration = next.generation;
-            continue;
-          }
-          const absent = yield* stateStore.update(
+          const next = yield* stateStore.update(
             current.service,
             stateGeneration,
             (state) =>
@@ -623,7 +590,7 @@ export class OperationsPlanner extends Context.Service<
                 ),
               }),
           );
-          stateGeneration = absent.generation;
+          stateGeneration = next.generation;
         }
         for (const confirmation of confirmedManualActions) {
           const pending = current.pendingManualActions.find((action) => action.id === confirmation);

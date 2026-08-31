@@ -77,6 +77,91 @@ const invalidQuery = (message: string, cause: string): ManagedQueryError =>
 const fieldPattern = /^[a-z][a-z0-9_]*(?:[.][a-z][a-z0-9_]*)*$/;
 const durationPattern = /^[1-9][0-9]*(?:ms|s|m|h|d)$/;
 const numberPattern = /^-?(?:0|[1-9][0-9]*)(?:[.][0-9]+)?$/;
+const percentilePattern = /^(?:100(?:[.]0+)?|(?:0|[1-9][0-9]?)(?:[.][0-9]+)?)$/;
+const safeManagedQueryNumber = (value: number): boolean =>
+  Number.isFinite(value) &&
+  Math.abs(value) <= Number.MAX_SAFE_INTEGER &&
+  !String(value).toLowerCase().includes("e");
+const SafeManagedQueryNumber = Schema.Number.check(
+  Schema.makeFilter(safeManagedQueryNumber, {
+    expected: "a finite, non-exponential number within JavaScript's safe magnitude",
+  }),
+);
+const ManagedQueryLiteralInput = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("string"), value: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("number"), value: SafeManagedQueryNumber }),
+  Schema.Struct({ kind: Schema.Literal("boolean"), value: Schema.Boolean }),
+]);
+const ManagedQueryScalarComparisonInput = Schema.Struct({
+  kind: Schema.Literal("comparison"),
+  field: Schema.String.check(Schema.isPattern(fieldPattern)),
+  operator: Schema.Literals(["==", "!=", ">", ">=", "<", "<="]),
+  values: Schema.Array(ManagedQueryLiteralInput).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(1),
+  ),
+});
+const ManagedQuerySetComparisonInput = Schema.Struct({
+  kind: Schema.Literal("comparison"),
+  field: Schema.String.check(Schema.isPattern(fieldPattern)),
+  operator: Schema.Literal("in"),
+  values: Schema.Array(ManagedQueryLiteralInput).check(Schema.isMinLength(1)),
+});
+const ManagedQueryAggregationInput = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("count") }),
+  Schema.Struct({
+    kind: Schema.Literal("field"),
+    function: Schema.Literals(["sum", "avg", "min", "max"]),
+    field: Schema.String.check(Schema.isPattern(fieldPattern)),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("quantile"),
+    field: Schema.String.check(Schema.isPattern(fieldPattern)),
+    percentile: Schema.String.check(Schema.isPattern(percentilePattern)),
+  }),
+]);
+const ManagedQueryGroupInput = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("field"),
+    field: Schema.String.check(Schema.isPattern(fieldPattern)),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("bin"),
+    field: Schema.String.check(Schema.isPattern(fieldPattern)),
+    duration: Schema.String.check(Schema.isPattern(durationPattern)),
+  }),
+]);
+const ManagedQueryStageInput = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("where"),
+    comparisons: Schema.Array(
+      Schema.Union([ManagedQueryScalarComparisonInput, ManagedQuerySetComparisonInput]),
+    ),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("summarize"),
+    aggregation: ManagedQueryAggregationInput,
+    groups: Schema.Array(ManagedQueryGroupInput),
+  }),
+]);
+const ManagedQueryCompilationInput = Schema.Struct({
+  query: Schema.Struct({
+    stream: ManagedSignalStream,
+    stages: Schema.Array(ManagedQueryStageInput),
+    binding: Schema.Struct({
+      field: Schema.Literals(["event.name", "metric.name"]),
+      identifiers: Schema.Array(Schema.String),
+    }),
+  }),
+  target: Schema.Struct({
+    dataset: Schema.String,
+    language: Schema.Literals(["apl", "mpl"]),
+    signals: Schema.Array(Schema.String).check(Schema.isMinLength(1)),
+  }),
+});
+const decodeManagedQueryCompilationInput = Schema.decodeUnknownSync(ManagedQueryCompilationInput, {
+  onExcessProperty: "error",
+});
 
 const splitOutsideStrings = (
   input: string,
@@ -147,7 +232,7 @@ const parseLiteral = (input: string): ManagedQueryLiteral | ManagedQueryError =>
   if (input === "true" || input === "false") return { kind: "boolean", value: input === "true" };
   if (numberPattern.test(input)) {
     const value = Number(input);
-    if (Number.isFinite(value)) return { kind: "number", value };
+    if (safeManagedQueryNumber(value)) return { kind: "number", value };
   }
   return invalidQuery("The managed query contains an unsupported literal.", input);
 };
@@ -399,40 +484,53 @@ const renderLiteral = (literal: ManagedQueryLiteral): string => {
   return String(literal.value);
 };
 
+const renderIdentifier = (identifier: string): string => `[${quote(identifier)}]`;
+
+const compilationInput = (query: ManagedQuery, target: ManagedQueryTarget) => {
+  try {
+    return decodeManagedQueryCompilationInput({ query, target });
+  } catch (cause) {
+    throw invalidQuery("The managed query cannot be compiled safely.", String(cause));
+  }
+};
+
 const renderAggregation = (aggregation: ManagedQueryAggregation): string => {
   if (aggregation.kind === "count") return "count()";
   if (aggregation.kind === "quantile") {
-    return `percentile(['${aggregation.field}'], ${aggregation.percentile})`;
+    return `percentile(${renderIdentifier(aggregation.field)}, ${aggregation.percentile})`;
   }
-  return `${aggregation.function}(['${aggregation.field}'])`;
+  return `${aggregation.function}(${renderIdentifier(aggregation.field)})`;
 };
 
 const renderGroup = (group: ManagedQueryGroup): string =>
-  group.kind === "bin" ? `bin(['${group.field}'], ${group.duration})` : `['${group.field}']`;
+  group.kind === "bin"
+    ? `bin(${renderIdentifier(group.field)}, ${group.duration})`
+    : renderIdentifier(group.field);
 
 export const compileManagedQuery = (
   query: ManagedQuery,
   target: ManagedQueryTarget,
 ): CompiledManagedQuery => {
-  const renderedStages = query.stages.map((stage) => {
+  const input = compilationInput(query, target);
+  const renderedStages = input.query.stages.map((stage) => {
     if (stage.kind === "summarize") {
       const groups = stage.groups.map(renderGroup);
       const suffix = groups.length === 0 ? "" : ` by ${groups.join(", ")}`;
       return `summarize ${renderAggregation(stage.aggregation)}${suffix}`;
     }
     const comparisons = stage.comparisons.map((comparison) => {
-      if (comparison.field === query.binding.field) {
-        return target.signals.length === 1
-          ? `['${comparison.field}'] == ${quote(target.signals[0] ?? "")}`
-          : `['${comparison.field}'] in (${target.signals.map(quote).join(", ")})`;
+      if (comparison.field === input.query.binding.field) {
+        return input.target.signals.length === 1
+          ? `${renderIdentifier(comparison.field)} == ${quote(input.target.signals[0] ?? "")}`
+          : `${renderIdentifier(comparison.field)} in (${input.target.signals.map(quote).join(", ")})`;
       }
       if (comparison.operator === "in") {
-        return `['${comparison.field}'] in (${comparison.values.map(renderLiteral).join(", ")})`;
+        return `${renderIdentifier(comparison.field)} in (${comparison.values.map(renderLiteral).join(", ")})`;
       }
-      return `['${comparison.field}'] ${comparison.operator} ${renderLiteral(comparison.values[0] ?? { kind: "string", value: "" })}`;
+      return `${renderIdentifier(comparison.field)} ${comparison.operator} ${comparison.values.map(renderLiteral).join("")}`;
     });
     return `where ${comparisons.join(" and ")}`;
   });
-  const text = [`['${target.dataset}']`, ...renderedStages].join(" | ");
-  return { dataset: target.dataset, language: target.language, text };
+  const text = [renderIdentifier(input.target.dataset), ...renderedStages].join(" | ");
+  return { dataset: input.target.dataset, language: input.target.language, text };
 };

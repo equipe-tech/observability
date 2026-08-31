@@ -217,28 +217,54 @@ const duplicates = (values: ReadonlyArray<string>): ReadonlyArray<string> => {
   return [...repeated].sort();
 };
 
-const expandedSignals = (
-  contract: OperationsContractIndex,
-  source: SignalReference,
-): ReadonlyArray<string> => {
-  const signals = new Set([source.name]);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const alias of contract.aliases) {
-      if (alias.kind === source.kind && signals.has(alias.from) && !signals.has(alias.to)) {
-        signals.add(alias.to);
-        changed = true;
-      }
-    }
+type AliasKind = SignalReference["kind"];
+type AliasExpansion = {
+  readonly targets: ReadonlySet<string>;
+  readonly cyclic: boolean;
+};
+type AliasGraph = {
+  expand(kind: AliasKind, source: string): AliasExpansion;
+};
+
+const aliasKey = (kind: AliasKind, name: string): string => `${kind}\u0000${name}`;
+
+const buildAliasGraph = (aliases: OperationsContractIndex["aliases"]): AliasGraph => {
+  const adjacency = new Map<string, Set<string>>();
+  for (const alias of aliases) {
+    const key = aliasKey(alias.kind, alias.from);
+    const targets = adjacency.get(key) ?? new Set<string>();
+    targets.add(alias.to);
+    adjacency.set(key, targets);
   }
-  return [...signals].sort();
+  const colors = new Map<string, "gray" | "black">();
+  const expansions = new Map<string, AliasExpansion>();
+  const expand = (kind: AliasKind, source: string): AliasExpansion => {
+    const key = aliasKey(kind, source);
+    const cached = expansions.get(key);
+    if (cached !== undefined) return cached;
+    if (colors.get(key) === "gray") return { targets: new Set([source]), cyclic: true };
+    colors.set(key, "gray");
+    const targets = new Set([source]);
+    let cyclic = false;
+    for (const target of adjacency.get(key) ?? []) {
+      const nested = expand(kind, target);
+      for (const nestedTarget of nested.targets) targets.add(nestedTarget);
+      if (nested.cyclic) cyclic = true;
+    }
+    const expansion = { targets, cyclic };
+    colors.set(key, "black");
+    expansions.set(key, expansion);
+    return expansion;
+  };
+  for (const alias of aliases) expand(alias.kind, alias.from);
+  return { expand };
 };
 
 const validateQuery = Effect.fn("validateManagedSource")(function* (
   queryText: string,
   sources: ReadonlyArray<SignalReference>,
   contract: OperationsContractIndex,
+  aliases: AliasGraph,
 ): Effect.fn.Return<ManagedQuery, OperationsManifestError | ManagedQueryError> {
   const query = yield* parseManagedQuery(queryText);
   const kinds = new Set(sources.map((source) => source.kind));
@@ -262,7 +288,7 @@ const validateQuery = Effect.fn("validateManagedSource")(function* (
     });
   }
   const expected = [
-    ...new Set(sources.flatMap((source) => expandedSignals(contract, source))),
+    ...new Set(sources.flatMap((source) => [...aliases.expand(source.kind, source.name).targets])),
   ].sort();
   const actual = [...query.binding.identifiers].sort();
   if (expected.join("\u0000") !== actual.join("\u0000")) {
@@ -272,9 +298,11 @@ const validateQuery = Effect.fn("validateManagedSource")(function* (
       cause: actual.join(","),
     });
   }
-  const expandedSourceNames = sources.flatMap((source) => expandedSignals(contract, source));
+  const expandedSourceNames = sources.flatMap((source) => [
+    ...aliases.expand(source.kind, source.name).targets,
+  ]);
   const targetAttributeSets = sources.flatMap((source) => {
-    const names = new Set(expandedSignals(contract, source));
+    const names = aliases.expand(source.kind, source.name).targets;
     return source.kind === "event"
       ? contract.events
           .filter((event) => names.has(event.name))
@@ -384,8 +412,10 @@ export const validateOperationsManifest = Effect.fn("validateOperationsManifest"
     if (matches.length !== 1)
       issues.push(`environment ${environment} requires exactly one retention`);
   }
-  const eventNames = new Set(contract.events.map((event) => event.name));
-  const metricNames = new Set(contract.metrics.map((metric) => metric.name));
+  const eventsByName = new Map(contract.events.map((event) => [event.name, event]));
+  const metricsByName = new Map(contract.metrics.map((metric) => [metric.name, metric]));
+  const eventNames = new Set(eventsByName.keys());
+  const metricNames = new Set(metricsByName.keys());
   for (const event of contract.events) {
     const attributes = [...event.attributes].sort();
     const classifications = event.attributeClassifications
@@ -404,32 +434,23 @@ export const validateOperationsManifest = Effect.fn("validateOperationsManifest"
       issues.push(`duplicate metric attributes metric ${metric.name}`);
     }
   }
+  const aliasGraph = buildAliasGraph(contract.aliases);
   for (const alias of contract.aliases) {
     const names = alias.kind === "event" ? eventNames : metricNames;
     if (!names.has(alias.to)) issues.push(`unknown alias target ${alias.kind} ${alias.to}`);
-    const paths: Array<ReadonlyArray<string>> = [[alias.from]];
-    for (let cursor = 0; cursor < paths.length; cursor += 1) {
-      const path = paths[cursor];
-      const target = path?.at(-1);
-      if (path === undefined || target === undefined) continue;
-      for (const next of contract.aliases.filter(
-        (candidate) => candidate.kind === alias.kind && candidate.from === target,
-      )) {
-        if (path.includes(next.to)) {
-          issues.push(`cyclic alias ${alias.kind} ${alias.from}`);
-          paths.length = 0;
-          break;
-        }
-        paths.push([...path, next.to]);
-      }
+    if (aliasGraph.expand(alias.kind, alias.from).cyclic) {
+      issues.push(`cyclic alias ${alias.kind} ${alias.from}`);
     }
   }
   const eventAliasSources = new Set(
     contract.aliases.filter((alias) => alias.kind === "event").map((alias) => alias.from),
   );
   for (const source of eventAliasSources) {
-    const names = new Set(expandedSignals(contract, { kind: "event", name: source }));
-    const targets = contract.events.filter((event) => names.has(event.name));
+    const names = aliasGraph.expand("event", source).targets;
+    const targets = [...names].flatMap((name) => {
+      const event = eventsByName.get(name);
+      return event === undefined ? [] : [event];
+    });
     const first = targets[0];
     const signature = (event: (typeof targets)[number]): string =>
       [...event.attributeClassifications]
@@ -451,8 +472,11 @@ export const validateOperationsManifest = Effect.fn("validateOperationsManifest"
     contract.aliases.filter((alias) => alias.kind === "metric").map((alias) => alias.from),
   );
   for (const source of metricAliasSources) {
-    const names = new Set(expandedSignals(contract, { kind: "metric", name: source }));
-    const targets = contract.metrics.filter((metric) => names.has(metric.name));
+    const names = aliasGraph.expand("metric", source).targets;
+    const targets = [...names].flatMap((name) => {
+      const metric = metricsByName.get(name);
+      return metric === undefined ? [] : [metric];
+    });
     const first = targets[0];
     if (
       first !== undefined &&
@@ -489,7 +513,7 @@ export const validateOperationsManifest = Effect.fn("validateOperationsManifest"
     for (const panel of dashboard.panels) {
       panels.push({
         definition: panel,
-        query: yield* validateQuery(panel.query, panel.sources, contract),
+        query: yield* validateQuery(panel.query, panel.sources, contract, aliasGraph),
       });
     }
     dashboards.push({ definition: dashboard, panels });
@@ -498,7 +522,7 @@ export const validateOperationsManifest = Effect.fn("validateOperationsManifest"
   for (const monitor of manifest.monitors) {
     monitors.push({
       definition: monitor,
-      query: yield* validateQuery(monitor.query, [monitor.source], contract),
+      query: yield* validateQuery(monitor.query, [monitor.source], contract, aliasGraph),
     });
   }
   return { manifest, contract, dashboards, monitors };

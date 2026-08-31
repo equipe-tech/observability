@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   ManagedQueryError,
@@ -13,6 +13,7 @@ import { OperationsError } from "./OperationsPlan.ts";
 
 const FileReadFailure = Schema.Struct({ code: Schema.String });
 const decodeFileReadFailure = Schema.decodeUnknownOption(FileReadFailure);
+const generatedPlanPattern = /^plan-[0-9a-f]{64}[.]json$/;
 
 const readDocument = Effect.fn("readOperationsDocument")(function* (
   path: string,
@@ -57,6 +58,16 @@ export const persistOperationsPlan = Effect.fn("persistOperationsPlan")(function
       await chmod(outputDirectory, 0o700);
       await writeFile(outputPath, content, { mode: 0o600 });
       await chmod(outputPath, 0o600);
+      const entries = await readdir(outputDirectory, { withFileTypes: true });
+      for (const entry of entries) {
+        if (
+          entry.isFile() &&
+          entry.name !== `plan-${digest}.json` &&
+          generatedPlanPattern.test(entry.name)
+        ) {
+          await rm(resolve(outputDirectory, entry.name), { force: true });
+        }
+      }
     },
     catch: (cause) =>
       new OperationsError({

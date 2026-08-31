@@ -33,11 +33,17 @@ export class MutationIntent extends Schema.Class<MutationIntent>(
   updatedAt: Schema.NonEmptyString,
 }) {}
 
+const OperationsStateGeneration = Schema.Int.check(
+  Schema.makeFilter((value) => Number.isSafeInteger(value) && value >= 0, {
+    expected: "a nonnegative safe integer",
+  }),
+);
+
 export class OperationsStateDocument extends Schema.Class<OperationsStateDocument>(
   "@equipe-tech/observability-cli/OperationsStateDocument",
 )({
   version: Schema.Literal(1),
-  generation: Schema.Int,
+  generation: OperationsStateGeneration,
   service: Schema.NonEmptyString,
   manualActions: Schema.Array(ManualAction),
   mutations: Schema.Array(MutationIntent),
@@ -253,6 +259,13 @@ export class OperationsState extends Context.Service<OperationsState, Operations
             return yield* new OperationsStateError({
               code: "OBS_CLI_OPERATIONS_STATE_BUSY",
               message: `Operations state for ${service} changed from generation ${expectedGeneration} to ${current.generation}. Retry with a fresh plan.`,
+              cause: current.generation,
+            });
+          }
+          if (current.generation === Number.MAX_SAFE_INTEGER) {
+            return yield* new OperationsStateError({
+              code: "OBS_CLI_OPERATIONS_STATE_INVALID",
+              message: "Operations state generation cannot be incremented safely.",
               cause: current.generation,
             });
           }

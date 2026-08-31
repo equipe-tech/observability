@@ -67,6 +67,37 @@ describe("contract index", () => {
     expect(Contract.encodeContractIndex(index)).toBe(`${JSON.stringify(index, null, 2)}\n`);
   });
 
+  it("indexes 1000 alias sources within a bounded runtime", async () => {
+    const contract = await Effect.runPromise(
+      defineTelemetryContract({
+        version: 1,
+        events: {
+          Target: {
+            name: "graph.target",
+            kind: "operation",
+            defaultSeverity: "info",
+            mandatory: true,
+            sampling: { kind: "always" },
+            attributes: {},
+          },
+        },
+        metrics: {},
+        auditActions: {},
+      }),
+    );
+    const aliases: Array<Contract.ContractSignalAliasDefinition> = Array.from(
+      { length: 1_000 },
+      (_, index) => ({
+        source: { kind: "event", name: `legacy.node_${String(index).padStart(4, "0")}` },
+        target: { kind: "event", name: "graph.target" },
+      }),
+    );
+    const startedAt = performance.now();
+    const index = Contract.contractIndex(contract, "graph", { version: 1, aliases });
+    expect(index.aliases).toHaveLength(1_000);
+    expect(performance.now() - startedAt).toBeLessThan(2_000);
+  });
+
   it("expands compatible sources and rejects invalid, incompatible and cyclic aliases", async () => {
     const contract = await Effect.runPromise(
       defineTelemetryContract({

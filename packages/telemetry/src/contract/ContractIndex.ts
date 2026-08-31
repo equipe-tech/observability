@@ -60,10 +60,59 @@ const byName = <Entry extends { readonly name: string }>(left: Entry, right: Ent
 
 const signalNamePattern = /^[a-z][a-z0-9_]*(?:[.][a-z][a-z0-9_]*)+$/;
 
+type AliasExpansion = {
+  readonly targets: ReadonlySet<string>;
+  readonly cyclic: boolean;
+};
+type AliasGraph = {
+  expand(kind: ContractSignalAlias["kind"], source: string): AliasExpansion;
+};
+
+const aliasKey = (kind: ContractSignalAlias["kind"], name: string): string =>
+  `${kind}\u0000${name}`;
+
+const buildAliasGraph = (aliases: ReadonlyArray<ContractSignalAlias>): AliasGraph => {
+  const adjacency = new Map<string, Set<string>>();
+  for (const alias of aliases) {
+    const key = aliasKey(alias.kind, alias.from);
+    const targets = adjacency.get(key) ?? new Set<string>();
+    targets.add(alias.to);
+    adjacency.set(key, targets);
+  }
+  const colors = new Map<string, "gray" | "black">();
+  const expansions = new Map<string, AliasExpansion>();
+  const expand = (kind: ContractSignalAlias["kind"], source: string): AliasExpansion => {
+    const key = aliasKey(kind, source);
+    const cached = expansions.get(key);
+    if (cached !== undefined) return cached;
+    if (colors.get(key) === "gray") return { targets: new Set([source]), cyclic: true };
+    colors.set(key, "gray");
+    const targets = new Set([source]);
+    let cyclic = false;
+    for (const target of adjacency.get(key) ?? []) {
+      const nested = expand(kind, target);
+      for (const nestedTarget of nested.targets) targets.add(nestedTarget);
+      if (nested.cyclic) cyclic = true;
+    }
+    const expansion = { targets, cyclic };
+    colors.set(key, "black");
+    expansions.set(key, expansion);
+    return expansion;
+  };
+  for (const alias of aliases) expand(alias.kind, alias.from);
+  return { expand };
+};
+
 const validatedAliases = <Definition extends TelemetryContractInput>(
   contract: TelemetryContract<Definition>,
   metadata: ContractSignalAliasMetadata,
 ): ReadonlyArray<ContractSignalAlias> => {
+  const eventEntries = [...contract.eventByName.values()];
+  const metricEntries = [...contract.metricByName.values()];
+  const events = new Map<string, (typeof eventEntries)[number]>();
+  const metrics = new Map<string, (typeof metricEntries)[number]>();
+  for (const event of eventEntries) events.set(event.name, event);
+  for (const metric of metricEntries) metrics.set(metric.name, metric);
   const aliases = metadata.aliases.map((alias) => {
     if (alias.source.kind !== alias.target.kind) {
       throw new TypeError("Contract alias source and target kinds must match.");
@@ -73,8 +122,8 @@ const validatedAliases = <Definition extends TelemetryContractInput>(
     }
     const targetExists =
       alias.target.kind === "event"
-        ? [...contract.eventByName.values()].some((event) => event.name === alias.target.name)
-        : [...contract.metricByName.values()].some((metric) => metric.name === alias.target.name);
+        ? events.has(alias.target.name)
+        : metrics.has(alias.target.name);
     if (!targetExists) {
       throw new TypeError(`Contract alias target ${alias.target.name} is not declared.`);
     }
@@ -87,40 +136,21 @@ const validatedAliases = <Definition extends TelemetryContractInput>(
       to: alias.target.name,
     };
   });
+  const aliasGraph = buildAliasGraph(aliases);
   for (const alias of aliases) {
-    const paths: Array<ReadonlyArray<string>> = [[alias.from]];
-    for (let cursor = 0; cursor < paths.length; cursor += 1) {
-      const path = paths[cursor];
-      const target = path?.at(-1);
-      if (path === undefined || target === undefined) continue;
-      for (const next of aliases.filter(
-        (candidate) => candidate.kind === alias.kind && candidate.from === target,
-      )) {
-        if (path.includes(next.to)) throw new TypeError("Contract aliases contain a cycle.");
-        paths.push([...path, next.to]);
-      }
+    if (aliasGraph.expand(alias.kind, alias.from).cyclic) {
+      throw new TypeError("Contract aliases contain a cycle.");
     }
   }
-  const expandedTargets = (source: string, kind: "event" | "metric"): ReadonlySet<string> => {
-    const targets = new Set([source]);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const alias of aliases) {
-        if (alias.kind === kind && targets.has(alias.from) && !targets.has(alias.to)) {
-          targets.add(alias.to);
-          changed = true;
-        }
-      }
-    }
-    return targets;
-  };
   const metricSources = new Set(
     aliases.filter((alias) => alias.kind === "metric").map((alias) => alias.from),
   );
   for (const source of metricSources) {
-    const names = expandedTargets(source, "metric");
-    const targets = [...contract.metricByName.values()].filter((metric) => names.has(metric.name));
+    const names = aliasGraph.expand("metric", source).targets;
+    const targets = [...names].flatMap((name) => {
+      const metric = metrics.get(name);
+      return metric === undefined ? [] : [metric];
+    });
     const first = targets[0];
     if (
       first !== undefined &&
@@ -141,8 +171,11 @@ const validatedAliases = <Definition extends TelemetryContractInput>(
     aliases.filter((alias) => alias.kind === "event").map((alias) => alias.from),
   );
   for (const source of eventSources) {
-    const names = expandedTargets(source, "event");
-    const targets = [...contract.eventByName.values()].filter((event) => names.has(event.name));
+    const names = aliasGraph.expand("event", source).targets;
+    const targets = [...names].flatMap((name) => {
+      const event = events.get(name);
+      return event === undefined ? [] : [event];
+    });
     const first = targets[0];
     const signature = (event: (typeof targets)[number]): string =>
       [...event.attributes.entries()]
