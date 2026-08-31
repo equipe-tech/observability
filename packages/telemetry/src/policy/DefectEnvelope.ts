@@ -1,18 +1,41 @@
-import { Option } from "effect";
-import type { CorrelationContext } from "../Correlation.ts";
+import { Option, Schema } from "effect";
+import { CorrelationContext } from "../Correlation.ts";
 import type { AttributeValue } from "../contract/TelemetryEvent.ts";
 import type { DataPolicy } from "./DataPolicy.ts";
 import { sanitizeText, transformSignalFields, type PolicyDecision } from "./PolicyTransform.ts";
 
-export type DefectEnvelope = {
-  readonly errorType: "UnexpectedDefect";
-  readonly errorMessage: string;
-  readonly stack: Option.Option<string>;
-  readonly fingerprint: ReadonlyArray<string>;
-  readonly tags: ReadonlyMap<string, string>;
-  readonly context: ReadonlyMap<string, AttributeValue>;
-  readonly correlation: CorrelationContext;
+export const DefectEnvelope = Schema.Struct({
+  errorType: Schema.Literal("UnexpectedDefect"),
+  errorMessage: Schema.String,
+  stack: Schema.Option(Schema.String),
+  fingerprint: Schema.Array(Schema.String),
+  tags: Schema.ReadonlyMap(Schema.String, Schema.String),
+  context: Schema.ReadonlyMap(
+    Schema.String,
+    Schema.Union([Schema.String, Schema.Number, Schema.Boolean]),
+  ),
+  correlation: CorrelationContext,
+});
+export type DefectEnvelope = typeof DefectEnvelope.Type;
+
+export type UnexpectedDefectInput = {
+  readonly error: Error;
+  readonly code: string;
+  readonly fingerprint?: ReadonlyArray<string>;
+  readonly tags?: ReadonlyMap<string, string>;
+  readonly context?: ReadonlyMap<string, AttributeValue>;
+  readonly correlation?: CorrelationContext;
 };
+
+export const unexpectedDefect = (input: UnexpectedDefectInput): DefectEnvelope => ({
+  errorType: "UnexpectedDefect",
+  errorMessage: input.error.message,
+  stack: Option.fromNullishOr(input.error.stack),
+  fingerprint: input.fingerprint ?? [input.code, input.error.name],
+  tags: input.tags ?? new Map(),
+  context: input.context ?? new Map(),
+  correlation: input.correlation ?? new CorrelationContext({}),
+});
 
 export const sanitizeDefectEnvelope = (
   policy: DataPolicy,

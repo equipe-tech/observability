@@ -18,7 +18,15 @@ export type SentrySourceMapPlan = {
 
 const Name = Schema.NonEmptyString.check(Schema.isPattern(/^[a-zA-Z0-9._-]+$/));
 const Path = Schema.NonEmptyString.check(
-  Schema.makeFilter((value) => !value.includes("\u0000"), { expected: "a path without NUL" }),
+  Schema.makeFilter(
+    (value) =>
+      !value.startsWith("-") &&
+      !Array.from(value).some((character) => {
+        const codePoint = character.codePointAt(0);
+        return codePoint !== undefined && (codePoint <= 31 || codePoint === 127);
+      }),
+    { expected: "a path without leading flags or control characters" },
+  ),
 );
 const decodeName = Schema.decodeUnknownOption(Name);
 const decodePath = Schema.decodeUnknownOption(Path);
@@ -55,7 +63,7 @@ export const sentrySourceMapUpload = (input: SentrySourceMapInput): SentrySource
   ];
   if (input.urlPrefix !== undefined) args.push("--url-prefix", input.urlPrefix);
   if (input.deleteAfterUpload === true) args.push("--delete-after-upload");
-  args.push(...input.includePaths);
+  args.push("--", ...input.includePaths);
   return {
     command: "sentry-cli",
     args,

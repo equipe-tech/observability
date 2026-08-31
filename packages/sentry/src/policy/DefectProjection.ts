@@ -1,15 +1,25 @@
 import { Option, Schema } from "effect";
-import type {
-  CorrelationContext,
-  DataPolicy,
-  DefectEnvelope,
-} from "@equipe-tech/observability/policy";
-import { sanitizeDefectEnvelope } from "@equipe-tech/observability/policy";
+import type { CorrelationContext, DataPolicy } from "@equipe-tech/observability/policy";
+import { DefectEnvelope, sanitizeDefectEnvelope } from "@equipe-tech/observability/policy";
+import { SentryAdapterError } from "../SentryAdapterError.ts";
 
 export type SentryAttributeValue = string | number | boolean;
 
-export type SentryDefectCapture = {
-  readonly envelope: DefectEnvelope;
+export const SentryDefectCapture = Schema.Struct({ envelope: DefectEnvelope });
+export type SentryDefectCapture = typeof SentryDefectCapture.Type;
+
+const decodeCapture = Schema.decodeUnknownSync(SentryDefectCapture);
+
+export const parseSentryDefectCapture = (input: SentryDefectCapture): SentryDefectCapture => {
+  try {
+    return decodeCapture(input);
+  } catch (cause) {
+    throw new SentryAdapterError({
+      code: "OBS_SENTRY_CAPTURE_INVALID",
+      message: "The Sentry defect capture is invalid. Use unexpectedDefect to build it.",
+      cause,
+    });
+  }
 };
 
 export type SentryVerificationReceipt = {
@@ -18,7 +28,7 @@ export type SentryVerificationReceipt = {
 };
 
 export type SentryCaptureOutcome =
-  | { readonly kind: "captured"; readonly eventId: string }
+  | { readonly kind: "queued"; readonly eventId: string }
   | { readonly kind: "deduplicated"; readonly reason: "identity" | "fingerprint" }
   | { readonly kind: "suppressed"; readonly reason: "disabled" | "policy" | "closed" }
   | { readonly kind: "failed"; readonly reason: "transport" };
@@ -43,9 +53,15 @@ export type SentryDefectReport = {
 
 export type ProjectedFrame = {
   readonly filename?: string;
+  readonly abs_path?: string;
   readonly function?: string;
   readonly module?: string;
+  readonly lineno?: number;
+  readonly colno?: number;
+  readonly in_app?: boolean;
 };
+
+export type PublicStackParser = (stack: string) => Array<ProjectedFrame>;
 
 export type ProjectedException = {
   readonly type: "UnexpectedDefect";
@@ -81,12 +97,16 @@ const tagsFor = (
   identity: ProjectionIdentity,
   envelope: DefectEnvelope,
 ): { readonly [name: string]: string } => {
-  const tags: { [name: string]: string } = {
-    "service.name": String(identity.serviceName),
-    "service.version": String(identity.serviceVersion),
-    "deployment.environment.name": String(identity.environment),
-  };
+  const tags: { [name: string]: string } = {};
   for (const [name, value] of envelope.tags) tags[name] = String(value);
+  tags["service.name"] = String(identity.serviceName);
+  tags["service.version"] = String(identity.serviceVersion);
+  tags["deployment.environment.name"] = String(identity.environment);
+  tags["error.code"] = String(envelope.fingerprint[0] ?? envelope.errorType);
+  delete tags["trace.id"];
+  delete tags["span.id"];
+  delete tags["request.id"];
+  delete tags["run.id"];
   const correlation: CorrelationContext = envelope.correlation;
   if (correlation.trace._tag === "Traced") {
     tags["trace.id"] = String(correlation.trace.traceId);
@@ -98,14 +118,18 @@ const tagsFor = (
   return tags;
 };
 
-const framesFor = (stack: Option.Option<string>): Array<ProjectedFrame> =>
+const framesFor = (
+  stack: Option.Option<string>,
+  stackParser: PublicStackParser,
+): Array<ProjectedFrame> =>
   Option.match(stack, {
     onNone: () => [],
     onSome: (value) =>
-      value
-        .split("\n")
-        .slice(0, 20)
-        .map((line) => ({ filename: line.trim() })),
+      stackParser(value)
+        .slice(-20)
+        .map((frame) =>
+          frame.filename === undefined ? { ...frame } : { ...frame, abs_path: frame.filename },
+        ),
   });
 
 export const projectDefect = (
@@ -113,13 +137,14 @@ export const projectDefect = (
   identity: ProjectionIdentity,
   envelope: DefectEnvelope,
   eventId: string,
+  stackParser: PublicStackParser,
 ): Option.Option<ProjectedSentryEvent> => {
   const decision = sanitizeDefectEnvelope(policy, envelope);
   if (Option.isNone(decision.value)) return Option.none();
   const safe = decision.value.value;
   const context: { [name: string]: SentryAttributeValue } = {};
   for (const [name, value] of safe.context) context[name] = value;
-  const frames = framesFor(safe.stack);
+  const frames = framesFor(safe.stack, stackParser);
   const exception: ProjectedException = {
     type: "UnexpectedDefect",
     value: safe.errorMessage,

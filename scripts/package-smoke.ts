@@ -444,6 +444,8 @@ try {
         "@equipe-tech/observability-evlog": `file:${join(temporaryDirectory, "evlog.tgz")}`,
         "@equipe-tech/observability-nestjs": `file:${join(temporaryDirectory, "nestjs.tgz")}`,
         "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
+        "@sentry/browser": "10.72.0",
+        "@sentry/node-core": "10.72.0",
         effect: "4.0.0-rc.111",
       },
     }),
@@ -463,6 +465,7 @@ try {
         "@equipe-tech/observability-evlog": `file:${join(temporaryDirectory, "evlog.tgz")}`,
         "@equipe-tech/observability-nestjs": `file:${join(temporaryDirectory, "nestjs.tgz")}`,
         "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
+        "@sentry/node-core": "10.72.0",
         "@nestjs/common": "^11.0.0",
         "@nestjs/core": "^11.0.0",
         effect: "4.0.0-rc.111",
@@ -511,7 +514,7 @@ try {
         "node",
         "--input-type=module",
         "--eval",
-        "const [root, effectEntry, metrics, node, evlog, nestjs, browser, client, testing, policy, sentry, sentryNode, sentryBrowser] = await Promise.all([import('@equipe-tech/observability'), import('@equipe-tech/observability/effect'), import('@equipe-tech/observability/metrics'), import('@equipe-tech/observability/node'), import('@equipe-tech/observability-evlog'), import('@equipe-tech/observability-nestjs'), import('@equipe-tech/observability/browser'), import('@equipe-tech/observability/browser/client'), import('@equipe-tech/observability/testing'), import('@equipe-tech/observability/policy'), import('@equipe-tech/observability-sentry'), import('@equipe-tech/observability-sentry/node'), import('@equipe-tech/observability-sentry/browser')]); if ('WideEvent' in root || 'layerWideEvent' in root || !effectEntry.WideEvent || !effectEntry.layerWideEvent || !root.Telemetry || !root.ServiceName || !root.EnvironmentName || !root.CorrelationContext || root.Correlation || root.registerTestingAdapter || root.profileCapabilityRank || root.profileCapabilityRequirement || root.secondReleaseVariables || root.baseBlockedValuePatterns || !root.registerOfficialAdapter || !root.ObservabilityLifecycleError || node.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.CurrentCorrelation !== root.CurrentCorrelation || nestjs.TelemetryEventSink !== root.TelemetryEventSink || !evlog.evlogAdapter || !nestjs.TelemetryModule || !metrics.createMetrics || !node.runMain || !node.createNodeObservability || !node.makeNodeObservability || !node.layerNodeObservability || !browser.BrowserTelemetry || !client.createBrowserTelemetryClient || !testing.run || !testing.registerTestingAdapter || !policy.sanitizeDefectEnvelope || !sentry.sentrySourceMapUpload || !sentryNode.sentryDefectAdapter || !sentryBrowser.createBrowserSentryDefectReporter) process.exit(1); try { await import('@equipe-tech/observability/nestjs'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') process.exit(1); }",
+        "const [root, effectEntry, metrics, node, evlog, nestjs, browser, client, testing, policy, sentry, sentryNode] = await Promise.all([import('@equipe-tech/observability'), import('@equipe-tech/observability/effect'), import('@equipe-tech/observability/metrics'), import('@equipe-tech/observability/node'), import('@equipe-tech/observability-evlog'), import('@equipe-tech/observability-nestjs'), import('@equipe-tech/observability/browser'), import('@equipe-tech/observability/browser/client'), import('@equipe-tech/observability/testing'), import('@equipe-tech/observability/policy'), import('@equipe-tech/observability-sentry'), import('@equipe-tech/observability-sentry/node')]); if ('WideEvent' in root || 'layerWideEvent' in root || !effectEntry.WideEvent || !effectEntry.layerWideEvent || !root.Telemetry || !root.ServiceName || !root.EnvironmentName || !root.CorrelationContext || root.Correlation || root.registerTestingAdapter || root.profileCapabilityRank || root.profileCapabilityRequirement || root.secondReleaseVariables || root.baseBlockedValuePatterns || !root.registerOfficialAdapter || !root.ObservabilityLifecycleError || node.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.CurrentCorrelation !== root.CurrentCorrelation || nestjs.TelemetryEventSink !== root.TelemetryEventSink || !evlog.evlogAdapter || !nestjs.TelemetryModule || !metrics.createMetrics || !node.runMain || !node.createNodeObservability || !node.makeNodeObservability || !node.layerNodeObservability || !browser.BrowserTelemetry || !client.createBrowserTelemetryClient || !testing.run || !testing.registerTestingAdapter || !policy.sanitizeDefectEnvelope || !sentry.sentrySourceMapUpload || !sentryNode.sentryDefectAdapter) process.exit(1); try { await import('@sentry/browser'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_MODULE_NOT_FOUND') process.exit(1); } try { await import('@equipe-tech/observability/nestjs'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') process.exit(1); }",
       ],
       nodeConsumer,
     ),
@@ -520,6 +523,38 @@ try {
   requireSuccess(
     await run([join(nodeConsumer, "node_modules/.bin/observability"), "--help"], nodeConsumer),
     "Executing the npm-installed CLI",
+  );
+
+  const browserConsumer = join(temporaryDirectory, "browser consumer outside repository");
+  await mkdir(browserConsumer, { recursive: true });
+  await writeFile(
+    join(browserConsumer, "package.json"),
+    JSON.stringify({
+      private: true,
+      type: "module",
+      dependencies: {
+        "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
+        "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
+        "@sentry/browser": "10.72.0",
+        effect: "4.0.0-rc.111",
+      },
+    }),
+  );
+  requireSuccess(
+    await run(["npm", "install"], browserConsumer),
+    "Installing the packed browser Sentry consumer",
+  );
+  requireSuccess(
+    await run(
+      [
+        "node",
+        "--input-type=module",
+        "--eval",
+        "const browser = await import('@equipe-tech/observability-sentry/browser'); if (!browser.createBrowserSentryDefectReporter) process.exit(1); try { await import('@sentry/node-core'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_MODULE_NOT_FOUND') process.exit(1); }",
+      ],
+      browserConsumer,
+    ),
+    "Importing the packed browser Sentry consumer without node-core",
   );
 
   const declarations = new Bun.Glob("**/*.d.ts");

@@ -2,17 +2,38 @@
 
 `@equipe-tech/observability-sentry` captura somente envelopes `UnexpectedDefect`. O entrypoint `/node` registra a capacidade `defects` no estágio `server`. O entrypoint `/browser` oferece um reporter imperativo sem registro de adapter.
 
-Os dois entrypoints usam `sanitizeDefectEnvelope` pelo subpath neutro `@equipe-tech/observability/policy`. O evento enviado é reconstruído com uma lista fechada. Ela contém identidade de serviço, ambiente, release, código do erro, correlação, fingerprint, mensagem e stack sanitizados. Request bodies, headers, cookies, usuário, breadcrumbs, anexos, módulos, contextos desconhecidos, prompts, conteúdo de LLM e dados de pagamento não entram no evento.
+Os dois entrypoints usam `sanitizeDefectEnvelope` pelo subpath neutro `@equipe-tech/observability/policy`. O evento enviado é reconstruído com uma lista fechada. Ela contém identidade de serviço, ambiente, release, código do erro, correlação, fingerprint, mensagem e stack sanitizados. A identidade e a correlação canônicas substituem tags homônimas da aplicação. Request bodies, headers, cookies, usuário, breadcrumbs, anexos, módulos, contextos desconhecidos, prompts, conteúdo de LLM e dados de pagamento não entram no evento.
 
-O Node usa `LightNodeClient` de `@sentry/node-core/light`. O pacote não chama o inicializador global do SDK e não configura tracing. Integrações padrão e handlers globais ficam desativados.
+Construa o envelope pela API pública e capture somente em limites de erro controlados pela aplicação:
 
-A deduplicação combina identidade do envelope e fingerprint normalizado. A janela e a capacidade têm limites configuráveis. `reports()` retorna somente contagens, horários e motivos.
+```ts
+import { unexpectedDefect } from "@equipe-tech/observability/policy";
 
-`sendVerificationDefect` retorna o `eventId` gravado no envelope e só emite `flushed: true` quando esse evento recebeu uma resposta HTTP 2xx e o flush terminou dentro do prazo. Supressão, respostas não 2xx, falha de rede e timeout retornam uma falha de transporte. `flush` pode ser repetido antes do fechamento. `close` e `dispose` são idempotentes. Depois que o fechamento do SDK termina, inclusive com `false` ou timeout, o reporter permanece fechado e novas capturas são suprimidas. O fechamento não é repetido porque o SDK desabilita o cliente na primeira chamada.
+const envelope = unexpectedDefect({
+  error,
+  code: "OBS_CHECKOUT_UNEXPECTED",
+});
+
+reporter.capture({ envelope });
+```
+
+O adapter não instala handlers globais. O chamador continua dono dos limites `catch`, `unhandledRejection` e `error` do browser. Essa escolha evita captura automática de erros operacionais esperados.
+
+O Node usa `LightNodeClient` de `@sentry/node-core/light`. O pacote não chama o inicializador global do SDK e não configura tracing. Integrações padrão ficam desativadas.
+
+A deduplicação combina identidade do envelope e fingerprint normalizado. A janela e a capacidade têm limites configuráveis. Cada reserva recebe um prazo terminal igual a `flushDeadlineMillis`. Drops anteriores ao transporte, falhas e prazo vencido liberam a capacidade e permitem nova tentativa imediata.
+
+`capture` retorna `queued` quando o SDK aceitou o evento na fila local. Isso não confirma entrega. `reports().reasons.captured` cresce somente após uma resposta HTTP 2xx para o evento exato. `reports()` contém contagens, horários e motivos. Esses dados descrevem decisões desta instância e não substituem recibos do servidor.
+
+`sendVerificationDefect` retorna o `eventId` gravado no envelope e só emite `flushed: true` quando esse evento recebeu uma resposta HTTP 2xx e o flush terminou dentro do prazo. Supressão retorna `suppressed` ou `deduplicated`. Respostas não 2xx, drop do SDK, falha de rede e timeout retornam `{ kind: "failed", reason: "transport" }`.
+
+No browser, DSN ausente ou inválido é erro, exceto com `disabled: true`. O modo desabilitado retorna supressão `disabled` e não cria cliente. `flush` pode ser repetido antes do fechamento. `close` e `dispose` são idempotentes. A instância entra no estado fechado antes de aguardar o SDK. Capturas concorrentes ao fechamento retornam supressão `closed` e não enviam eventos.
+
+As definições compiladas não referenciam tipos de provider. Instale somente o peer do entrypoint usado. Node requer `@sentry/node-core@10.72.0`. Browser requer `@sentry/browser@10.72.0`.
 
 ## Source maps
 
-`sentrySourceMapUpload` produz a lista exata de argumentos de `sentry-cli sourcemaps upload`. O plano nunca contém token. Defina `SENTRY_AUTH_TOKEN` somente no ambiente do processo do CLI.
+`sentrySourceMapUpload` produz a lista exata de argumentos de `sentry-cli sourcemaps upload`. O plano rejeita valores que começam com `-` ou contêm caracteres de controle. Ele insere `--` antes dos caminhos. O plano nunca contém token. Defina `SENTRY_AUTH_TOKEN` somente no ambiente do processo do CLI.
 
 ## Migração
 

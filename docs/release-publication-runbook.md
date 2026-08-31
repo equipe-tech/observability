@@ -5,6 +5,7 @@ Cada pacote tem versão, tag, notas, checksum, archive e publicação próprios.
 - `observability@0.3.0`
 - `observability-evlog@0.3.0`
 - `observability-nestjs@0.3.0`
+- `observability-sentry@0.3.0`
 - `observability-cli@0.2.1`
 
 Tags `v*` pertencem ao histórico da linha coordenada 0.2 e não acionam o workflow atual. Os registros `docs/releases/v0.2.0.sha256` e `docs/releases/v0.2.1.sha256` preservam os checksums históricos dessa linha e não são entradas do fluxo independente.
@@ -30,7 +31,7 @@ O dry run não altera manifest, lockfile, commit ou tag. Uma release real altera
 
 ## Verificar os archives
 
-`bun run test:package` compila e empacota os quatro pacotes. O smoke instala os archives em consumidores Node e Bun, testa NestJS 10 e 11, percorre as declarações, rejeita imports não declarados e confirma os entrypoints públicos.
+`bun run test:package` compila e empacota os cinco pacotes. O smoke instala os archives em consumidores Node e Bun, testa NestJS 10 e 11, percorre as declarações, rejeita imports não declarados e confirma os entrypoints públicos.
 
 `release-candidate.ts` empacota a candidata duas vezes e exige bytes idênticos. O job de publicação reconstrói a candidata a partir do checkout do tag, verifica o checksum gerado e compara os bytes reconstruídos com o asset baixado do GitHub antes de publicar no npm.
 

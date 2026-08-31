@@ -35,16 +35,24 @@
     "build": "bun ../../scripts/build-packages.ts",
     "prepack": "bun run build"
   },
-  "dependencies": {
-    "@sentry/browser": "10.72.0",
-    "@sentry/node-core": "10.72.0"
-  },
   "devDependencies": {
     "@equipe-tech/observability": "workspace:*",
+    "@sentry/browser": "10.72.0",
+    "@sentry/node-core": "10.72.0",
     "effect": "4.0.0-rc.111"
   },
   "peerDependencies": {
     "@equipe-tech/observability": "0.3.x",
+    "@sentry/browser": "10.72.0",
+    "@sentry/node-core": "10.72.0",
     "effect": "4.0.0-rc.111"
+  },
+  "peerDependenciesMeta": {
+    "@sentry/browser": {
+      "optional": true
+    },
+    "@sentry/node-core": {
+      "optional": true
+    }
   }
 }

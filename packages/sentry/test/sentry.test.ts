@@ -5,20 +5,25 @@ import {
   parseRunId,
   parseSpanId,
   parseTraceId,
+  unexpectedDefect,
   type DefectEnvelope,
 } from "@equipe-tech/observability/policy";
 import { defineTelemetryContract } from "@equipe-tech/observability";
 import { createNodeObservability } from "@equipe-tech/observability/node";
 import { evlogAdapter } from "@equipe-tech/observability-evlog";
 import { Effect, Option, Schema } from "effect";
+import { execFile } from "node:child_process";
 import { createServer } from "node:http";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vite-plus/test";
 import { parseSentryDsn, sentrySourceMapUpload } from "../src/index.ts";
 import { createBrowserSentryDefectReporter } from "../src/browser/index.ts";
 import { SentryDefects, sentryDefectAdapter } from "../src/node/index.ts";
 import { defectDeduplicator } from "../src/policy/Deduplication.ts";
 import { eventSettlements } from "../src/policy/EventSettlement.ts";
+import { malformedCaptureErrors } from "./malformed-capture.js";
 
+const execFileAsync = promisify(execFile);
 const policy = { attributes: {}, blockedKeys: [], blockedValuePatterns: [] };
 const sensitivePolicy = definePolicy({
   attributes: {
@@ -52,6 +57,19 @@ const envelope = (fingerprint = "stable"): DefectEnvelope => ({
 });
 
 describe("Sentry adapter policy", () => {
+  it("builds canonical unexpected defect envelopes through the public policy API", () => {
+    const defect = unexpectedDefect({
+      error: new Error("public builder"),
+      code: "OBS_PUBLIC_BUILDER",
+    });
+    expect(defect).toMatchObject({
+      errorType: "UnexpectedDefect",
+      errorMessage: "public builder",
+      fingerprint: ["OBS_PUBLIC_BUILDER", "Error"],
+    });
+    expect(Option.isSome(defect.stack)).toBe(true);
+  });
+
   it("validates DSNs without exposing credentials", async () => {
     const valid = await Effect.runPromise(parseSentryDsn(new URL("https://public@sentry.io/42")));
     expect(valid.projectId).toBe("42");
@@ -86,11 +104,31 @@ describe("Sentry adapter policy", () => {
         "--url-prefix",
         "~/assets",
         "--delete-after-upload",
+        "--",
         "dist/assets",
       ],
       environment: { authTokenVariable: "SENTRY_AUTH_TOKEN" },
     });
     expect(JSON.stringify(plan)).not.toContain("AUTH_TOKEN=");
+    for (const unsafe of ["--auth-token=secret", "dist\n--org", "dist\u0000map"]) {
+      expect(() =>
+        sentrySourceMapUpload({
+          organization: "equipe-tech",
+          project: "web",
+          release: "1.4.0",
+          includePaths: [unsafe],
+        }),
+      ).toThrowError(expect.objectContaining({ code: "OBS_SENTRY_SOURCE_MAP_INVALID" }));
+    }
+    expect(() =>
+      sentrySourceMapUpload({
+        organization: "equipe-tech",
+        project: "web",
+        release: "1.4.0",
+        includePaths: ["dist"],
+        urlPrefix: "--auth-token=secret",
+      }),
+    ).toThrowError(expect.objectContaining({ code: "OBS_SENTRY_SOURCE_MAP_INVALID" }));
   });
 
   it("deduplicates identity, fingerprint, window, and bounded capacity", () => {
@@ -113,7 +151,7 @@ describe("Sentry adapter policy", () => {
 
   it("bounds pending settlement state and removes every terminal entry", async () => {
     const dedupe = defectDeduplicator(100, 4);
-    const settlements = eventSettlements(1, dedupe);
+    const settlements = eventSettlements<{ readonly envelope: DefectEnvelope }>(1, 20, dedupe);
     const first = envelope("settlement-first");
     expect(dedupe.admit("first", first, 0).kind).toBe("admitted");
     const accepted = settlements.reserve("first", { envelope: first });
@@ -137,6 +175,12 @@ describe("Sentry adapter policy", () => {
     settlements.clear();
     expect(await closure).toBe(false);
     expect(settlements.size()).toBe(0);
+    const expired = envelope("settlement-expired");
+    expect(dedupe.admit("expired", expired, 3).kind).toBe("admitted");
+    const expiration = settlements.reserve("expired", { envelope: expired });
+    expect(await expiration).toBe(false);
+    expect(settlements.size()).toBe(0);
+    expect(dedupe.admit("retry", expired, 24).kind).toBe("admitted");
   });
 
   it("sends one allowlisted browser error envelope through the wire transport", async () => {
@@ -161,7 +205,7 @@ describe("Sentry adapter policy", () => {
       policy,
     });
     const outcome = reporter.capture({ envelope: envelope() });
-    expect(outcome.kind).toBe("captured");
+    expect(outcome.kind).toBe("queued");
     expect(await reporter.flush()).toBe(true);
     expect(await reporter.dispose()).toBe(true);
     await new Promise<void>((resolve, reject) =>
@@ -173,6 +217,10 @@ describe("Sentry adapter policy", () => {
     expect(wire).toContain('"environment":"test"');
     expect(wire).toContain('"service.name":"web"');
     expect(wire).toContain('"error.code":"OBS_TEST_UNEXPECTED"');
+    expect(wire).toContain('"filename":"/srv/app.js"');
+    expect(wire).toContain('"abs_path":"/srv/app.js"');
+    expect(wire).toContain('"lineno":10');
+    expect(wire).toContain('"colno":2');
     expect(wire).not.toContain('"request"');
     expect(wire).not.toContain('"user"');
     expect(wire).not.toContain('"breadcrumbs"');
@@ -215,7 +263,7 @@ describe("Sentry adapter policy", () => {
       adapters: [events.registration, sentry.registration],
     });
     const capture = await sentry.captureAsync({ envelope: envelope("node") });
-    expect(capture.kind).toBe("captured");
+    expect(capture.kind).toBe("queued");
     const receipt = await sentry.sendVerificationDefect({ envelope: envelope("verification") });
     expect(receipt).toMatchObject({ flushed: true });
     const serviceOutcome = await Effect.runPromise(
@@ -224,7 +272,7 @@ describe("Sentry adapter policy", () => {
         return yield* defects.capture({ envelope: envelope("service") });
       }).pipe(Effect.provide(sentry.layer)),
     );
-    expect(serviceOutcome.kind).toBe("captured");
+    expect(serviceOutcome.kind).toBe("queued");
     const nodeSensitive = {
       ...envelope("node-sensitive"),
       context: new Map([
@@ -261,7 +309,7 @@ describe("Sentry adapter policy", () => {
       server.close((error) => (error === undefined ? resolve() : reject(error))),
     );
     expect(bodies.some((body) => body.includes('"service.name":"worker"'))).toBe(true);
-    if (capture.kind === "captured") {
+    if (capture.kind === "queued") {
       expect(bodies.some((body) => body.includes(capture.eventId))).toBe(true);
     }
     if ("eventId" in receipt) {
@@ -284,7 +332,7 @@ describe("Sentry adapter policy", () => {
     ]) {
       expect(bodies.join("\n")).not.toContain(secret);
     }
-    expect(sentry.reports().reasons).toMatchObject({ captured: 6, transport: 1 });
+    expect(sentry.reports().reasons).toMatchObject({ captured: 5, transport: 1 });
   });
 
   it("reports degraded Node lifecycle and suppresses capture after close timeout", async () => {
@@ -312,7 +360,7 @@ describe("Sentry adapter policy", () => {
       policy,
       adapters: [events.registration, sentry.registration],
     });
-    expect((await sentry.captureAsync({ envelope: envelope("node-hang") })).kind).toBe("captured");
+    expect((await sentry.captureAsync({ envelope: envelope("node-hang") })).kind).toBe("queued");
     expect((await runtime.flush()).degraded).toBe(true);
     expect(sentry.reports().reasons.flushIncomplete).toBe(1);
     await runtime.close();
@@ -383,6 +431,14 @@ describe("Sentry adapter policy", () => {
       tags: new Map([
         ["safe.value", "visible"],
         ["bad key", "hidden"],
+        ["service.name", "spoofed-service"],
+        ["service.version", "spoofed-version"],
+        ["deployment.environment.name", "spoofed-environment"],
+        ["error.code", "spoofed-code"],
+        ["trace.id", "spoofed-trace"],
+        ["span.id", "spoofed-span"],
+        ["request.id", "spoofed-request"],
+        ["run.id", "spoofed-run"],
       ]),
       context: new Map([
         ["request.body", '{"nested":{"password":"body-secret"}}'],
@@ -435,6 +491,11 @@ describe("Sentry adapter policy", () => {
       expect(wire).not.toContain(secret);
     }
     expect(wire).toContain('"safe.value":"visible"');
+    expect(wire).toContain('"service.name":"web"');
+    expect(wire).toContain('"service.version":"1.4.0"');
+    expect(wire).toContain('"deployment.environment.name":"test"');
+    expect(wire).toContain('"error.code":"OBS_TEST_UNEXPECTED"');
+    expect(wire).not.toContain("spoofed-");
     expect(wire).toContain('"trace.id":"11111111111111111111111111111111"');
     expect(wire).toContain('"span.id":"2222222222222222"');
     expect(wire).toContain('"request.id":"request-1"');
@@ -547,7 +608,7 @@ describe("Sentry adapter policy", () => {
       kind: "failed",
       reason: "transport",
     });
-    expect(reporter.capture({ envelope: defect }).kind).toBe("captured");
+    expect(reporter.capture({ envelope: defect }).kind).toBe("queued");
     await reporter.dispose();
   });
 
@@ -562,10 +623,19 @@ describe("Sentry adapter policy", () => {
       flushDeadlineMillis: 20,
       closeDeadlineMillis: 20,
     });
-    expect(reporter.capture({ envelope: envelope("hang") }).kind).toBe("captured");
+    expect(reporter.capture({ envelope: envelope("hang") }).kind).toBe("queued");
     expect(await Promise.all([reporter.flush(), reporter.flush()])).toEqual([false, false]);
-    expect(reporter.reports().reasons.flushIncomplete).toBe(1);
-    expect(await reporter.dispose()).toBe(false);
+    expect(reporter.reports().reasons).toMatchObject({
+      captured: 0,
+      transport: 1,
+      flushIncomplete: 1,
+    });
+    const disposing = reporter.dispose();
+    expect(reporter.capture({ envelope: envelope("during-close") })).toEqual({
+      kind: "suppressed",
+      reason: "closed",
+    });
+    expect(await disposing).toBe(false);
     expect(await reporter.dispose()).toBe(false);
     expect(reporter.capture({ envelope: envelope("after-close") })).toEqual({
       kind: "suppressed",
@@ -578,6 +648,12 @@ describe("Sentry adapter policy", () => {
   });
 
   it("rejects invalid browser options, unknown keys, and invalid policies", () => {
+    expect(() =>
+      createBrowserSentryDefectReporter({
+        service: { name: "web", version: "1.4.0", environment: "test" },
+        policy,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "OBS_SENTRY_DSN_INVALID" }));
     expect(() =>
       createBrowserSentryDefectReporter({
         disabled: true,
@@ -646,6 +722,29 @@ describe("Sentry adapter policy", () => {
         includePaths: [],
       }),
     ).toThrowError(expect.objectContaining({ code: "OBS_SENTRY_SOURCE_MAP_INVALID" }));
+  });
+
+  it("settles global processor null drops and restores capacity on Node and browser", async () => {
+    await Promise.all(
+      ["global-drop-node.ts", "global-drop-browser.ts"].map(async (file) => {
+        const result = await execFileAsync("bun", [new URL(file, import.meta.url).pathname], {
+          timeout: 5_000,
+        });
+        expect(result.stderr).toBe("");
+      }),
+    );
+  });
+
+  it("returns typed failures for malformed public capture inputs", async () => {
+    const reporter = createBrowserSentryDefectReporter({
+      disabled: true,
+      service: { name: "web", version: "1.4.0", environment: "test" },
+      policy,
+    });
+    expect(malformedCaptureErrors(reporter)).toEqual(
+      Array.from({ length: 6 }, () => "OBS_SENTRY_CAPTURE_INVALID"),
+    );
+    await reporter.dispose();
   });
 
   it("keeps disabled and closed outcomes explicit", async () => {

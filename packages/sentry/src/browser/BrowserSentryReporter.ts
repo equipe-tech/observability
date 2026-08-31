@@ -8,10 +8,11 @@ import {
 import { Effect, Option, Result, Schema } from "effect";
 import { parseSentryDsn } from "../SentryDsn.ts";
 import { SentryAdapterError } from "../SentryAdapterError.ts";
+import { captureDefectNow, type CaptureResult } from "../policy/CaptureOwner.ts";
 import { defectDeduplicator } from "../policy/Deduplication.ts";
 import { eventSettlements } from "../policy/EventSettlement.ts";
 import {
-  projectDefect,
+  type ProjectedSentryEvent,
   type ProjectionIdentity,
   type SentryCaptureOutcome,
   type SentryDefectCapture,
@@ -89,11 +90,6 @@ const acceptedStatus = (statusCode: number | undefined): boolean =>
   statusCode !== undefined && statusCode >= 200 && statusCode < 300;
 const decodeEventId = Schema.decodeUnknownOption(Schema.String);
 
-type CaptureResult = {
-  readonly outcome: SentryCaptureOutcome;
-  readonly completion?: Promise<boolean>;
-};
-
 export const createBrowserSentryDefectReporter = (
   config: BrowserSentryDefectReporterConfig,
 ): BrowserSentryDefectReporter => {
@@ -119,13 +115,17 @@ export const createBrowserSentryDefectReporter = (
     config.dedupeWindowMillis ?? 60_000,
     config.dedupeCapacity ?? 256,
   );
-  const settlements = eventSettlements(config.dedupeCapacity ?? 256, dedupe);
+  const settlements = eventSettlements<ProjectedSentryEvent>(
+    config.dedupeCapacity ?? 256,
+    flushDeadline,
+    dedupe,
+  );
   let closed = false;
   let flushInFlight: Promise<boolean> | undefined;
   let disposeInFlight: Promise<boolean> | undefined;
   let disposeResult: boolean | undefined;
   const decodedDsn = config.dsn === undefined ? Option.none<URL>() : decodeDsn(config.dsn);
-  if (config.disabled !== true && config.dsn !== undefined && Option.isNone(decodedDsn)) {
+  if (config.disabled !== true && Option.isNone(decodedDsn)) {
     throw new SentryAdapterError({
       code: "OBS_SENTRY_DSN_INVALID",
       message:
@@ -186,9 +186,7 @@ export const createBrowserSentryDefectReporter = (
           if (id === undefined) return null;
           const accepted = settlements.input(id);
           if (accepted === undefined) return null;
-          const projected = projectDefect(policy, identity, accepted.envelope, id);
-          if (Option.isNone(projected)) settlements.reject(id);
-          return Option.getOrNull(projected);
+          return accepted;
         },
         beforeSendTransaction: () => null,
         beforeBreadcrumb: () => null,
@@ -196,42 +194,19 @@ export const createBrowserSentryDefectReporter = (
     : undefined;
 
   const captureNow = (input: SentryDefectCapture): CaptureResult => {
-    if (closed) {
-      reportState.increment("closed");
-      return { outcome: { kind: "suppressed", reason: "closed" } };
-    }
     const current = client;
-    if (current === undefined) {
-      reportState.increment("disabled");
-      return { outcome: { kind: "suppressed", reason: "disabled" } };
-    }
-    const id = randomEventId();
-    const decision = dedupe.admit(id, input.envelope, Date.now());
-    if (decision.kind === "deduplicated") {
-      reportState.increment(decision.reason);
-      return { outcome: decision };
-    }
-    const projected = projectDefect(policy, identity, input.envelope, id);
-    if (Option.isNone(projected)) {
-      dedupe.rollback(id);
-      reportState.increment("policy");
-      return { outcome: { kind: "suppressed", reason: "policy" } };
-    }
-    const completion = settlements.reserve(id, input);
-    if (completion === undefined) {
-      dedupe.rollback(id);
-      reportState.increment("transport");
-      return { outcome: { kind: "failed", reason: "transport" } };
-    }
-    try {
-      current.captureEvent(projected.value);
-    } catch {
-      settlements.reject(id);
-      reportState.increment("transport");
-      return { outcome: { kind: "failed", reason: "transport" } };
-    }
-    reportState.increment("captured");
-    return { outcome: { kind: "captured", eventId: id }, completion };
+    const runtime =
+      current === undefined
+        ? undefined
+        : {
+            policy,
+            identity,
+            dedupe,
+            settlements,
+            stackParser: defaultStackParser,
+            send: (event: ProjectedSentryEvent) => current.captureEvent(event),
+          };
+    return captureDefectNow(input, closed, runtime, randomEventId, reportState);
   };
 
   const capture = (input: SentryDefectCapture): SentryCaptureOutcome => captureNow(input).outcome;
@@ -262,6 +237,7 @@ export const createBrowserSentryDefectReporter = (
       return true;
     }
     if (disposeInFlight === undefined) {
+      closed = true;
       disposeInFlight = Promise.resolve(current.close(closeDeadline))
         .catch(() => false)
         .then((completed) => {
@@ -279,13 +255,11 @@ export const createBrowserSentryDefectReporter = (
     input: SentryDefectCapture,
   ): Promise<SentryVerificationReceipt | SentryCaptureOutcome> => {
     const result = captureNow(input);
-    if (result.outcome.kind !== "captured" || result.completion === undefined)
-      return result.outcome;
+    if (result.outcome.kind !== "queued" || result.completion === undefined) return result.outcome;
     const completed = await flush();
     if (!completed) settlements.reject(result.outcome.eventId);
     const accepted = await result.completion;
     if (!completed || !accepted) {
-      reportState.increment("transport");
       return { kind: "failed", reason: "transport" };
     }
     return { eventId: result.outcome.eventId, flushed: true };

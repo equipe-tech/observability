@@ -1,32 +1,30 @@
-import type { DefectEnvelope } from "@equipe-tech/observability/policy";
 import type { DefectDeduplicator } from "./Deduplication.ts";
-
-type PendingEvent = {
-  readonly input: { readonly envelope: DefectEnvelope };
+type PendingEvent<Event> = {
+  readonly input: Event;
   readonly resolve: (accepted: boolean) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
 };
 
-export type EventSettlements = {
-  readonly reserve: (
-    eventId: string,
-    input: { readonly envelope: DefectEnvelope },
-  ) => Promise<boolean> | undefined;
-  readonly input: (eventId: string) => { readonly envelope: DefectEnvelope } | undefined;
+export type EventSettlements<Event> = {
+  readonly reserve: (eventId: string, input: Event) => Promise<boolean> | undefined;
+  readonly input: (eventId: string) => Event | undefined;
   readonly settle: (eventId: string, accepted: boolean) => void;
   readonly reject: (eventId: string) => void;
   readonly clear: () => void;
   readonly size: () => number;
 };
 
-export const eventSettlements = (
+export const eventSettlements = <Event>(
   capacity: number,
+  deadlineMillis: number,
   dedupe: DefectDeduplicator,
-): EventSettlements => {
-  const entries = new Map<string, PendingEvent>();
+): EventSettlements<Event> => {
+  const entries = new Map<string, PendingEvent<Event>>();
   const settle = (eventId: string, accepted: boolean): void => {
     const entry = entries.get(eventId);
     if (entry === undefined) return;
     entries.delete(eventId);
+    clearTimeout(entry.timer);
     if (accepted) dedupe.release(eventId);
     else dedupe.rollback(eventId);
     entry.resolve(accepted);
@@ -38,7 +36,9 @@ export const eventSettlements = (
       const completion = new Promise<boolean>((complete) => {
         resolve = complete;
       });
-      entries.set(eventId, { input, resolve });
+      const timer = setTimeout(() => settle(eventId, false), deadlineMillis);
+      timer.unref?.();
+      entries.set(eventId, { input, resolve, timer });
       return completion;
     },
     input: (eventId) => entries.get(eventId)?.input,
