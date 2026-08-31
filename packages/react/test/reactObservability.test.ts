@@ -143,6 +143,33 @@ describe("React browser observability", () => {
     assert.isAbove(batches.length, 0);
   });
 
+  it("records operational delivery when Sentry event ID generation fails", async () => {
+    const originalCrypto = globalThis.crypto;
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: { randomUUID: () => "01234567-89ab-cdef-0123-456789abcdef" },
+    });
+    const fixture = recordingHost();
+    try {
+      const observability = createBrowserObservability({
+        service,
+        policy,
+        host: fixture.host,
+        sentry: { dsn: "http://public@127.0.0.1:1/1" },
+        events: { flushIntervalMs: 60_000, transport: async () => undefined },
+      });
+      const outcome = observability.defects.report({
+        error: new Error("failed"),
+        origin: "manual",
+      });
+      assert.strictEqual(outcome.kind, "recorded");
+      if (outcome.kind === "recorded") assert.strictEqual(outcome.destinations.sentry, "failed");
+      await observability.dispose();
+    } finally {
+      Object.defineProperty(globalThis, "crypto", { configurable: true, value: originalCrypto });
+    }
+  });
+
   it("suppresses a component stack rejected by policy", async () => {
     const fixture = recordingHost();
     const rejectingPolicy = definePolicy({
