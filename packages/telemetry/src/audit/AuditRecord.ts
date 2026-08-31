@@ -41,8 +41,9 @@ export type AuditResourceType = typeof AuditResourceType.Type;
 
 export const AuditAction = Schema.NonEmptyString.check(
   withoutControlCharacters,
+  Schema.isMinLength(3),
   Schema.isMaxLength(128),
-  Schema.isPattern(/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$/),
+  Schema.isPattern(/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/),
 ).pipe(Schema.brand("AuditAction"));
 export type AuditAction = typeof AuditAction.Type;
 

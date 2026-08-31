@@ -331,7 +331,7 @@ const parseCorrelation = (
   );
 };
 
-const parseOutcome = (definition: CompiledEventDefinition, outcome: EventOutcome) =>
+const parseOutcome = (definition: CompiledEventDefinition, outcome: AuditOutcome) =>
   decodeOutcome(outcome).pipe(
     Effect.mapError(() =>
       eventError(
@@ -427,13 +427,6 @@ const buildEvent = Effect.fn("buildEvent")(function* (
           "OBS_EVENT_INVALID_FIELD",
           `Domain event "${definition.name}" requires an outcome. Add the required field.`,
           { eventName: definition.name },
-        );
-      }
-      if (payload.outcome === "denied") {
-        return yield* eventError(
-          "OBS_EVENT_INVALID_OUTCOME",
-          `Event "${definition.name}" has an invalid outcome. Use success, failure, or cancelled.`,
-          { eventName: definition.name, attributeName: "event.outcome" },
         );
       }
       const outcome = yield* parseOutcome(definition, payload.outcome);

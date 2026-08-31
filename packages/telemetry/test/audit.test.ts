@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { Effect, Layer, Option, Schema } from "effect";
 import {
+  AuditAction,
   AuditDigest,
   AuditHash,
   AuditOccurredAt,
@@ -48,6 +49,15 @@ const parsedRecord = Effect.gen(function* () {
 });
 
 describe("audit contracts", () => {
+  it("uses the contract action grammar for the branded action", () => {
+    for (const action of ["a.b", `a.${"b".repeat(126)}`]) {
+      expect(Schema.is(AuditAction)(action)).toBe(true);
+    }
+    for (const action of ["ab", "a.B", "a-b", `a.${"b".repeat(127)}`]) {
+      expect(Schema.is(AuditAction)(action)).toBe(false);
+    }
+  });
+
   it("binds action-owned resource, outcome, reason, and immutable snapshots", async () => {
     const record = await Effect.runPromise(parsedRecord);
     expect(record.resource.type).toBe("invoice");

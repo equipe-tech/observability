@@ -192,10 +192,10 @@ export type TelemetryContract<Definition extends TelemetryContractInput> = {
 const isAttributeClassification = Schema.is(AttributeClassification);
 const isEventKind = Schema.is(EventKind);
 const isEventSeverity = Schema.is(EventSeverity);
+const isAuditAction = Schema.is(AuditAction);
 const isAuditOutcome = Schema.is(AuditOutcome);
 const isAuditReasonCode = Schema.is(AuditReasonCode);
 const isAuditResourceType = Schema.is(AuditResourceType);
-const auditActionPattern = /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/;
 const canonicalSinkFields = new Set([
   "event.name",
   "event.kind",
@@ -531,11 +531,11 @@ const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<Contra
       auditActionAliasesByName.set(action.action, alias);
     }
     const actionContext = { auditActionAlias: alias, auditActionName: action.action };
-    if (action.action.length > 128 || !auditActionPattern.test(action.action)) {
+    if (!isAuditAction(action.action)) {
       issues.push(
         issue(
           "OBS_CONTRACT_INVALID_AUDIT_ACTION",
-          `Audit action alias "${alias}" has an invalid canonical action. Use 2 to 128 characters in dotted lowercase form with at least two segments.`,
+          `Audit action alias "${alias}" has an invalid canonical action. Use 3 to 128 characters in dotted lowercase form with at least two segments.`,
           actionContext,
         ),
       );

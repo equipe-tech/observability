@@ -418,7 +418,7 @@ describe("defineTelemetryContract", () => {
   it.effect("reports the exact failed audit action rule for every invalid matrix", () =>
     Effect.gen(function* () {
       const actionMessage =
-        'Audit action alias "AccessReviewed" has an invalid canonical action. Use 2 to 128 characters in dotted lowercase form with at least two segments.';
+        'Audit action alias "AccessReviewed" has an invalid canonical action. Use 3 to 128 characters in dotted lowercase form with at least two segments.';
       for (const action of [
         "access",
         "Access.reviewed",

@@ -4,7 +4,7 @@
 
 ## Contrato
 
-Cada ação em `auditActions` declara `action`, `resourceType`, `allowedOutcomes` e um catálogo opcional `reasonCodes`. `AuditOutcome` aceita `success`, `failure`, `cancelled` e `denied`. `EventOutcome` continua aceitando somente `success`, `failure` e `cancelled`. `resourceType` aceita de 1 a 64 caracteres sem controles. Cada segmento separado por ponto começa com uma letra minúscula e continua com letras minúsculas, números ou sublinhados.
+Cada ação em `auditActions` declara `action`, `resourceType`, `allowedOutcomes` e um catálogo opcional `reasonCodes`. `AuditOutcome` aceita `success`, `failure`, `cancelled` e `denied`. `EventOutcome` continua aceitando somente `success`, `failure` e `cancelled`. `action` aceita de 3 a 128 caracteres e exige pelo menos dois segmentos separados por ponto. Cada segmento começa com uma letra minúscula e continua com letras minúsculas, números ou sublinhados. `resourceType` aceita de 1 a 64 caracteres sem controles e usa a mesma gramática de segmento, mas também aceita um único segmento.
 
 `parseAuditRecord` recebe o ID do recurso. O parser deriva o tipo do recurso pela ação selecionada. O parser também limita identificadores, rejeita caracteres de controle e verifica o resultado e o código de razão. `occurredAt` aceita somente RFC 3339 UTC canônico com três dígitos de milissegundos, como `2026-01-02T03:04:05.000Z`. O registro não aceita email, nome de exibição, razão livre, metadata, snapshots de mudança, patches ou objetos da aplicação.
 
@@ -21,7 +21,7 @@ const result = yield * recordAudit(record, (document) => durableLedgerWrite(docu
 
 `commitAuditRecord` cria `committedAt`, calcula o hash e entrega um único `AuditCommitDocument` plano ao callback durável. A aplicação persiste exatamente esse documento junto ao ledger na mesma operação atômica. A função só constrói `CommittedAuditRecord` depois que o callback termina com sucesso. O tipo não tem construtor público. Uma falha do ledger mantém o canal de erro original e não publica uma cópia.
 
-`recordAudit` devolve o valor do ledger, o registro comprometido e o recibo de publicação. A publicação não falha no canal Effect. O recibo é `published`, `deduplicated` ou `dropped`. Os motivos de descarte são `unbound`, `closed`, `queue-overflow`, `contract-rejected`, `policy-rejected` e `transport`. `contract-rejected` indica que a ação, o tipo de recurso derivado, o resultado ou o código de razão não pertence ao contrato do adapter. O relatório registra somente a contagem e os timestamps desse descarte.
+`recordAudit` devolve o valor do ledger, o registro comprometido e o recibo de publicação. A publicação não falha no canal Effect. O recibo é `published`, `deduplicated` ou `dropped`. `published` confirma a admissão na fila, não a entrega ao transporte. Uma falha terminal posterior incrementa `dropped` e o motivo terminal. Por isso, `published` e `dropped` podem contar o mesmo registro e não são contadores mutuamente exclusivos. Os motivos de descarte são `unbound`, `closed`, `queue-overflow`, `contract-rejected`, `policy-rejected` e `transport`. `contract-rejected` indica que o valor não é um `CommittedAuditRecord` criado pelo pacote ou que a ação, o tipo de recurso derivado, o resultado ou o código de razão não pertence ao contrato do adapter. O relatório registra somente a contagem e os timestamps desse descarte.
 
 ## Outbox da aplicação
 
@@ -30,6 +30,8 @@ const result = yield * recordAudit(record, (document) => durableLedgerWrite(docu
 Use `recordId` como a única chave de idempotência. Uma repetição dentro da janela do adapter retorna `deduplicated`. Esse resultado não conta como perda. Uma rejeição da fila ou um descarte terminal libera a reserva para uma tentativa posterior.
 
 ## Cópia operacional
+
+Um evento comum de contrato com `kind: "audit"` passa por `EventProducer.emit` e pelo pipeline normal de eventos. Esse evento não tem a ordem durável, o ID, o hash nem as âncoras da cópia operacional. A cópia operacional aceita somente um `CommittedAuditRecord` criado e marcado pelo pacote depois da gravação durável. `Contract.organizationEvents.AuditRecorded` registra o formato exigido no startup, mas emitir esse alias pelo `EventProducer` ainda produz um evento comum.
 
 O adapter evlog existente fornece `observability.auditLayer`. A cópia usa a mesma fila, os mesmos limites, retry, fallback, flush, close e contagem de perdas dos eventos.
 

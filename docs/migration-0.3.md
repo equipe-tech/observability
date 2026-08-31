@@ -137,7 +137,7 @@ O ingest HTTP do browser agora exige a mesma layer. Passe `{ eventLayer: observa
 
 ## Migrar auditorias do servidor
 
-Declare ações em `auditActions` e use `AuditOutcome` quando uma auditoria precisa representar `denied`. `EventOutcome` não mudou. Troque razões livres por códigos fechados em `reasonCodes`.
+Declare ações em `auditActions` e use `AuditOutcome` quando uma auditoria precisa representar `denied`. `EventOutcome` não mudou. Troque razões livres por códigos fechados em `reasonCodes`. Cada `action` aceita de 3 a 128 caracteres e exige pelo menos dois segmentos separados por ponto. Cada segmento começa com uma letra minúscula e continua com letras minúsculas, números ou sublinhados.
 
 A versão 0.3 restringe `resourceType` a 1 até 64 caracteres sem controles. Cada segmento separado por ponto começa com uma letra minúscula e continua com letras minúsculas, números ou sublinhados. Contratos 0.2 com maiúsculas, hífens, espaços, caracteres de controle ou mais de 64 caracteres agora falham na compilação. Renomeie esses tipos antes da atualização e use o mesmo valor no ledger da aplicação.
 

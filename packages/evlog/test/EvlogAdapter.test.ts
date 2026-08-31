@@ -2195,49 +2195,116 @@ describe("evlogAdapter", () => {
     expect(receiver.bodies.some((body) => body.includes("second-generation"))).toBe(true);
   });
 
-  it("requires the audit.recorded organization event for active audit publication", async () => {
-    const contract = await Effect.runPromise(
-      defineTelemetryContract({
-        version: 1,
-        events: {},
-        metrics: {},
-        auditActions: {
-          AccessReviewed: {
-            action: "access.reviewed",
-            resourceType: "account",
-            allowedOutcomes: ["success"],
-          },
-        },
-      }),
-    );
-    const config = await Effect.runPromise(
-      parseNodeObservabilityConfig({
-        enabled: true,
-        profile: "worker",
-        service: { name: "audit-contract-test", version: "1.2.3", environment: "test" },
-        telemetry: { endpoint: new URL("http://127.0.0.1:1") },
-        evlog: {
-          contract,
-          policy: { attributes: {}, blockedKeys: [], blockedValuePatterns: [] },
-        },
-        sentry: { enabled: false },
-      }),
-    );
-    await expect(
-      createNodeObservabilityFromConfig(config, [
-        evlogAdapter({ installGlobalLogger: false }).registration,
-      ]),
-    ).rejects.toMatchObject({
-      code: "OBS_OBSERVABILITY_STARTUP_FAILED",
-      cause: {
-        cause: {
-          code: "OBS_EVLOG_AUDIT_CONTRACT_INVALID",
-          message:
-            "Audit publication requires Contract.organizationEvents.AuditRecorded when the contract declares audit actions.",
+  const auditStartupCases = [
+    { name: "missing event", events: {}, valid: false },
+    {
+      name: "wrong kind",
+      events: {
+        AuditRecorded: { ...Contract.organizationEvents.AuditRecorded, kind: "domain" },
+      },
+      valid: false,
+    },
+    {
+      name: "wrong severity",
+      events: {
+        AuditRecorded: { ...Contract.organizationEvents.AuditRecorded, defaultSeverity: "warn" },
+      },
+      valid: false,
+    },
+    {
+      name: "not mandatory",
+      events: {
+        AuditRecorded: { ...Contract.organizationEvents.AuditRecorded, mandatory: false },
+      },
+      valid: false,
+    },
+    {
+      name: "sampled",
+      events: {
+        AuditRecorded: {
+          ...Contract.organizationEvents.AuditRecorded,
+          sampling: { kind: "rate", rate: 1 },
         },
       },
-    });
-  });
+      valid: false,
+    },
+    {
+      name: "custom attributes",
+      events: {
+        AuditRecorded: {
+          ...Contract.organizationEvents.AuditRecorded,
+          attributes: {
+            "audit.detail": { classification: "public", required: false, metricLabel: false },
+          },
+        },
+      },
+      valid: false,
+    },
+    {
+      name: "exact organization event",
+      events: { AuditRecorded: Contract.organizationEvents.AuditRecorded },
+      valid: true,
+    },
+  ] satisfies ReadonlyArray<{
+    readonly name: string;
+    readonly events: TelemetryContractInput["events"];
+    readonly valid: boolean;
+  }>;
+
+  it.each(auditStartupCases)(
+    "validates the audit.recorded startup contract for $name",
+    async ({ events, valid }) => {
+      const contract = await Effect.runPromise(
+        defineTelemetryContract(
+          JSON.parse(
+            JSON.stringify({
+              version: 1,
+              events,
+              metrics: {},
+              auditActions: {
+                AccessReviewed: {
+                  action: "access.reviewed",
+                  resourceType: "account",
+                  allowedOutcomes: ["success"],
+                },
+              },
+            }),
+          ),
+        ),
+      );
+      const config = await Effect.runPromise(
+        parseNodeObservabilityConfig({
+          enabled: true,
+          profile: "worker",
+          service: { name: "audit-contract-test", version: "1.2.3", environment: "test" },
+          telemetry: { endpoint: new URL("http://127.0.0.1:1") },
+          evlog: {
+            contract,
+            policy: { attributes: {}, blockedKeys: [], blockedValuePatterns: [] },
+          },
+          sentry: { enabled: false },
+        }),
+      );
+      const startup = createNodeObservabilityFromConfig(config, [
+        evlogAdapter({ installGlobalLogger: false }).registration,
+      ]);
+      if (valid) {
+        const observability = await startup;
+        await observability.close();
+        return;
+      }
+      await expect(startup).rejects.toMatchObject({
+        code: "OBS_OBSERVABILITY_STARTUP_FAILED",
+        cause: {
+          cause: {
+            code: "OBS_EVLOG_AUDIT_CONTRACT_INVALID",
+            message:
+              "Audit publication requires Contract.organizationEvents.AuditRecorded when the contract declares audit actions.",
+          },
+        },
+      });
+    },
+  );
 
   it("reports invalid and unknown options through startup", async () => {
     const { config } = await makeConfig(new URL("http://127.0.0.1:1"));

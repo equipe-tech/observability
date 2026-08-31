@@ -11,6 +11,7 @@ export {
   type AuditOutboxSettlement,
   type AuditOutboxValue,
 } from "./AuditOutbox.ts";
+export { isCommittedAuditRecord } from "./CommittedAuditRecordInternal.ts";
 export {
   AuditPublisher,
   commitAuditRecord,

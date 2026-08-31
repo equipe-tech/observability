@@ -8,6 +8,7 @@ import {
   BrowserEvents,
   Contract,
   instanceResourceAttributes,
+  isCommittedAuditRecord,
   registerOfficialAdapter,
   SpanId,
   TelemetryEventSink,
@@ -1089,8 +1090,13 @@ export const makeEvlogAdapter = (
           }
         }
 
-        const admitAudit = (record: CommittedAuditRecord): Effect.Effect<AuditPublishReceipt> =>
-          Effect.promise<AuditPublishReceipt>(async () => {
+        const admitAudit = (record: CommittedAuditRecord): Effect.Effect<AuditPublishReceipt> => {
+          if (!isCommittedAuditRecord(record)) {
+            return Effect.sync(() =>
+              incrementAuditDrop(auditState, "contract-rejected", dropTimestamp()),
+            );
+          }
+          return Effect.promise<AuditPublishReceipt>(async () => {
             const declaredAction = context.contract.auditActionByName.get(record.action);
             if (
               declaredAction === undefined ||
@@ -1230,6 +1236,7 @@ export const makeEvlogAdapter = (
               return { kind: "published" };
             }
           });
+        };
 
         const auditLayer = Layer.succeed(
           AuditPublisher,
