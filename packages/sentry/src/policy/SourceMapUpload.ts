@@ -16,8 +16,7 @@ export type SentrySourceMapPlan = {
   readonly environment: { readonly authTokenVariable: "SENTRY_AUTH_TOKEN" };
 };
 
-const Name = Schema.NonEmptyString.check(Schema.isPattern(/^[a-zA-Z0-9._-]+$/));
-const Path = Schema.NonEmptyString.check(
+const SafeArgument = Schema.NonEmptyString.check(
   Schema.makeFilter(
     (value) =>
       !value.startsWith("-") &&
@@ -25,9 +24,11 @@ const Path = Schema.NonEmptyString.check(
         const codePoint = character.codePointAt(0);
         return codePoint !== undefined && (codePoint <= 31 || codePoint === 127);
       }),
-    { expected: "a path without leading flags or control characters" },
+    { expected: "a value without leading flags or control characters" },
   ),
 );
+const Name = SafeArgument.check(Schema.isPattern(/^[a-zA-Z0-9._-]+$/));
+const Path = SafeArgument;
 const decodeName = Schema.decodeUnknownOption(Name);
 const decodePath = Schema.decodeUnknownOption(Path);
 

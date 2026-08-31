@@ -9,10 +9,11 @@ export const SentryDefectCapture = Schema.Struct({ envelope: DefectEnvelope });
 export type SentryDefectCapture = typeof SentryDefectCapture.Type;
 
 const decodeCapture = Schema.decodeUnknownSync(SentryDefectCapture);
+const isCapture = Schema.is(SentryDefectCapture);
 
 export const parseSentryDefectCapture = (input: SentryDefectCapture): SentryDefectCapture => {
   try {
-    return decodeCapture(input);
+    return isCapture(input) ? input : decodeCapture(input);
   } catch (cause) {
     throw new SentryAdapterError({
       code: "OBS_SENTRY_CAPTURE_INVALID",
@@ -74,7 +75,6 @@ export type ProjectedSentryEvent = {
   readonly event_id: string;
   readonly timestamp: number;
   readonly level: "error";
-  readonly platform: "javascript";
   readonly release: string;
   readonly environment: string;
   readonly fingerprint: Array<string>;
@@ -155,7 +155,6 @@ export const projectDefect = (
     event_id: decodeEventId(eventId),
     timestamp: Date.now() / 1_000,
     level: "error",
-    platform: "javascript",
     release: identity.serviceVersion,
     environment: identity.environment,
     fingerprint: [...safe.fingerprint],
@@ -164,4 +163,35 @@ export const projectDefect = (
   };
   if (Object.keys(context).length > 0) Object.assign(event, { contexts: { obs: context } });
   return Option.some(event);
+};
+
+const projectFinalException = (exception: ProjectedException): ProjectedException => {
+  const projected: ProjectedException = {
+    type: exception.type,
+    value: exception.value,
+  };
+  if (exception.stacktrace !== undefined) {
+    Object.assign(projected, {
+      stacktrace: { frames: exception.stacktrace.frames.map((frame) => ({ ...frame })) },
+    });
+  }
+  return projected;
+};
+
+export const projectFinalEvent = (event: ProjectedSentryEvent): ProjectedSentryEvent => {
+  const projected: ProjectedSentryEvent = {
+    type: undefined,
+    event_id: event.event_id,
+    timestamp: event.timestamp,
+    level: event.level,
+    release: event.release,
+    environment: event.environment,
+    fingerprint: [...event.fingerprint],
+    exception: { values: event.exception.values.map(projectFinalException) },
+    tags: { ...event.tags },
+  };
+  if (event.contexts !== undefined) {
+    Object.assign(projected, { contexts: { obs: { ...event.contexts.obs } } });
+  }
+  return projected;
 };

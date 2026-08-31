@@ -8,13 +8,14 @@ import {
 import { defaultStackParser, LightNodeClient, makeNodeTransport } from "@sentry/node-core/light";
 import type { ErrorEvent } from "@sentry/node-core/light";
 import { Context, Effect, Layer, Option, Schema } from "effect";
-import { randomUUID } from "node:crypto";
 import { parseSentryDsn } from "../SentryDsn.ts";
 import { SentryAdapterError } from "../SentryAdapterError.ts";
 import { captureDefectNow, type CaptureResult } from "../policy/CaptureOwner.ts";
 import { defectDeduplicator, type DefectDeduplicator } from "../policy/Deduplication.ts";
 import { eventSettlements, type EventSettlements } from "../policy/EventSettlement.ts";
+import { secureEventId } from "../policy/EventId.ts";
 import {
+  projectFinalEvent,
   type ProjectedSentryEvent,
   type ProjectionIdentity,
   type SentryCaptureOutcome,
@@ -27,6 +28,7 @@ import { sentryReportState } from "../policy/ReportState.ts";
 export type SentryDefectAdapterOptions = {
   readonly flushDeadlineMillis?: number;
   readonly closeDeadlineMillis?: number;
+  readonly terminalSettlementDeadlineMillis?: number;
   readonly dedupeWindowMillis?: number;
   readonly dedupeCapacity?: number;
 };
@@ -54,6 +56,7 @@ const Deadline = PositiveInteger.check(Schema.makeFilter((value) => value <= 5_0
 const OptionsDocument = Schema.Struct({
   flushDeadlineMillis: Schema.optional(Deadline),
   closeDeadlineMillis: Schema.optional(Deadline),
+  terminalSettlementDeadlineMillis: Schema.optional(Deadline),
   dedupeWindowMillis: Schema.optional(PositiveInteger),
   dedupeCapacity: Schema.optional(PositiveInteger),
 });
@@ -61,6 +64,7 @@ const decodeOptions = Schema.decodeUnknownOption(OptionsDocument);
 const optionNames = new Set([
   "flushDeadlineMillis",
   "closeDeadlineMillis",
+  "terminalSettlementDeadlineMillis",
   "dedupeWindowMillis",
   "dedupeCapacity",
 ]);
@@ -68,6 +72,7 @@ const optionNames = new Set([
 type AdapterOptions = {
   readonly flushDeadlineMillis: number;
   readonly closeDeadlineMillis: number;
+  readonly terminalSettlementDeadlineMillis: number;
   readonly dedupeWindowMillis: number;
   readonly dedupeCapacity: number;
 };
@@ -100,6 +105,8 @@ const resolveOptions = (
   return Effect.succeed({
     flushDeadlineMillis: options.flushDeadlineMillis ?? 2_000,
     closeDeadlineMillis: options.closeDeadlineMillis ?? 2_000,
+    terminalSettlementDeadlineMillis:
+      options.terminalSettlementDeadlineMillis ?? terminalSettlementDeadlineMillis,
     dedupeWindowMillis: options.dedupeWindowMillis ?? 60_000,
     dedupeCapacity: options.dedupeCapacity ?? 256,
   });
@@ -112,7 +119,7 @@ const adapterFailure = (cause: SentryAdapterError): AdapterFailure =>
     cause,
   });
 
-const eventId = (): string => randomUUID().replaceAll("-", "");
+const terminalSettlementDeadlineMillis = 5_000;
 const acceptedStatus = (statusCode: number | undefined): boolean =>
   statusCode !== undefined && statusCode >= 200 && statusCode < 300;
 const decodeEventId = Schema.decodeUnknownOption(Schema.String);
@@ -138,9 +145,10 @@ export const sentryDefectAdapter = (
             dedupe: current.dedupe,
             settlements: current.settlements,
             stackParser: defaultStackParser,
-            send: (event: ProjectedSentryEvent) => current.client.captureEvent(event),
+            send: (event: ProjectedSentryEvent) =>
+              current.client.captureEvent(projectFinalEvent(event)),
           };
-    return captureDefectNow(input, closed, runtime, eventId, reportState);
+    return captureDefectNow(input, closed, runtime, secureEventId, reportState);
   };
 
   const flush = async (): Promise<boolean> => {
@@ -210,7 +218,7 @@ export const sentryDefectAdapter = (
         const dedupe = defectDeduplicator(resolved.dedupeWindowMillis, resolved.dedupeCapacity);
         const settlements = eventSettlements<ProjectedSentryEvent>(
           resolved.dedupeCapacity,
-          resolved.flushDeadlineMillis,
+          resolved.terminalSettlementDeadlineMillis,
           dedupe,
         );
         const client = new LightNodeClient({
@@ -223,14 +231,21 @@ export const sentryDefectAdapter = (
               flush: (timeout) => transport.flush(timeout),
               send: (envelope) => {
                 const id = decodeEventId(envelope[0].event_id);
+                if (Option.isNone(id)) return Promise.resolve({ statusCode: 400 });
+                const accepted = settlements.input(id.value);
+                const item = envelope[1][0];
+                if (accepted === undefined || item === undefined) {
+                  return Promise.resolve({ statusCode: 400 });
+                }
+                envelope[1][0] = [{ type: "event" }, projectFinalEvent(accepted)];
+                delete envelope[0].sdk;
                 return Promise.resolve(transport.send(envelope)).then(
                   (response) => {
-                    if (Option.isSome(id))
-                      settlements.settle(id.value, acceptedStatus(response.statusCode));
+                    settlements.settle(id.value, acceptedStatus(response.statusCode));
                     return response;
                   },
                   (cause) => {
-                    if (Option.isSome(id)) settlements.reject(id.value);
+                    settlements.reject(id.value);
                     throw cause;
                   },
                 );
@@ -239,6 +254,7 @@ export const sentryDefectAdapter = (
           },
           stackParser: defaultStackParser,
           integrations: [],
+          includeServerName: false,
           sendDefaultPii: false,
           dataCollection: {
             userInfo: false,
@@ -260,7 +276,7 @@ export const sentryDefectAdapter = (
             if (id === undefined) return null;
             const accepted = settlements.input(id);
             if (accepted === undefined) return null;
-            return accepted;
+            return projectFinalEvent(accepted);
           },
           beforeSendTransaction: () => null,
           beforeBreadcrumb: () => null,
@@ -288,11 +304,12 @@ export const sentryDefectAdapter = (
     const result = captureNow(input);
     if (result.outcome.kind !== "queued" || result.completion === undefined) return result.outcome;
     const completed = await flush();
-    if (!completed) active?.settlements.reject(result.outcome.eventId);
-    const accepted = await result.completion;
-    if (!completed || !accepted) {
-      return { kind: "failed", reason: "transport" };
+    if (!completed) return { kind: "failed", reason: "transport" };
+    if (active?.settlements.pending(result.outcome.eventId) === true) {
+      active.settlements.reject(result.outcome.eventId);
     }
+    const accepted = await result.completion;
+    if (!accepted) return { kind: "failed", reason: "transport" };
     return { eventId: result.outcome.eventId, flushed: true };
   };
   return {

@@ -43,7 +43,13 @@ export const captureDefectNow = (
     reportState.increment("disabled");
     return { outcome: { kind: "suppressed", reason: "disabled" } };
   }
-  const id = eventId();
+  let id: string;
+  try {
+    id = eventId();
+  } catch {
+    reportState.increment("transport");
+    return { outcome: { kind: "failed", reason: "transport" } };
+  }
   const decision = runtime.dedupe.admit(id, parsedInput.envelope, Date.now());
   if (decision.kind === "deduplicated") {
     reportState.increment(decision.reason);

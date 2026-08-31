@@ -11,7 +11,9 @@ import { SentryAdapterError } from "../SentryAdapterError.ts";
 import { captureDefectNow, type CaptureResult } from "../policy/CaptureOwner.ts";
 import { defectDeduplicator } from "../policy/Deduplication.ts";
 import { eventSettlements } from "../policy/EventSettlement.ts";
+import { secureEventId } from "../policy/EventId.ts";
 import {
+  projectFinalEvent,
   type ProjectedSentryEvent,
   type ProjectionIdentity,
   type SentryCaptureOutcome,
@@ -32,6 +34,7 @@ export type BrowserSentryDefectReporterConfig = {
   readonly policy: DataPolicyInput;
   readonly flushDeadlineMillis?: number;
   readonly closeDeadlineMillis?: number;
+  readonly terminalSettlementDeadlineMillis?: number;
   readonly dedupeWindowMillis?: number;
   readonly dedupeCapacity?: number;
 };
@@ -59,6 +62,7 @@ const ConfigDocument = Schema.Struct({
   policy: Schema.Any,
   flushDeadlineMillis: Schema.optional(Deadline),
   closeDeadlineMillis: Schema.optional(Deadline),
+  terminalSettlementDeadlineMillis: Schema.optional(Deadline),
   dedupeWindowMillis: Schema.optional(PositiveInteger),
   dedupeCapacity: Schema.optional(PositiveInteger),
 });
@@ -71,6 +75,7 @@ const configNames = new Set([
   "policy",
   "flushDeadlineMillis",
   "closeDeadlineMillis",
+  "terminalSettlementDeadlineMillis",
   "dedupeWindowMillis",
   "dedupeCapacity",
 ]);
@@ -85,7 +90,7 @@ const invalidConfig = (cause: unknown): never => {
   });
 };
 
-const randomEventId = (): string => crypto.randomUUID().replaceAll("-", "");
+const terminalSettlementDeadlineMillis = 5_000;
 const acceptedStatus = (statusCode: number | undefined): boolean =>
   statusCode !== undefined && statusCode >= 200 && statusCode < 300;
 const decodeEventId = Schema.decodeUnknownOption(Schema.String);
@@ -117,7 +122,7 @@ export const createBrowserSentryDefectReporter = (
   );
   const settlements = eventSettlements<ProjectedSentryEvent>(
     config.dedupeCapacity ?? 256,
-    flushDeadline,
+    config.terminalSettlementDeadlineMillis ?? terminalSettlementDeadlineMillis,
     dedupe,
   );
   let closed = false;
@@ -149,14 +154,21 @@ export const createBrowserSentryDefectReporter = (
             flush: (timeout) => transport.flush(timeout),
             send: (envelope) => {
               const id = decodeEventId(envelope[0].event_id);
+              if (Option.isNone(id)) return Promise.resolve({ statusCode: 400 });
+              const accepted = settlements.input(id.value);
+              const item = envelope[1][0];
+              if (accepted === undefined || item === undefined) {
+                return Promise.resolve({ statusCode: 400 });
+              }
+              envelope[1][0] = [{ type: "event" }, projectFinalEvent(accepted)];
+              delete envelope[0].sdk;
               return Promise.resolve(transport.send(envelope)).then(
                 (response) => {
-                  if (Option.isSome(id))
-                    settlements.settle(id.value, acceptedStatus(response.statusCode));
+                  settlements.settle(id.value, acceptedStatus(response.statusCode));
                   return response;
                 },
                 (cause) => {
-                  if (Option.isSome(id)) settlements.reject(id.value);
+                  settlements.reject(id.value);
                   throw cause;
                 },
               );
@@ -186,7 +198,7 @@ export const createBrowserSentryDefectReporter = (
           if (id === undefined) return null;
           const accepted = settlements.input(id);
           if (accepted === undefined) return null;
-          return accepted;
+          return projectFinalEvent(accepted);
         },
         beforeSendTransaction: () => null,
         beforeBreadcrumb: () => null,
@@ -204,9 +216,9 @@ export const createBrowserSentryDefectReporter = (
             dedupe,
             settlements,
             stackParser: defaultStackParser,
-            send: (event: ProjectedSentryEvent) => current.captureEvent(event),
+            send: (event: ProjectedSentryEvent) => current.captureEvent(projectFinalEvent(event)),
           };
-    return captureDefectNow(input, closed, runtime, randomEventId, reportState);
+    return captureDefectNow(input, closed, runtime, secureEventId, reportState);
   };
 
   const capture = (input: SentryDefectCapture): SentryCaptureOutcome => captureNow(input).outcome;
@@ -257,11 +269,10 @@ export const createBrowserSentryDefectReporter = (
     const result = captureNow(input);
     if (result.outcome.kind !== "queued" || result.completion === undefined) return result.outcome;
     const completed = await flush();
-    if (!completed) settlements.reject(result.outcome.eventId);
+    if (!completed) return { kind: "failed", reason: "transport" };
+    if (settlements.pending(result.outcome.eventId)) settlements.reject(result.outcome.eventId);
     const accepted = await result.completion;
-    if (!completed || !accepted) {
-      return { kind: "failed", reason: "transport" };
-    }
+    if (!accepted) return { kind: "failed", reason: "transport" };
     return { eventId: result.outcome.eventId, flushed: true };
   };
 

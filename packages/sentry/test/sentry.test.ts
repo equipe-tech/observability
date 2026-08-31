@@ -24,6 +24,11 @@ import { eventSettlements } from "../src/policy/EventSettlement.ts";
 import { malformedCaptureErrors } from "./malformed-capture.js";
 
 const execFileAsync = promisify(execFile);
+const WireEventDocument = Schema.Struct({
+  event_id: Schema.String,
+  contexts: Schema.Struct({ obs: Schema.Any }),
+});
+const decodeJsonDocument = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Json));
 const policy = { attributes: {}, blockedKeys: [], blockedValuePatterns: [] };
 const sensitivePolicy = definePolicy({
   attributes: {
@@ -129,6 +134,40 @@ describe("Sentry adapter policy", () => {
         urlPrefix: "--auth-token=secret",
       }),
     ).toThrowError(expect.objectContaining({ code: "OBS_SENTRY_SOURCE_MAP_INVALID" }));
+    const unsafeNames = ["--org", "bad\nname", "bad\u0000name"];
+    for (const unsafe of unsafeNames) {
+      for (const input of [
+        {
+          organization: unsafe,
+          project: "web",
+          release: "1.4.0",
+          includePaths: ["dist"],
+        },
+        {
+          organization: "equipe-tech",
+          project: unsafe,
+          release: "1.4.0",
+          includePaths: ["dist"],
+        },
+        {
+          organization: "equipe-tech",
+          project: "web",
+          release: unsafe,
+          includePaths: ["dist"],
+        },
+        {
+          organization: "equipe-tech",
+          project: "web",
+          release: "1.4.0",
+          includePaths: ["dist"],
+          urlPrefix: unsafe,
+        },
+      ]) {
+        expect(() => sentrySourceMapUpload(input)).toThrowError(
+          expect.objectContaining({ code: "OBS_SENTRY_SOURCE_MAP_INVALID" }),
+        );
+      }
+    }
   });
 
   it("deduplicates identity, fingerprint, window, and bounded capacity", () => {
@@ -204,15 +243,45 @@ describe("Sentry adapter policy", () => {
       service: { name: "web", version: "1.4.0", environment: "test" },
       policy,
     });
-    const outcome = reporter.capture({ envelope: envelope() });
+    const original = envelope();
+    const outcome = reporter.capture({ envelope: original });
     expect(outcome.kind).toBe("queued");
+    expect(await reporter.flush()).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(reporter.capture({ envelope: original })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    const plain = envelope("plain-equivalent");
+    expect(reporter.capture({ envelope: plain }).kind).toBe("queued");
+    expect(reporter.capture({ envelope: { ...plain } })).toEqual({
+      kind: "deduplicated",
+      reason: "fingerprint",
+    });
     expect(await reporter.flush()).toBe(true);
     expect(await reporter.dispose()).toBe(true);
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error === undefined ? resolve() : reject(error))),
     );
-    expect(bodies).toHaveLength(1);
+    expect(bodies).toHaveLength(2);
     const wire = bodies[0] ?? "";
+    const wireLines = wire.trim().split("\n");
+    expect(wireLines).toHaveLength(3);
+    expect(decodeJsonDocument(wireLines.at(-2) ?? "")).toEqual({ type: "event" });
+    const event = decodeJsonDocument(wireLines.at(-1) ?? "");
+    if (!Schema.is(WireEventDocument)(event)) throw new Error("Expected a Sentry error event.");
+    expect(Object.keys(event).sort()).toEqual([
+      "contexts",
+      "environment",
+      "event_id",
+      "exception",
+      "fingerprint",
+      "level",
+      "release",
+      "tags",
+      "timestamp",
+    ]);
+    expect(Object.keys(event.contexts)).toEqual(["obs"]);
     expect(wire).toContain('"release":"1.4.0"');
     expect(wire).toContain('"environment":"test"');
     expect(wire).toContain('"service.name":"web"');
@@ -225,6 +294,14 @@ describe("Sentry adapter policy", () => {
     expect(wire).not.toContain('"user"');
     expect(wire).not.toContain('"breadcrumbs"');
     expect(wire).not.toContain('"transaction"');
+    expect(wire).not.toContain('"replay"');
+    expect(wire).not.toContain('"session"');
+    expect(wire).not.toContain('"server_name"');
+    expect(wire).not.toContain('"runtime"');
+    expect(wire).not.toContain('"sdk"');
+    expect(wire).not.toContain('"modules"');
+    expect(wire).not.toContain('"platform"');
+    expect(reporter.reports().reasons).toMatchObject({ identity: 1, fingerprint: 1 });
   });
 
   it("registers the Node adapter and flushes one defect through lifecycle", async () => {
@@ -310,7 +387,34 @@ describe("Sentry adapter policy", () => {
     );
     expect(bodies.some((body) => body.includes('"service.name":"worker"'))).toBe(true);
     if (capture.kind === "queued") {
-      expect(bodies.some((body) => body.includes(capture.eventId))).toBe(true);
+      const wire = bodies.find((body) => body.includes(capture.eventId));
+      expect(wire).toBeDefined();
+      const event = decodeJsonDocument(wire?.trim().split("\n").at(-1) ?? "");
+      if (!Schema.is(WireEventDocument)(event)) throw new Error("Expected a Sentry error event.");
+      expect(Object.keys(event).sort()).toEqual([
+        "contexts",
+        "environment",
+        "event_id",
+        "exception",
+        "fingerprint",
+        "level",
+        "release",
+        "tags",
+        "timestamp",
+      ]);
+      expect(Object.keys(event.contexts)).toEqual(["obs"]);
+      for (const forbidden of [
+        '"server_name"',
+        '"runtime"',
+        '"sdk"',
+        '"modules"',
+        '"platform"',
+        '"replay"',
+        '"session"',
+        '"transaction"',
+      ]) {
+        expect(wire).not.toContain(forbidden);
+      }
     }
     if ("eventId" in receipt) {
       expect(bodies.some((body) => body.includes(receipt.eventId))).toBe(true);
@@ -333,6 +437,82 @@ describe("Sentry adapter policy", () => {
       expect(bodies.join("\n")).not.toContain(secret);
     }
     expect(sentry.reports().reasons).toMatchObject({ captured: 5, transport: 1 });
+  });
+
+  it("keeps slow Node transport terminal state after the verification deadline", async () => {
+    let status = 200;
+    let delay = 100;
+    let bodies = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      request.on("end", () => {
+        bodies += 1;
+        setTimeout(() => {
+          response.writeHead(status);
+          response.end();
+        }, delay);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    const contract = await Effect.runPromise(
+      defineTelemetryContract({ version: 1, events: {}, metrics: {}, auditActions: {} }),
+    );
+    const sentry = sentryDefectAdapter({
+      flushDeadlineMillis: 20,
+      terminalSettlementDeadlineMillis: 500,
+    });
+    const events = evlogAdapter({ installGlobalLogger: false, stdout: { write: () => true } });
+    const runtime = await createNodeObservability({
+      profile: "worker",
+      env: {
+        OTEL_SERVICE_NAME: "worker",
+        OTEL_SERVICE_VERSION: "1.4.0",
+        OTEL_DEPLOYMENT_ENVIRONMENT: "test",
+        OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${address.port}`,
+        SENTRY_DSN: `http://public@127.0.0.1:${address.port}/1`,
+      },
+      contract,
+      policy,
+      adapters: [events.registration, sentry.registration],
+    });
+    const slowAccepted = envelope("node-slow-accepted");
+    expect(await sentry.sendVerificationDefect({ envelope: slowAccepted })).toEqual({
+      kind: "failed",
+      reason: "transport",
+    });
+    expect(await sentry.captureAsync({ envelope: slowAccepted })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    expect(sentry.reports().reasons).toMatchObject({ captured: 1, transport: 0 });
+    expect(await sentry.captureAsync({ envelope: slowAccepted })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    const slowRejected = envelope("node-slow-rejected");
+    status = 500;
+    expect(await sentry.sendVerificationDefect({ envelope: slowRejected })).toEqual({
+      kind: "failed",
+      reason: "transport",
+    });
+    expect(await sentry.captureAsync({ envelope: slowRejected })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    expect(sentry.reports().reasons.transport).toBe(1);
+    status = 200;
+    delay = 0;
+    expect(await sentry.sendVerificationDefect({ envelope: slowRejected })).toMatchObject({
+      flushed: true,
+    });
+    expect(bodies).toBe(3);
+    await runtime.close();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
   });
 
   it("reports degraded Node lifecycle and suppresses capture after close timeout", async () => {
@@ -562,6 +742,68 @@ describe("Sentry adapter policy", () => {
     },
   );
 
+  it("keeps slow browser transport terminal state after the verification deadline", async () => {
+    let status = 200;
+    let delay = 100;
+    let bodies = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      request.on("end", () => {
+        bodies += 1;
+        setTimeout(() => {
+          response.writeHead(status);
+          response.end();
+        }, delay);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    const reporter = createBrowserSentryDefectReporter({
+      dsn: `http://public@127.0.0.1:${address.port}/1`,
+      service: { name: "web", version: "1.4.0", environment: "test" },
+      policy,
+      flushDeadlineMillis: 20,
+      terminalSettlementDeadlineMillis: 500,
+    });
+    const slowAccepted = envelope("slow-accepted");
+    expect(await reporter.sendVerificationDefect({ envelope: slowAccepted })).toEqual({
+      kind: "failed",
+      reason: "transport",
+    });
+    expect(reporter.capture({ envelope: slowAccepted })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    expect(reporter.reports().reasons).toMatchObject({ captured: 1, transport: 0 });
+    expect(reporter.capture({ envelope: slowAccepted })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    const slowRejected = envelope("slow-rejected");
+    status = 500;
+    expect(await reporter.sendVerificationDefect({ envelope: slowRejected })).toEqual({
+      kind: "failed",
+      reason: "transport",
+    });
+    expect(reporter.capture({ envelope: slowRejected })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    expect(reporter.reports().reasons.transport).toBe(1);
+    status = 200;
+    delay = 0;
+    expect(await reporter.sendVerificationDefect({ envelope: slowRejected })).toMatchObject({
+      flushed: true,
+    });
+    expect(bodies).toBe(3);
+    await reporter.dispose();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+  });
+
   it("rolls back dedupe after transport rejection", async () => {
     let status = 500;
     const server = createServer((_request, response) => {
@@ -622,14 +864,23 @@ describe("Sentry adapter policy", () => {
       policy,
       flushDeadlineMillis: 20,
       closeDeadlineMillis: 20,
+      terminalSettlementDeadlineMillis: 100,
     });
-    expect(reporter.capture({ envelope: envelope("hang") }).kind).toBe("queued");
+    const hanging = envelope("hang");
+    expect(reporter.capture({ envelope: hanging }).kind).toBe("queued");
     expect(await Promise.all([reporter.flush(), reporter.flush()])).toEqual([false, false]);
     expect(reporter.reports().reasons).toMatchObject({
       captured: 0,
-      transport: 1,
+      transport: 0,
       flushIncomplete: 1,
     });
+    expect(reporter.capture({ envelope: hanging })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 110));
+    expect(reporter.reports().reasons.transport).toBe(1);
+    expect(reporter.capture({ envelope: hanging }).kind).toBe("queued");
     const disposing = reporter.dispose();
     expect(reporter.capture({ envelope: envelope("during-close") })).toEqual({
       kind: "suppressed",
@@ -637,6 +888,7 @@ describe("Sentry adapter policy", () => {
     });
     expect(await disposing).toBe(false);
     expect(await reporter.dispose()).toBe(false);
+    expect(reporter.reports().reasons.transport).toBe(2);
     expect(reporter.capture({ envelope: envelope("after-close") })).toEqual({
       kind: "suppressed",
       reason: "closed",
@@ -645,6 +897,40 @@ describe("Sentry adapter policy", () => {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error === undefined ? resolve() : reject(error))),
     );
+  });
+
+  it("generates browser event IDs without randomUUID and contains missing crypto failures", async () => {
+    const reporter = createBrowserSentryDefectReporter({
+      dsn: "http://public@127.0.0.1:1/1",
+      service: { name: "web", version: "1.4.0", environment: "test" },
+      policy,
+      flushDeadlineMillis: 20,
+      closeDeadlineMillis: 20,
+      terminalSettlementDeadlineMillis: 50,
+    });
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+    try {
+      Object.defineProperty(globalThis, "crypto", {
+        configurable: true,
+        value: {
+          getRandomValues: (bytes: Uint8Array) => bytes.fill(7),
+        },
+      });
+      expect(reporter.capture({ envelope: envelope("secure-id") })).toMatchObject({
+        kind: "queued",
+        eventId: "07".repeat(16),
+      });
+      Object.defineProperty(globalThis, "crypto", { configurable: true, value: undefined });
+      expect(reporter.capture({ envelope: envelope("missing-crypto") })).toEqual({
+        kind: "failed",
+        reason: "transport",
+      });
+    } finally {
+      if (descriptor === undefined) {
+        Object.defineProperty(globalThis, "crypto", { configurable: true, value: undefined });
+      } else Object.defineProperty(globalThis, "crypto", descriptor);
+      await reporter.dispose();
+    }
   });
 
   it("rejects invalid browser options, unknown keys, and invalid policies", () => {

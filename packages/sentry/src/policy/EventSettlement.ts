@@ -10,6 +10,7 @@ export type EventSettlements<Event> = {
   readonly input: (eventId: string) => Event | undefined;
   readonly settle: (eventId: string, accepted: boolean) => void;
   readonly reject: (eventId: string) => void;
+  readonly pending: (eventId: string) => boolean;
   readonly clear: () => void;
   readonly size: () => number;
 };
@@ -44,6 +45,7 @@ export const eventSettlements = <Event>(
     input: (eventId) => entries.get(eventId)?.input,
     settle,
     reject: (eventId) => settle(eventId, false),
+    pending: (eventId) => entries.has(eventId),
     clear: () => {
       for (const eventId of entries.keys()) settle(eventId, false);
     },
