@@ -287,6 +287,45 @@ describe("Sentry adapter policy", () => {
     expect(sentry.reports().reasons).toMatchObject({ captured: 6, transport: 1 });
   });
 
+  it("reports degraded Node lifecycle and suppresses capture after close timeout", async () => {
+    const server = createServer(() => {});
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    const contract = await Effect.runPromise(
+      defineTelemetryContract({ version: 1, events: {}, metrics: {}, auditActions: {} }),
+    );
+    const sentry = sentryDefectAdapter({
+      flushDeadlineMillis: 20,
+      closeDeadlineMillis: 20,
+    });
+    const events = evlogAdapter({ installGlobalLogger: false, stdout: { write: () => true } });
+    const runtime = await createNodeObservability({
+      profile: "worker",
+      env: {
+        OTEL_SERVICE_NAME: "worker",
+        OTEL_SERVICE_VERSION: "1.4.0",
+        OTEL_DEPLOYMENT_ENVIRONMENT: "test",
+        OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${address.port}`,
+        SENTRY_DSN: `http://public@127.0.0.1:${address.port}/1`,
+      },
+      contract,
+      policy,
+      adapters: [events.registration, sentry.registration],
+    });
+    expect((await sentry.captureAsync({ envelope: envelope("node-hang") })).kind).toBe("captured");
+    expect((await runtime.flush()).degraded).toBe(true);
+    expect(sentry.reports().reasons.flushIncomplete).toBe(1);
+    await runtime.close();
+    expect(await sentry.captureAsync({ envelope: envelope("node-closed") })).toEqual({
+      kind: "suppressed",
+      reason: "closed",
+    });
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+  });
+
   it.each([
     { options: { flushDeadlineMillis: 0 }, code: "OBS_SENTRY_CONFIG_INVALID", dsn: true },
     { options: {}, code: "OBS_SENTRY_DISABLED", dsn: false },
