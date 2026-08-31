@@ -1,3 +1,4 @@
+import { Effect } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 import {
   BrowserTelemetryClientDeliveryError,
@@ -13,7 +14,8 @@ import {
   type BrowserTelemetryClientBatch,
   type BrowserTelemetryClientTransport,
 } from "../src/browser/index.ts";
-import { definePolicy } from "../src/policy/DataPolicy.ts";
+import { definePolicy, parseDataPolicy } from "../src/policy/DataPolicy.ts";
+import { transformSignalFields } from "../src/policy/PolicyTransform.ts";
 import { sensitiveFieldReplacement, sensitiveTextReplacement } from "../src/RedactionPolicy.ts";
 
 const deferred = (): {
@@ -41,8 +43,9 @@ describe("browser telemetry client", () => {
       blockedKeys: [],
       blockedValuePatterns: [],
     });
+    const compiledPolicy = Effect.runSync(parseDataPolicy(policy));
     const client = createBrowserTelemetryClient({
-      policy,
+      policy: (fields) => transformSignalFields(compiledPolicy, "browser-ingest", fields).value,
       transport: async (batch) => {
         batches.push(batch);
       },

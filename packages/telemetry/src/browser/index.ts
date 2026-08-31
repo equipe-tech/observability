@@ -6,6 +6,8 @@ import {
   maxEventsPerBatch,
 } from "../BrowserEvents.ts";
 import type { EventAttributes } from "../contract/TelemetryEvent.ts";
+import { parseDataPolicy, type DataPolicyInput } from "../policy/DataPolicy.ts";
+import { transformSignalFields } from "../policy/PolicyTransform.ts";
 import { BrowserClientEngine, normalizePositiveInteger } from "./BrowserClient.ts";
 
 export {
@@ -22,6 +24,7 @@ export type {
   BrowserTelemetryClientEvent,
   BrowserTelemetryClientFields,
   BrowserTelemetryDefectInput,
+  BrowserTelemetryFieldTransform,
   BrowserTelemetryClientTransport,
 } from "./BrowserClient.ts";
 
@@ -102,6 +105,7 @@ export type BrowserTelemetryOptions = {
   readonly maxBatchSize?: number;
   readonly maxQueueSize?: number;
   readonly flushInterval?: Duration.Input;
+  readonly policy?: DataPolicyInput;
 };
 
 const makeBrowserTelemetry = Effect.fn("makeBrowserTelemetry")(function* (
@@ -109,13 +113,20 @@ const makeBrowserTelemetry = Effect.fn("makeBrowserTelemetry")(function* (
 ) {
   const transport = yield* BrowserEventTransport;
   const flushInterval = Duration.fromInputUnsafe(options?.flushInterval ?? "5 seconds");
+  const policy =
+    options?.policy === undefined
+      ? undefined
+      : yield* parseDataPolicy(options.policy).pipe(Effect.orDie);
   const engine = new BrowserClientEngine({
     disabled: false,
     maxBatchSize: Math.min(normalizePositiveInteger(options?.maxBatchSize, 32), maxEventsPerBatch),
     maxQueueSize: normalizePositiveInteger(options?.maxQueueSize, 256),
     flushIntervalMs: normalizePositiveInteger(Duration.toMillis(flushInterval), 5_000),
     shutdownTimeoutMs: 2_000,
-    policy: undefined,
+    policy:
+      policy === undefined
+        ? undefined
+        : (fields) => transformSignalFields(policy, "browser-ingest", fields).value,
     transport: (batch) =>
       new Promise<void>((resolve, reject) => {
         Effect.runCallback(

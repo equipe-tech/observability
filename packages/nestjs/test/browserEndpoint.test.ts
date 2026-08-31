@@ -65,6 +65,16 @@ const browserContract = Effect.runSync(
             "cart.total": { classification: "public", required: true, metricLabel: false },
           },
         },
+        BrowserFailed: {
+          name: "browser.render.crash",
+          kind: "defect",
+          defaultSeverity: "error",
+          mandatory: false,
+          sampling: { kind: "always" },
+          attributes: {
+            "error.origin": { classification: "internal", required: false, metricLabel: false },
+          },
+        },
       },
       metrics: {},
       auditActions: {},
@@ -216,6 +226,29 @@ describe("browser events endpoint", () => {
     assert.strictEqual(attributeOrUndefined(checkout.attributes, "event.source"), "browser");
     assert.notInclude(JSON.stringify(telemetry), secret);
   }, 30_000);
+
+  it("accepts old and new envelopes and preserves defect failure fields", async () => {
+    const harness = await startApp(false);
+    const response = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({
+        version: 1,
+        events: [
+          { id: "old", name: "old.event", occurredAt: 1, fields: {} },
+          {
+            id: "new",
+            name: "new.defect",
+            occurredAt: 2,
+            fields: { "error.origin": "react.uncaught" },
+            error: { type: "TypeError", message: "render failed", retryable: false },
+          },
+        ],
+      }),
+    );
+    assert.strictEqual(response.status, 202);
+    assert.deepStrictEqual(await response.json(), { accepted: 2, redacted: 0, dropped: 0 });
+    await harness.close();
+  });
 
   it("accepts a valid request near the documented browser byte budget", async () => {
     const harness = await startApp(true);
@@ -477,6 +510,22 @@ describe("browser events endpoint", () => {
       JSON.stringify({
         version: 1,
         events: [{ id: "evt", name: "checkout.completed", occurredAt: 1, fields: {} }],
+      }),
+      JSON.stringify({
+        version: 1,
+        events: [{ id: "evt", name: "browser.render.crash", occurredAt: 1, fields: {} }],
+      }),
+      JSON.stringify({
+        version: 1,
+        events: [
+          {
+            id: "evt",
+            name: "checkout.completed",
+            occurredAt: 1,
+            fields: { "cart.total": 1 },
+            error: { type: "TypeError", message: "invalid", retryable: false },
+          },
+        ],
       }),
     ];
     for (const body of cases) {

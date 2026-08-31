@@ -34,12 +34,7 @@
   },
   "peerDependencies": {
     "@equipe-tech/observability": "0.3.x",
-    "@equipe-tech/observability-sentry": "*",
+    "@equipe-tech/observability-sentry": "0.3.x",
     "effect": "4.0.0-rc.111"
-  },
-  "peerDependenciesMeta": {
-    "@equipe-tech/observability-sentry": {
-      "optional": true
-    }
   }
 }

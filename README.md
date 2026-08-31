@@ -62,6 +62,7 @@ packages/
   telemetry/          @equipe-tech/observability: núcleo neutro, contratos, política, identidade e lifecycle
   evlog/              @equipe-tech/observability-evlog: eventos tipados com fila e entrega OTLP do evlog
   sentry/             @equipe-tech/observability-sentry: captura sanitizada de defeitos Node e browser
+  react/              @equipe-tech/observability-react: runtime React web, listeners e entrega coordenada
   nestjs/             @equipe-tech/observability-nestjs: integração HTTP e lifecycle do NestJS
   cli/                observability dev|provision: CLI, assets da stack local e do Collector de produção
 docs/                 padrões de código, erros, testes e workflow

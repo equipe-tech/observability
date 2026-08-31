@@ -31,7 +31,8 @@ export type BrowserSentryDefectReporterConfig = {
     readonly version: string;
     readonly environment: string;
   };
-  readonly policy: DataPolicyInput;
+  readonly policy?: DataPolicyInput;
+  readonly policyOwnership?: "owned" | "delegated";
   readonly flushDeadlineMillis?: number;
   readonly closeDeadlineMillis?: number;
   readonly terminalSettlementDeadlineMillis?: number;
@@ -60,7 +61,8 @@ const ConfigDocument = Schema.Struct({
     version: Schema.NonEmptyString,
     environment: Schema.NonEmptyString,
   }),
-  policy: Schema.Any,
+  policy: Schema.optional(Schema.Any),
+  policyOwnership: Schema.optional(Schema.Literals(["owned", "delegated"])),
   flushDeadlineMillis: Schema.optional(Deadline),
   closeDeadlineMillis: Schema.optional(Deadline),
   terminalSettlementDeadlineMillis: Schema.optional(Deadline),
@@ -75,6 +77,7 @@ const configNames = new Set([
   "disabled",
   "service",
   "policy",
+  "policyOwnership",
   "flushDeadlineMillis",
   "closeDeadlineMillis",
   "terminalSettlementDeadlineMillis",
@@ -97,6 +100,7 @@ const delegatedDeduplicator: DefectDeduplicator = {
   admit: () => ({ kind: "admitted" }),
   rollback: () => undefined,
   release: () => undefined,
+  retainedEnvelopeCount: () => 0,
 };
 
 const terminalSettlementDeadlineMillis = 5_000;
@@ -115,9 +119,18 @@ export const createBrowserSentryDefectReporter = (
   ) {
     return invalidConfig("invalid browser Sentry configuration");
   }
-  const policyResult = Effect.runSync(Effect.result(parseDataPolicy(config.policy)));
-  if (Result.isFailure(policyResult)) return invalidConfig(policyResult.failure);
-  const policy = policyResult.success;
+  const delegatedPolicy = config.policyOwnership === "delegated";
+  if (!delegatedPolicy && config.policy === undefined) {
+    return invalidConfig("owned policy is missing");
+  }
+  const policyResult =
+    config.policy === undefined
+      ? undefined
+      : Effect.runSync(Effect.result(parseDataPolicy(config.policy)));
+  if (policyResult !== undefined && Result.isFailure(policyResult)) {
+    return invalidConfig(policyResult.failure);
+  }
+  const policy = delegatedPolicy || policyResult === undefined ? undefined : policyResult.success;
   const reportState = sentryReportState();
   const flushDeadline = config.flushDeadlineMillis ?? 2_000;
   const closeDeadline = config.closeDeadlineMillis ?? 2_000;

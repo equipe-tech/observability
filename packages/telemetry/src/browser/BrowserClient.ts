@@ -1,7 +1,3 @@
-import { Effect, Predicate } from "effect";
-import type { DataPolicy, DataPolicyInput } from "../policy/DataPolicy.ts";
-import { parseDataPolicy } from "../policy/DataPolicy.ts";
-import { transformSignalFields } from "../policy/PolicyTransform.ts";
 import {
   browserRequestByteBudget,
   maxEventIdLength,
@@ -44,6 +40,10 @@ export type BrowserTelemetryClientTransport = (
   signal: AbortSignal,
 ) => Promise<void>;
 
+export type BrowserTelemetryFieldTransform = (
+  fields: BrowserTelemetryClientFields,
+) => BrowserTelemetryClientFields;
+
 export type BrowserTelemetryClientConfig = {
   readonly disabled?: boolean;
   readonly endpoint?: string;
@@ -52,7 +52,7 @@ export type BrowserTelemetryClientConfig = {
   readonly flushIntervalMs?: number;
   readonly shutdownTimeoutMs?: number;
   readonly transport?: BrowserTelemetryClientTransport;
-  readonly policy?: DataPolicyInput;
+  readonly policy?: BrowserTelemetryFieldTransform;
 };
 
 export type BrowserTelemetryClient = {
@@ -82,7 +82,7 @@ export class BrowserTelemetryClientShutdownError extends Error {
 
   constructor(readonly timeoutMs: number) {
     super(
-      `Browser telemetry shutdown exceeded ${timeoutMs} milliseconds. The client aborted active delivery and retained its sanitized batch.`,
+      `Browser telemetry shutdown exceeded ${timeoutMs} milliseconds; the sanitized batch remains queued.`,
     );
     this.name = "BrowserTelemetryClientShutdownError";
   }
@@ -122,7 +122,7 @@ const fitEventToRequestBudget = (
     fields: Object.fromEntries(
       Object.entries(event.fields).map(([key, value]) => [
         key,
-        Predicate.isString(value) ? fitStringToByteBudget(value) : value,
+        String(value) === value ? fitStringToByteBudget(value) : value,
       ]),
     ),
   };
@@ -149,8 +149,6 @@ const fitEventToRequestBudget = (
 export const normalizePositiveInteger = (value: number | undefined, fallback: number): number =>
   value === undefined || !Number.isSafeInteger(value) || value <= 0 ? fallback : value;
 
-const positiveInteger = normalizePositiveInteger;
-
 const fetchTransport =
   (endpoint: string): BrowserTelemetryClientTransport =>
   async (batch, signal) => {
@@ -165,14 +163,14 @@ const fetchTransport =
       });
     } catch (cause) {
       throw new BrowserTelemetryClientDeliveryError(
-        "The browser events could not be sent. The events stay queued and the next flush retries the same batch.",
+        "Browser delivery failed; sanitized events remain queued.",
         true,
         { cause },
       );
     }
     if (!response.ok) {
       throw new BrowserTelemetryClientDeliveryError(
-        `The telemetry endpoint rejected the batch with status ${response.status}. Check the /_telemetry/events route of the project API.`,
+        `Telemetry returned ${response.status}; verify /_telemetry/events.`,
         response.status === 429 || response.status >= 500,
         { cause: response.status },
       );
@@ -186,7 +184,7 @@ type BrowserClientEngineOptions = {
   readonly flushIntervalMs: number;
   readonly shutdownTimeoutMs: number;
   readonly transport: BrowserTelemetryClientTransport;
-  readonly policy: DataPolicy | undefined;
+  readonly policy: BrowserTelemetryFieldTransform | undefined;
   readonly startTimer: boolean;
 };
 
@@ -243,7 +241,7 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
 
   private sanitizeFields(fields: BrowserTelemetryClientFields): BrowserTelemetryClientFields {
     if (this.options.policy === undefined) return sanitizeBrowserFields(fields);
-    return transformSignalFields(this.options.policy, "browser-ingest", fields).value;
+    return this.options.policy(fields);
   }
 
   private enqueue(event: BrowserTelemetryClientEvent): void {
@@ -358,19 +356,17 @@ export const createBrowserTelemetryClient = (
   config: BrowserTelemetryClientConfig = {},
 ): BrowserTelemetryClient => {
   const maxBatchSize = Math.min(
-    positiveInteger(config.maxBatchSize, defaultMaxBatchSize),
+    normalizePositiveInteger(config.maxBatchSize, defaultMaxBatchSize),
     maxBatchSizeLimit,
   );
-  const policy =
-    config.policy === undefined ? undefined : Effect.runSync(parseDataPolicy(config.policy));
   return new BrowserClientEngine({
     disabled: config.disabled ?? false,
     maxBatchSize,
-    maxQueueSize: positiveInteger(config.maxQueueSize, defaultMaxQueueSize),
-    flushIntervalMs: positiveInteger(config.flushIntervalMs, defaultFlushIntervalMs),
-    shutdownTimeoutMs: positiveInteger(config.shutdownTimeoutMs, defaultShutdownTimeoutMs),
+    maxQueueSize: normalizePositiveInteger(config.maxQueueSize, defaultMaxQueueSize),
+    flushIntervalMs: normalizePositiveInteger(config.flushIntervalMs, defaultFlushIntervalMs),
+    shutdownTimeoutMs: normalizePositiveInteger(config.shutdownTimeoutMs, defaultShutdownTimeoutMs),
     transport: config.transport ?? fetchTransport(config.endpoint ?? defaultEndpoint),
-    policy,
+    policy: config.policy,
     startTimer: true,
   });
 };

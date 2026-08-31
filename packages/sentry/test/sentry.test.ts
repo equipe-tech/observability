@@ -213,6 +213,13 @@ describe("Sentry adapter policy", () => {
       kind: "deduplicated",
       reason: "fingerprint",
     });
+    expect(dedupe.retainedEnvelopeCount()).toBe(4);
+    for (const id of ["a", "d", "e", "f"]) dedupe.release(id);
+    expect(dedupe.retainedEnvelopeCount()).toBe(0);
+    expect(dedupe.admit("h", first, 105)).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
   });
 
   it("bounds pending settlement state and removes every terminal entry", async () => {
@@ -835,6 +842,43 @@ describe("Sentry adapter policy", () => {
     expect(wire).toContain('"span.id":"2222222222222222"');
     expect(wire).toContain('"request.id":"request-1"');
     expect(wire).toContain('"run.id":"run-1"');
+    await reporter.dispose();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+  });
+
+  it("accepts a canonical delegated envelope without a second policy verdict", async () => {
+    const bodies: Array<string> = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        bodies.push(body);
+        response.writeHead(200).end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    const reporter = createBrowserSentryDefectReporter({
+      dsn: `http://public@127.0.0.1:${address.port}/1`,
+      service: { name: "web", version: "1.4.0", environment: "test" },
+      policyOwnership: "delegated",
+      deduplication: "delegated",
+    });
+    const canonical = {
+      ...envelope("delegated"),
+      errorMessage: "already-sanitized",
+      context: new Map([["canonical.value", "visible"]]),
+    } satisfies DefectEnvelope;
+    expect(await reporter.sendVerificationDefect({ envelope: canonical })).toMatchObject({
+      flushed: true,
+    });
+    expect(bodies.join("\n")).toContain("already-sanitized");
+    expect(bodies.join("\n")).toContain('"canonical.value":"visible"');
     await reporter.dispose();
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error === undefined ? resolve() : reject(error))),

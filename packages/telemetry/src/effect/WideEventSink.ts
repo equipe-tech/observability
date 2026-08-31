@@ -66,14 +66,22 @@ export const layerWideEvent: Layer.Layer<TelemetryEventSink> = Layer.succeed(
     recordBrowserBatch: (events) =>
       Effect.forEach(
         events,
-        (event) =>
-          WideEvent.emit(event.name, {
+        (event) => {
+          const fields: { [name: string]: string | number | boolean } = {
             ...event.attributes,
             "event.source": "browser",
+            "event.outcome": event.error === undefined ? "success" : "failure",
             "browser.event.id": event.id,
             "browser.event.occurred_at": event.occurredAt,
             "event.policy_dropped_attributes": event.admission.policyDroppedAttributes,
-          }),
+          };
+          if (event.error !== undefined) {
+            fields["error.type"] = event.error.type;
+            fields["error.message"] = event.error.message;
+            fields["error.retryable"] = event.error.retryable;
+          }
+          return WideEvent.emit(event.name, fields);
+        },
         { discard: true },
       ),
   }),

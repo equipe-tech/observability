@@ -41,4 +41,4 @@ Substitua inicialização direta do Sentry pelo adapter do runtime. Passe o mesm
 
 ## Composição React
 
-`@equipe-tech/observability-react` chama o reporter de browser com deduplicação delegada. A entrada React toma uma decisão de deduplicação e uma decisão de política para o Sentry e para o evento operacional. O `event_id` do Sentry também é o `browser.event.id`. O reporter não instala handlers globais e não habilita tracing ou replay.
+`@equipe-tech/observability-react` chama o reporter de browser com deduplicação e política delegadas. A entrada React entrega um envelope canônico já sanitizado. O reporter não executa um segundo veredito de política nesse modo. O modo direto mantém política e deduplicação próprias. O `event_id` do Sentry também é o `browser.event.id`. O reporter não instala handlers globais e não habilita tracing ou replay.

@@ -10,6 +10,7 @@ import {
 } from "../src/browser/index.ts";
 import { sensitiveFieldReplacement, sensitiveTextReplacement } from "../src/RedactionPolicy.ts";
 import type { EventAttributes } from "../src/contract/TelemetryEvent.ts";
+import { definePolicy } from "../src/policy/DataPolicy.ts";
 
 const AddressInfo = Schema.Struct({ port: Schema.Number });
 const decodeAddressInfo = Schema.decodeUnknownOption(AddressInfo);
@@ -64,6 +65,33 @@ describe("BrowserTelemetry", () => {
       const long = event.fields["page.long"];
       assert.strictEqual(String(long).length, maxFieldValueLength);
       assert.strictEqual(Object.keys(event.fields).length, 32);
+    }),
+  );
+
+  it.live("applies a policy through the Effect service", () =>
+    Effect.gen(function* () {
+      const sent: RecordedBatches = [];
+      const policy = definePolicy({
+        attributes: {
+          "customer.email": {
+            classification: "sensitive",
+            required: false,
+            metricLabel: false,
+          },
+        },
+        blockedKeys: [],
+        blockedValuePatterns: [],
+      });
+      yield* Effect.gen(function* () {
+        const telemetry = yield* BrowserTelemetry;
+        yield* telemetry.emit("policy.event", { "customer.email": "person@example.com" });
+        yield* telemetry.flush();
+      }).pipe(
+        Effect.provide(
+          BrowserTelemetry.layer({ policy }).pipe(Layer.provide(recordingTransport(sent))),
+        ),
+      );
+      assert.strictEqual(sent[0]?.events[0]?.fields["customer.email"], sensitiveFieldReplacement);
     }),
   );
 

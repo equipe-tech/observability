@@ -14,7 +14,7 @@ Bibliotecas podem exportar definições de instrumentos. O perfil `library` pro�
 
 OTLP, traces e métricas pertencem ao núcleo. Aplicações registram adapters oficiais de eventos, defeitos e browser ingest com `registerOfficialAdapter`. Registros de teste e suas factories existem somente no entrypoint `@equipe-tech/observability/testing` e são rejeitados pelas factories oficiais.
 
-`react-web` é somente um descritor de contrato nesta entrega. O OBS-54 fornecerá a factory de browser. A factory de Node rejeita `react-web` porque esse perfil não possui runtime global de Node.
+`createBrowserObservability` implementa o runtime global do perfil `react-web`. A factory de Node rejeita `react-web` porque esse perfil não possui runtime global de Node.
 
 ## Configuração de Node
 
@@ -46,4 +46,4 @@ Identidade, endpoint, ambiente, topologia, rota, proxy, secrets e valores de dep
 
 ## Runtime React web
 
-`createBrowserObservability` atende `browser-ingest`, `events` e `defects` do perfil `react-web`. O encerramento reserva 1.150 ms para o cliente do browser e 800 ms para o Sentry dentro do prazo total de 2.000 ms. O runtime remove os listeners antes de encerrar os destinos e nunca rejeita `dispose`. A capacidade `traces` continua sem implementação no browser.
+`createBrowserObservability` atende `browser-ingest`, `events` e `defects` do perfil `react-web`. Em produção, a configuração exige um DSN do Sentry. A desativação explícita também exige `allowDisabledInProduction: true`. O encerramento reserva 1.150 ms para o cliente do browser e 800 ms para o Sentry dentro do prazo total de 2.000 ms. O runtime remove os listeners antes de encerrar os destinos e nunca rejeita `dispose`. A capacidade `traces` continua sem implementação no browser.

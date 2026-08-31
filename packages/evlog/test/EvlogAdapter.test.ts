@@ -224,6 +224,45 @@ describe("evlogAdapter", () => {
     expect(wire).toContain("failure");
   });
 
+  it("rejects every illegal browser error membership branch", async () => {
+    const receiver = await startReceiver();
+    const { config } = await makeConfig(receiver.endpoint);
+    const adapter = evlogAdapter({ installGlobalLogger: false, batchSize: 1 });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    const defectWithoutError = {
+      id: "defect-without-error",
+      name: "job.processing",
+      occurredAt: 1,
+      attributes: { "job.name": "billing" },
+      admission: { policyDroppedAttributes: 0 },
+    };
+    const nonDefectWithError = {
+      id: "event-with-error",
+      name: "job.completed",
+      occurredAt: 1,
+      attributes: { "job.name": "billing" },
+      error: { type: "TypeError", message: "invalid", retryable: false },
+      admission: { policyDroppedAttributes: 0 },
+    };
+    for (const event of [defectWithoutError, nonDefectWithError]) {
+      const failure = await observability.runtime.runPromise(
+        Effect.flip(
+          TelemetryEventSink.pipe(
+            Effect.flatMap((sink) => sink.recordBrowserBatch([event])),
+            Effect.provide(observability.eventLayer),
+          ),
+        ),
+      );
+      expect(failure.code).toBe("OBS_EVENT_INVALID_FIELD");
+      expect(failure.attributeName).toBe("error");
+    }
+    await observability.close();
+    await receiver.close();
+    expect(receiver.bodies.join("\n")).not.toContain("defect-without-error");
+    expect(receiver.bodies.join("\n")).not.toContain("event-with-error");
+  });
+
   it("rejects unknown attributes before queue and transport", async () => {
     const receiver = await startReceiver();
     const { config } = await makeConfig(receiver.endpoint);

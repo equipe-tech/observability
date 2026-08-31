@@ -67,6 +67,34 @@ describe("ingestBrowserEvents", () => {
     }),
   );
 
+  it.live("decodes old and new envelopes at the public ingest boundary", () =>
+    Effect.gen(function* () {
+      const payload = {
+        version: 1,
+        events: [
+          { id: "old", name: "old.event", occurredAt: 1, fields: {} },
+          {
+            id: "new",
+            name: "new.defect",
+            occurredAt: 2,
+            fields: { "error.origin": "react.uncaught" },
+            error: { type: "TypeError", message: "render failed", retryable: false },
+          },
+        ],
+      };
+      const collector = yield* Testing.makeCollectingTelemetryEventSink();
+      const receipt = yield* ingestBrowserEvents(payload).pipe(Effect.provide(collector.layer));
+      const events = yield* collector.browserEvents;
+      assert.deepStrictEqual(receipt, { accepted: 2, redacted: 0, dropped: 0 });
+      assert.strictEqual(events[0]?.name, "old.event");
+      assert.isUndefined(events[0]?.error);
+      assert.strictEqual(events[1]?.name, "new.defect");
+      assert.strictEqual(events[1]?.error?.type, "TypeError");
+      assert.strictEqual(events[1]?.error?.message, "render failed");
+      assert.isFalse(events[1]?.error?.retryable);
+    }),
+  );
+
   it.effect("rejects a malformed payload with the invalid batch contract", () =>
     Effect.gen(function* () {
       const failure = yield* ingestBrowserEvents({ nonsense: true }).pipe(
@@ -101,6 +129,21 @@ describe("ingestBrowserEvents", () => {
         Effect.flip,
       );
       assert.strictEqual(failure.code, "OBS_BROWSER_EVENTS_INVALID_BATCH");
+    }),
+  );
+
+  it.effect("rejects oversized typed error members", () =>
+    Effect.gen(function* () {
+      for (const error of [
+        { type: "x".repeat(maxFieldValueLength + 1), message: "bounded", retryable: false },
+        { type: "TypeError", message: "x".repeat(maxFieldValueLength + 1), retryable: false },
+      ]) {
+        const failure = yield* ingestBrowserEvents({
+          version: 1,
+          events: [{ id: "evt-1", name: "big", occurredAt: 1, fields: {}, error }],
+        }).pipe(Effect.provide(layerWideEvent), Effect.flip);
+        assert.strictEqual(failure.code, "OBS_BROWSER_EVENTS_INVALID_BATCH");
+      }
     }),
   );
 

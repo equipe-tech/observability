@@ -460,6 +460,9 @@ try {
         "@sentry/node-core": "10.72.0",
         effect: "4.0.0-rc.111",
       },
+      overrides: {
+        "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
+      },
     }),
   );
   requireSuccess(await run(["bun", "install"], consumer), "Installing packed packages");
@@ -551,6 +554,9 @@ try {
         "@sentry/browser": "10.72.0",
         effect: "4.0.0-rc.111",
       },
+      overrides: {
+        "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
+      },
     }),
   );
   requireSuccess(
@@ -563,7 +569,7 @@ try {
         "node",
         "--input-type=module",
         "--eval",
-        "const browser = await import('@equipe-tech/observability-sentry/browser'); if (!browser.createBrowserSentryDefectReporter) process.exit(1); try { await import('@sentry/node-core'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_MODULE_NOT_FOUND') process.exit(1); }",
+        "const [browser, react, policy] = await Promise.all([import('@equipe-tech/observability-sentry/browser'), import('@equipe-tech/observability-react'), import('@equipe-tech/observability/policy')]); if (!browser.createBrowserSentryDefectReporter || !react.createBrowserObservability) process.exit(1); const config = { service: { name: 'packed-web', version: '0.3.0', environment: 'test' }, policy: policy.definePolicy({ attributes: { 'error.origin': { classification: 'internal', required: true, metricLabel: false } }, blockedKeys: [], blockedValuePatterns: [] }), sentry: { disabled: true } }; const inert = react.createBrowserObservability(config); if (inert.installed) process.exit(1); await inert.dispose(); const listeners = new Map(); const host = { addEventListener(name, listener) { listeners.set(name, listener); }, removeEventListener(name) { listeners.delete(name); } }; const active = react.createBrowserObservability({ ...config, host }); if (!active.installed || active.defects.report({ error: new Error('packed'), origin: 'manual' }).kind !== 'recorded') process.exit(1); const duplicateReact = await import(`${import.meta.resolve('@equipe-tech/observability-react')}?duplicate-bundle`); try { duplicateReact.createBrowserObservability({ ...config, host }); process.exit(1); } catch (error) { if (error?.code !== 'OBS_REACT_ALREADY_INSTALLED') process.exit(1); } await active.dispose(); const replacement = duplicateReact.createBrowserObservability({ ...config, host }); await replacement.dispose(); if (listeners.size !== 0) process.exit(1); try { await import('@sentry/node-core'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_MODULE_NOT_FOUND') process.exit(1); }",
       ],
       browserConsumer,
     ),
@@ -758,6 +764,15 @@ try {
   if (/\bEffect\b|from ["']effect["']/.test(browserClientDeclaration)) {
     throw new Error("The imperative browser client declaration exposes an Effect type.");
   }
+  const browserClientRuntime = await readFile(
+    join(consumer, "node_modules/@equipe-tech/observability/dist/browser/BrowserClient.js"),
+    "utf8",
+  );
+  if (
+    /import\s*\{[^}]*(?:Effect|Schema)[^}]*\}\s*from\s*["']effect["']/.test(browserClientRuntime)
+  ) {
+    throw new Error("The imperative browser client runtime imports Effect or Schema.");
+  }
 
   const browserSmokeSource = [
     "import { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client';",
@@ -812,7 +827,7 @@ try {
     throw new Error("The isolated browser facade gzip output is not reproducible.");
   }
   const facadeGzipDeltaBytes = browserGzip.byteLength - emptyGzip.byteLength;
-  const facadeGzipRegressionCeilingBytes = 100_000;
+  const facadeGzipRegressionCeilingBytes = 80_000;
   const evidence = join(root, ".verification/observability/obs-11-browser-facade");
   await rm(evidence, { recursive: true, force: true });
   await mkdir(evidence, { recursive: true });

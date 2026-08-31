@@ -8,8 +8,11 @@ import {
   parseDataPolicy,
   parseResourceIdentity,
   sanitizeDefectEnvelope,
+  transformSignalFields,
   unexpectedDefect,
+  type DataPolicy,
   type DataPolicyInput,
+  type ResourceIdentity,
 } from "@equipe-tech/observability/policy";
 import {
   createBrowserSentryDefectReporter,
@@ -37,6 +40,7 @@ export type BrowserObservabilityConfig = {
     readonly dsn?: string;
     readonly disabled?: boolean;
     readonly componentStack?: boolean;
+    readonly allowDisabledInProduction?: boolean;
   };
   readonly dedupeWindowMillis?: number;
   readonly dedupeCapacity?: number;
@@ -116,7 +120,14 @@ export class BrowserObservabilityError extends Schema.TaggedError<BrowserObserva
   },
 ) {}
 
-const activeHosts = new WeakSet<object>();
+declare global {
+  var __equipeTechObservabilityReactHosts: WeakSet<object> | undefined;
+}
+
+const activeHosts = (): WeakSet<object> => {
+  globalThis.__equipeTechObservabilityReactHosts ??= new WeakSet<object>();
+  return globalThis.__equipeTechObservabilityReactHosts;
+};
 const componentStackLimit = 4_096;
 
 const nativeHost = (): { readonly host: BrowserEventHost; readonly owner: object } | undefined => {
@@ -197,21 +208,54 @@ const inertHandle = (service: BrowserServiceIdentity): BrowserObservability => {
 
 const eventId = (): string => crypto.randomUUID().replaceAll("-", "");
 
+const invalidConfig = (cause: unknown): never => {
+  throw new BrowserObservabilityError({
+    code: "OBS_REACT_CONFIG_INVALID",
+    message:
+      "The React browser observability configuration requires canonical identity, a compilable policy, valid positive options, and a usable browser event host.",
+    cause,
+  });
+};
+
+const validPositiveOption = (value: number | undefined): boolean =>
+  value === undefined || (Number.isSafeInteger(value) && value > 0);
+
 export const createBrowserObservability = (
   config: BrowserObservabilityConfig,
 ): BrowserObservability => {
-  const identity = Effect.runSync(
-    parseResourceIdentity({
-      serviceName: config.service.name,
-      serviceVersion: config.service.version,
-      environment: config.service.environment,
-    }),
-  );
-  const policy = Effect.runSync(parseDataPolicy(config.policy));
+  let identity: ResourceIdentity;
+  let policy: DataPolicy;
+  try {
+    if (
+      !validPositiveOption(config.dedupeWindowMillis) ||
+      !validPositiveOption(config.dedupeCapacity) ||
+      !validPositiveOption(config.events?.maxBatchSize) ||
+      !validPositiveOption(config.events?.maxQueueSize) ||
+      !validPositiveOption(config.events?.flushIntervalMs) ||
+      (config.host !== undefined &&
+        (!Predicate.isFunction(config.host.addEventListener) ||
+          !Predicate.isFunction(config.host.removeEventListener))) ||
+      (config.service.environment === "production" &&
+        config.sentry?.dsn === undefined &&
+        !(config.sentry?.disabled === true && config.sentry.allowDisabledInProduction === true))
+    ) {
+      return invalidConfig("invalid React browser observability options");
+    }
+    identity = Effect.runSync(
+      parseResourceIdentity({
+        serviceName: config.service.name,
+        serviceVersion: config.service.version,
+        environment: config.service.environment,
+      }),
+    );
+    policy = Effect.runSync(parseDataPolicy(config.policy));
+  } catch (cause) {
+    return invalidConfig(cause);
+  }
   const selected =
     config.host === undefined ? nativeHost() : { host: config.host, owner: config.host };
   if (selected === undefined) return inertHandle(config.service);
-  if (activeHosts.has(selected.owner)) {
+  if (activeHosts().has(selected.owner)) {
     throw new BrowserObservabilityError({
       code: "OBS_REACT_ALREADY_INSTALLED",
       message:
@@ -219,10 +263,10 @@ export const createBrowserObservability = (
       cause: "active browser observability host",
     });
   }
-  activeHosts.add(selected.owner);
+  activeHosts().add(selected.owner);
   const events = createBrowserTelemetryClient({
     ...config.events,
-    policy: config.policy,
+    policy: (fields) => transformSignalFields(policy, "browser-ingest", fields).value,
     shutdownTimeoutMs: 1_150,
   });
   const sentryConfig: Omit<BrowserSentryDefectReporterConfig, "dsn"> = {
@@ -232,7 +276,7 @@ export const createBrowserObservability = (
       version: identity.serviceVersion,
       environment: identity.environment,
     },
-    policy: config.policy,
+    policyOwnership: "delegated",
     closeDeadlineMillis: 800,
     flushDeadlineMillis: 800,
     deduplication: "delegated",
@@ -252,6 +296,7 @@ export const createBrowserObservability = (
   const defectEnvelopes = new WeakMap<Error, ReturnType<typeof unexpectedDefect>>();
 
   const report = (input: DefectReportInput): DefectOutcome => {
+    let admittedId: string | undefined;
     try {
       if (closed) {
         suppressed += 1;
@@ -277,6 +322,7 @@ export const createBrowserObservability = (
         deduplicated += 1;
         return admission;
       }
+      admittedId = reservedId;
       const policyDecision = sanitizeDefectEnvelope(policy, envelope);
       if (Option.isNone(policyDecision.value)) {
         dedupe.rollback(reservedId);
@@ -301,6 +347,8 @@ export const createBrowserObservability = (
         },
         fields: { "error.origin": input.origin },
       });
+      dedupe.release(reservedId);
+      admittedId = undefined;
       recorded += 1;
       return {
         kind: "recorded",
@@ -308,6 +356,7 @@ export const createBrowserObservability = (
         destinations: { sentry: sentryDestination, events: "queued" },
       };
     } catch {
+      if (admittedId !== undefined) dedupe.release(admittedId);
       suppressed += 1;
       return { kind: "suppressed", reason: closed ? "closed" : "policy" };
     }
@@ -341,7 +390,7 @@ export const createBrowserObservability = (
     selected.host.removeEventListener("error", onError);
     selected.host.removeEventListener("unhandledrejection", onUnhandledRejection);
     selected.host.removeEventListener("pagehide", onPageHide);
-    activeHosts.delete(selected.owner);
+    activeHosts().delete(selected.owner);
     disposal = Promise.allSettled([events.dispose(), sentry.dispose()]).then((outcomes) => ({
       durationMillis: Date.now() - startedAt,
       degraded:
@@ -374,8 +423,16 @@ export const createBrowserObservability = (
   };
 };
 
+export type BrowserDeliveryCanaryTransport = (
+  endpoint: URL,
+  signal: AbortSignal,
+) => Promise<Response>;
+
 export type BrowserDeliveryCanaryInput = {
   readonly endpoint: URL;
+  readonly topology?: "published" | "local";
+  readonly timeoutMillis?: number;
+  readonly transport?: BrowserDeliveryCanaryTransport;
 };
 
 export type BrowserDeliveryCanaryReceipt = {
@@ -410,15 +467,28 @@ const isLocalEndpoint = (endpoint: URL): boolean =>
   endpoint.hostname.startsWith("[fe80:") ||
   isPrivateIpv4(endpoint.hostname);
 
+const fetchCanary: BrowserDeliveryCanaryTransport = (endpoint, signal) =>
+  fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ version: 1, events: [] }),
+    signal,
+  });
+
 export const runBrowserDeliveryCanary = async (
   input: BrowserDeliveryCanaryInput,
 ): Promise<BrowserDeliveryCanaryReceipt> => {
   const endpoint = input.endpoint;
+  const topology = input.topology ?? "published";
+  const local = isLocalEndpoint(endpoint);
   if (
-    endpoint.protocol !== "https:" ||
     endpoint.username.length > 0 ||
     endpoint.password.length > 0 ||
-    isLocalEndpoint(endpoint)
+    (topology === "published" && (endpoint.protocol !== "https:" || local)) ||
+    (topology === "local" &&
+      ((endpoint.protocol !== "http:" && endpoint.protocol !== "https:") || !local)) ||
+    (topology === "local" && input.transport !== undefined) ||
+    !validPositiveOption(input.timeoutMillis)
   ) {
     throw new BrowserObservabilityError({
       code: "OBS_REACT_CANARY_ENDPOINT_INVALID",
@@ -428,15 +498,10 @@ export const runBrowserDeliveryCanary = async (
     });
   }
   const startedAt = Date.now();
-  const signal = AbortSignal.timeout(5_000);
+  const signal = AbortSignal.timeout(input.timeoutMillis ?? 5_000);
   let response: Response;
   try {
-    response = await fetch(endpoint, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ version: 1, events: [] }),
-      signal,
-    });
+    response = await (input.transport ?? fetchCanary)(endpoint, signal);
   } catch (cause) {
     throw new BrowserObservabilityError({
       code: "OBS_REACT_CANARY_FAILED",

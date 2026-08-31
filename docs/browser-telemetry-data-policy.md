@@ -61,4 +61,4 @@ The telemetry package owns the semantic key vocabulary and the six core credenti
 
 ## Política no cliente React
 
-`createBrowserObservability` compila a política uma vez. O cliente aplica a política e o vocabulário de browser antes de inserir eventos na fila. `BrowserTelemetryClient` mantém o comportamento anterior quando `policy` não é informado. Defeitos usam o membro tipado `error` do envelope, enquanto `error.origin` permanece em `fields`.
+`createBrowserObservability` compila a política uma vez e injeta a transformação compilada no cliente. O cliente aplica a política e o vocabulário de browser antes de inserir eventos na fila. `BrowserTelemetryClient` mantém o comportamento anterior quando `policy` não é informado. O serviço Effect aceita `policy` e compila a mesma transformação na construção da camada. Defeitos usam o membro tipado `error` do envelope, enquanto `error.origin` permanece em `fields`.
