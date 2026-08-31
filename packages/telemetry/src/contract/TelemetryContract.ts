@@ -215,6 +215,7 @@ const canonicalSinkFields = new Set([
   "audit.actor.id",
   "audit.resource.type",
   "audit.resource.id",
+  "audit.outcome",
   "audit.reason_code",
   "audit.tenant.id",
   "audit.record.id",

@@ -3,6 +3,7 @@ import { Effect, Layer, Option, Schema } from "effect";
 import {
   AuditDigest,
   AuditHash,
+  AuditOccurredAt,
   AuditPublisher,
   canonicalAuditPayload,
   commitAuditRecord,
@@ -105,7 +106,7 @@ describe("audit contracts", () => {
         first.publish(
           (
             await Effect.runPromise(
-              commitAuditRecord(await Effect.runPromise(parsedRecord), Effect.void).pipe(
+              commitAuditRecord(await Effect.runPromise(parsedRecord), () => Effect.void).pipe(
                 Effect.provide(layerNodeAuditDigest),
               ),
             )
@@ -150,7 +151,7 @@ describe("audit contracts", () => {
     );
     const failure = { code: "DATABASE_DOWN" };
     const error = await Effect.runPromise(
-      recordAudit(record, Effect.fail(failure)).pipe(
+      recordAudit(record, () => Effect.fail(failure)).pipe(
         Effect.provide(layerNodeAuditDigest),
         Effect.provide(publisher),
         Effect.flip,
@@ -174,29 +175,30 @@ describe("audit contracts", () => {
       }),
     );
     const result = await Effect.runPromise(
-      commitAuditRecord(
-        record,
+      commitAuditRecord(record, (document) =>
         Effect.sync(() => {
-          order.push("durable");
+          order.push(`durable:${document.committedAt}:${document.ledgerHash}`);
           return "row";
         }),
       ).pipe(Effect.provide(digest)),
     );
-    expect(order).toEqual(["durable", "digest"]);
+    expect(order[0]).toBe("digest");
+    expect(order[1]).toMatch(/^durable:.*:[0-9a-f]{64}$/);
     expect(result.committed).toBe("row");
     expect(Object.isFrozen(result.record)).toBe(true);
   });
 
   it("keeps canonical payload and SHA-256 stable", async () => {
     const record = await Effect.runPromise(parsedRecord);
-    const payload = canonicalAuditPayload(record);
+    const committedAt = Schema.decodeUnknownSync(AuditOccurredAt)("2026-01-02T03:04:06.000Z");
+    const payload = canonicalAuditPayload(record, committedAt);
     const digest = await Effect.runPromise(
       Effect.gen(function* () {
         const service = yield* AuditDigest;
         return yield* service.hash(payload);
       }).pipe(Effect.provide(layerNodeAuditDigest)),
     );
-    expect(canonicalAuditPayload(record)).toBe(payload);
+    expect(canonicalAuditPayload(record, committedAt)).toBe(payload);
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
     expect(payload).not.toContain("email");
     expect(payload).not.toContain("metadata");

@@ -72,30 +72,42 @@ describe("package boundaries", () => {
       { role: "domain", file: "packages/telemetry/src/contract/database.ts" },
       { role: "react", file: "packages/react/src/database.ts" },
     ] as const;
+    const databaseSpecifiers = [
+      "@prisma/client",
+      "bun:sqlite",
+      "drizzle-orm",
+      "node:sqlite",
+      "pg",
+      "postgres",
+      "sequelize",
+      "typeorm",
+    ];
     for (const fixture of fixtures) {
-      const temporary = await mkdtemp(join(tmpdir(), "boundaries-database-"));
-      try {
-        await cp(join(projects, "allowed"), temporary, { recursive: true });
-        const source = join(temporary, fixture.file);
-        await mkdir(dirname(source), { recursive: true });
-        if (fixture.role === "react") {
-          await writeFile(
-            join(temporary, "packages/react/package.json"),
-            JSON.stringify({ name: "react-boundary" }),
+      for (const specifier of databaseSpecifiers) {
+        const temporary = await mkdtemp(join(tmpdir(), "boundaries-database-"));
+        try {
+          await cp(join(projects, "allowed"), temporary, { recursive: true });
+          const source = join(temporary, fixture.file);
+          await mkdir(dirname(source), { recursive: true });
+          if (fixture.role === "react") {
+            await writeFile(
+              join(temporary, "packages/react/package.json"),
+              JSON.stringify({ name: "react-boundary" }),
+            );
+          }
+          await writeFile(source, `import "${specifier}";\n`);
+          const violations = await checkPackageBoundaries(temporary);
+          assert.equal(sourceRole(fixture.file), fixture.role);
+          assert.equal(
+            violations.some(
+              (violation) => violation.rule === `boundary/${fixture.role}-forbidden-database`,
+            ),
+            true,
+            `${fixture.role}:${specifier}`,
           );
+        } finally {
+          await rm(temporary, { recursive: true, force: true });
         }
-        await writeFile(source, 'import "bun:sqlite";\n');
-        const violations = await checkPackageBoundaries(temporary);
-        assert.equal(sourceRole(fixture.file), fixture.role);
-        assert.equal(
-          violations.some(
-            (violation) => violation.rule === `boundary/${fixture.role}-forbidden-database`,
-          ),
-          true,
-          fixture.role,
-        );
-      } finally {
-        await rm(temporary, { recursive: true, force: true });
       }
     }
   });

@@ -21,7 +21,7 @@ import {
 import { parseNodeObservabilityConfig } from "@equipe-tech/observability";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { initLogger, isEnabled, log, type DrainContext } from "evlog";
+import { audit, initLogger, isEnabled, log, type DrainContext } from "evlog";
 import { Effect, Option, Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 import { makeEvlogAdapter } from "../src/EvlogAdapter.ts";
@@ -66,7 +66,7 @@ const contractDefinition = Contract.telemetryContractDefinition({
     AccessReviewed: {
       action: "access.reviewed",
       resourceType: "account",
-      allowedOutcomes: ["denied"],
+      allowedOutcomes: ["denied", "cancelled"],
       reasonCodes: ["approval.missing"],
     },
   },
@@ -174,7 +174,35 @@ describe("evlogAdapter", () => {
         profile: "worker",
         service: { name: "audit-test", version: "1.2.3", environment: "test" },
         telemetry: { endpoint: receiver.endpoint },
-        evlog: { contract, policy: { attributes: {}, blockedKeys: [], blockedValuePatterns: [] } },
+        evlog: {
+          contract,
+          policy: {
+            attributes: {
+              "audit.actor.id": {
+                classification: "sensitive",
+                required: false,
+                metricLabel: false,
+              },
+              "audit.tenant.id": {
+                classification: "sensitive",
+                required: false,
+                metricLabel: false,
+              },
+              "request.id": {
+                classification: "forbidden",
+                required: false,
+                metricLabel: false,
+              },
+              "trace.id": {
+                classification: "forbidden",
+                required: false,
+                metricLabel: false,
+              },
+            },
+            blockedKeys: [],
+            blockedValuePatterns: [],
+          },
+        },
         sentry: { enabled: false },
       }),
     );
@@ -209,7 +237,7 @@ describe("evlogAdapter", () => {
       }),
     );
     const committed = await Effect.runPromise(
-      commitAuditRecord(record, Effect.succeed("ledger-row")).pipe(
+      commitAuditRecord(record, () => Effect.succeed("ledger-row")).pipe(
         Effect.provide(layerNodeAuditDigest),
       ),
     );
@@ -231,7 +259,9 @@ describe("evlogAdapter", () => {
       }),
     );
     const overflowCommitted = await Effect.runPromise(
-      commitAuditRecord(overflowRecord, Effect.void).pipe(Effect.provide(layerNodeAuditDigest)),
+      commitAuditRecord(overflowRecord, () => Effect.void).pipe(
+        Effect.provide(layerNodeAuditDigest),
+      ),
     );
     expect(await Effect.runPromise(publisher.publish(overflowCommitted.record))).toEqual({
       kind: "published",
@@ -247,7 +277,9 @@ describe("evlogAdapter", () => {
       }),
     );
     const queueDropCommitted = await Effect.runPromise(
-      commitAuditRecord(queueDropRecord, Effect.void).pipe(Effect.provide(layerNodeAuditDigest)),
+      commitAuditRecord(queueDropRecord, () => Effect.void).pipe(
+        Effect.provide(layerNodeAuditDigest),
+      ),
     );
     expect(await Effect.runPromise(publisher.publish(queueDropCommitted.record))).toEqual({
       kind: "dropped",
@@ -269,17 +301,25 @@ describe("evlogAdapter", () => {
     expect(body["audit.actor.kind"]).toBe("service");
     expect(body["audit.outcome"]).toBe("denied");
     expect(body["event.outcome"]).toBe("failure");
-    expect(body["request.id"]).toBe("request-audit");
+    expect(body["request.id"]).toBeUndefined();
+    expect(body["audit.tenant.id"]).toBe("****");
+    expect(body["trace.id"]).toBeUndefined();
     expect(body["run.id"]).toBe("run-audit");
     expect(body.audit.actor.type).toBe("api");
     expect(body.audit.outcome).toBe("denied");
     expect(body.audit.idempotencyKey).toBe("audit-record-1");
+    expect(body.audit.context.requestId).toBeUndefined();
+    expect(body.audit.context.traceId).toBeUndefined();
+    expect(body.audit.context.tenantId).toBe("****");
     expect(body.audit.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(logBody).not.toContain("request-audit");
+    expect(logBody).not.toContain("tenant-1");
+    expect(logBody).not.toContain(traceId);
     expect(publisher.report().deduplicated).toBe(1);
     expect(publisher.report().reasons.closed).toBe(1);
   });
 
-  it("returns policy-rejected when policy blocks a required audit field", async () => {
+  it("returns policy-rejected when policy changes an immutable audit anchor", async () => {
     const receiver = await startReceiver();
     const contract = await Effect.runPromise(defineTelemetryContract(contractDefinition));
     const config = await Effect.runPromise(
@@ -291,8 +331,14 @@ describe("evlogAdapter", () => {
         evlog: {
           contract,
           policy: {
-            attributes: {},
-            blockedKeys: ["^audit[.]actor[.]kind$"],
+            attributes: {
+              "audit.record.id": {
+                classification: "sensitive",
+                required: false,
+                metricLabel: false,
+              },
+            },
+            blockedKeys: [],
             blockedValuePatterns: [],
           },
         },
@@ -313,7 +359,7 @@ describe("evlogAdapter", () => {
       }),
     );
     const committed = await Effect.runPromise(
-      commitAuditRecord(record, Effect.void).pipe(Effect.provide(layerNodeAuditDigest)),
+      commitAuditRecord(record, () => Effect.void).pipe(Effect.provide(layerNodeAuditDigest)),
     );
     const publisher = await Effect.runPromise(
       AuditPublisher.pipe(Effect.provide(observability.auditLayer)),
@@ -352,7 +398,7 @@ describe("evlogAdapter", () => {
       }),
     );
     const committed = await Effect.runPromise(
-      commitAuditRecord(record, Effect.void).pipe(Effect.provide(layerNodeAuditDigest)),
+      commitAuditRecord(record, () => Effect.void).pipe(Effect.provide(layerNodeAuditDigest)),
     );
     const publisher = await Effect.runPromise(
       AuditPublisher.pipe(Effect.provide(observability.auditLayer)),
@@ -414,6 +460,20 @@ describe("evlogAdapter", () => {
         })
         .pipe(Effect.provide(observability.eventLayer)),
     );
+    await observability.runtime.runPromise(
+      producer
+        .emit("audited", {
+          outcome: "cancelled",
+          audit: {
+            action: "access.reviewed",
+            actor: { kind: "system" },
+            resourceType: "account",
+            resourceId: "account-cancelled",
+          },
+          attributes: {},
+        })
+        .pipe(Effect.provide(observability.eventLayer)),
+    );
     await observability.close();
     await receiver.close();
     const auditWire = receiver.bodies.find((body) => body.includes("approval.missing")) ?? "";
@@ -422,6 +482,15 @@ describe("evlogAdapter", () => {
       auditRequest.resourceLogs[0]?.scopeLogs[0]?.logRecords[0]?.body.stringValue ?? "",
     );
     expect(auditBody["audit.reason_code"]).toBe("approval.missing");
+    expect(auditBody["audit.outcome"]).toBe("denied");
+    expect(auditBody["event.outcome"]).toBe("failure");
+    const cancelledWire = receiver.bodies.find((body) => body.includes("account-cancelled")) ?? "";
+    const cancelledRequest = Schema.decodeUnknownSync(RequestBody)(JSON.parse(cancelledWire));
+    const cancelledBody = JSON.parse(
+      cancelledRequest.resourceLogs[0]?.scopeLogs[0]?.logRecords[0]?.body.stringValue ?? "",
+    );
+    expect(cancelledBody["audit.outcome"]).toBe("cancelled");
+    expect(cancelledBody["event.outcome"]).toBe("failure");
     const logBody = receiver.bodies.find((body) => body.includes("job.completed")) ?? "";
     expect(logBody).not.toContain(secret);
     const request = Schema.decodeUnknownSync(RequestBody)(JSON.parse(logBody));
@@ -1598,12 +1667,18 @@ describe("evlogAdapter", () => {
       "job.name": "billing",
       "job.unknown": "undeclared",
     });
+    audit({
+      action: "access.reviewed",
+      actor: { type: "user", id: "private@example.com" },
+      target: { type: "account", id: "private-account" },
+    });
     await observability.close();
-    expect(adapter.drops().reasons.contractRejected).toBe(5);
-    expect(adapter.drops().total).toBe(5);
+    expect(adapter.drops().reasons.contractRejected).toBe(6);
+    expect(adapter.drops().total).toBe(6);
     expect(Option.isSome(adapter.drops().firstDroppedAt)).toBe(true);
     expect(Option.isSome(adapter.drops().lastDroppedAt)).toBe(true);
     expect(JSON.stringify(adapter.drops())).not.toContain("missing required");
+    expect(JSON.stringify(adapter.drops())).not.toContain("private@example.com");
   });
 
   it("keeps TypeScript and Vite package mappings in parity", async () => {

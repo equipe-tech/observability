@@ -1,21 +1,15 @@
 import { Context, Effect, Exit, Option, Schema } from "effect";
-import { CorrelationContext, RequestId, RunId, SpanId, TraceId } from "../Correlation.ts";
-import { AuditDigest, AuditHash, canonicalAuditPayload } from "./AuditDigest.ts";
+import { CorrelationContext } from "../Correlation.ts";
+import {
+  AuditCommitDocument as AuditCommitDocumentSchema,
+  auditCommitDocumentFor,
+} from "./AuditCommitDocument.ts";
+import { AuditDigest, canonicalAuditPayload } from "./AuditDigest.ts";
 import {
   sealCommittedAuditRecord,
   type CommittedAuditRecord,
 } from "./CommittedAuditRecordInternal.ts";
-import {
-  AuditAction,
-  AuditActor,
-  AuditOccurredAt,
-  AuditOutcome,
-  AuditReasonCode,
-  AuditRecordId,
-  AuditResource,
-  AuditTenantId,
-  type AuditRecord,
-} from "./AuditRecord.ts";
+import type { AuditRecord } from "./AuditRecord.ts";
 import { AuditPublisher, type AuditPublishReceipt } from "./AuditPublisher.ts";
 
 export class AuditOutboxFailure extends Schema.TaggedError<AuditOutboxFailure>()(
@@ -28,66 +22,33 @@ export class AuditOutboxFailure extends Schema.TaggedError<AuditOutboxFailure>()
   },
 ) {}
 
-const AuditOutboxCorrelation = Schema.Union([
-  Schema.Struct({
-    traceId: Schema.Null,
-    spanId: Schema.Null,
-    requestId: Schema.NullOr(RequestId),
-    runId: Schema.NullOr(RunId),
-  }),
-  Schema.Struct({
-    traceId: TraceId,
-    spanId: SpanId,
-    requestId: Schema.NullOr(RequestId),
-    runId: Schema.NullOr(RunId),
-  }),
-]);
-
-export const AuditOutboxDocument = Schema.Struct({
-  schemaVersion: Schema.Literal(1),
-  recordId: AuditRecordId,
-  action: AuditAction,
-  actor: AuditActor,
-  resource: AuditResource,
-  outcome: AuditOutcome,
-  reasonCode: Schema.NullOr(AuditReasonCode),
-  tenantId: Schema.NullOr(AuditTenantId),
-  occurredAt: AuditOccurredAt,
-  correlation: AuditOutboxCorrelation,
-  committedAt: AuditOccurredAt,
-  ledgerHash: AuditHash,
-});
+export const AuditOutboxDocument = AuditCommitDocumentSchema;
 export type AuditOutboxDocument = typeof AuditOutboxDocument.Type;
 
-export const encodeAuditOutboxDocument = (record: CommittedAuditRecord): AuditOutboxDocument => ({
-  schemaVersion: record.schemaVersion,
-  recordId: record.recordId,
-  action: Schema.decodeUnknownSync(AuditAction)(record.action),
-  actor: record.actor,
-  resource: record.resource,
-  outcome: record.outcome,
-  reasonCode: Option.getOrNull(record.reasonCode),
-  tenantId: Option.getOrNull(record.tenantId),
-  occurredAt: record.occurredAt,
-  correlation:
-    record.correlation.trace._tag === "Untraced"
-      ? {
-          traceId: null,
-          spanId: null,
-          requestId: Option.getOrNull(record.correlation.requestId),
-          runId: Option.getOrNull(record.correlation.runId),
-        }
-      : {
-          traceId: record.correlation.trace.traceId,
-          spanId: record.correlation.trace.spanId,
-          requestId: Option.getOrNull(record.correlation.requestId),
-          runId: Option.getOrNull(record.correlation.runId),
-        },
-  committedAt: Schema.decodeUnknownSync(AuditOccurredAt)(record.committedAt),
-  ledgerHash: record.ledgerHash,
-});
+export const encodeAuditOutboxDocument = (record: CommittedAuditRecord): AuditOutboxDocument =>
+  auditCommitDocumentFor(record, record.committedAt, record.ledgerHash);
 
-export type AuditOutboxEntry = { readonly record: AuditOutboxDocument };
+export const AuditOutboxClaimKey = Schema.NonEmptyString.check(Schema.isMaxLength(256)).pipe(
+  Schema.brand("AuditOutboxClaimKey"),
+);
+export type AuditOutboxClaimKey = typeof AuditOutboxClaimKey.Type;
+
+export type AuditOutboxValue =
+  | string
+  | number
+  | boolean
+  | null
+  | ReadonlyArray<AuditOutboxValue>
+  | { readonly [field: string]: AuditOutboxValue };
+
+export type AuditOutboxEntry = {
+  readonly claimKey: AuditOutboxClaimKey;
+  readonly document: AuditOutboxValue;
+};
+
+export type AuditOutboxSettlement =
+  | AuditPublishReceipt
+  | { readonly kind: "quarantined"; readonly reason: "invalid-document" };
 
 export class AuditOutbox extends Context.Service<
   AuditOutbox,
@@ -96,8 +57,8 @@ export class AuditOutbox extends Context.Service<
       maximum: number,
     ) => Effect.Effect<ReadonlyArray<AuditOutboxEntry>, AuditOutboxFailure>;
     readonly settle: (
-      recordId: AuditRecordId,
-      receipt: AuditPublishReceipt,
+      claimKey: AuditOutboxClaimKey,
+      settlement: AuditOutboxSettlement,
     ) => Effect.Effect<void, AuditOutboxFailure>;
   }
 >()("@equipe-tech/observability/AuditOutbox") {}
@@ -107,6 +68,7 @@ export type AuditOutboxDrainReport = {
   readonly published: number;
   readonly deduplicated: number;
   readonly dropped: number;
+  readonly quarantined: number;
 };
 
 const decodeDocument = Schema.decodeUnknownEffect(AuditOutboxDocument);
@@ -116,14 +78,19 @@ const failure = (
   message: string,
   cause: AuditOutboxFailure["cause"],
 ): AuditOutboxFailure =>
-  new AuditOutboxFailure({ code: "OBS_AUDIT_OUTBOX_FAILED", operation, message, cause });
+  new AuditOutboxFailure({
+    code: "OBS_AUDIT_OUTBOX_FAILED",
+    operation,
+    message,
+    cause,
+  });
 
 const restore = Effect.fn("restoreAuditOutboxRecord")(function* (
-  document: AuditOutboxDocument,
+  document: AuditOutboxValue,
 ): Effect.fn.Return<CommittedAuditRecord, AuditOutboxFailure, AuditDigest> {
   const decoded = yield* decodeDocument(document).pipe(
-    Effect.mapError((cause) =>
-      failure("parse", "The claimed audit outbox document is invalid.", cause),
+    Effect.mapError(() =>
+      failure("parse", "The claimed audit outbox document is invalid.", "invalid document"),
     ),
   );
   const correlation = new CorrelationContext({
@@ -155,12 +122,12 @@ const restore = Effect.fn("restoreAuditOutboxRecord")(function* (
     correlation,
   });
   const digest = yield* AuditDigest;
-  const ledgerHash = yield* digest.hash(canonicalAuditPayload(record));
+  const ledgerHash = yield* digest.hash(canonicalAuditPayload(record, decoded.committedAt));
   if (ledgerHash !== decoded.ledgerHash) {
     return yield* failure(
       "parse",
       "The claimed audit outbox document does not match its ledger hash.",
-      "ledger hash mismatch",
+      "digest mismatch",
     );
   }
   return sealCommittedAuditRecord(record, decoded.committedAt, decoded.ledgerHash);
@@ -179,9 +146,18 @@ export const drainAuditOutbox = Effect.fn("drainAuditOutbox")(function* (
   let published = 0;
   let deduplicated = 0;
   let dropped = 0;
+  let quarantined = 0;
   for (const entry of entries) {
-    const record = yield* restore(entry.record);
-    const publishExit = yield* Effect.exit(publisher.publish(record));
+    const restored = yield* Effect.exit(restore(entry.document));
+    if (Exit.isFailure(restored)) {
+      yield* outbox.settle(entry.claimKey, {
+        kind: "quarantined",
+        reason: "invalid-document",
+      });
+      quarantined += 1;
+      continue;
+    }
+    const publishExit = yield* Effect.exit(publisher.publish(restored.value));
     if (Exit.isFailure(publishExit)) {
       return yield* failure(
         "publish",
@@ -190,7 +166,7 @@ export const drainAuditOutbox = Effect.fn("drainAuditOutbox")(function* (
       );
     }
     const receipt = publishExit.value;
-    yield* outbox.settle(record.recordId, receipt);
+    yield* outbox.settle(entry.claimKey, receipt);
     switch (receipt.kind) {
       case "published":
         published += 1;
@@ -203,5 +179,11 @@ export const drainAuditOutbox = Effect.fn("drainAuditOutbox")(function* (
         break;
     }
   }
-  return { claimed: entries.length, published, deduplicated, dropped };
+  return {
+    claimed: entries.length,
+    published,
+    deduplicated,
+    dropped,
+    quarantined,
+  };
 });

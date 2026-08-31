@@ -1,5 +1,16 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Option, Schema } from "effect";
+import {
+  AuditPublisher,
+  commitAuditRecord,
+  CorrelationContext,
+  defineTelemetryContract,
+  parseAuditRecord,
+  parseNodeObservabilityConfig,
+  parseRunId,
+} from "../src/index.ts";
+import { createNodeObservabilityFromConfig, layerNodeAuditDigest } from "../src/node/index.ts";
+import { evlogAdapter } from "@equipe-tech/observability-evlog";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -75,6 +86,18 @@ const RedactedLogBody = Schema.Struct({
 });
 
 const decodeRedactedLogBody = Schema.decodeUnknownSync(RedactedLogBody);
+
+const AuditCanaryBody = Schema.Struct({
+  "audit.record.id": Schema.String,
+  "audit.outcome": Schema.String,
+  "event.outcome": Schema.String,
+  "run.id": Schema.String,
+  audit: Schema.Struct({
+    actor: Schema.Struct({ id: Schema.String }),
+    idempotencyKey: Schema.String,
+  }),
+});
+const decodeAuditCanaryBody = Schema.decodeUnknownOption(AuditCanaryBody);
 
 const LogExport = Schema.Struct({
   resourceLogs: Schema.Array(
@@ -249,13 +272,24 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
           Option.getOrUndefined(attributeValue(candidate.dataPoint.attributes, "canary.run_id")) ===
             runId,
       );
+      const auditLog = telemetryExport.logs.find((candidate) => {
+        const body = candidate.log.body.stringValue;
+        if (body === undefined) return false;
+        const parsed = Effect.runSync(
+          Effect.try((): unknown => JSON.parse(body)).pipe(Effect.option),
+        );
+        if (Option.isNone(parsed)) return false;
+        const decoded = decodeAuditCanaryBody(parsed.value);
+        return Option.isSome(decoded) && decoded.value["audit.record.id"] === `audit-${runId}`;
+      });
       if (
         redactionSpanEvent !== undefined &&
         child !== undefined &&
         log !== undefined &&
         browserLog !== undefined &&
         redactionLog !== undefined &&
-        metric !== undefined
+        metric !== undefined &&
+        auditLog !== undefined
       ) {
         return {
           exportContent: telemetryExport.content,
@@ -266,6 +300,7 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
           browserLog,
           redactionLog,
           metric,
+          auditLog,
         };
       }
     }
@@ -293,6 +328,58 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
         });
 
         yield* emitCanary(config, runId);
+
+        const auditContract = yield* defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {},
+          auditActions: {
+            CanaryObserved: {
+              action: "canary.observed",
+              resourceType: "canary",
+              allowedOutcomes: ["denied"],
+            },
+          },
+        });
+        const auditConfig = yield* parseNodeObservabilityConfig({
+          enabled: true,
+          profile: "worker",
+          service: { name: "observability-canary", version: "0.1.0", environment: "test" },
+          telemetry: { endpoint: new URL("http://localhost:4318") },
+          evlog: {
+            contract: auditContract,
+            policy: { attributes: {}, blockedKeys: [], blockedValuePatterns: [] },
+          },
+          sentry: { enabled: false },
+        });
+        const auditAdapter = evlogAdapter({ installGlobalLogger: false, batchSize: 1 });
+        const auditObservability = yield* Effect.promise(() =>
+          createNodeObservabilityFromConfig(auditConfig, [auditAdapter.registration]),
+        );
+        if (!auditObservability.enabled) return yield* Effect.die("audit canary runtime disabled");
+        const correlationRunId = yield* parseRunId(runId);
+        const auditRecord = yield* parseAuditRecord(auditContract, {
+          recordId: `audit-${runId}`,
+          action: "canary.observed",
+          actor: { kind: "service", id: `private-${runId}@example.com` },
+          resource: { id: runId },
+          outcome: "denied",
+          occurredAt: "2026-01-02T03:04:05.000Z",
+          correlation: new CorrelationContext({
+            trace: { _tag: "Untraced" },
+            requestId: Option.none(),
+            runId: Option.some(correlationRunId),
+          }),
+        });
+        const committed = yield* commitAuditRecord(auditRecord, () => Effect.void).pipe(
+          Effect.provide(layerNodeAuditDigest),
+        );
+        const auditPublisher = yield* AuditPublisher.pipe(
+          Effect.provide(auditObservability.auditLayer),
+        );
+        const auditReceipt = yield* auditPublisher.publish(committed.record);
+        assert.strictEqual(auditReceipt.kind, "published");
+        yield* Effect.promise(() => auditObservability.close());
 
         const run = yield* findRun(runId);
 
@@ -333,6 +420,19 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
           Option.getOrUndefined(attributeValue(run.browserLog.log.attributes, "browser.event.id")),
           `browser-${runId}`,
         );
+        const auditBody = decodeAuditCanaryBody(
+          JSON.parse(Option.getOrThrow(Option.fromNullishOr(run.auditLog.log.body.stringValue))),
+        );
+        assert.isTrue(Option.isSome(auditBody));
+        const capturedAudit = Option.getOrThrow(auditBody);
+        assert.strictEqual(capturedAudit["audit.record.id"], `audit-${runId}`);
+        assert.strictEqual(capturedAudit["audit.outcome"], "denied");
+        assert.strictEqual(capturedAudit["event.outcome"], "failure");
+        assert.strictEqual(capturedAudit["run.id"], runId);
+        assert.strictEqual(capturedAudit.audit.idempotencyKey, `audit-${runId}`);
+        assert.strictEqual(capturedAudit.audit.actor.id, "[REDACTED]");
+        assert.notInclude(run.exportContent, `private-${runId}@example.com`);
+
         assert.strictEqual(run.metric.metric.name, "canary.operations");
         assert.strictEqual(run.metric.dataPoint.asDouble, 1);
         assert.isAtMost(runId.length, 128);

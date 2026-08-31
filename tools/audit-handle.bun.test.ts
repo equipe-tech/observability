@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "bun:test";
 
 const compile = async (source: string): Promise<boolean> => {
-  const directory = await mkdtemp(join(process.cwd(), ".audit-handle-"));
+  const directory = await mkdtemp(join(tmpdir(), "audit-handle-"));
   try {
     const file = join(directory, "mutation.ts");
     const config = join(directory, "tsconfig.json");
+    await symlink(join(process.cwd(), "node_modules"), join(directory, "node_modules"), "dir");
     await writeFile(file, source);
     await writeFile(
       config,

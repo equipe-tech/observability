@@ -39,7 +39,7 @@ import {
 } from "evlog";
 import { sendBatchToOTLP } from "evlog/otlp";
 import { createDrainPipeline, type PipelineDrainFn } from "evlog/pipeline";
-import { Effect, Layer, Option, Schema } from "effect";
+import { Clock, DateTime, Effect, Layer, Option, Schema } from "effect";
 import { EvlogAdapterError } from "./EvlogAdapterError.ts";
 
 export type EvlogDropReasonCounts = {
@@ -397,6 +397,8 @@ const fieldsForContractEvent = (
       break;
     }
     case "audit":
+      fields["event.outcome"] = event.outcome === "success" ? "success" : "failure";
+      fields["audit.outcome"] = event.outcome;
       fields["audit.action"] = event.audit.action;
       fields["audit.actor.kind"] = event.audit.actor.kind;
       if (event.audit.actor.kind !== "system") fields["audit.actor.id"] = event.audit.actor.id;
@@ -511,8 +513,9 @@ const auditPublishReport = (state: MutableAuditPublishState): AuditPublishReport
 const incrementAuditDrop = (
   state: MutableAuditPublishState,
   reason: "closed" | "queue-overflow" | "policy-rejected" | "transport",
+  effectTimestamp?: string,
 ): AuditPublishReceipt => {
-  const droppedAt = new Date().toISOString();
+  const droppedAt = effectTimestamp ?? new Date().toISOString();
   state.dropped += 1;
   if (Option.isNone(state.firstDroppedAt)) state.firstDroppedAt = Option.some(droppedAt);
   state.lastDroppedAt = Option.some(droppedAt);
@@ -533,9 +536,10 @@ const incrementAuditDrop = (
   return { kind: "dropped", reason };
 };
 
-const nativeAuditInput = (record: CommittedAuditRecord, fields: EventAttributes): AuditInput => {
-  const actorType =
-    record.actor.kind === "service" ? "api" : record.actor.kind === "user" ? "user" : "system";
+const nativeAuditInput = (fields: EventAttributes): AuditInput => {
+  const actorKind = String(fields["audit.actor.kind"]);
+  const actorType = actorKind === "service" ? "api" : actorKind === "user" ? "user" : "system";
+  const outcome = String(fields["audit.outcome"]);
   const input: AuditInput = {
     action: String(fields["audit.action"]),
     actor: { type: actorType, id: String(fields["audit.actor.id"]) },
@@ -543,8 +547,7 @@ const nativeAuditInput = (record: CommittedAuditRecord, fields: EventAttributes)
       type: String(fields["audit.resource.type"]),
       id: String(fields["audit.resource.id"]),
     },
-    outcome:
-      record.outcome === "success" ? "success" : record.outcome === "denied" ? "denied" : "failure",
+    outcome: outcome === "success" ? "success" : outcome === "denied" ? "denied" : "failure",
     version: AUDIT_SCHEMA_VERSION,
   };
   if (fields["audit.reason_code"] !== undefined) input.reason = String(fields["audit.reason_code"]);
@@ -867,6 +870,10 @@ export const makeEvlogAdapter = (
           });
 
         const admitGlobal = (drainContext: DrainContext): void => {
+          if (drainContext.event.audit !== undefined) {
+            incrementReason(dropState, "contract-rejected");
+            return;
+          }
           const timestamp = normalizeGlobalTimestamp(drainContext.event.timestamp);
           if (Option.isNone(timestamp)) {
             incrementReason(dropState, "contract-rejected");
@@ -998,113 +1005,130 @@ export const makeEvlogAdapter = (
         }
 
         const admitAudit = (record: CommittedAuditRecord): Effect.Effect<AuditPublishReceipt> =>
-          Effect.promise(async () => {
-            const now = Date.now();
-            for (const [recordId, deliveredAt] of deliveredAuditRecords) {
-              if (now - deliveredAt > resolvedOptions.auditDedupeWindowMillis) {
-                deliveredAuditRecords.delete(recordId);
+          Effect.gen(function* () {
+            const now = yield* Clock.currentTimeMillis;
+            const effectTimestamp = DateTime.formatIso(DateTime.makeUnsafe(now));
+            return yield* Effect.promise<AuditPublishReceipt>(async () => {
+              for (const [recordId, deliveredAt] of deliveredAuditRecords) {
+                if (now - deliveredAt > resolvedOptions.auditDedupeWindowMillis) {
+                  deliveredAuditRecords.delete(recordId);
+                }
               }
-            }
-            if (
-              accepting &&
-              (deliveredAuditRecords.has(record.recordId) ||
-                reservedAuditRecords.has(record.recordId))
-            ) {
-              auditState.deduplicated += 1;
-              return { kind: "deduplicated" };
-            }
-            const fields: { [attributeName: string]: Contract.AttributeValue } = {
-              "event.name": "audit.recorded",
-              "event.kind": "wide",
-              "event.type": "audit",
-              "event.severity": "info",
-              "event.outcome": record.outcome === "success" ? "success" : "failure",
-              "event.timestamp": record.committedAt,
-              "audit.action": record.action,
-              "audit.actor.kind": record.actor.kind,
-              "audit.actor.id": record.actor.kind === "system" ? "system" : record.actor.id,
-              "audit.resource.type": record.resource.type,
-              "audit.resource.id": record.resource.id,
-              "audit.outcome": record.outcome,
-              "audit.record.id": record.recordId,
-              "audit.record.hash": record.ledgerHash,
-              "audit.occurred_at": record.occurredAt,
-              "audit.schema_version": record.schemaVersion,
-            };
-            if (Option.isSome(record.reasonCode)) {
-              fields["audit.reason_code"] = record.reasonCode.value;
-            }
-            if (Option.isSome(record.tenantId)) fields["audit.tenant.id"] = record.tenantId.value;
-            if (Option.isSome(record.correlation.requestId)) {
-              fields["request.id"] = record.correlation.requestId.value;
-            }
-            if (Option.isSome(record.correlation.runId)) {
-              fields["run.id"] = record.correlation.runId.value;
-            }
-            const decision = transformSignalFields(context.policy, "audit", fields);
-            const requiredFields = [
-              "audit.action",
-              "audit.actor.kind",
-              "audit.actor.id",
-              "audit.resource.type",
-              "audit.resource.id",
-              "audit.outcome",
-              "audit.record.id",
-              "audit.record.hash",
-              "audit.occurred_at",
-              "audit.schema_version",
-            ];
-            if (
-              requiredFields.some(
-                (name) =>
-                  decision.value[name] === undefined ||
-                  context.policy.blockedKeys.some((pattern) => pattern.test(name)),
-              )
-            ) {
-              return incrementAuditDrop(auditState, "policy-rejected");
-            }
-            reservedAuditRecords.add(record.recordId);
-            const native = {
-              ...buildAuditFields(nativeAuditInput(record, decision.value)),
-              idempotencyKey: record.recordId,
-            };
-            const nativeContext: { [name: string]: string } = {};
-            if (Option.isSome(record.correlation.requestId)) {
-              nativeContext.requestId = record.correlation.requestId.value;
-            }
-            if (Option.isSome(record.correlation.traceId)) {
-              nativeContext.traceId = record.correlation.traceId.value;
-            }
-            if (Option.isSome(record.tenantId)) nativeContext.tenantId = record.tenantId.value;
-            if (Object.keys(nativeContext).length > 0) native.context = nativeContext;
-            const event = Object.assign(
-              wideEventFor(
-                context,
-                record.committedAt,
-                "info",
-                decision.value,
-                Option.getOrUndefined(record.correlation.traceId),
-                Option.getOrUndefined(record.correlation.spanId),
-              ),
-              { audit: native },
-            );
-            let integrityEvent: WideEvent;
-            try {
-              integrityEvent = await applyAuditIntegrity(event);
-            } catch {
-              reservedAuditRecords.delete(record.recordId);
-              return incrementAuditDrop(auditState, "transport");
-            }
-            const admission = offer(admittedRecord(integrityEvent, record.recordId));
-            if (admission !== "queued") {
-              reservedAuditRecords.delete(record.recordId);
-              return incrementAuditDrop(
-                auditState,
-                admission === "closed" ? "closed" : "queue-overflow",
+              if (
+                accepting &&
+                (deliveredAuditRecords.has(record.recordId) ||
+                  reservedAuditRecords.has(record.recordId))
+              ) {
+                auditState.deduplicated += 1;
+                return { kind: "deduplicated" };
+              }
+              const recordId = record.recordId;
+              const fields: { [attributeName: string]: Contract.AttributeValue } = {
+                "event.name": "audit.recorded",
+                "event.kind": "wide",
+                "event.type": "audit",
+                "event.severity": "info",
+                "event.outcome": record.outcome === "success" ? "success" : "failure",
+                "event.timestamp": record.committedAt,
+                "audit.action": record.action,
+                "audit.actor.kind": record.actor.kind,
+                "audit.actor.id": record.actor.kind === "system" ? "system" : record.actor.id,
+                "audit.resource.type": record.resource.type,
+                "audit.resource.id": record.resource.id,
+                "audit.outcome": record.outcome,
+                "audit.record.id": recordId,
+                "audit.record.hash": record.ledgerHash,
+                "audit.occurred_at": record.occurredAt,
+                "audit.schema_version": record.schemaVersion,
+              };
+              if (Option.isSome(record.reasonCode)) {
+                fields["audit.reason_code"] = record.reasonCode.value;
+              }
+              if (Option.isSome(record.tenantId)) fields["audit.tenant.id"] = record.tenantId.value;
+              if (Option.isSome(record.correlation.requestId)) {
+                fields["request.id"] = record.correlation.requestId.value;
+              }
+              if (Option.isSome(record.correlation.runId)) {
+                fields["run.id"] = record.correlation.runId.value;
+              }
+              if (Option.isSome(record.correlation.traceId)) {
+                fields["trace.id"] = record.correlation.traceId.value;
+              }
+              if (Option.isSome(record.correlation.spanId)) {
+                fields["span.id"] = record.correlation.spanId.value;
+              }
+              const immutableAnchorNames = [
+                "event.outcome",
+                "audit.record.id",
+                "audit.record.hash",
+                "audit.action",
+                "audit.actor.kind",
+                "audit.resource.type",
+                "audit.outcome",
+                "audit.schema_version",
+              ];
+              const decision = transformSignalFields(context.policy, "audit", fields);
+              const requiredFieldNames = [
+                ...immutableAnchorNames,
+                "audit.actor.kind",
+                "audit.actor.id",
+                "audit.resource.id",
+                "audit.occurred_at",
+              ];
+              if (
+                requiredFieldNames.some((name) => decision.value[name] === undefined) ||
+                immutableAnchorNames.some((name) => decision.value[name] !== fields[name])
+              ) {
+                return incrementAuditDrop(auditState, "policy-rejected", effectTimestamp);
+              }
+              reservedAuditRecords.add(recordId);
+              const native = {
+                ...buildAuditFields(nativeAuditInput(decision.value)),
+                idempotencyKey: String(decision.value["audit.record.id"]),
+              };
+              const nativeContext: { [name: string]: string } = {};
+              if (decision.value["request.id"] !== undefined) {
+                nativeContext.requestId = String(decision.value["request.id"]);
+              }
+              if (decision.value["trace.id"] !== undefined) {
+                nativeContext.traceId = String(decision.value["trace.id"]);
+              }
+              if (decision.value["audit.tenant.id"] !== undefined) {
+                nativeContext.tenantId = String(decision.value["audit.tenant.id"]);
+              }
+              if (Object.keys(nativeContext).length > 0) native.context = nativeContext;
+              const traceId = decodeTraceId(decision.value["trace.id"]);
+              const spanId = decodeSpanId(decision.value["span.id"]);
+              const event = Object.assign(
+                wideEventFor(
+                  context,
+                  String(decision.value["event.timestamp"]),
+                  "info",
+                  decision.value,
+                  Option.getOrUndefined(traceId),
+                  Option.getOrUndefined(spanId),
+                ),
+                { audit: native },
               );
-            }
-            auditState.published += 1;
-            return { kind: "published" };
+              let integrityEvent: WideEvent;
+              try {
+                integrityEvent = await applyAuditIntegrity(event);
+              } catch {
+                reservedAuditRecords.delete(recordId);
+                return incrementAuditDrop(auditState, "transport", effectTimestamp);
+              }
+              const admission = offer(admittedRecord(integrityEvent, recordId));
+              if (admission !== "queued") {
+                reservedAuditRecords.delete(recordId);
+                return incrementAuditDrop(
+                  auditState,
+                  admission === "closed" ? "closed" : "queue-overflow",
+                  effectTimestamp,
+                );
+              }
+              auditState.published += 1;
+              return { kind: "published" };
+            });
           });
 
         const auditLayer = Layer.succeed(

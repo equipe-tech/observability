@@ -57,7 +57,7 @@ Cada instrumento aceita no máximo 100 valores distintos por rótulo durante a v
 
 A versão 0.3 reserva campos preenchidos pelos sinks. Remova das definições de atributos da aplicação `event.source`, `event.policy_dropped_attributes`, `browser.event.id`, `browser.event.occurred_at`, `error.name` e `error.status`. Esses nomes, junto com os demais campos canônicos listados no contrato de telemetria, produzem `OBS_CONTRACT_RESERVED_ATTRIBUTE_NAME` durante a compilação do contrato.
 
-Remova também os atributos da aplicação `audit.reason_code`, `audit.tenant.id`, `audit.record.id`, `audit.record.hash`, `audit.occurred_at` e `audit.schema_version`. A versão 0.3 reserva esses campos para cópias operacionais de auditoria.
+Remova também os atributos da aplicação `audit.outcome`, `audit.reason_code`, `audit.tenant.id`, `audit.record.id`, `audit.record.hash`, `audit.occurred_at` e `audit.schema_version`. A versão 0.3 reserva esses campos para cópias operacionais de auditoria.
 
 ## Limitar timestamps ao intervalo do OTLP
 
@@ -139,7 +139,7 @@ O ingest HTTP do browser agora exige a mesma layer. Passe `{ eventLayer: observa
 
 Declare ações em `auditActions` e use `AuditOutcome` quando uma auditoria precisa representar `denied`. `EventOutcome` não mudou. Troque razões livres por códigos fechados em `reasonCodes`.
 
-Mantenha o ledger no banco de dados da aplicação. Use `commitAuditRecord` ou `recordAudit` para impedir a publicação antes da escrita durável. Forneça `layerNodeAuditDigest` e `observability.auditLayer` no runtime Node. Não publique auditorias pelo browser ou pelo pacote React.
+Mantenha o ledger no banco de dados da aplicação. Use `commitAuditRecord` ou `recordAudit` e persista o `AuditCommitDocument` recebido pelo callback na mesma operação durável do ledger. Forneça `layerNodeAuditDigest` e `observability.auditLayer` no runtime Node. Não publique auditorias pelo browser ou pelo pacote React. A chamada direta `log.audit()` não é suportada.
 
 ## Usar releases independentes
 

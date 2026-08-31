@@ -121,6 +121,7 @@ const dependencyKind = (specifier: string): DependencyKind | undefined => {
   const dependency = packageNameForSpecifier(specifier);
   if (
     specifier === "bun:sqlite" ||
+    specifier === "node:sqlite" ||
     dependency === "pg" ||
     dependency === "postgres" ||
     dependency === "drizzle-orm" ||

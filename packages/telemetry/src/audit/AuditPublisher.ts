@@ -1,10 +1,11 @@
-import { Clock, Context, DateTime, Effect, Option } from "effect";
+import { Clock, Context, DateTime, Effect, Option, Schema } from "effect";
+import { auditCommitDocumentFor, type AuditCommitDocument } from "./AuditCommitDocument.ts";
 import { AuditDigest, canonicalAuditPayload } from "./AuditDigest.ts";
 import {
   sealCommittedAuditRecord,
   type CommittedAuditRecord,
 } from "./CommittedAuditRecordInternal.ts";
-import type { AuditRecord } from "./AuditRecord.ts";
+import { AuditOccurredAt, type AuditRecord } from "./AuditRecord.ts";
 
 export type { CommittedAuditRecord } from "./CommittedAuditRecordInternal.ts";
 
@@ -43,7 +44,13 @@ const emptyReport = (): AuditPublishReport => ({
   dropped: 0,
   firstDroppedAt: Option.none(),
   lastDroppedAt: Option.none(),
-  reasons: { unbound: 0, closed: 0, queueOverflow: 0, policyRejected: 0, transport: 0 },
+  reasons: {
+    unbound: 0,
+    closed: 0,
+    queueOverflow: 0,
+    policyRejected: 0,
+    transport: 0,
+  },
 });
 
 export type AuditPublisherService = {
@@ -57,8 +64,8 @@ export const unboundAuditPublisher = (): AuditPublisherService => {
   let lastDrop = Option.none<string>();
   return {
     publish: () =>
-      Effect.sync(() => {
-        const droppedAt = new Date().toISOString();
+      Effect.gen(function* () {
+        const droppedAt = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
         drops += 1;
         if (Option.isNone(firstDrop)) firstDrop = Option.some(droppedAt);
         lastDrop = Option.some(droppedAt);
@@ -85,13 +92,16 @@ export type CommitAuditResult<A> = {
 
 export const commitAuditRecord = <A, E, R>(
   record: AuditRecord,
-  durableWrite: Effect.Effect<A, E, R>,
+  durableWrite: (document: AuditCommitDocument) => Effect.Effect<A, E, R>,
 ): Effect.Effect<CommitAuditResult<A>, E, R | AuditDigest> =>
   Effect.gen(function* () {
-    const committed = yield* durableWrite;
+    const committedAt = Schema.decodeUnknownSync(AuditOccurredAt)(
+      DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+    );
     const digest = yield* AuditDigest;
-    const ledgerHash = yield* digest.hash(canonicalAuditPayload(record));
-    const committedAt = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+    const ledgerHash = yield* digest.hash(canonicalAuditPayload(record, committedAt));
+    const document = auditCommitDocumentFor(record, committedAt, ledgerHash);
+    const committed = yield* durableWrite(document);
     const committedRecord = sealCommittedAuditRecord(record, committedAt, ledgerHash);
     return { committed, record: committedRecord };
   });
@@ -102,7 +112,7 @@ export type RecordAuditResult<A> = CommitAuditResult<A> & {
 
 export const recordAudit = <A, E, R>(
   record: AuditRecord,
-  durableWrite: Effect.Effect<A, E, R>,
+  durableWrite: (document: AuditCommitDocument) => Effect.Effect<A, E, R>,
 ): Effect.Effect<RecordAuditResult<A>, E, R | AuditDigest | AuditPublisher> =>
   Effect.gen(function* () {
     const result = yield* commitAuditRecord(record, durableWrite);

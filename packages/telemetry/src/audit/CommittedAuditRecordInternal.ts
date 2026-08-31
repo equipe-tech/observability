@@ -1,17 +1,17 @@
 import type { AuditHash } from "./AuditDigest.ts";
-import type { AuditRecord } from "./AuditRecord.ts";
+import type { AuditOccurredAt, AuditRecord } from "./AuditRecord.ts";
 
 const committedAuditRecordBrand: unique symbol = Symbol("CommittedAuditRecord");
 
 export type CommittedAuditRecord = AuditRecord & {
-  readonly committedAt: string;
+  readonly committedAt: AuditOccurredAt;
   readonly ledgerHash: AuditHash;
   readonly [committedAuditRecordBrand]: true;
 };
 
 export const sealCommittedAuditRecord = (
   record: AuditRecord,
-  committedAt: string,
+  committedAt: AuditOccurredAt,
   ledgerHash: AuditHash,
 ): CommittedAuditRecord => {
   const committed: CommittedAuditRecord = {

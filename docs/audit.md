@@ -16,16 +16,16 @@ Grave o ledger da aplicação antes da cópia operacional.
 
 ```ts
 const record = yield * parseAuditRecord(contract, input);
-const result = yield * recordAudit(record, durableLedgerWrite);
+const result = yield * recordAudit(record, (document) => durableLedgerWrite(document));
 ```
 
-`commitAuditRecord` só constrói `CommittedAuditRecord` depois que `durableLedgerWrite` termina com sucesso. O tipo não tem construtor público. Uma falha do ledger mantém o canal de erro original e não publica uma cópia.
+`commitAuditRecord` cria `committedAt`, calcula o hash e entrega um único `AuditCommitDocument` plano ao callback durável. A aplicação persiste exatamente esse documento junto ao ledger na mesma operação atômica. A função só constrói `CommittedAuditRecord` depois que o callback termina com sucesso. O tipo não tem construtor público. Uma falha do ledger mantém o canal de erro original e não publica uma cópia.
 
 `recordAudit` devolve o valor do ledger, o registro comprometido e o recibo de publicação. A publicação não falha no canal Effect. O recibo é `published`, `deduplicated` ou `dropped`. Os motivos de descarte são `unbound`, `closed`, `queue-overflow`, `policy-rejected` e `transport`.
 
 ## Outbox da aplicação
 
-`AuditOutbox` é uma porta de armazenamento. A aplicação persiste o resultado de `encodeAuditOutboxDocument` como JSON e implementa `claim` e `settle` sobre a própria tabela. `claim` devolve somente documentos planos decodificados por `AuditOutboxDocument`. `drainAuditOutbox` valida o documento, o timestamp e o hash antes de restaurar o registro comprometido dentro do pacote. Depois publica por `AuditPublisher` e entrega o recibo a `settle`. Uma aplicação pode fechar o processo, reabrir a tabela e drenar sem manter objetos em memória. O código de produção do núcleo e dos adapters não importa bibliotecas de banco de dados.
+`AuditOutbox` é uma porta de armazenamento. A aplicação persiste o `AuditCommitDocument` recebido pelo callback como JSON e implementa `claim` e `settle` sobre a própria tabela. `claim` devolve uma chave opaca `AuditOutboxClaimKey` e um documento plano. `drainAuditOutbox` valida o documento, `committedAt` e o hash antes de restaurar o registro comprometido dentro do pacote. Um documento inválido ou adulterado é entregue a `settle` como `quarantined`, entra no relatório e não impede a publicação dos próximos itens. Erros e relatórios não incluem dados do documento. Uma aplicação pode fechar o processo, reabrir a tabela e drenar sem manter objetos em memória. O código de produção do núcleo e dos adapters não importa bibliotecas de banco de dados.
 
 Use `recordId` como a única chave de idempotência. Uma repetição dentro da janela do adapter retorna `deduplicated`. Esse resultado não conta como perda. Uma rejeição da fila ou um descarte terminal libera a reserva para uma tentativa posterior.
 
@@ -33,7 +33,7 @@ Use `recordId` como a única chave de idempotência. Uma repetição dentro da j
 
 O adapter evlog existente fornece `observability.auditLayer`. A cópia usa a mesma fila, os mesmos limites, retry, fallback, flush, close e contagem de perdas dos eventos.
 
-A política sanitiza todos os campos antes da fila. A superfície `audit` aceita no máximo 64 campos e 4.096 caracteres por texto. Se a política remover um campo obrigatório do ator ou do recurso, o adapter descarta a cópia inteira como `policy-rejected`.
+A política sanitiza todos os campos antes da fila e a projeção nativa lê somente o resultado transformado. A superfície `audit` aceita no máximo 64 campos e 4.096 caracteres por texto. Se a política remover ou alterar `audit.record.id`, `audit.record.hash`, `audit.action`, `audit.resource.type`, `audit.outcome` ou `audit.schema_version`, o adapter descarta a cópia inteira como `policy-rejected`. A política pode mascarar `audit.actor.id`, inclusive emails, e remover campos opcionais de contexto. O envelope nativo recebe o mesmo valor mascarado ou removido do campo canônico.
 
 A projeção nativa usa estes mapeamentos:
 
@@ -51,10 +51,12 @@ A projeção nativa usa estes mapeamentos:
 
 ## Integridade
 
-`canonicalAuditPayload` serializa o registro em ordem estável. `AuditDigest` é a porta neutra de hash. `layerNodeAuditDigest`, no entrypoint `./node`, usa SHA-256.
+`canonicalAuditPayload` serializa o registro e `committedAt` em ordem estável. `AuditDigest` é a porta neutra de hash. `layerNodeAuditDigest`, no entrypoint `./node`, usa SHA-256.
 
 `EvlogAdapterOptions.auditIntegrity` ativa a assinatura nativa somente para auditorias. Use `strategy: "hash-chain"` para encadear cópias ou `strategy: "hmac"` com um secret. O adapter não inclui o secret em erros, relatórios ou logs.
 
 A aplicação pode guardar o mesmo hash no ledger e comparar o valor com `audit.record.hash`. Essa comparação detecta divergência entre o ledger e a cópia operacional. O pacote não torna um banco de dados da aplicação resistente a alterações.
 
 Relatórios contêm somente contagens, motivos e timestamps. Eles não contêm registros, IDs, códigos de razão, hashes, respostas de provedor ou secrets. A API de auditoria existe somente nos entrypoints de servidor. Os pacotes browser e React não a exportam.
+
+A chamada direta `log.audit()` do logger global não implementa o contrato de ação nem a ordem durável e não é suportada. O adapter a rejeita como descarte contado e não envia o envelope de auditoria.
