@@ -866,6 +866,58 @@ try {
     );
   }
 
+  const reactSmokeSource = [
+    "import { createBrowserObservability } from '@equipe-tech/observability-react';",
+    "import { definePolicy } from '@equipe-tech/observability/policy';",
+    "const policy = definePolicy({ attributes: { 'error.origin': { classification: 'internal', required: true, metricLabel: false } }, blockedKeys: [], blockedValuePatterns: [] });",
+    "const handle = createBrowserObservability({ service: { name: 'bundle-smoke', version: '0.3.0', environment: 'test' }, policy, sentry: { disabled: true } });",
+    "await handle.dispose();",
+  ].join("\n");
+  const reactSmokeEntry = join(consumer, "react-smoke.ts");
+  const reactBundle = join(consumer, "react-smoke.min.js");
+  await writeFile(reactSmokeEntry, reactSmokeSource);
+  requireSuccess(
+    await run(
+      ["bun", "build", reactSmokeEntry, "--target=browser", "--minify", `--outfile=${reactBundle}`],
+      consumer,
+    ),
+    "Bundling the packed React production entrypoint",
+  );
+  requireSuccess(await run(["bun", reactBundle], consumer), "Executing the packed React bundle");
+  const reactBytes = await Bun.file(reactBundle).bytes();
+  const reactGzip = Bun.gzipSync(reactBytes, { level: 9 });
+  const reactGzipDeltaBytes = reactGzip.byteLength - emptyGzip.byteLength;
+  const reactGzipRegressionCeilingBytes = 137_372;
+  const reactEvidence = join(root, ".verification/observability/obs-54-react-bundle");
+  await rm(reactEvidence, { recursive: true, force: true });
+  await mkdir(reactEvidence, { recursive: true });
+  await Bun.write(join(reactEvidence, "react-smoke.ts"), reactSmokeSource);
+  await Bun.write(join(reactEvidence, "react-smoke.min.js"), reactBytes);
+  await Bun.write(join(reactEvidence, "react-smoke.min.js.gz"), reactGzip);
+  await Bun.write(
+    join(reactEvidence, "evidence.json"),
+    JSON.stringify(
+      {
+        command: "bun build react-smoke.ts --target=browser --minify --outfile=react-smoke.min.js",
+        baselineCommand: "bun build empty.ts --target=browser --minify --outfile=empty.min.js",
+        source: "packed @equipe-tech/observability-react production entrypoint",
+        reactMinifiedBytes: reactBytes.byteLength,
+        reactMinifiedGzipBytes: reactGzip.byteLength,
+        emptyMinifiedGzipBytes: emptyGzip.byteLength,
+        reactMinifiedGzipDeltaBytes: reactGzipDeltaBytes,
+        reactGzipRegressionCeilingBytes,
+        bunVersion: Bun.version,
+      },
+      undefined,
+      2,
+    ),
+  );
+  if (reactGzipDeltaBytes > reactGzipRegressionCeilingBytes) {
+    throw new Error(
+      `The React production entrypoint gzip delta is ${reactGzipDeltaBytes} bytes, above the ${reactGzipRegressionCeilingBytes} byte regression ceiling.`,
+    );
+  }
+
   const executable = join(consumer, "node_modules/.bin/observability");
   const help = await run([executable, "--help"], consumer);
   requireSuccess(help, "Executing the packed CLI");

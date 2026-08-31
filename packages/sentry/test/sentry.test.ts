@@ -213,9 +213,8 @@ describe("Sentry adapter policy", () => {
       kind: "deduplicated",
       reason: "fingerprint",
     });
-    expect(dedupe.retainedEnvelopeCount()).toBe(4);
     for (const id of ["a", "d", "e", "f"]) dedupe.release(id);
-    expect(dedupe.retainedEnvelopeCount()).toBe(0);
+    dedupe.rollback("a");
     expect(dedupe.admit("h", first, 105)).toEqual({
       kind: "deduplicated",
       reason: "identity",

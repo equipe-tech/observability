@@ -8,7 +8,6 @@ export type DefectDeduplicator = {
   readonly admit: (eventId: string, envelope: DefectEnvelope, now: number) => DedupeDecision;
   readonly rollback: (eventId: string) => void;
   readonly release: (eventId: string) => void;
-  readonly retainedEnvelopeCount: () => number;
 };
 
 type Reservation = {
@@ -66,6 +65,5 @@ export const defectDeduplicator = (windowMillis: number, capacity: number): Defe
     release: (eventId) => {
       reservations.delete(eventId);
     },
-    retainedEnvelopeCount: () => reservations.size,
   };
 };

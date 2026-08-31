@@ -100,7 +100,6 @@ const delegatedDeduplicator: DefectDeduplicator = {
   admit: () => ({ kind: "admitted" }),
   rollback: () => undefined,
   release: () => undefined,
-  retainedEnvelopeCount: () => 0,
 };
 
 const terminalSettlementDeadlineMillis = 5_000;

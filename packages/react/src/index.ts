@@ -62,14 +62,20 @@ export type DefectReportInput = {
   readonly componentStack?: string;
 };
 
+export type DefectDestinationState = {
+  readonly sentry: "not-attempted" | "queued" | "disabled" | "failed";
+  readonly events: "not-attempted" | "queued" | "failed";
+};
+
 export type DefectOutcome =
   | {
       readonly kind: "recorded";
       readonly eventId: string;
-      readonly destinations: {
-        readonly sentry: "queued" | "disabled" | "failed";
-        readonly events: "queued";
-      };
+      readonly destinations: DefectDestinationState;
+    }
+  | {
+      readonly kind: "failed";
+      readonly destinations: DefectDestinationState;
     }
   | { readonly kind: "deduplicated"; readonly reason: "identity" | "fingerprint" }
   | { readonly kind: "suppressed"; readonly reason: "policy" | "closed" | "not-installed" };
@@ -85,6 +91,7 @@ export type BrowserObservabilityReport = {
   readonly recorded: number;
   readonly deduplicated: number;
   readonly suppressed: number;
+  readonly failed: number;
   readonly pendingEvents: number;
   readonly sentry: SentryDefectReport;
 };
@@ -183,6 +190,7 @@ const inertHandle = (service: BrowserServiceIdentity): BrowserObservability => {
       recorded: 0,
       deduplicated: 0,
       suppressed: 0,
+      failed: 0,
       pendingEvents: 0,
       sentry: {
         total: 0,
@@ -292,11 +300,14 @@ export const createBrowserObservability = (
   let recorded = 0;
   let deduplicated = 0;
   let suppressed = 0;
+  let failed = 0;
   let disposal: Promise<BrowserLifecycleReport> | undefined;
   const defectEnvelopes = new WeakMap<Error, ReturnType<typeof unexpectedDefect>>();
 
   const report = (input: DefectReportInput): DefectOutcome => {
     let admittedId: string | undefined;
+    let sentryDestination: DefectDestinationState["sentry"] = "not-attempted";
+    let eventsAttempted = false;
     try {
       if (closed) {
         suppressed += 1;
@@ -331,12 +342,13 @@ export const createBrowserObservability = (
       }
       const sentryOutcome = sentry.capture({ envelope: policyDecision.value.value });
       const sharedId = sentryOutcome.kind === "queued" ? sentryOutcome.eventId : reservedId;
-      const sentryDestination =
+      sentryDestination =
         sentryOutcome.kind === "queued"
           ? "queued"
           : sentryOutcome.kind === "suppressed" && sentryOutcome.reason === "disabled"
             ? "disabled"
             : "failed";
+      eventsAttempted = true;
       events.emitDefect({
         id: sharedId,
         name: "browser.error",
@@ -357,8 +369,14 @@ export const createBrowserObservability = (
       };
     } catch {
       if (admittedId !== undefined) dedupe.release(admittedId);
-      suppressed += 1;
-      return { kind: "suppressed", reason: closed ? "closed" : "policy" };
+      failed += 1;
+      return {
+        kind: "failed",
+        destinations: {
+          sentry: sentryDestination,
+          events: eventsAttempted ? "failed" : "not-attempted",
+        },
+      };
     }
   };
 
@@ -414,6 +432,7 @@ export const createBrowserObservability = (
       recorded,
       deduplicated,
       suppressed,
+      failed,
       pendingEvents: events.pending(),
       sentry: sentry.reports(),
     }),
@@ -431,7 +450,6 @@ export type BrowserDeliveryCanaryTransport = (
 export type BrowserDeliveryCanaryInput = {
   readonly endpoint: URL;
   readonly topology?: "published" | "local";
-  readonly timeoutMillis?: number;
   readonly transport?: BrowserDeliveryCanaryTransport;
 };
 
@@ -441,7 +459,7 @@ export type BrowserDeliveryCanaryReceipt = {
   readonly durationMillis: number;
 };
 
-const localHostnames = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
+const localHostnames = new Set(["localhost", "0.0.0.0"]);
 
 const isPrivateIpv4 = (hostname: string): boolean => {
   const octets = hostname.split(".").map(Number);
@@ -481,31 +499,54 @@ export const runBrowserDeliveryCanary = async (
   const endpoint = input.endpoint;
   const topology = input.topology ?? "published";
   const local = isLocalEndpoint(endpoint);
+  if (endpoint.username.length > 0 || endpoint.password.length > 0) {
+    throw new BrowserObservabilityError({
+      code: "OBS_REACT_CANARY_ENDPOINT_INVALID",
+      message: "The browser delivery canary endpoint must not contain credentials.",
+      cause: endpoint.href,
+    });
+  }
   if (
-    endpoint.username.length > 0 ||
-    endpoint.password.length > 0 ||
-    (topology === "published" && (endpoint.protocol !== "https:" || local)) ||
-    (topology === "local" &&
-      ((endpoint.protocol !== "http:" && endpoint.protocol !== "https:") || !local)) ||
-    (topology === "local" && input.transport !== undefined) ||
-    !validPositiveOption(input.timeoutMillis)
+    (topology === "published" && endpoint.protocol !== "https:") ||
+    (topology === "local" && endpoint.protocol !== "http:" && endpoint.protocol !== "https:")
   ) {
     throw new BrowserObservabilityError({
       code: "OBS_REACT_CANARY_ENDPOINT_INVALID",
       message:
-        "The browser delivery canary requires a credential-free HTTPS URL on a published non-loopback host.",
+        topology === "published"
+          ? "The published browser delivery canary endpoint must use HTTPS."
+          : "The local browser delivery canary endpoint must use HTTP or HTTPS.",
+      cause: endpoint.href,
+    });
+  }
+  if ((topology === "published" && local) || (topology === "local" && !local)) {
+    throw new BrowserObservabilityError({
+      code: "OBS_REACT_CANARY_ENDPOINT_INVALID",
+      message:
+        topology === "published"
+          ? "The published browser delivery canary endpoint must use a non-local host."
+          : "The local browser delivery canary endpoint must use a loopback or private host.",
+      cause: endpoint.href,
+    });
+  }
+  if (topology === "local" && input.transport !== undefined) {
+    throw new BrowserObservabilityError({
+      code: "OBS_REACT_CONFIG_INVALID",
+      message: "The local browser delivery canary does not allow a custom transport.",
       cause: endpoint.href,
     });
   }
   const startedAt = Date.now();
-  const signal = AbortSignal.timeout(input.timeoutMillis ?? 5_000);
+  const signal = AbortSignal.timeout(5_000);
   let response: Response;
   try {
     response = await (input.transport ?? fetchCanary)(endpoint, signal);
   } catch (cause) {
     throw new BrowserObservabilityError({
       code: "OBS_REACT_CANARY_FAILED",
-      message: "The browser delivery canary did not complete within five seconds.",
+      message: signal.aborted
+        ? "The browser delivery canary timed out after five seconds."
+        : "The browser delivery canary transport failed before receiving a response.",
       cause,
     });
   }

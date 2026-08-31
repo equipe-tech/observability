@@ -12,5 +12,6 @@ export type {
   BrowserTelemetryClientEvent,
   BrowserTelemetryClientFields,
   BrowserTelemetryDefectInput,
+  BrowserTelemetryFieldTransform,
   BrowserTelemetryClientTransport,
 } from "./BrowserClient.ts";
