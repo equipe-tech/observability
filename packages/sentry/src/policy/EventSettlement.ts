@@ -3,7 +3,6 @@ import type { DefectDeduplicator } from "./Deduplication.ts";
 
 type PendingEvent = {
   readonly input: { readonly envelope: DefectEnvelope };
-  readonly completion: Promise<boolean>;
   readonly resolve: (accepted: boolean) => void;
 };
 
@@ -13,7 +12,6 @@ export type EventSettlements = {
     input: { readonly envelope: DefectEnvelope },
   ) => Promise<boolean> | undefined;
   readonly input: (eventId: string) => { readonly envelope: DefectEnvelope } | undefined;
-  readonly completion: (eventId: string) => Promise<boolean> | undefined;
   readonly settle: (eventId: string, accepted: boolean) => void;
   readonly reject: (eventId: string) => void;
   readonly clear: () => void;
@@ -40,11 +38,10 @@ export const eventSettlements = (
       const completion = new Promise<boolean>((complete) => {
         resolve = complete;
       });
-      entries.set(eventId, { input, completion, resolve });
+      entries.set(eventId, { input, resolve });
       return completion;
     },
     input: (eventId) => entries.get(eventId)?.input,
-    completion: (eventId) => entries.get(eventId)?.completion,
     settle,
     reject: (eventId) => settle(eventId, false),
     clear: () => {

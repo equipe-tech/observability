@@ -6,6 +6,7 @@ import { describe, it } from "bun:test";
 import {
   checkPackageBoundaries,
   decodePackageManifest,
+  defineOwnership,
   sourceRole,
 } from "../../scripts/package-boundaries.ts";
 
@@ -346,6 +347,17 @@ describe("package boundaries", () => {
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
+  });
+
+  it("rejects duplicate ownership selectors", () => {
+    assert.throws(
+      () =>
+        defineOwnership([
+          { kind: "prefix", path: "packages/sentry/src/", role: "adapter" },
+          { kind: "prefix", path: "packages/sentry/src/", role: "adapter" },
+        ]),
+      /Duplicate package ownership selector "prefix:packages\/sentry\/src\/"/,
+    );
   });
 
   it("classifies every production role by repository-relative ownership", () => {

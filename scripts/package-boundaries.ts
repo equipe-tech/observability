@@ -23,64 +23,63 @@ type BoundaryViolation = {
 };
 
 type PathOwnership = {
+  readonly kind: "exact" | "prefix";
+  readonly path: string;
   readonly role: BoundaryRole;
-  readonly matches: (file: string) => boolean;
 };
 
 type DependencyKind = "framework" | "metric-api" | "otlp" | "provider" | "runtime-platform";
 
-const ownership: ReadonlyArray<PathOwnership> = [
-  { role: "bootstrap", matches: (file) => file === "packages/cli/src/main.ts" },
+export const defineOwnership = (
+  entries: ReadonlyArray<PathOwnership>,
+): ReadonlyArray<PathOwnership> => {
+  const selectors = new Set<string>();
+  for (const entry of entries) {
+    const selector = `${entry.kind}:${entry.path}`;
+    if (selectors.has(selector)) {
+      throw new Error(`Duplicate package ownership selector "${selector}"`);
+    }
+    selectors.add(selector);
+  }
+  return entries;
+};
+
+const ownership = defineOwnership([
+  { kind: "exact", path: "packages/cli/src/main.ts", role: "bootstrap" },
+  { kind: "prefix", path: "packages/sentry/src/policy/", role: "domain" },
+  { kind: "prefix", path: "packages/sentry/src/", role: "adapter" },
+  { kind: "prefix", path: "packages/nestjs/src/", role: "adapter" },
+  { kind: "prefix", path: "packages/evlog/src/", role: "adapter" },
+  { kind: "exact", path: "packages/telemetry/src/MetricsRuntime.ts", role: "adapter" },
+  { kind: "exact", path: "packages/telemetry/src/PolicyOtlpLogger.ts", role: "adapter" },
+  { kind: "exact", path: "packages/telemetry/src/Telemetry.ts", role: "adapter" },
+  { kind: "exact", path: "packages/telemetry/src/node/Observability.ts", role: "adapter" },
   {
-    role: "domain",
-    matches: (file) => file.startsWith("packages/sentry/src/policy/"),
-  },
-  { role: "adapter", matches: (file) => file.startsWith("packages/sentry/src/") },
-  { role: "adapter", matches: (file) => file.startsWith("packages/nestjs/src/") },
-  { role: "adapter", matches: (file) => file.startsWith("packages/evlog/src/") },
-  { role: "adapter", matches: (file) => file.startsWith("packages/sentry/src/") },
-  {
+    kind: "exact",
+    path: "packages/telemetry/src/profile/LifecycleRegistry.ts",
     role: "adapter",
-    matches: (file) => file === "packages/telemetry/src/MetricsRuntime.ts",
   },
   {
+    kind: "exact",
+    path: "packages/telemetry/src/profile/ObservabilityAdapter.ts",
     role: "adapter",
-    matches: (file) => file === "packages/telemetry/src/PolicyOtlpLogger.ts",
   },
-  { role: "adapter", matches: (file) => file === "packages/telemetry/src/Telemetry.ts" },
+  { kind: "exact", path: "packages/telemetry/src/testing/index.ts", role: "adapter" },
   {
+    kind: "exact",
+    path: "packages/telemetry/src/trace/HttpServerOtlpTracer.ts",
     role: "adapter",
-    matches: (file) => file === "packages/telemetry/src/node/Observability.ts",
   },
-  {
-    role: "adapter",
-    matches: (file) => file === "packages/telemetry/src/profile/LifecycleRegistry.ts",
-  },
-  {
-    role: "adapter",
-    matches: (file) => file === "packages/telemetry/src/profile/ObservabilityAdapter.ts",
-  },
-  {
-    role: "adapter",
-    matches: (file) => file === "packages/telemetry/src/testing/index.ts",
-  },
-  {
-    role: "adapter",
-    matches: (file) => file === "packages/telemetry/src/trace/HttpServerOtlpTracer.ts",
-  },
-  {
-    role: "domain",
-    matches: (file) =>
-      file.startsWith("packages/cli/src/") ||
-      file.startsWith("packages/telemetry/src/contract/") ||
-      file.startsWith("packages/telemetry/src/policy/") ||
-      file.startsWith("packages/telemetry/src/profile/"),
-  },
-];
+  { kind: "prefix", path: "packages/cli/src/", role: "domain" },
+  { kind: "prefix", path: "packages/telemetry/src/contract/", role: "domain" },
+  { kind: "prefix", path: "packages/telemetry/src/policy/", role: "domain" },
+  { kind: "prefix", path: "packages/telemetry/src/profile/", role: "domain" },
+]);
 
 export const sourceRole = (file: string): BoundaryRole => {
   for (const owner of ownership) {
-    if (owner.matches(file)) return owner.role;
+    const matches = owner.kind === "exact" ? file === owner.path : file.startsWith(owner.path);
+    if (matches) return owner.role;
   }
   return "core";
 };
