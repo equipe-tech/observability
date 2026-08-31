@@ -26,6 +26,14 @@ const BrowserEventFields = Schema.Record(BoundedFieldKey, BoundedFieldValue).che
 
 export type BrowserEventFields = typeof BrowserEventFields.Type;
 
+export class BrowserEventError extends Schema.Class<BrowserEventError>(
+  "@equipe-tech/observability/BrowserEventError",
+)({
+  type: Schema.NonEmptyString.check(Schema.isMaxLength(maxFieldValueLength)),
+  message: Schema.String.check(Schema.isMaxLength(maxFieldValueLength)),
+  retryable: Schema.Boolean,
+}) {}
+
 export class BrowserEvent extends Schema.Class<BrowserEvent>(
   "@equipe-tech/observability/BrowserEvent",
 )({
@@ -38,6 +46,7 @@ export class BrowserEvent extends Schema.Class<BrowserEvent>(
     }),
   ),
   fields: BrowserEventFields,
+  error: Schema.optional(BrowserEventError),
 }) {}
 
 export class BrowserEventBatch extends Schema.Class<BrowserEventBatch>(

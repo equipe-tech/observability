@@ -38,3 +38,7 @@ As definições compiladas não referenciam tipos de provider. Instale somente o
 ## Migração
 
 Substitua inicialização direta do Sentry pelo adapter do runtime. Passe o mesmo `service.version` usado pelo OpenTelemetry como release e o ambiente canônico como environment. Mova políticas de browser para `@equipe-tech/observability/policy` para evitar importar os exportadores OTLP do entrypoint raiz.
+
+## Composição React
+
+`@equipe-tech/observability-react` chama o reporter de browser com deduplicação delegada. A entrada React toma uma decisão de deduplicação e uma decisão de política para o Sentry e para o evento operacional. O `event_id` do Sentry também é o `browser.event.id`. O reporter não instala handlers globais e não habilita tracing ou replay.

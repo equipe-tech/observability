@@ -9,7 +9,7 @@ import { Effect, Option, Result, Schema } from "effect";
 import { parseSentryDsn } from "../SentryDsn.ts";
 import { SentryAdapterError } from "../SentryAdapterError.ts";
 import { captureDefectNow, type CaptureResult } from "../policy/CaptureOwner.ts";
-import { defectDeduplicator } from "../policy/Deduplication.ts";
+import { defectDeduplicator, type DefectDeduplicator } from "../policy/Deduplication.ts";
 import { eventSettlements } from "../policy/EventSettlement.ts";
 import { secureEventId } from "../policy/EventId.ts";
 import {
@@ -37,6 +37,7 @@ export type BrowserSentryDefectReporterConfig = {
   readonly terminalSettlementDeadlineMillis?: number;
   readonly dedupeWindowMillis?: number;
   readonly dedupeCapacity?: number;
+  readonly deduplication?: "owned" | "delegated";
 };
 
 export type BrowserSentryDefectReporter = {
@@ -65,6 +66,7 @@ const ConfigDocument = Schema.Struct({
   terminalSettlementDeadlineMillis: Schema.optional(Deadline),
   dedupeWindowMillis: Schema.optional(PositiveInteger),
   dedupeCapacity: Schema.optional(PositiveInteger),
+  deduplication: Schema.optional(Schema.Literals(["owned", "delegated"])),
 });
 const decodeConfig = Schema.decodeUnknownOption(ConfigDocument);
 const decodeDsn = Schema.decodeUnknownOption(Schema.URLFromString);
@@ -78,6 +80,7 @@ const configNames = new Set([
   "terminalSettlementDeadlineMillis",
   "dedupeWindowMillis",
   "dedupeCapacity",
+  "deduplication",
 ]);
 const serviceNames = new Set(["name", "version", "environment"]);
 
@@ -88,6 +91,12 @@ const invalidConfig = (cause: unknown): never => {
       "The browser Sentry reporter configuration is invalid. Set canonical service identity, a compilable data policy, and positive bounded timing values.",
     cause,
   });
+};
+
+const delegatedDeduplicator: DefectDeduplicator = {
+  admit: () => ({ kind: "admitted" }),
+  rollback: () => undefined,
+  release: () => undefined,
 };
 
 const terminalSettlementDeadlineMillis = 5_000;
@@ -117,10 +126,10 @@ export const createBrowserSentryDefectReporter = (
     serviceVersion: config.service.version,
     environment: config.service.environment,
   };
-  const dedupe = defectDeduplicator(
-    config.dedupeWindowMillis ?? 60_000,
-    config.dedupeCapacity ?? 256,
-  );
+  const dedupe =
+    config.deduplication === "delegated"
+      ? delegatedDeduplicator
+      : defectDeduplicator(config.dedupeWindowMillis ?? 60_000, config.dedupeCapacity ?? 256);
   const settlements = eventSettlements<ProjectedSentryEvent>(
     config.dedupeCapacity ?? 256,
     config.terminalSettlementDeadlineMillis ?? terminalSettlementDeadlineMillis,

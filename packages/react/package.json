@@ -1,0 +1,45 @@
+{
+  "name": "@equipe-tech/observability-react",
+  "version": "0.3.0",
+  "description": "Adaptador React para observabilidade de browser da Equipe Tech",
+  "homepage": "https://github.com/equipe-tech/observability#readme",
+  "bugs": {
+    "url": "https://github.com/equipe-tech/observability/issues"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/equipe-tech/observability.git",
+    "directory": "packages/react"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "bun ../../scripts/build-packages.ts",
+    "prepack": "bun run build"
+  },
+  "devDependencies": {
+    "@equipe-tech/observability": "workspace:*",
+    "@equipe-tech/observability-sentry": "workspace:*",
+    "effect": "4.0.0-rc.111"
+  },
+  "peerDependencies": {
+    "@equipe-tech/observability": "0.3.x",
+    "@equipe-tech/observability-sentry": "*",
+    "effect": "4.0.0-rc.111"
+  },
+  "peerDependenciesMeta": {
+    "@equipe-tech/observability-sentry": {
+      "optional": true
+    }
+  }
+}

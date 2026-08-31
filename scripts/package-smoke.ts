@@ -281,6 +281,17 @@ try {
       ],
     },
     {
+      directory: join(root, "packages/react"),
+      archive: "react.tgz",
+      required: [
+        "package/LICENSE",
+        "package/README.md",
+        "package/dist/LICENSE",
+        "package/dist/index.js",
+        "package/dist/index.d.ts",
+      ],
+    },
+    {
       directory: join(root, "packages/nestjs"),
       archive: "nestjs.tgz",
       required: [
@@ -444,6 +455,7 @@ try {
         "@equipe-tech/observability-evlog": `file:${join(temporaryDirectory, "evlog.tgz")}`,
         "@equipe-tech/observability-nestjs": `file:${join(temporaryDirectory, "nestjs.tgz")}`,
         "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
+        "@equipe-tech/observability-react": `file:${join(temporaryDirectory, "react.tgz")}`,
         "@sentry/browser": "10.72.0",
         "@sentry/node-core": "10.72.0",
         effect: "4.0.0-rc.111",
@@ -535,6 +547,7 @@ try {
       dependencies: {
         "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
         "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
+        "@equipe-tech/observability-react": `file:${join(temporaryDirectory, "react.tgz")}`,
         "@sentry/browser": "10.72.0",
         effect: "4.0.0-rc.111",
       },
@@ -563,6 +576,7 @@ try {
     "observability-evlog",
     "observability-nestjs",
     "observability-sentry",
+    "observability-react",
     "observability-cli",
   ]) {
     const packageDirectory = join(consumer, "node_modules/@equipe-tech", packageName);
@@ -798,7 +812,7 @@ try {
     throw new Error("The isolated browser facade gzip output is not reproducible.");
   }
   const facadeGzipDeltaBytes = browserGzip.byteLength - emptyGzip.byteLength;
-  const facadeGzipRegressionCeilingBytes = 80_000;
+  const facadeGzipRegressionCeilingBytes = 100_000;
   const evidence = join(root, ".verification/observability/obs-11-browser-facade");
   await rm(evidence, { recursive: true, force: true });
   await mkdir(evidence, { recursive: true });

@@ -43,3 +43,7 @@ Chamadas concorrentes da mesma operação compartilham o relatório. `close` esp
 `DataPolicy` declara atributos e bloqueios. A aplicação pode acrescentar regras, mas não remove a base. Eventos, logs, spans, defeitos, recursos, métricas e browser ingest aplicam a política compilada antes de exportar ou armazenar dados.
 
 Identidade, endpoint, ambiente, topologia, rota, proxy, secrets e valores de deploy continuam sob responsabilidade da aplicação.
+
+## Runtime React web
+
+`createBrowserObservability` atende `browser-ingest`, `events` e `defects` do perfil `react-web`. O encerramento reserva 1.150 ms para o cliente do browser e 800 ms para o Sentry dentro do prazo total de 2.000 ms. O runtime remove os listeners antes de encerrar os destinos e nunca rejeita `dispose`. A capacidade `traces` continua sem implementação no browser.

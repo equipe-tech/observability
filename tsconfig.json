@@ -27,7 +27,8 @@
       "@equipe-tech/observability-evlog": ["./packages/evlog/src/index.ts"],
       "@equipe-tech/observability-sentry": ["./packages/sentry/src/index.ts"],
       "@equipe-tech/observability-sentry/node": ["./packages/sentry/src/node/index.ts"],
-      "@equipe-tech/observability-sentry/browser": ["./packages/sentry/src/browser/index.ts"]
+      "@equipe-tech/observability-sentry/browser": ["./packages/sentry/src/browser/index.ts"],
+      "@equipe-tech/observability-react": ["./packages/react/src/index.ts"]
     }
   },
   "include": ["vite.config.ts", "tools/**/*.ts", "scripts/**/*.ts", "packages/**/*.ts"],

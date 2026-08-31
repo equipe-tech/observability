@@ -1,9 +1,22 @@
-import { Predicate } from "effect";
-import { browserRequestByteBudget } from "../BrowserEvents.ts";
+import { Effect, Predicate } from "effect";
+import type { DataPolicy, DataPolicyInput } from "../policy/DataPolicy.ts";
+import { parseDataPolicy } from "../policy/DataPolicy.ts";
+import { transformSignalFields } from "../policy/PolicyTransform.ts";
+import {
+  browserRequestByteBudget,
+  maxEventIdLength,
+  maxFieldValueLength,
+} from "../BrowserEvents.ts";
 import { sanitizeBrowserFields, sanitizeEventName } from "../RedactionPolicy.ts";
 
 export type BrowserTelemetryClientFields = {
   readonly [field: string]: string | number | boolean;
+};
+
+export type BrowserTelemetryClientError = {
+  readonly type: string;
+  readonly message: string;
+  readonly retryable: boolean;
 };
 
 export type BrowserTelemetryClientEvent = {
@@ -11,6 +24,14 @@ export type BrowserTelemetryClientEvent = {
   readonly name: string;
   readonly occurredAt: number;
   readonly fields: BrowserTelemetryClientFields;
+  readonly error?: BrowserTelemetryClientError;
+};
+
+export type BrowserTelemetryDefectInput = {
+  readonly id?: string;
+  readonly name: string;
+  readonly error: BrowserTelemetryClientError;
+  readonly fields?: BrowserTelemetryClientFields;
 };
 
 export type BrowserTelemetryClientBatch = {
@@ -31,10 +52,12 @@ export type BrowserTelemetryClientConfig = {
   readonly flushIntervalMs?: number;
   readonly shutdownTimeoutMs?: number;
   readonly transport?: BrowserTelemetryClientTransport;
+  readonly policy?: DataPolicyInput;
 };
 
 export type BrowserTelemetryClient = {
   emit(name: string, fields?: BrowserTelemetryClientFields): void;
+  emitDefect(input: BrowserTelemetryDefectInput): void;
   flush(): Promise<void>;
   pending(): number;
   dispose(): Promise<void>;
@@ -163,6 +186,7 @@ type BrowserClientEngineOptions = {
   readonly flushIntervalMs: number;
   readonly shutdownTimeoutMs: number;
   readonly transport: BrowserTelemetryClientTransport;
+  readonly policy: DataPolicy | undefined;
   readonly startTimer: boolean;
 };
 
@@ -192,12 +216,37 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
   emit(name: string, fields: BrowserTelemetryClientFields = {}): void {
     if (this.options.disabled || this.disposed) return;
     const sanitizedName = sanitizeEventName(name);
-    const event: BrowserTelemetryClientEvent = {
+    this.enqueue({
       id: crypto.randomUUID(),
       name: sanitizedName.length === 0 ? fallbackEventName : sanitizedName,
       occurredAt: Date.now(),
-      fields: sanitizeBrowserFields(fields),
-    };
+      fields: this.sanitizeFields(fields),
+    });
+  }
+
+  emitDefect(input: BrowserTelemetryDefectInput): void {
+    if (this.options.disabled || this.disposed) return;
+    const sanitizedName = sanitizeEventName(input.name);
+    const id = input.id ?? crypto.randomUUID().replaceAll("-", "");
+    this.enqueue({
+      id: id.slice(0, maxEventIdLength),
+      name: sanitizedName.length === 0 ? fallbackEventName : sanitizedName,
+      occurredAt: Date.now(),
+      fields: this.sanitizeFields(input.fields ?? {}),
+      error: {
+        type: input.error.type.slice(0, maxFieldValueLength),
+        message: input.error.message.slice(0, maxFieldValueLength),
+        retryable: input.error.retryable,
+      },
+    });
+  }
+
+  private sanitizeFields(fields: BrowserTelemetryClientFields): BrowserTelemetryClientFields {
+    if (this.options.policy === undefined) return sanitizeBrowserFields(fields);
+    return transformSignalFields(this.options.policy, "browser-ingest", fields).value;
+  }
+
+  private enqueue(event: BrowserTelemetryClientEvent): void {
     if (this.events.length >= this.options.maxQueueSize) {
       this.events.shift();
       this.droppedEvents += 1;
@@ -312,6 +361,8 @@ export const createBrowserTelemetryClient = (
     positiveInteger(config.maxBatchSize, defaultMaxBatchSize),
     maxBatchSizeLimit,
   );
+  const policy =
+    config.policy === undefined ? undefined : Effect.runSync(parseDataPolicy(config.policy));
   return new BrowserClientEngine({
     disabled: config.disabled ?? false,
     maxBatchSize,
@@ -319,6 +370,7 @@ export const createBrowserTelemetryClient = (
     flushIntervalMs: positiveInteger(config.flushIntervalMs, defaultFlushIntervalMs),
     shutdownTimeoutMs: positiveInteger(config.shutdownTimeoutMs, defaultShutdownTimeoutMs),
     transport: config.transport ?? fetchTransport(config.endpoint ?? defaultEndpoint),
+    policy,
     startTimer: true,
   });
 };

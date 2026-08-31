@@ -45,13 +45,14 @@ export const ingestBrowserEventBatch = Effect.fn("ingestBrowserEventBatch")(func
     const decision = transformSignalFields(policy, "browser-ingest", event.fields);
     dropped += decision.dropped;
     redacted += decision.redactions.filter((redaction) => redaction.action !== "dropped").length;
-    return {
+    const ingested = {
       id: event.id,
       name: event.name,
       occurredAt: event.occurredAt,
       attributes: decision.value,
       admission: { policyDroppedAttributes: decision.dropped },
     };
+    return event.error === undefined ? ingested : { ...ingested, error: event.error };
   });
   yield* sink.recordBrowserBatch(events);
   return { accepted: events.length, redacted, dropped };

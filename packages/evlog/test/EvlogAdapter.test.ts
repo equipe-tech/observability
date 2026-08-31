@@ -192,6 +192,38 @@ describe("evlogAdapter", () => {
     expect(adapter.pending()).toEqual({ count: 0, serializedBytes: 0 });
   });
 
+  it("projects browser defects with typed error context and failure outcome", async () => {
+    const receiver = await startReceiver();
+    const { config } = await makeConfig(receiver.endpoint);
+    const adapter = evlogAdapter({ installGlobalLogger: false, batchSize: 1 });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    await observability.runtime.runPromise(
+      TelemetryEventSink.pipe(
+        Effect.flatMap((sink) =>
+          sink.recordBrowserBatch([
+            {
+              id: "browser-defect",
+              name: "job.processing",
+              occurredAt: 1,
+              attributes: { "job.name": "billing" },
+              error: { type: "TypeError", message: "render failed", retryable: false },
+              admission: { policyDroppedAttributes: 0 },
+            },
+          ]),
+        ),
+        Effect.provide(observability.eventLayer),
+      ),
+    );
+    await observability.close();
+    await receiver.close();
+    const wire = receiver.bodies.join("\n");
+    expect(wire).toContain("browser-defect");
+    expect(wire).toContain("TypeError");
+    expect(wire).toContain("render failed");
+    expect(wire).toContain("failure");
+  });
+
   it("rejects unknown attributes before queue and transport", async () => {
     const receiver = await startReceiver();
     const { config } = await makeConfig(receiver.endpoint);

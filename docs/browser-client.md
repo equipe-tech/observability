@@ -55,3 +55,7 @@ export function startReactApp(container: HTMLElement) {
 ```
 
 Call the returned cleanup when the application root is permanently stopped. Repeated cleanup remains safe because disposal is idempotent.
+
+## Adaptador React
+
+Use `@equipe-tech/observability-react` para instalar uma entrada única de defeitos, callbacks estruturais do React 19 e os handlers globais de `error`, `unhandledrejection` e `pagehide`. A aplicação continua dona do root, do contexto, da interface de fallback, do roteador, da rota `/_telemetry/events` e do unmount. Chame `dispose` depois do unmount. O pacote não importa React nem React DOM.

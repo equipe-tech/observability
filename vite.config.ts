@@ -8,6 +8,10 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: "@equipe-tech/observability-react",
+        replacement: `${root}packages/react/src/index.ts`,
+      },
+      {
         find: "@equipe-tech/observability-sentry/browser",
         replacement: `${root}packages/sentry/src/browser/index.ts`,
       },
@@ -105,7 +109,7 @@ export default defineConfig({
     "*.{css,html,json,jsonc,md,mdx,toml,yaml,yml}": "vp fmt --write",
   },
   test: {
-    exclude: ["**/node_modules/**", "**/*.bun.test.ts", "repos/**"],
+    exclude: ["**/node_modules/**", "**/*.bun.test.ts", "**/*.browser.test.ts", "repos/**"],
   },
   run: {
     cache: {

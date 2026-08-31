@@ -18,14 +18,17 @@ export type {
   BrowserTelemetryClient,
   BrowserTelemetryClientBatch,
   BrowserTelemetryClientConfig,
+  BrowserTelemetryClientError,
   BrowserTelemetryClientEvent,
   BrowserTelemetryClientFields,
+  BrowserTelemetryDefectInput,
   BrowserTelemetryClientTransport,
 } from "./BrowserClient.ts";
 
 export {
   BrowserEvent,
   BrowserEventBatch,
+  BrowserEventError,
   browserRequestByteBudget,
   maxEventNameLength,
   maxEventsPerBatch,
@@ -112,6 +115,7 @@ const makeBrowserTelemetry = Effect.fn("makeBrowserTelemetry")(function* (
     maxQueueSize: normalizePositiveInteger(options?.maxQueueSize, 256),
     flushIntervalMs: normalizePositiveInteger(Duration.toMillis(flushInterval), 5_000),
     shutdownTimeoutMs: 2_000,
+    policy: undefined,
     transport: (batch) =>
       new Promise<void>((resolve, reject) => {
         Effect.runCallback(

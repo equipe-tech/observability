@@ -13,6 +13,7 @@ import {
   type BrowserTelemetryClientBatch,
   type BrowserTelemetryClientTransport,
 } from "../src/browser/index.ts";
+import { definePolicy } from "../src/policy/DataPolicy.ts";
 import { sensitiveFieldReplacement, sensitiveTextReplacement } from "../src/RedactionPolicy.ts";
 
 const deferred = (): {
@@ -30,6 +31,46 @@ const deferred = (): {
 };
 
 describe("browser telemetry client", () => {
+  it("applies an optional compiled policy before queue insertion and emits typed defects", async () => {
+    const batches: Array<BrowserTelemetryClientBatch> = [];
+    const policy = definePolicy({
+      attributes: {
+        "error.origin": { classification: "internal", required: true, metricLabel: false },
+        "customer.email": { classification: "sensitive", required: false, metricLabel: false },
+      },
+      blockedKeys: [],
+      blockedValuePatterns: [],
+    });
+    const client = createBrowserTelemetryClient({
+      policy,
+      transport: async (batch) => {
+        batches.push(batch);
+      },
+      flushIntervalMs: 60_000,
+    });
+    client.emitDefect({
+      id: "0123456789abcdef0123456789abcdef",
+      name: "browser.error",
+      error: { type: "TypeError", message: "failed", retryable: false },
+      fields: {
+        "error.origin": "manual",
+        "customer.email": "person@example.com",
+      },
+    });
+    await client.flush();
+    expect(batches[0]?.events[0]).toEqual({
+      id: "0123456789abcdef0123456789abcdef",
+      name: "browser.error",
+      occurredAt: expect.any(Number),
+      fields: {
+        "error.origin": "manual",
+        "customer.email": sensitiveFieldReplacement,
+      },
+      error: { type: "TypeError", message: "failed", retryable: false },
+    });
+    await client.dispose();
+  });
+
   it("emits synchronously, sanitizes before transport, and retries the same batch", async () => {
     const secret = crypto.randomUUID().replaceAll("-", "");
     const batches: Array<BrowserTelemetryClientBatch> = [];

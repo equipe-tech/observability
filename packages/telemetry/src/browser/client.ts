@@ -8,7 +8,9 @@ export type {
   BrowserTelemetryClient,
   BrowserTelemetryClientBatch,
   BrowserTelemetryClientConfig,
+  BrowserTelemetryClientError,
   BrowserTelemetryClientEvent,
   BrowserTelemetryClientFields,
+  BrowserTelemetryDefectInput,
   BrowserTelemetryClientTransport,
 } from "./BrowserClient.ts";

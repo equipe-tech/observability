@@ -8,6 +8,7 @@ import {
   type TelemetryContractInput,
   validateContractEvent,
 } from "./TelemetryContract.ts";
+import type { BrowserEventError } from "../BrowserEvents.ts";
 import {
   AuditContext,
   type AuditActor,
@@ -36,6 +37,7 @@ export type BrowserTelemetryEvent = {
   readonly name: string;
   readonly occurredAt: number;
   readonly attributes: EventAttributes;
+  readonly error?: BrowserEventError;
   readonly admission: EventAdmissionMetadata;
 };
 

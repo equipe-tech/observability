@@ -48,6 +48,7 @@ const ownership = defineOwnership([
   { kind: "exact", path: "packages/cli/src/main.ts", role: "bootstrap" },
   { kind: "prefix", path: "packages/sentry/src/policy/", role: "domain" },
   { kind: "prefix", path: "packages/sentry/src/", role: "adapter" },
+  { kind: "prefix", path: "packages/react/src/", role: "adapter" },
   { kind: "prefix", path: "packages/nestjs/src/", role: "adapter" },
   { kind: "prefix", path: "packages/evlog/src/", role: "adapter" },
   { kind: "exact", path: "packages/telemetry/src/MetricsRuntime.ts", role: "adapter" },
