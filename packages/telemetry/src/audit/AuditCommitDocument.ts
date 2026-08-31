@@ -52,7 +52,7 @@ export const auditCommitDocumentFor = (
 ): AuditCommitDocument => ({
   schemaVersion: record.schemaVersion,
   recordId: record.recordId,
-  action: Schema.decodeUnknownSync(AuditAction)(record.action),
+  action: record.action,
   actor: record.actor,
   resource: record.resource,
   outcome: record.outcome,

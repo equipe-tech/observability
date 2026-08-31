@@ -401,7 +401,8 @@ const fieldsForContractEvent = (
       fields["audit.outcome"] = event.outcome;
       fields["audit.action"] = event.audit.action;
       fields["audit.actor.kind"] = event.audit.actor.kind;
-      if (event.audit.actor.kind !== "system") fields["audit.actor.id"] = event.audit.actor.id;
+      fields["audit.actor.id"] =
+        event.audit.actor.kind === "system" ? "system" : event.audit.actor.id;
       fields["audit.resource.type"] = event.audit.resourceType;
       fields["audit.resource.id"] = event.audit.resourceId;
       if (event.audit.reasonCode !== undefined)
@@ -589,6 +590,33 @@ export const makeEvlogAdapter = (
             ),
           ),
         );
+        const clock = yield* Clock.Clock;
+        if (context.contract.auditActionByName.size > 0) {
+          const auditEventName = context.contract.eventNames.find(
+            (candidate) => candidate === "audit.recorded",
+          );
+          const auditEvent =
+            auditEventName === undefined
+              ? undefined
+              : context.contract.eventByName.get(auditEventName);
+          if (
+            auditEvent?.kind !== "audit" ||
+            auditEvent.defaultSeverity !== "info" ||
+            !auditEvent.mandatory ||
+            auditEvent.sampling.kind !== "always" ||
+            auditEvent.attributes.size !== 0
+          ) {
+            return yield* safeAdapterFailure(
+              "The telemetry contract cannot publish audit records. Add Contract.organizationEvents.AuditRecorded before retrying startup.",
+              new EvlogAdapterError({
+                code: "OBS_EVLOG_AUDIT_CONTRACT_INVALID",
+                message:
+                  "Audit publication requires Contract.organizationEvents.AuditRecorded when the contract declares audit actions.",
+                cause: "missing audit.recorded organization event",
+              }),
+            );
+          }
+        }
         if (Option.isSome(resolvedOptions.requestEventName)) {
           const configuredRequestName = resolvedOptions.requestEventName.value;
           const requestName = context.contract.eventNames.find(
@@ -713,7 +741,7 @@ export const makeEvlogAdapter = (
             for (const record of records) {
               if (record.auditRecordId !== undefined) {
                 reservedAuditRecords.delete(record.auditRecordId);
-                deliveredAuditRecords.set(record.auditRecordId, Date.now());
+                deliveredAuditRecords.set(record.auditRecordId, clock.currentTimeMillisUnsafe());
                 while (deliveredAuditRecords.size > resolvedOptions.auditDedupeCapacity) {
                   const oldest = deliveredAuditRecords.keys().next().value;
                   if (oldest === undefined) break;
@@ -1005,10 +1033,10 @@ export const makeEvlogAdapter = (
         }
 
         const admitAudit = (record: CommittedAuditRecord): Effect.Effect<AuditPublishReceipt> =>
-          Effect.gen(function* () {
-            const now = yield* Clock.currentTimeMillis;
+          Effect.suspend(() => {
+            const now = clock.currentTimeMillisUnsafe();
             const effectTimestamp = DateTime.formatIso(DateTime.makeUnsafe(now));
-            return yield* Effect.promise<AuditPublishReceipt>(async () => {
+            return Effect.promise<AuditPublishReceipt>(async () => {
               for (const [recordId, deliveredAt] of deliveredAuditRecords) {
                 if (now - deliveredAt > resolvedOptions.auditDedupeWindowMillis) {
                   deliveredAuditRecords.delete(recordId);
@@ -1059,6 +1087,7 @@ export const makeEvlogAdapter = (
               }
               const immutableAnchorNames = [
                 "event.outcome",
+                "event.timestamp",
                 "audit.record.id",
                 "audit.record.hash",
                 "audit.action",
@@ -1068,6 +1097,10 @@ export const makeEvlogAdapter = (
                 "audit.schema_version",
               ];
               const decision = transformSignalFields(context.policy, "audit", fields);
+              const admittedFields: EventAttributes = {
+                ...decision.value,
+                "event.policy_dropped_attributes": decision.dropped,
+              };
               const requiredFieldNames = [
                 ...immutableAnchorNames,
                 "audit.actor.kind",
@@ -1083,28 +1116,28 @@ export const makeEvlogAdapter = (
               }
               reservedAuditRecords.add(recordId);
               const native = {
-                ...buildAuditFields(nativeAuditInput(decision.value)),
-                idempotencyKey: String(decision.value["audit.record.id"]),
+                ...buildAuditFields(nativeAuditInput(admittedFields)),
+                idempotencyKey: String(admittedFields["audit.record.id"]),
               };
               const nativeContext: { [name: string]: string } = {};
-              if (decision.value["request.id"] !== undefined) {
-                nativeContext.requestId = String(decision.value["request.id"]);
+              if (admittedFields["request.id"] !== undefined) {
+                nativeContext.requestId = String(admittedFields["request.id"]);
               }
-              if (decision.value["trace.id"] !== undefined) {
-                nativeContext.traceId = String(decision.value["trace.id"]);
+              if (admittedFields["trace.id"] !== undefined) {
+                nativeContext.traceId = String(admittedFields["trace.id"]);
               }
-              if (decision.value["audit.tenant.id"] !== undefined) {
-                nativeContext.tenantId = String(decision.value["audit.tenant.id"]);
+              if (admittedFields["audit.tenant.id"] !== undefined) {
+                nativeContext.tenantId = String(admittedFields["audit.tenant.id"]);
               }
               if (Object.keys(nativeContext).length > 0) native.context = nativeContext;
-              const traceId = decodeTraceId(decision.value["trace.id"]);
-              const spanId = decodeSpanId(decision.value["span.id"]);
+              const traceId = decodeTraceId(admittedFields["trace.id"]);
+              const spanId = decodeSpanId(admittedFields["span.id"]);
               const event = Object.assign(
                 wideEventFor(
                   context,
-                  String(decision.value["event.timestamp"]),
+                  record.committedAt,
                   "info",
-                  decision.value,
+                  admittedFields,
                   Option.getOrUndefined(traceId),
                   Option.getOrUndefined(spanId),
                 ),

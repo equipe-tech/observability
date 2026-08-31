@@ -162,7 +162,7 @@ export const drainAuditOutbox = Effect.fn("drainAuditOutbox")(function* (
       return yield* failure(
         "publish",
         "The claimed audit outbox document could not be published.",
-        publishExit.cause,
+        "audit publisher failed",
       );
     }
     const receipt = publishExit.value;

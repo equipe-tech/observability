@@ -17,12 +17,14 @@ import {
   createNodeObservabilityFromConfig,
   ingestBrowserEvents,
   layerNodeAuditDigest,
+  makeNodeObservability,
 } from "@equipe-tech/observability/node";
 import { parseNodeObservabilityConfig } from "@equipe-tech/observability";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { audit, initLogger, isEnabled, log, type DrainContext } from "evlog";
 import { Effect, Option, Schema } from "effect";
+import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vite-plus/test";
 import { makeEvlogAdapter } from "../src/EvlogAdapter.ts";
 import { evlogAdapter } from "../src/index.ts";
@@ -30,6 +32,7 @@ import { evlogAdapter } from "../src/index.ts";
 const contractDefinition = Contract.telemetryContractDefinition({
   version: 1,
   events: {
+    AuditRecorded: Contract.organizationEvents.AuditRecorded,
     completed: {
       name: "job.completed",
       kind: "operation",
@@ -305,6 +308,8 @@ describe("evlogAdapter", () => {
     expect(body["audit.tenant.id"]).toBe("****");
     expect(body["trace.id"]).toBeUndefined();
     expect(body["run.id"]).toBe("run-audit");
+    expect(body["event.timestamp"]).toBe(committed.record.committedAt);
+    expect(body["event.policy_dropped_attributes"]).toBe(2);
     expect(body.audit.actor.type).toBe("api");
     expect(body.audit.outcome).toBe("denied");
     expect(body.audit.idempotencyKey).toBe("audit-record-1");
@@ -374,6 +379,152 @@ describe("evlogAdapter", () => {
     await observability.close();
     await receiver.close();
     expect(receiver.bodies.join("\n")).not.toContain("audit-policy-rejected");
+  });
+
+  it("rejects every timestamp policy mutation before queueing and preserves sibling batches", async () => {
+    const cases = [
+      {
+        name: "forbidden",
+        attributes: {
+          "event.timestamp": {
+            classification: "forbidden",
+            required: false,
+            metricLabel: false,
+          },
+        },
+        blockedKeys: [],
+      },
+      {
+        name: "sensitive",
+        attributes: {
+          "event.timestamp": {
+            classification: "sensitive",
+            required: false,
+            metricLabel: false,
+          },
+        },
+        blockedKeys: [],
+      },
+      { name: "blocked", attributes: {}, blockedKeys: ["timestamp"] },
+    ] satisfies ReadonlyArray<{
+      readonly name: string;
+      readonly attributes: Contract.AttributeDefinitionsInput;
+      readonly blockedKeys: ReadonlyArray<string>;
+    }>;
+    for (const testCase of cases) {
+      const receiver = await startReceiver();
+      const contract = await Effect.runPromise(defineTelemetryContract(contractDefinition));
+      const config = await Effect.runPromise(
+        parseNodeObservabilityConfig({
+          enabled: true,
+          profile: "worker",
+          service: { name: "audit-policy-test", version: "1.2.3", environment: "test" },
+          telemetry: { endpoint: receiver.endpoint },
+          evlog: {
+            contract,
+            policy: {
+              attributes: testCase.attributes,
+              blockedKeys: testCase.blockedKeys,
+              blockedValuePatterns: [],
+            },
+          },
+          sentry: { enabled: false },
+        }),
+      );
+      const adapter = evlogAdapter({
+        installGlobalLogger: false,
+        batchSize: 4,
+        maximumBufferedEvents: 4,
+        transportRetries: 0,
+      });
+      const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+      if (!observability.enabled) throw new Error("Expected enabled observability.");
+      const record = await Effect.runPromise(
+        parseAuditRecord(contract, {
+          recordId: `audit-timestamp-${testCase.name}`,
+          action: "access.reviewed",
+          actor: { kind: "system" },
+          resource: { id: "account-1" },
+          outcome: "denied",
+          occurredAt: "2026-01-02T03:04:05.000Z",
+        }),
+      );
+      const committed = await Effect.runPromise(
+        commitAuditRecord(record, () => Effect.void).pipe(Effect.provide(layerNodeAuditDigest)),
+      );
+      const publisher = await Effect.runPromise(
+        AuditPublisher.pipe(Effect.provide(observability.auditLayer)),
+      );
+      expect(await Effect.runPromise(publisher.publish(committed.record))).toEqual({
+        kind: "dropped",
+        reason: "policy-rejected",
+      });
+      const producer = makeEventProducer(contract);
+      for (const sibling of ["sibling-a", "sibling-b", "sibling-c"]) {
+        await observability.runtime.runPromise(
+          producer
+            .emit("completed", {
+              outcome: "success",
+              durationMs: 1,
+              attributes: { "job.name": `${testCase.name}-${sibling}` },
+            })
+            .pipe(Effect.provide(observability.eventLayer)),
+        );
+      }
+      expect(adapter.pending()).toEqual({
+        count: 3,
+        serializedBytes: expect.any(Number),
+      });
+      await observability.close();
+      await receiver.close();
+      const wire = receiver.bodies.join("\n");
+      expect(wire).not.toContain(`audit-timestamp-${testCase.name}`);
+      expect(wire).not.toContain('"timestamp":"undefined"');
+      expect(wire).not.toContain('"timeUnixNano":"NaN"');
+      for (const sibling of ["sibling-a", "sibling-b", "sibling-c"]) {
+        expect(wire).toContain(`${testCase.name}-${sibling}`);
+      }
+      expect(publisher.report().reasons.policyRejected).toBe(1);
+      expect(adapter.drops().reasons.transport).toBe(0);
+    }
+  });
+
+  it("expires delivered audit dedupe entries with TestClock", async () => {
+    const receiver = await startReceiver();
+    const { contract, config } = await makeConfig(receiver.endpoint);
+    const adapter = evlogAdapter({
+      installGlobalLogger: false,
+      batchSize: 1,
+      auditDedupeWindowMillis: 1_000,
+      transportRetries: 0,
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const observability = yield* makeNodeObservability(config, [adapter.registration]);
+        if (!observability.enabled) return yield* Effect.die("Expected enabled observability.");
+        const record = yield* parseAuditRecord(contract, {
+          recordId: "audit-test-clock",
+          action: "access.reviewed",
+          actor: { kind: "system" },
+          resource: { id: "account-clock" },
+          outcome: "denied",
+          occurredAt: "2026-01-02T03:04:05.000Z",
+        });
+        const committed = yield* commitAuditRecord(record, () => Effect.void).pipe(
+          Effect.provide(layerNodeAuditDigest),
+        );
+        const publisher = yield* AuditPublisher.pipe(Effect.provide(observability.auditLayer));
+        expect(yield* publisher.publish(committed.record)).toEqual({ kind: "published" });
+        yield* Effect.promise(() => observability.flush());
+        expect(yield* publisher.publish(committed.record)).toEqual({ kind: "deduplicated" });
+        yield* TestClock.adjust("1001 millis");
+        expect(yield* publisher.publish(committed.record)).toEqual({ kind: "published" });
+        yield* Effect.promise(() => observability.close());
+      }).pipe(Effect.provide(TestClock.layer())),
+    );
+    await receiver.close();
+    expect(receiver.bodies.filter((body) => body.includes("audit-test-clock"))).toHaveLength(2);
+    expect(receiver.bodies.join("\n")).toContain('\\"audit.actor.id\\":\\"system\\"');
   });
 
   it("reports audit transport drops after blackhole exhaustion", async () => {
@@ -483,6 +634,7 @@ describe("evlogAdapter", () => {
     );
     expect(auditBody["audit.reason_code"]).toBe("approval.missing");
     expect(auditBody["audit.outcome"]).toBe("denied");
+    expect(auditBody["audit.actor.id"]).toBe("system");
     expect(auditBody["event.outcome"]).toBe("failure");
     const cancelledWire = receiver.bodies.find((body) => body.includes("account-cancelled")) ?? "";
     const cancelledRequest = Schema.decodeUnknownSync(RequestBody)(JSON.parse(cancelledWire));
@@ -981,6 +1133,7 @@ describe("evlogAdapter", () => {
     const definition = Contract.telemetryContractDefinition({
       version: 1,
       events: {
+        AuditRecorded: Contract.organizationEvents.AuditRecorded,
         operation: {
           name: "canonicalsecret.operation",
           kind: "operation",
@@ -1617,6 +1770,50 @@ describe("evlogAdapter", () => {
     await receiver.close();
     expect(receiver.bodies.some((body) => body.includes("first-generation"))).toBe(true);
     expect(receiver.bodies.some((body) => body.includes("second-generation"))).toBe(true);
+  });
+
+  it("requires the audit.recorded organization event for active audit publication", async () => {
+    const contract = await Effect.runPromise(
+      defineTelemetryContract({
+        version: 1,
+        events: {},
+        metrics: {},
+        auditActions: {
+          AccessReviewed: {
+            action: "access.reviewed",
+            resourceType: "account",
+            allowedOutcomes: ["success"],
+          },
+        },
+      }),
+    );
+    const config = await Effect.runPromise(
+      parseNodeObservabilityConfig({
+        enabled: true,
+        profile: "worker",
+        service: { name: "audit-contract-test", version: "1.2.3", environment: "test" },
+        telemetry: { endpoint: new URL("http://127.0.0.1:1") },
+        evlog: {
+          contract,
+          policy: { attributes: {}, blockedKeys: [], blockedValuePatterns: [] },
+        },
+        sentry: { enabled: false },
+      }),
+    );
+    await expect(
+      createNodeObservabilityFromConfig(config, [
+        evlogAdapter({ installGlobalLogger: false }).registration,
+      ]),
+    ).rejects.toMatchObject({
+      code: "OBS_OBSERVABILITY_STARTUP_FAILED",
+      cause: {
+        cause: {
+          code: "OBS_EVLOG_AUDIT_CONTRACT_INVALID",
+          message:
+            "Audit publication requires Contract.organizationEvents.AuditRecorded when the contract declares audit actions.",
+        },
+      },
+    });
   });
 
   it("reports invalid and unknown options through startup", async () => {

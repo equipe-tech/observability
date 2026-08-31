@@ -45,9 +45,8 @@ const fieldsForEvent = (event: TelemetryEvent): EventAttributes => {
     case "audit":
       fields["audit.action"] = event.audit.action;
       fields["audit.actor.kind"] = event.audit.actor.kind;
-      if (event.audit.actor.kind !== "system") {
-        fields["audit.actor.id"] = event.audit.actor.id;
-      }
+      fields["audit.actor.id"] =
+        event.audit.actor.kind === "system" ? "system" : event.audit.actor.id;
       fields["audit.resource.type"] = event.audit.resourceType;
       fields["audit.resource.id"] = event.audit.resourceId;
       break;

@@ -4,6 +4,7 @@ import {
   AuditPublisher,
   commitAuditRecord,
   CorrelationContext,
+  Contract,
   defineTelemetryContract,
   parseAuditRecord,
   parseNodeObservabilityConfig,
@@ -331,7 +332,7 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
 
         const auditContract = yield* defineTelemetryContract({
           version: 1,
-          events: {},
+          events: { AuditRecorded: Contract.organizationEvents.AuditRecorded },
           metrics: {},
           auditActions: {
             CanaryObserved: {

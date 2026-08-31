@@ -202,6 +202,84 @@ describe("audit outbox port", () => {
     }
   });
 
+  it("sanitizes publisher defects from outbox failures", async () => {
+    const definition = await Effect.runPromise(contract);
+    const record = await Effect.runPromise(
+      parseAuditRecord(definition, {
+        recordId: "private-document-record",
+        action: "access.reviewed",
+        actor: { kind: "system" },
+        resource: { id: "private-document-resource" },
+        outcome: "success",
+        occurredAt: "2026-01-02T03:04:05.000Z",
+      }),
+    );
+    let document: AuditOutboxDocument | undefined;
+    await Effect.runPromise(
+      commitAuditRecord(record, (candidate) =>
+        Effect.sync(() => {
+          document = candidate;
+        }),
+      ).pipe(Effect.provide(layerNodeAuditDigest)),
+    );
+    if (document === undefined) throw new Error("Expected a committed outbox document.");
+    const committedDocument = document;
+    const outbox = Layer.succeed(
+      AuditOutbox,
+      AuditOutbox.of({
+        claim: () =>
+          Effect.succeed([
+            {
+              claimKey: Schema.decodeUnknownSync(AuditOutboxClaimKey)("private-claim"),
+              document: committedDocument,
+            },
+          ]),
+        settle: () => Effect.void,
+      }),
+    );
+    const publisher = Layer.succeed(
+      AuditPublisher,
+      AuditPublisher.of({
+        publish: () =>
+          Effect.die(
+            "provider secret-payload document private-document-record body private-document-resource",
+          ),
+        report: () => ({
+          published: 0,
+          deduplicated: 0,
+          dropped: 0,
+          firstDroppedAt: Option.none(),
+          lastDroppedAt: Option.none(),
+          reasons: {
+            unbound: 0,
+            closed: 0,
+            queueOverflow: 0,
+            policyRejected: 0,
+            transport: 0,
+          },
+        }),
+      }),
+    );
+    const failure = await Effect.runPromise(
+      drainAuditOutbox(1).pipe(
+        Effect.provide(outbox),
+        Effect.provide(publisher),
+        Effect.provide(layerNodeAuditDigest),
+        Effect.flip,
+      ),
+    );
+    expect(failure).toBeInstanceOf(AuditOutboxFailure);
+    expect(failure).toMatchObject({
+      operation: "publish",
+      message: "The claimed audit outbox document could not be published.",
+      cause: "audit publisher failed",
+    });
+    const serialized = JSON.stringify(failure);
+    expect(serialized).not.toContain("secret-payload");
+    expect(serialized).not.toContain("private-document-record");
+    expect(serialized).not.toContain("private-document-resource");
+  });
+
   it("reports claim failures without publishing", async () => {
     let publishes = 0;
     const claimFailure = outboxFailure(

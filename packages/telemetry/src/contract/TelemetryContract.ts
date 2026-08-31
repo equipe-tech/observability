@@ -1,5 +1,10 @@
 import { Effect, Option, Schema } from "effect";
-import { AuditOutcome, AuditReasonCode, isControlCharacterFree } from "../audit/AuditRecord.ts";
+import {
+  AuditAction,
+  AuditOutcome,
+  AuditReasonCode,
+  isControlCharacterFree,
+} from "../audit/AuditRecord.ts";
 import { EventName, isValidAttributeName, isValidEventName } from "./EventName.ts";
 import {
   EventKind,
@@ -118,7 +123,7 @@ export type CompiledEventDefinition = {
 };
 
 export type AuditActionDefinition = {
-  readonly action: string;
+  readonly action: AuditAction;
   readonly resourceType: string;
   readonly allowedOutcomes: ReadonlyArray<AuditOutcome>;
   readonly reasonCodes: ReadonlyArray<string>;
@@ -616,7 +621,7 @@ export const defineTelemetryContract = Effect.fn("defineTelemetryContract")(func
   for (const [alias, action] of Object.entries(definition.auditActions)) {
     const compiled: CompiledAuditActionDefinition = {
       alias,
-      action: action.action,
+      action: AuditAction.make(action.action),
       resourceType: action.resourceType,
       allowedOutcomes: action.allowedOutcomes,
       reasonCodes: action.reasonCodes ?? [],

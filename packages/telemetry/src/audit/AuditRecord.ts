@@ -99,7 +99,7 @@ export type AuditOccurredAt = typeof AuditOccurredAt.Type;
 export type AuditRecord = {
   readonly schemaVersion: 1;
   readonly recordId: AuditRecordId;
-  readonly action: string;
+  readonly action: AuditAction;
   readonly actor: AuditActor;
   readonly resource: AuditResource;
   readonly outcome: AuditOutcome;

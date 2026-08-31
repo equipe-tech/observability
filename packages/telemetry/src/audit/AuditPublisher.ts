@@ -5,7 +5,8 @@ import {
   sealCommittedAuditRecord,
   type CommittedAuditRecord,
 } from "./CommittedAuditRecordInternal.ts";
-import { AuditOccurredAt, type AuditRecord } from "./AuditRecord.ts";
+import { AuditAction, AuditOccurredAt, type AuditRecord } from "./AuditRecord.ts";
+import { InvalidAuditRecord } from "./InvalidAuditRecord.ts";
 
 export type { CommittedAuditRecord } from "./CommittedAuditRecordInternal.ts";
 
@@ -93,8 +94,19 @@ export type CommitAuditResult<A> = {
 export const commitAuditRecord = <A, E, R>(
   record: AuditRecord,
   durableWrite: (document: AuditCommitDocument) => Effect.Effect<A, E, R>,
-): Effect.Effect<CommitAuditResult<A>, E, R | AuditDigest> =>
+): Effect.Effect<CommitAuditResult<A>, E | InvalidAuditRecord, R | AuditDigest> =>
   Effect.gen(function* () {
+    yield* Schema.decodeUnknownEffect(AuditAction)(record.action).pipe(
+      Effect.mapError(
+        () =>
+          new InvalidAuditRecord({
+            code: "OBS_AUDIT_INVALID_FIELD",
+            message:
+              "Audit action is invalid. Parse the record through the telemetry contract before committing it.",
+            field: "action",
+          }),
+      ),
+    );
     const committedAt = Schema.decodeUnknownSync(AuditOccurredAt)(
       DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
     );
@@ -113,7 +125,7 @@ export type RecordAuditResult<A> = CommitAuditResult<A> & {
 export const recordAudit = <A, E, R>(
   record: AuditRecord,
   durableWrite: (document: AuditCommitDocument) => Effect.Effect<A, E, R>,
-): Effect.Effect<RecordAuditResult<A>, E, R | AuditDigest | AuditPublisher> =>
+): Effect.Effect<RecordAuditResult<A>, E | InvalidAuditRecord, R | AuditDigest | AuditPublisher> =>
   Effect.gen(function* () {
     const result = yield* commitAuditRecord(record, durableWrite);
     const publisher = yield* AuditPublisher;
