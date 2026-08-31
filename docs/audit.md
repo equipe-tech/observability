@@ -6,7 +6,7 @@
 
 Cada ação em `auditActions` declara `action`, `resourceType`, `allowedOutcomes` e um catálogo opcional `reasonCodes`. `AuditOutcome` aceita `success`, `failure`, `cancelled` e `denied`. `EventOutcome` continua aceitando somente `success`, `failure` e `cancelled`.
 
-`parseAuditRecord` recebe o ID do recurso. O parser deriva o tipo do recurso pela ação selecionada. O parser também limita identificadores, rejeita caracteres de controle e verifica o resultado e o código de razão. O registro não aceita email, nome de exibição, razão livre, metadata, snapshots de mudança, patches ou objetos da aplicação.
+`parseAuditRecord` recebe o ID do recurso. O parser deriva o tipo do recurso pela ação selecionada. O parser também limita identificadores, rejeita caracteres de controle e verifica o resultado e o código de razão. `occurredAt` aceita somente RFC 3339 UTC canônico com três dígitos de milissegundos, como `2026-01-02T03:04:05.000Z`. O registro não aceita email, nome de exibição, razão livre, metadata, snapshots de mudança, patches ou objetos da aplicação.
 
 O ator é um snapshot imutável. A publicação não consulta um serviço de identidade. Se o chamador omitir `correlation`, o parser usa `CurrentCorrelation`.
 
@@ -25,7 +25,7 @@ const result = yield * recordAudit(record, durableLedgerWrite);
 
 ## Outbox da aplicação
 
-`AuditOutbox` é uma porta de armazenamento. A aplicação implementa `claim` e `settle` sobre a própria tabela. `drainAuditOutbox` publica cada registro comprometido por `AuditPublisher` e entrega o recibo a `settle`. O código de produção do núcleo e dos adapters não importa bibliotecas de banco de dados.
+`AuditOutbox` é uma porta de armazenamento. A aplicação persiste o resultado de `encodeAuditOutboxDocument` como JSON e implementa `claim` e `settle` sobre a própria tabela. `claim` devolve somente documentos planos decodificados por `AuditOutboxDocument`. `drainAuditOutbox` valida o documento, o timestamp e o hash antes de restaurar o registro comprometido dentro do pacote. Depois publica por `AuditPublisher` e entrega o recibo a `settle`. Uma aplicação pode fechar o processo, reabrir a tabela e drenar sem manter objetos em memória. O código de produção do núcleo e dos adapters não importa bibliotecas de banco de dados.
 
 Use `recordId` como a única chave de idempotência. Uma repetição dentro da janela do adapter retorna `deduplicated`. Esse resultado não conta como perda. Uma rejeição da fila ou um descarte terminal libera a reserva para uma tentativa posterior.
 

@@ -39,6 +39,13 @@ export const AuditResourceType = Schema.NonEmptyString.check(
 ).pipe(Schema.brand("AuditResourceType"));
 export type AuditResourceType = typeof AuditResourceType.Type;
 
+export const AuditAction = Schema.NonEmptyString.check(
+  withoutControlCharacters,
+  Schema.isMaxLength(128),
+  Schema.isPattern(/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$/),
+).pipe(Schema.brand("AuditAction"));
+export type AuditAction = typeof AuditAction.Type;
+
 export const AuditReasonCode = Schema.NonEmptyString.check(
   withoutControlCharacters,
   Schema.isMaxLength(64),
@@ -60,10 +67,34 @@ export type AuditActorInput =
   | { readonly kind: "service"; readonly id: string }
   | { readonly kind: "system" };
 
-export type AuditResource = {
-  readonly type: AuditResourceType;
-  readonly id: AuditResourceId;
-};
+export const AuditResource = Schema.Struct({
+  type: AuditResourceType,
+  id: AuditResourceId,
+});
+export type AuditResource = typeof AuditResource.Type;
+
+export const AuditContext = Schema.Struct({
+  action: AuditAction,
+  actor: AuditActor,
+  resourceType: AuditResourceType,
+  resourceId: AuditResourceId,
+  reasonCode: Schema.String.pipe(Schema.optionalKey),
+});
+export type AuditContext = typeof AuditContext.Type;
+
+const canonicalOccurredAtPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+export const AuditOccurredAt = Schema.String.check(
+  Schema.makeFilter(
+    (value) =>
+      canonicalOccurredAtPattern.test(value) &&
+      isControlCharacterFree(value) &&
+      Date.parse(value) >= 0 &&
+      new Date(value).toISOString() === value,
+    { expected: "a canonical RFC 3339 UTC timestamp with millisecond precision" },
+  ),
+).pipe(Schema.brand("AuditOccurredAt"));
+export type AuditOccurredAt = typeof AuditOccurredAt.Type;
 
 export type AuditRecord = {
   readonly schemaVersion: 1;
@@ -74,7 +105,7 @@ export type AuditRecord = {
   readonly outcome: AuditOutcome;
   readonly reasonCode: Option.Option<AuditReasonCode>;
   readonly tenantId: Option.Option<AuditTenantId>;
-  readonly occurredAt: string;
+  readonly occurredAt: AuditOccurredAt;
   readonly correlation: CorrelationContext;
 };
 
@@ -97,9 +128,7 @@ const decodeResourceType = Schema.decodeUnknownEffect(AuditResourceType);
 const decodeOutcome = Schema.decodeUnknownEffect(AuditOutcome);
 const decodeReasonCode = Schema.decodeUnknownEffect(AuditReasonCode);
 const decodeTenantId = Schema.decodeUnknownEffect(AuditTenantId);
-const decodeOccurredAt = Schema.decodeUnknownEffect(
-  Schema.DateTimeUtcFromString.pipe(Schema.encodeTo(Schema.String)),
-);
+const decodeOccurredAt = Schema.decodeUnknownEffect(AuditOccurredAt);
 const decodeCorrelation = Schema.decodeUnknownEffect(CorrelationContext);
 
 const invalid = (
@@ -162,16 +191,7 @@ export const parseAuditRecord = Effect.fn("parseAuditRecord")(function* <
       ),
     ),
   );
-  const resourceType = yield* decodeResourceType(action.resourceType).pipe(
-    Effect.mapError(() =>
-      invalid(
-        "OBS_AUDIT_INVALID_RESOURCE",
-        "The selected audit action has an invalid resource type.",
-        "resource.type",
-        input.action,
-      ),
-    ),
-  );
+  const resourceType = yield* decodeResourceType(action.resourceType).pipe(Effect.orDie);
   const outcome = yield* decodeOutcome(input.outcome).pipe(
     Effect.mapError(() =>
       invalid(
@@ -231,7 +251,7 @@ export const parseAuditRecord = Effect.fn("parseAuditRecord")(function* <
         ),
       ),
   });
-  yield* decodeOccurredAt(input.occurredAt).pipe(
+  const occurredAt = yield* decodeOccurredAt(input.occurredAt).pipe(
     Effect.mapError(() =>
       invalid(
         "OBS_AUDIT_INVALID_FIELD",
@@ -265,7 +285,7 @@ export const parseAuditRecord = Effect.fn("parseAuditRecord")(function* <
     outcome,
     reasonCode,
     tenantId,
-    occurredAt: input.occurredAt,
+    occurredAt,
     correlation,
   });
 });

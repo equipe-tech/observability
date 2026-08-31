@@ -10,6 +10,7 @@ import {
   InvalidAuditRecord,
   parseAuditRecord,
   recordAudit,
+  unboundAuditPublisher,
   type AuditRecordInput,
 } from "../src/index.ts";
 import { layerNodeAuditDigest } from "../src/node/index.ts";
@@ -71,6 +72,53 @@ describe("audit contracts", () => {
       expect(error).toBeInstanceOf(InvalidAuditRecord);
       expect(error.code).toBe(code);
     }
+  });
+
+  it("accepts only canonical UTC occurrence timestamps", async () => {
+    const contract = await Effect.runPromise(contractEffect);
+    for (const occurredAt of [
+      "2026-01-02",
+      "2026-01-02T08:04:05.000+05:00",
+      "2026-01-02T03:04:05Z",
+      "2026-01-02T03:04:05.00Z",
+      "2026-01-02T03:04:05.0000Z",
+      "2026-02-30T03:04:05.000Z",
+      "2026-01-02T03:04:05.000Z\n",
+    ]) {
+      const error = await Effect.runPromise(
+        parseAuditRecord(contract, { ...input, occurredAt }).pipe(Effect.flip),
+      );
+      expect(error.code).toBe("OBS_AUDIT_INVALID_FIELD");
+      expect(error.field).toBe("occurredAt");
+    }
+    const record = await Effect.runPromise(
+      parseAuditRecord(contract, { ...input, occurredAt: "2026-01-02T03:04:05.000Z" }),
+    );
+    expect(record.occurredAt).toBe("2026-01-02T03:04:05.000Z");
+  });
+
+  it("isolates unbound publisher reports", async () => {
+    const first = unboundAuditPublisher();
+    const second = unboundAuditPublisher();
+    expect(
+      await Effect.runPromise(
+        first.publish(
+          (
+            await Effect.runPromise(
+              commitAuditRecord(await Effect.runPromise(parsedRecord), Effect.void).pipe(
+                Effect.provide(layerNodeAuditDigest),
+              ),
+            )
+          ).record,
+        ),
+      ),
+    ).toEqual({ kind: "dropped", reason: "unbound" });
+    expect(first.report().dropped).toBe(1);
+    expect(first.report().reasons.unbound).toBe(1);
+    expect(Option.isSome(first.report().firstDroppedAt)).toBe(true);
+    expect(Option.isSome(first.report().lastDroppedAt)).toBe(true);
+    expect(second.report().dropped).toBe(0);
+    expect(Option.isNone(second.report().firstDroppedAt)).toBe(true);
   });
 
   it("does not publish when the durable write fails", async () => {

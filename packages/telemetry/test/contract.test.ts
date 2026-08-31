@@ -17,6 +17,7 @@ import {
   type TelemetryContractInput,
 } from "../src/contract/index.ts";
 import {
+  auditRecordErrorFixtures,
   contractIssueFixtures,
   invalidMetricDefinitionFixtures,
   makeCollectingTelemetryEventSink,
@@ -78,6 +79,17 @@ const issueCodes = (error: { readonly issues: ReadonlyArray<{ readonly code: str
   error.issues.map((contractIssue) => contractIssue.code);
 
 describe("defineTelemetryContract", () => {
+  it("exports every reachable audit record error code", () => {
+    assert.sameMembers(Array.from(auditRecordErrorFixtures), [
+      "OBS_AUDIT_UNKNOWN_ACTION",
+      "OBS_AUDIT_INVALID_ACTOR",
+      "OBS_AUDIT_INVALID_RESOURCE",
+      "OBS_AUDIT_INVALID_OUTCOME",
+      "OBS_AUDIT_UNKNOWN_REASON_CODE",
+      "OBS_AUDIT_INVALID_FIELD",
+    ]);
+  });
+
   it("exports every reachable contract issue code", () => {
     assert.sameMembers(Array.from(contractIssueFixtures), [
       "OBS_CONTRACT_INVALID_DOCUMENT",
@@ -1414,7 +1426,47 @@ describe("contract event producer", () => {
         .pipe(Effect.provide(sink.layer), Effect.flip);
       assert.strictEqual(wrongReason.code, "OBS_EVENT_INVALID_AUDIT_REASON");
       assert.strictEqual(wrongReason.attributeName, "audit.reason_code");
-      assert.lengthOf(yield* sink.events, 0);
+      for (const candidate of [
+        { actorId: "a".repeat(129), resourceId: "account-1" },
+        { actorId: "actor\nforged", resourceId: "account-1" },
+        { actorId: "a".repeat(300), resourceId: "account-1" },
+        { actorId: "actor-1", resourceId: "r".repeat(129) },
+        { actorId: "actor-1", resourceId: "resource\nforged" },
+        { actorId: "actor-1", resourceId: "r".repeat(300) },
+      ]) {
+        const invalid = yield* producer
+          .emit("AuditTracked", {
+            outcome: "success",
+            audit: {
+              action: "access.reviewed",
+              actor: { kind: "user", id: candidate.actorId },
+              resourceType: "account",
+              resourceId: candidate.resourceId,
+            },
+            attributes: {},
+          })
+          .pipe(Effect.provide(sink.layer), Effect.flip);
+        assert.strictEqual(invalid.code, "OBS_EVENT_INVALID_FIELD");
+      }
+      for (const boundary of [
+        { actorId: "a".repeat(128), resourceId: "account-1" },
+        { actorId: "actor-1", resourceId: "r".repeat(128) },
+      ]) {
+        const accepted = yield* producer
+          .emit("AuditTracked", {
+            outcome: "success",
+            audit: {
+              action: "access.reviewed",
+              actor: { kind: "user", id: boundary.actorId },
+              resourceType: "account",
+              resourceId: boundary.resourceId,
+            },
+            attributes: {},
+          })
+          .pipe(Effect.provide(sink.layer));
+        assert.strictEqual(accepted.decision, "recorded");
+      }
+      assert.lengthOf(yield* sink.events, 2);
     }),
   );
 

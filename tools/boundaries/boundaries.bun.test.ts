@@ -64,6 +64,42 @@ describe("package boundaries", () => {
     ]);
   });
 
+  it("rejects database imports from every protected source role", async () => {
+    const fixtures = [
+      { role: "adapter", file: "packages/telemetry/src/Telemetry.ts" },
+      { role: "bootstrap", file: "packages/cli/src/main.ts" },
+      { role: "core", file: "packages/telemetry/src/index.ts" },
+      { role: "domain", file: "packages/telemetry/src/contract/database.ts" },
+      { role: "react", file: "packages/react/src/database.ts" },
+    ] as const;
+    for (const fixture of fixtures) {
+      const temporary = await mkdtemp(join(tmpdir(), "boundaries-database-"));
+      try {
+        await cp(join(projects, "allowed"), temporary, { recursive: true });
+        const source = join(temporary, fixture.file);
+        await mkdir(dirname(source), { recursive: true });
+        if (fixture.role === "react") {
+          await writeFile(
+            join(temporary, "packages/react/package.json"),
+            JSON.stringify({ name: "react-boundary" }),
+          );
+        }
+        await writeFile(source, 'import "bun:sqlite";\n');
+        const violations = await checkPackageBoundaries(temporary);
+        assert.equal(sourceRole(fixture.file), fixture.role);
+        assert.equal(
+          violations.some(
+            (violation) => violation.rule === `boundary/${fixture.role}-forbidden-database`,
+          ),
+          true,
+          fixture.role,
+        );
+      } finally {
+        await rm(temporary, { recursive: true, force: true });
+      }
+    }
+  });
+
   it("rejects undeclared runtime and declaration imports in every role", async () => {
     const violations = await checkPackageBoundaries(join(projects, "violations"));
     const undeclared = violations.filter(

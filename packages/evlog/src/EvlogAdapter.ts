@@ -402,6 +402,8 @@ const fieldsForContractEvent = (
       if (event.audit.actor.kind !== "system") fields["audit.actor.id"] = event.audit.actor.id;
       fields["audit.resource.type"] = event.audit.resourceType;
       fields["audit.resource.id"] = event.audit.resourceId;
+      if (event.audit.reasonCode !== undefined)
+        fields["audit.reason_code"] = event.audit.reasonCode;
       break;
   }
   return fields;
@@ -728,12 +730,16 @@ export const makeEvlogAdapter = (
             fallback(record);
             return "closed";
           }
-          if (
-            pendingBytes + record.serializedBytes > resolvedOptions.maximumBufferedBytes ||
-            (record.auditRecordId !== undefined &&
-              (pipeline?.pending ?? 0) >= resolvedOptions.maximumBufferedEvents)
-          ) {
+          if (pendingBytes + record.serializedBytes > resolvedOptions.maximumBufferedBytes) {
             incrementReason(dropState, "byte-overflow");
+            fallback(record);
+            return "queue-overflow";
+          }
+          if (
+            record.auditRecordId !== undefined &&
+            (pipeline?.pending ?? 0) >= resolvedOptions.maximumBufferedEvents
+          ) {
+            incrementReason(dropState, "count-overflow");
             fallback(record);
             return "queue-overflow";
           }
@@ -1048,7 +1054,13 @@ export const makeEvlogAdapter = (
               "audit.occurred_at",
               "audit.schema_version",
             ];
-            if (requiredFields.some((name) => decision.value[name] === undefined)) {
+            if (
+              requiredFields.some(
+                (name) =>
+                  decision.value[name] === undefined ||
+                  context.policy.blockedKeys.some((pattern) => pattern.test(name)),
+              )
+            ) {
               return incrementAuditDrop(auditState, "policy-rejected");
             }
             reservedAuditRecords.add(record.recordId);

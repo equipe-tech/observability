@@ -52,9 +52,24 @@ const contractDefinition = Contract.telemetryContractDefinition({
         "job.name": { classification: "public", required: true, metricLabel: false },
       },
     },
+    audited: {
+      name: "access.reviewed",
+      kind: "audit",
+      defaultSeverity: "info",
+      mandatory: true,
+      sampling: { kind: "always" },
+      attributes: {},
+    },
   },
   metrics: {},
-  auditActions: {},
+  auditActions: {
+    AccessReviewed: {
+      action: "access.reviewed",
+      resourceType: "account",
+      allowedOutcomes: ["denied"],
+      reasonCodes: ["approval.missing"],
+    },
+  },
 });
 
 const RequestBody = Schema.Struct({
@@ -137,7 +152,7 @@ const startReceiver = async (responseDelayMillis = 0, status = 200) => {
 
 describe("evlogAdapter", () => {
   it("publishes sanitized native audit copies with canonical correlation and dedupe", async () => {
-    const receiver = await startReceiver();
+    const receiver = await startReceiver(100);
     const contract = await Effect.runPromise(
       defineTelemetryContract({
         version: 1,
@@ -166,6 +181,7 @@ describe("evlogAdapter", () => {
     const adapter = evlogAdapter({
       installGlobalLogger: false,
       batchSize: 1,
+      maximumBufferedEvents: 1,
       transportRetries: 0,
       auditIntegrity: { strategy: "hash-chain" },
     });
@@ -204,6 +220,42 @@ describe("evlogAdapter", () => {
     expect((await Effect.runPromise(publisher.publish(committed.record))).kind).toBe(
       "deduplicated",
     );
+    const overflowRecord = await Effect.runPromise(
+      parseAuditRecord(contract, {
+        recordId: "audit-record-overflow",
+        action: "invoice.refunded",
+        actor: { kind: "system" },
+        resource: { id: "invoice-overflow" },
+        outcome: "success",
+        occurredAt: "2026-01-02T03:04:05.000Z",
+      }),
+    );
+    const overflowCommitted = await Effect.runPromise(
+      commitAuditRecord(overflowRecord, Effect.void).pipe(Effect.provide(layerNodeAuditDigest)),
+    );
+    expect(await Effect.runPromise(publisher.publish(overflowCommitted.record))).toEqual({
+      kind: "published",
+    });
+    const queueDropRecord = await Effect.runPromise(
+      parseAuditRecord(contract, {
+        recordId: "audit-record-queue-drop",
+        action: "invoice.refunded",
+        actor: { kind: "system" },
+        resource: { id: "invoice-queue-drop" },
+        outcome: "success",
+        occurredAt: "2026-01-02T03:04:05.000Z",
+      }),
+    );
+    const queueDropCommitted = await Effect.runPromise(
+      commitAuditRecord(queueDropRecord, Effect.void).pipe(Effect.provide(layerNodeAuditDigest)),
+    );
+    expect(await Effect.runPromise(publisher.publish(queueDropCommitted.record))).toEqual({
+      kind: "dropped",
+      reason: "queue-overflow",
+    });
+    expect(publisher.report().reasons.queueOverflow).toBe(1);
+    expect(Option.isSome(publisher.report().firstDroppedAt)).toBe(true);
+    expect(Option.isSome(publisher.report().lastDroppedAt)).toBe(true);
     await observability.close();
     const closedReceipt = await Effect.runPromise(publisher.publish(committed.record));
     await receiver.close();
@@ -226,6 +278,96 @@ describe("evlogAdapter", () => {
     expect(publisher.report().deduplicated).toBe(1);
     expect(publisher.report().reasons.closed).toBe(1);
   });
+
+  it("returns policy-rejected when policy blocks a required audit field", async () => {
+    const receiver = await startReceiver();
+    const contract = await Effect.runPromise(defineTelemetryContract(contractDefinition));
+    const config = await Effect.runPromise(
+      parseNodeObservabilityConfig({
+        enabled: true,
+        profile: "worker",
+        service: { name: "audit-policy-test", version: "1.2.3", environment: "test" },
+        telemetry: { endpoint: receiver.endpoint },
+        evlog: {
+          contract,
+          policy: {
+            attributes: {},
+            blockedKeys: ["^audit[.]actor[.]kind$"],
+            blockedValuePatterns: [],
+          },
+        },
+        sentry: { enabled: false },
+      }),
+    );
+    const adapter = evlogAdapter({ installGlobalLogger: false, batchSize: 1 });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    const record = await Effect.runPromise(
+      parseAuditRecord(contract, {
+        recordId: "audit-policy-rejected",
+        action: "access.reviewed",
+        actor: { kind: "system" },
+        resource: { id: "account-1" },
+        outcome: "denied",
+        occurredAt: "2026-01-02T03:04:05.000Z",
+      }),
+    );
+    const committed = await Effect.runPromise(
+      commitAuditRecord(record, Effect.void).pipe(Effect.provide(layerNodeAuditDigest)),
+    );
+    const publisher = await Effect.runPromise(
+      AuditPublisher.pipe(Effect.provide(observability.auditLayer)),
+    );
+    expect(await Effect.runPromise(publisher.publish(committed.record))).toEqual({
+      kind: "dropped",
+      reason: "policy-rejected",
+    });
+    expect(publisher.report().reasons.policyRejected).toBe(1);
+    expect(Option.isSome(publisher.report().firstDroppedAt)).toBe(true);
+    expect(Option.isSome(publisher.report().lastDroppedAt)).toBe(true);
+    await observability.close();
+    await receiver.close();
+    expect(receiver.bodies.join("\n")).not.toContain("audit-policy-rejected");
+  });
+
+  it("reports audit transport drops after blackhole exhaustion", async () => {
+    const receiver = await startReceiver(0, 503);
+    const { contract, config } = await makeConfig(receiver.endpoint);
+    const adapter = evlogAdapter({
+      installGlobalLogger: false,
+      batchSize: 1,
+      maximumAttempts: 1,
+      transportRetries: 0,
+    });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    const record = await Effect.runPromise(
+      parseAuditRecord(contract, {
+        recordId: "audit-transport-drop",
+        action: "access.reviewed",
+        actor: { kind: "system" },
+        resource: { id: "account-transport" },
+        outcome: "denied",
+        occurredAt: "2026-01-02T03:04:05.000Z",
+      }),
+    );
+    const committed = await Effect.runPromise(
+      commitAuditRecord(record, Effect.void).pipe(Effect.provide(layerNodeAuditDigest)),
+    );
+    const publisher = await Effect.runPromise(
+      AuditPublisher.pipe(Effect.provide(observability.auditLayer)),
+    );
+    expect(await Effect.runPromise(publisher.publish(committed.record))).toEqual({
+      kind: "published",
+    });
+    await observability.close();
+    await receiver.close();
+    expect(publisher.report().reasons.transport).toBe(1);
+    expect(publisher.report().dropped).toBe(1);
+    expect(Option.isSome(publisher.report().firstDroppedAt)).toBe(true);
+    expect(Option.isSome(publisher.report().lastDroppedAt)).toBe(true);
+  });
+
   it("exports contract events through the real evlog OTLP encoder", async () => {
     const receiver = await startReceiver();
     const { contract, config } = await makeConfig(receiver.endpoint);
@@ -257,9 +399,30 @@ describe("evlogAdapter", () => {
         })
         .pipe(Effect.provide(observability.eventLayer)),
     );
+    await observability.runtime.runPromise(
+      producer
+        .emit("audited", {
+          outcome: "denied",
+          audit: {
+            action: "access.reviewed",
+            actor: { kind: "system" },
+            resourceType: "account",
+            resourceId: "account-1",
+            reasonCode: "approval.missing",
+          },
+          attributes: {},
+        })
+        .pipe(Effect.provide(observability.eventLayer)),
+    );
     await observability.close();
     await receiver.close();
-    const logBody = receiver.bodies.find((body) => body.includes('"resourceLogs"')) ?? "";
+    const auditWire = receiver.bodies.find((body) => body.includes("approval.missing")) ?? "";
+    const auditRequest = Schema.decodeUnknownSync(RequestBody)(JSON.parse(auditWire));
+    const auditBody = JSON.parse(
+      auditRequest.resourceLogs[0]?.scopeLogs[0]?.logRecords[0]?.body.stringValue ?? "",
+    );
+    expect(auditBody["audit.reason_code"]).toBe("approval.missing");
+    const logBody = receiver.bodies.find((body) => body.includes("job.completed")) ?? "";
     expect(logBody).not.toContain(secret);
     const request = Schema.decodeUnknownSync(RequestBody)(JSON.parse(logBody));
     const resource = request.resourceLogs[0];
@@ -889,9 +1052,9 @@ describe("evlogAdapter", () => {
             outcome: "failure",
             audit: {
               action: "canonicalsecret.action",
-              actor: { kind: "user", id: secretText },
+              actor: { kind: "user", id: "person@example.com" },
               resourceType: "canonicalsecret_resource",
-              resourceId: secretText,
+              resourceId: "cookie=session-secret",
             },
             attributes: { "case.name": "contract-audit" },
           })

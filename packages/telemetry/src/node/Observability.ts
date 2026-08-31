@@ -1,6 +1,6 @@
 import { Cause, Context, Duration, Effect, Layer, ManagedRuntime, Option } from "effect";
 import { OtlpExporter } from "effect/unstable/observability";
-import { AuditPublisher, unboundAuditPublisher } from "../audit/AuditPublisher.ts";
+import { AuditPublisher, type AuditPublisherService } from "../audit/AuditPublisher.ts";
 import { TelemetryEventSink } from "../contract/EventProducer.ts";
 import * as Telemetry from "../Telemetry.ts";
 import type { Metrics } from "../Metrics.ts";
@@ -35,7 +35,7 @@ import { profileCapabilityRank } from "../profile/ObservabilityProfile.ts";
 export type NodeObservabilityDisabled = {
   readonly enabled: false;
   readonly eventLayer: Layer.Layer<TelemetryEventSink>;
-  readonly auditLayer: Layer.Layer<never>;
+  readonly auditLayer: Layer.Layer<AuditPublisher>;
   readonly metrics: Metrics;
   readonly flush: () => Promise<LifecycleReport>;
   readonly close: () => Promise<LifecycleReport>;
@@ -48,7 +48,7 @@ export type NodeObservabilityEnabled = {
   readonly config: NodeObservabilityConfigEnabled;
   readonly runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, InvalidObservabilityConfig>;
   readonly eventLayer: Layer.Layer<TelemetryEventSink>;
-  readonly auditLayer: Layer.Layer<never>;
+  readonly auditLayer: Layer.Layer<AuditPublisher>;
   readonly metrics: Metrics;
   readonly flush: () => Promise<LifecycleReport>;
   readonly close: () => Promise<LifecycleReport>;
@@ -80,7 +80,36 @@ const noopEventLayer = Layer.succeed(
   TelemetryEventSink.of({ record: () => Effect.void, recordBrowserBatch: () => Effect.void }),
 );
 
-const noopAuditLayer = Layer.succeed(AuditPublisher, unboundAuditPublisher);
+const noopAuditLayer = (): Layer.Layer<AuditPublisher> => {
+  let drops = 0;
+  let firstDrop = Option.none<string>();
+  let lastDrop = Option.none<string>();
+  const publisher: AuditPublisherService = {
+    publish: () =>
+      Effect.sync(() => {
+        const droppedAt = new Date().toISOString();
+        drops += 1;
+        if (Option.isNone(firstDrop)) firstDrop = Option.some(droppedAt);
+        lastDrop = Option.some(droppedAt);
+        return { kind: "dropped", reason: "unbound" };
+      }),
+    report: () => ({
+      published: 0,
+      deduplicated: 0,
+      dropped: drops,
+      firstDroppedAt: firstDrop,
+      lastDroppedAt: lastDrop,
+      reasons: {
+        unbound: drops,
+        closed: 0,
+        queueOverflow: 0,
+        policyRejected: 0,
+        transport: 0,
+      },
+    }),
+  };
+  return Layer.succeed(AuditPublisher, publisher);
+};
 
 const disabledHandle = (): NodeObservabilityDisabled => {
   const report = emptyReport("close");
@@ -96,7 +125,7 @@ const disabledHandle = (): NodeObservabilityDisabled => {
   return {
     enabled: false,
     eventLayer: noopEventLayer,
-    auditLayer: noopAuditLayer,
+    auditLayer: noopAuditLayer(),
     metrics,
     flush: () => (closed ? closedFlush() : Promise.resolve(emptyReport("flush"))),
     close,
@@ -120,7 +149,7 @@ class LiveNodeObservability implements NodeObservabilityEnabled {
       InvalidObservabilityConfig
     >,
     readonly eventLayer: Layer.Layer<TelemetryEventSink>,
-    readonly auditLayer: Layer.Layer<never>,
+    readonly auditLayer: Layer.Layer<AuditPublisher>,
     readonly metrics: Metrics,
     private readonly runLifecycle: (operation: "flush" | "close") => Effect.Effect<LifecycleReport>,
   ) {}
@@ -259,10 +288,7 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
     (entry) => entry.registration.adapter.capability === "events",
   )?.handle;
   const eventLayer = eventHandle?.eventLayer ?? Option.none();
-  const auditLayer = Option.getOrElse(
-    eventHandle?.auditLayer ?? Option.none(),
-    () => noopAuditLayer,
-  );
+  const auditLayer = Option.getOrElse(eventHandle?.auditLayer ?? Option.none(), noopAuditLayer);
   if (Option.isNone(eventLayer)) {
     yield* rollbackStartedAdapters(started);
     yield* Effect.promise(() => releaseMetricsLease(metrics));

@@ -1,5 +1,5 @@
 import { Clock, Context, DateTime, Effect, Predicate, Random, Schema } from "effect";
-import { AuditOutcome, type AuditActor } from "../audit/AuditRecord.ts";
+import { AuditContext, AuditOutcome, type AuditActor } from "../audit/AuditRecord.ts";
 import { CorrelationContext, CurrentCorrelation } from "../Correlation.ts";
 import {
   type AttributeDefinitionsInput,
@@ -11,7 +11,6 @@ import {
 } from "./TelemetryContract.ts";
 import type { BrowserEventError } from "../BrowserEvents.ts";
 import {
-  AuditContext,
   type AttributeValue,
   ErrorContext,
   EventDuration,
@@ -295,7 +294,15 @@ const parseError = (eventName: string, error: ErrorContext) =>
     ),
   );
 
-const parseAudit = (eventName: string, audit: AuditContext) =>
+type AuditContextInput = {
+  readonly action: string;
+  readonly actor: AuditActor;
+  readonly resourceType: string;
+  readonly resourceId: string;
+  readonly reasonCode?: string;
+};
+
+const parseAudit = (eventName: string, audit: AuditContextInput) =>
   decodeAudit(audit).pipe(
     Effect.mapError(() =>
       eventError(
@@ -324,7 +331,7 @@ const parseCorrelation = (
   );
 };
 
-const parseOutcome = (definition: CompiledEventDefinition, outcome: EventOutcome | AuditOutcome) =>
+const parseOutcome = (definition: CompiledEventDefinition, outcome: EventOutcome) =>
   decodeOutcome(outcome).pipe(
     Effect.mapError(() =>
       eventError(
@@ -420,6 +427,13 @@ const buildEvent = Effect.fn("buildEvent")(function* (
           "OBS_EVENT_INVALID_FIELD",
           `Domain event "${definition.name}" requires an outcome. Add the required field.`,
           { eventName: definition.name },
+        );
+      }
+      if (payload.outcome === "denied") {
+        return yield* eventError(
+          "OBS_EVENT_INVALID_OUTCOME",
+          `Event "${definition.name}" has an invalid outcome. Use success, failure, or cancelled.`,
+          { eventName: definition.name, attributeName: "event.outcome" },
         );
       }
       const outcome = yield* parseOutcome(definition, payload.outcome);

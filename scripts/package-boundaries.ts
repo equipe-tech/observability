@@ -112,7 +112,7 @@ const forbiddenByRole = new Map<BoundaryRole, ReadonlySet<DependencyKind>>([
     new Set(["database", "framework", "metric-api", "otlp", "provider", "runtime-platform"]),
   ],
   ["domain", new Set(["database", "metric-api", "otlp", "provider", "runtime-platform"])],
-  ["bootstrap", new Set(["framework", "provider"])],
+  ["bootstrap", new Set(["database", "framework", "provider"])],
   ["adapter", new Set(["database"])],
   ["react", new Set(["database", "framework", "otlp", "provider", "runtime-platform"])],
 ]);

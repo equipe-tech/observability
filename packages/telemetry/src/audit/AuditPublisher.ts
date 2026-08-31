@@ -1,14 +1,12 @@
 import { Clock, Context, DateTime, Effect, Option } from "effect";
-import { AuditDigest, canonicalAuditPayload, type AuditHash } from "./AuditDigest.ts";
-import type { AuditRecord, AuditRecordId } from "./AuditRecord.ts";
+import { AuditDigest, canonicalAuditPayload } from "./AuditDigest.ts";
+import {
+  sealCommittedAuditRecord,
+  type CommittedAuditRecord,
+} from "./CommittedAuditRecordInternal.ts";
+import type { AuditRecord } from "./AuditRecord.ts";
 
-const committedAuditRecordBrand: unique symbol = Symbol("CommittedAuditRecord");
-
-export type CommittedAuditRecord = AuditRecord & {
-  readonly committedAt: string;
-  readonly ledgerHash: AuditHash;
-  readonly [committedAuditRecordBrand]: true;
-};
+export type { CommittedAuditRecord } from "./CommittedAuditRecordInternal.ts";
 
 export type AuditDropReason =
   | "unbound"
@@ -53,32 +51,32 @@ export type AuditPublisherService = {
   readonly report: () => AuditPublishReport;
 };
 
-let unboundDrops = 0;
-let firstUnboundDrop = Option.none<string>();
-let lastUnboundDrop = Option.none<string>();
-
-export const unboundAuditPublisher: AuditPublisherService = {
-  publish: () =>
-    Effect.sync(() => {
-      const droppedAt = new Date().toISOString();
-      unboundDrops += 1;
-      if (Option.isNone(firstUnboundDrop)) firstUnboundDrop = Option.some(droppedAt);
-      lastUnboundDrop = Option.some(droppedAt);
-      return { kind: "dropped", reason: "unbound" };
+export const unboundAuditPublisher = (): AuditPublisherService => {
+  let drops = 0;
+  let firstDrop = Option.none<string>();
+  let lastDrop = Option.none<string>();
+  return {
+    publish: () =>
+      Effect.sync(() => {
+        const droppedAt = new Date().toISOString();
+        drops += 1;
+        if (Option.isNone(firstDrop)) firstDrop = Option.some(droppedAt);
+        lastDrop = Option.some(droppedAt);
+        return { kind: "dropped", reason: "unbound" };
+      }),
+    report: () => ({
+      ...emptyReport(),
+      dropped: drops,
+      firstDroppedAt: firstDrop,
+      lastDroppedAt: lastDrop,
+      reasons: { ...emptyReport().reasons, unbound: drops },
     }),
-  report: () => ({
-    ...emptyReport(),
-    dropped: unboundDrops,
-    firstDroppedAt: firstUnboundDrop,
-    lastDroppedAt: lastUnboundDrop,
-    reasons: { ...emptyReport().reasons, unbound: unboundDrops },
-  }),
+  };
 };
 
-export const AuditPublisher = Context.Reference<AuditPublisherService>(
+export class AuditPublisher extends Context.Service<AuditPublisher, AuditPublisherService>()(
   "@equipe-tech/observability/AuditPublisher",
-  { defaultValue: () => unboundAuditPublisher },
-);
+) {}
 
 export type CommitAuditResult<A> = {
   readonly committed: A;
@@ -94,13 +92,7 @@ export const commitAuditRecord = <A, E, R>(
     const digest = yield* AuditDigest;
     const ledgerHash = yield* digest.hash(canonicalAuditPayload(record));
     const committedAt = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
-    const committedRecord: CommittedAuditRecord = {
-      ...record,
-      committedAt,
-      ledgerHash,
-      [committedAuditRecordBrand]: true,
-    };
-    Object.freeze(committedRecord);
+    const committedRecord = sealCommittedAuditRecord(record, committedAt, ledgerHash);
     return { committed, record: committedRecord };
   });
 
@@ -111,16 +103,10 @@ export type RecordAuditResult<A> = CommitAuditResult<A> & {
 export const recordAudit = <A, E, R>(
   record: AuditRecord,
   durableWrite: Effect.Effect<A, E, R>,
-): Effect.Effect<RecordAuditResult<A>, E, R | AuditDigest> =>
+): Effect.Effect<RecordAuditResult<A>, E, R | AuditDigest | AuditPublisher> =>
   Effect.gen(function* () {
     const result = yield* commitAuditRecord(record, durableWrite);
     const publisher = yield* AuditPublisher;
     const publish = yield* publisher.publish(result.record);
     return { ...result, publish };
   });
-
-export type AuditPublishReservation = {
-  readonly recordId: AuditRecordId;
-  readonly release: Effect.Effect<void>;
-  readonly complete: Effect.Effect<void>;
-};
