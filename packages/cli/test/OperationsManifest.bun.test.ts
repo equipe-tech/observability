@@ -169,6 +169,9 @@ describe("operations manifest", () => {
     const unsupported = [
       validManifest.replace("version: 1", "%YAML 1.2\n---\nversion: 1"),
       validManifest.replace("version: 1", "%TAG !! tag:yaml.org,2002:\n---\nversion: 1"),
+      validManifest.replace("version: 1", "%FOO bar\n---\nversion: 1"),
+      validManifest.replace("version: 1", "%yaml 1.1\n---\nversion: 1"),
+      validManifest.replace("version: 1", "%RESERVED x y z\n---\nversion: 1"),
       validManifest.replace("days: 30", "days: !!int 30"),
       validManifest.replace("days: 30", "days: &retention-days 30"),
       validManifest
@@ -189,6 +192,14 @@ describe("operations manifest", () => {
         "YAML directives, tags, anchors, aliases and merge keys are unsupported",
       );
     }
+  });
+
+  test("rejects YAML parser warnings", async () => {
+    const error = await Effect.runPromise(
+      Effect.flip(parseOperationsManifest(validManifest.replace("days: 30", "days: !foo 30"))),
+    );
+    expect(error.code).toBe("OBS_CLI_MANIFEST_INVALID");
+    expect(error.issues).toContain("YAML could not be decoded");
   });
 
   test("rejects YAML 1.1 retention values hidden by merged and aliased mappings", async () => {

@@ -166,10 +166,7 @@ export const parseOperationsManifest = Effect.fn("parseOperationsManifest")(func
     return yield* manifestInvalid(["manifest exceeds 1048576 bytes"], content.length);
   }
   for (const token of new Parser().parse(content)) {
-    if (
-      token.type === "directive" &&
-      (token.source.startsWith("%YAML") || token.source.startsWith("%TAG"))
-    ) {
+    if (token.type === "directive") {
       return yield* manifestInvalid([unsupportedYamlIssue], token.source);
     }
   }
@@ -195,6 +192,9 @@ export const parseOperationsManifest = Effect.fn("parseOperationsManifest")(func
       ],
       parsed.errors,
     );
+  }
+  if (parsed.warnings.length > 0) {
+    return yield* manifestInvalid(["YAML could not be decoded"], parsed.warnings);
   }
   let unsupportedYaml = false;
   visit(parsed, {
