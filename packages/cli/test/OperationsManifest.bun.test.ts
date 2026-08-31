@@ -142,6 +142,18 @@ describe("operations manifest", () => {
     }
   });
 
+  test("rejects non-canonical YAML retention integers", async () => {
+    for (const spelling of ["0o30", "0x1e", "3e1", "030", "30.0", "+30"]) {
+      const error = await Effect.runPromise(
+        Effect.flip(
+          parseOperationsManifest(validManifest.replace("days: 30", `days: ${spelling}`)),
+        ),
+      );
+      expect(error.code).toBe("OBS_CLI_MANIFEST_INVALID");
+      expect(error.issues).toContain("retention days must use canonical decimal integers");
+    }
+  });
+
   test("allows repeated keys in separate list items and block query scalar syntax", async () => {
     const content = validManifest
       .replace("environments: [staging]", "environments: [staging, prod]")
@@ -232,6 +244,91 @@ describe("operations manifest", () => {
       parseOperationsManifest(validManifest.replace("count()", "sum(payment.provider)")),
     );
     await Effect.runPromise(validateOperationsManifest(declaredEventAggregation, index));
+  });
+
+  test("rejects forbidden query attributes through direct and aliased sources", async () => {
+    const forbiddenIndex = await Effect.runPromise(
+      parseOperationsContractIndex(
+        contract.replace('"classification":"public"', '"classification":"forbidden"'),
+      ),
+    );
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      [
+        validManifest.replace(
+          'event.name == "payment.attempt"',
+          'event.name == "payment.attempt" and payment.provider == "stripe"',
+        ),
+        "forbidden query field payment.provider",
+      ],
+      [
+        validManifest.replace("summarize count()", "summarize count() by payment.provider"),
+        "forbidden query group payment.provider",
+      ],
+      [
+        validManifest.replace("summarize count()", "summarize sum(payment.provider)"),
+        "forbidden query aggregation payment.provider",
+      ],
+    ];
+    for (const [content, issue] of cases) {
+      const manifest = await Effect.runPromise(parseOperationsManifest(content));
+      const error = await Effect.runPromise(
+        Effect.flip(validateOperationsManifest(manifest, forbiddenIndex)),
+      );
+      if (error._tag !== "OperationsManifestError") {
+        throw new Error("Expected source error.");
+      }
+      expect(error.issues).toContain(issue);
+    }
+
+    const aliasedContract = contract
+      .replace('"classification":"public"', '"classification":"forbidden"')
+      .replace(
+        '"aliases":[]',
+        '"aliases":[{"kind":"event","from":"payment.charge","to":"payment.attempt"}]',
+      );
+    const aliasedManifest = await Effect.runPromise(
+      parseOperationsManifest(
+        validManifest
+          .replace("name: payment.attempt", "name: payment.charge")
+          .replace(
+            'event.name == "payment.attempt" | summarize count()',
+            'event.name in ("payment.charge", "payment.attempt") | summarize count() by payment.provider',
+          ),
+      ),
+    );
+    const aliasError = await Effect.runPromise(
+      Effect.flip(
+        validateOperationsManifest(
+          aliasedManifest,
+          await Effect.runPromise(parseOperationsContractIndex(aliasedContract)),
+        ),
+      ),
+    );
+    if (aliasError._tag !== "OperationsManifestError") {
+      throw new Error("Expected aliased source error.");
+    }
+    expect(aliasError.issues).toContain("forbidden query group payment.provider");
+
+    const sensitiveManifest = await Effect.runPromise(
+      parseOperationsManifest(
+        validManifest
+          .replace(
+            'event.name == "payment.attempt"',
+            'event.name == "payment.attempt" and payment.provider == "stripe"',
+          )
+          .replace("summarize count()", "summarize sum(payment.provider) by payment.provider"),
+      ),
+    );
+    await Effect.runPromise(
+      validateOperationsManifest(
+        sensitiveManifest,
+        await Effect.runPromise(
+          parseOperationsContractIndex(
+            contract.replace('"classification":"public"', '"classification":"sensitive"'),
+          ),
+        ),
+      ),
+    );
   });
 
   test("rejects uppercase, tab and newline AND undeclared-field smuggling", async () => {

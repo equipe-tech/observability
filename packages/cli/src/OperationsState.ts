@@ -2,6 +2,7 @@ import { Context, Effect, Layer, Option, Schema } from "effect";
 import { chmod, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { EnvironmentName } from "./ResourceNamePolicy.ts";
 
 const OperationsEnvironment = Schema.Struct({
   OBSERVABILITY_HOME: Schema.NonEmptyString.pipe(Schema.optionalKey),
@@ -28,7 +29,7 @@ export class MutationIntent extends Schema.Class<MutationIntent>(
   id: Schema.NonEmptyString,
   operation: Schema.NonEmptyString,
   resource: Schema.NonEmptyString,
-  environment: Schema.NonEmptyString.pipe(Schema.optionalKey),
+  environment: EnvironmentName,
   desiredFingerprint: Schema.NonEmptyString,
   status: Schema.Literals(["pending", "resolved", "outcome-unknown"]),
   updatedAt: Schema.NonEmptyString,
@@ -147,7 +148,8 @@ export class OperationsState extends Context.Service<OperationsState, Operations
             (cause) =>
               new OperationsStateError({
                 code: "OBS_CLI_OPERATIONS_STATE_INVALID",
-                message: "Operations state does not match version 1.",
+                message:
+                  "Operations state does not match version 1. Remove the invalid file and rerun ops plan to rebuild it.",
                 cause,
               }),
           ),

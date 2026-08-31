@@ -77,6 +77,15 @@ const invalidQuery = (message: string, cause: unknown): ManagedQueryError =>
 const maximumManagedQueryStages = 64;
 const maximumManagedQueryComparisons = 64;
 const maximumManagedQueryValues = 256;
+const maximumManagedQueryGroupFields = 64;
+const maximumManagedQueryAstNodes = 1_024;
+const maximumManagedQueryTotalValues = 512;
+const maximumManagedQueryLiteralBytes = 4_096;
+const maximumManagedQueryFieldLength = 128;
+const maximumManagedQueryTokenLength = 32;
+const maximumManagedQueryDatasetBytes = 255;
+const maximumManagedQuerySignalBytes = 128;
+const maximumManagedQueryTextSize = 16_384;
 const maximumManagedQueryRenderedSize = 16_384;
 const fieldPattern = /^[a-z][a-z0-9_]*(?:[.][a-z][a-z0-9_]*)*$/;
 const durationPattern = /^[1-9][0-9]*(?:ms|s|m|h|d)$/;
@@ -91,14 +100,28 @@ const SafeManagedQueryNumber = Schema.Number.check(
     expected: "a finite, non-exponential number within JavaScript's safe magnitude",
   }),
 );
+const ManagedQueryField = Schema.String.check(
+  Schema.isPattern(fieldPattern),
+  Schema.isMaxLength(maximumManagedQueryFieldLength),
+);
+const ManagedQueryStringLiteral = Schema.String.check(
+  Schema.isMaxLength(maximumManagedQueryLiteralBytes),
+);
+const ManagedQueryToken = Schema.String.check(Schema.isMaxLength(maximumManagedQueryTokenLength));
+const ManagedQueryDataset = Schema.NonEmptyString.check(
+  Schema.isMaxLength(maximumManagedQueryDatasetBytes),
+);
+const ManagedQuerySignal = Schema.NonEmptyString.check(
+  Schema.isMaxLength(maximumManagedQuerySignalBytes),
+);
 const ManagedQueryLiteralInput = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("string"), value: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("string"), value: ManagedQueryStringLiteral }),
   Schema.Struct({ kind: Schema.Literal("number"), value: SafeManagedQueryNumber }),
   Schema.Struct({ kind: Schema.Literal("boolean"), value: Schema.Boolean }),
 ]);
 const ManagedQueryScalarComparisonInput = Schema.Struct({
   kind: Schema.Literal("comparison"),
-  field: Schema.String.check(Schema.isPattern(fieldPattern)),
+  field: ManagedQueryField,
   operator: Schema.Literals(["==", "!=", ">", ">=", "<", "<="]),
   values: Schema.Array(ManagedQueryLiteralInput).check(
     Schema.isMinLength(1),
@@ -107,7 +130,7 @@ const ManagedQueryScalarComparisonInput = Schema.Struct({
 });
 const ManagedQuerySetComparisonInput = Schema.Struct({
   kind: Schema.Literal("comparison"),
-  field: Schema.String.check(Schema.isPattern(fieldPattern)),
+  field: ManagedQueryField,
   operator: Schema.Literal("in"),
   values: Schema.Array(ManagedQueryLiteralInput).check(
     Schema.isMinLength(1),
@@ -119,23 +142,23 @@ const ManagedQueryAggregationInput = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("field"),
     function: Schema.Literals(["sum", "avg", "min", "max"]),
-    field: Schema.String.check(Schema.isPattern(fieldPattern)),
+    field: ManagedQueryField,
   }),
   Schema.Struct({
     kind: Schema.Literal("quantile"),
-    field: Schema.String.check(Schema.isPattern(fieldPattern)),
-    percentile: Schema.String.check(Schema.isPattern(percentilePattern)),
+    field: ManagedQueryField,
+    percentile: ManagedQueryToken.check(Schema.isPattern(percentilePattern)),
   }),
 ]);
 const ManagedQueryGroupInput = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("field"),
-    field: Schema.String.check(Schema.isPattern(fieldPattern)),
+    field: ManagedQueryField,
   }),
   Schema.Struct({
     kind: Schema.Literal("bin"),
-    field: Schema.String.check(Schema.isPattern(fieldPattern)),
-    duration: Schema.String.check(Schema.isPattern(durationPattern)),
+    field: ManagedQueryField,
+    duration: ManagedQueryToken.check(Schema.isPattern(durationPattern)),
   }),
 ]);
 const ManagedQueryStageInput = Schema.Union([
@@ -149,7 +172,7 @@ const ManagedQueryStageInput = Schema.Union([
     kind: Schema.Literal("summarize"),
     aggregation: ManagedQueryAggregationInput,
     groups: Schema.Array(ManagedQueryGroupInput).check(
-      Schema.isMaxLength(maximumManagedQueryComparisons),
+      Schema.isMaxLength(maximumManagedQueryGroupFields),
     ),
   }),
 ]);
@@ -161,16 +184,16 @@ const ManagedQueryCompilationInput = Schema.Struct({
     ),
     binding: Schema.Struct({
       field: Schema.Literals(["event.name", "metric.name"]),
-      identifiers: Schema.Array(Schema.NonEmptyString).check(
+      identifiers: Schema.Array(ManagedQuerySignal).check(
         Schema.isMinLength(1),
         Schema.isMaxLength(maximumManagedQueryValues),
       ),
     }),
   }),
   target: Schema.Struct({
-    dataset: Schema.NonEmptyString,
+    dataset: ManagedQueryDataset,
     language: Schema.Literals(["apl", "mpl"]),
-    signals: Schema.Array(Schema.NonEmptyString).check(
+    signals: Schema.Array(ManagedQuerySignal).check(
       Schema.isMinLength(1),
       Schema.isMaxLength(maximumManagedQueryValues),
     ),
@@ -182,6 +205,144 @@ const decodeManagedQueryCompilationInput = Schema.decodeUnknownEffect(
     onExcessProperty: "error",
   },
 );
+
+const utf8ByteLength = (value: string): number => {
+  let bytes = 0;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+  }
+  return bytes;
+};
+
+const fieldBudgetIssue = (field: string): string | undefined =>
+  field.length > maximumManagedQueryFieldLength
+    ? `Managed query fields cannot exceed ${maximumManagedQueryFieldLength} characters.`
+    : undefined;
+
+const managedQueryBudgetIssue = (query: ManagedQuery): string | undefined => {
+  if (!Array.isArray(query.stages) || !Array.isArray(query.binding.identifiers)) return undefined;
+  if (query.stages.length > maximumManagedQueryStages) {
+    return `Managed queries cannot exceed ${maximumManagedQueryStages} stages.`;
+  }
+  if (query.binding.identifiers.length > maximumManagedQueryValues) {
+    return `Managed query bindings cannot exceed ${maximumManagedQueryValues} values.`;
+  }
+  for (const identifier of query.binding.identifiers) {
+    if (
+      identifier.length > maximumManagedQuerySignalBytes ||
+      utf8ByteLength(identifier) > maximumManagedQuerySignalBytes
+    ) {
+      return `Managed query binding identifiers cannot exceed ${maximumManagedQuerySignalBytes} bytes.`;
+    }
+  }
+  let nodes = 1;
+  let values = 0;
+  let literalBytes = 0;
+  for (const stage of query.stages) {
+    nodes += 1;
+    if (nodes > maximumManagedQueryAstNodes) {
+      return `Managed queries cannot exceed ${maximumManagedQueryAstNodes} AST nodes.`;
+    }
+    if (stage.kind === "where") {
+      if (!Array.isArray(stage.comparisons)) continue;
+      if (stage.comparisons.length > maximumManagedQueryComparisons) {
+        return `Managed query where stages cannot exceed ${maximumManagedQueryComparisons} comparisons.`;
+      }
+      for (const comparison of stage.comparisons) {
+        nodes += 1;
+        if (nodes > maximumManagedQueryAstNodes) {
+          return `Managed queries cannot exceed ${maximumManagedQueryAstNodes} AST nodes.`;
+        }
+        const fieldIssue = fieldBudgetIssue(comparison.field);
+        if (fieldIssue !== undefined) return fieldIssue;
+        if (!Array.isArray(comparison.values)) continue;
+        if (comparison.operator === "in" && comparison.values.length > maximumManagedQueryValues) {
+          return `Managed query IN predicates cannot exceed ${maximumManagedQueryValues} values.`;
+        }
+        values += comparison.values.length;
+        if (values > maximumManagedQueryTotalValues) {
+          return `Managed queries cannot exceed ${maximumManagedQueryTotalValues} total values.`;
+        }
+        for (const literal of comparison.values) {
+          nodes += 1;
+          if (nodes > maximumManagedQueryAstNodes) {
+            return `Managed queries cannot exceed ${maximumManagedQueryAstNodes} AST nodes.`;
+          }
+          const text =
+            literal.kind === "string"
+              ? literal.value
+              : literal.kind === "boolean"
+                ? literal.value
+                  ? "true"
+                  : "false"
+                : String(literal.value);
+          if (text.length > maximumManagedQueryLiteralBytes) {
+            return `Managed query literals cannot exceed ${maximumManagedQueryLiteralBytes} bytes.`;
+          }
+          literalBytes += utf8ByteLength(text);
+          if (literalBytes > maximumManagedQueryLiteralBytes) {
+            return `Managed queries cannot exceed ${maximumManagedQueryLiteralBytes} cumulative literal bytes.`;
+          }
+        }
+      }
+      continue;
+    }
+    if (stage.kind !== "summarize") continue;
+    nodes += 1;
+    if (nodes > maximumManagedQueryAstNodes) {
+      return `Managed queries cannot exceed ${maximumManagedQueryAstNodes} AST nodes.`;
+    }
+    if (stage.aggregation.kind !== "count") {
+      const fieldIssue = fieldBudgetIssue(stage.aggregation.field);
+      if (fieldIssue !== undefined) return fieldIssue;
+      if (
+        stage.aggregation.kind === "quantile" &&
+        stage.aggregation.percentile.length > maximumManagedQueryTokenLength
+      ) {
+        return `Managed query tokens cannot exceed ${maximumManagedQueryTokenLength} characters.`;
+      }
+    }
+    if (!Array.isArray(stage.groups)) continue;
+    if (stage.groups.length > maximumManagedQueryGroupFields) {
+      return `Managed query summarize stages cannot exceed ${maximumManagedQueryGroupFields} group fields.`;
+    }
+    for (const group of stage.groups) {
+      nodes += 1;
+      if (nodes > maximumManagedQueryAstNodes) {
+        return `Managed queries cannot exceed ${maximumManagedQueryAstNodes} AST nodes.`;
+      }
+      const fieldIssue = fieldBudgetIssue(group.field);
+      if (fieldIssue !== undefined) return fieldIssue;
+      if (group.kind === "bin" && group.duration.length > maximumManagedQueryTokenLength) {
+        return `Managed query tokens cannot exceed ${maximumManagedQueryTokenLength} characters.`;
+      }
+    }
+  }
+  return undefined;
+};
+
+const managedQueryTargetBudgetIssue = (target: ManagedQueryTarget): string | undefined => {
+  if (
+    target.dataset.length > maximumManagedQueryDatasetBytes ||
+    utf8ByteLength(target.dataset) > maximumManagedQueryDatasetBytes
+  ) {
+    return `Managed query datasets cannot exceed ${maximumManagedQueryDatasetBytes} bytes.`;
+  }
+  if (!Array.isArray(target.signals)) return undefined;
+  if (target.signals.length > maximumManagedQueryValues) {
+    return `Managed query targets cannot exceed ${maximumManagedQueryValues} signals.`;
+  }
+  for (const signal of target.signals) {
+    if (
+      signal.length > maximumManagedQuerySignalBytes ||
+      utf8ByteLength(signal) > maximumManagedQuerySignalBytes
+    ) {
+      return `Managed query target signals cannot exceed ${maximumManagedQuerySignalBytes} bytes.`;
+    }
+  }
+  return undefined;
+};
 
 const splitOutsideStrings = (
   input: string,
@@ -483,7 +644,7 @@ const parseManagedQuerySync = (text: string): ManagedQuery | ManagedQueryError =
   const syntax = textOutsideStrings(text);
   if (
     text.length === 0 ||
-    text.length > 16_384 ||
+    text.length > maximumManagedQueryTextSize ||
     text.includes("\u0000") ||
     /\/\/|\/\*|--/.test(syntax)
   ) {
@@ -539,7 +700,20 @@ const parseManagedQuerySync = (text: string): ManagedQuery | ManagedQueryError =
   const identifiers = binding.values.flatMap((value) =>
     value.kind === "string" ? [value.value] : [],
   );
-  return { stream, stages, binding: { field: bindingField, identifiers } };
+  const query: ManagedQuery = { stream, stages, binding: { field: bindingField, identifiers } };
+  const budgetIssue = managedQueryBudgetIssue(query);
+  if (budgetIssue !== undefined) return invalidQuery(budgetIssue, "query budget");
+  const renderedLength = managedQueryRenderedLength(
+    query,
+    "\u0001".repeat(maximumManagedQueryDatasetBytes),
+    [identifiers[0] ?? "", ...identifiers.slice(1)],
+  );
+  return renderedLength <= maximumManagedQueryRenderedSize
+    ? query
+    : invalidQuery(
+        `The rendered managed query exceeds ${maximumManagedQueryRenderedSize} characters.`,
+        renderedLength,
+      );
 };
 
 export const parseManagedQuery = Effect.fn("parseManagedQuery")(function* (
@@ -579,10 +753,121 @@ const renderLiteral = (literal: ManagedQueryLiteral): string => {
 
 const renderIdentifier = (identifier: string): string => `[${quote(identifier)}]`;
 
+const quotedLength = (value: string): number => {
+  let length = 2;
+  for (const character of value) {
+    if (
+      character === "\\" ||
+      character === "'" ||
+      character === "\n" ||
+      character === "\r" ||
+      character === "\t" ||
+      character === "\b" ||
+      character === "\f"
+    ) {
+      length += 2;
+    } else if (controlOrFormatPattern.test(character)) {
+      length += character.length * 6;
+    } else {
+      length += character.length;
+    }
+  }
+  return length;
+};
+
+const identifierLength = (identifier: string): number => quotedLength(identifier) + 2;
+const literalLength = (literal: ManagedQueryLiteral): number =>
+  literal.kind === "string"
+    ? quotedLength(literal.value)
+    : literal.kind === "boolean"
+      ? literal.value
+        ? 4
+        : 5
+      : String(literal.value).length;
+const aggregationLength = (aggregation: ManagedQueryAggregation): number => {
+  if (aggregation.kind === "count") return 7;
+  if (aggregation.kind === "quantile") {
+    return 11 + identifierLength(aggregation.field) + 2 + aggregation.percentile.length + 1;
+  }
+  return aggregation.function.length + 1 + identifierLength(aggregation.field) + 1;
+};
+const groupLength = (group: ManagedQueryGroup): number =>
+  group.kind === "bin"
+    ? 4 + identifierLength(group.field) + 2 + group.duration.length + 1
+    : identifierLength(group.field);
+const comparisonLength = (
+  comparison: ManagedQueryComparison,
+  bindingField: ManagedQuery["binding"]["field"],
+  signals: ReadonlyArray<string>,
+): number => {
+  const fieldLength = identifierLength(comparison.field);
+  if (comparison.field === bindingField) {
+    if (signals.length === 1) return fieldLength + 4 + quotedLength(signals[0] ?? "");
+    return (
+      fieldLength +
+      5 +
+      signals.reduce((length, signal) => length + quotedLength(signal), 0) +
+      Math.max(0, signals.length - 1) * 2 +
+      1
+    );
+  }
+  if (comparison.operator === "in") {
+    return (
+      fieldLength +
+      5 +
+      comparison.values.reduce((length, literal) => length + literalLength(literal), 0) +
+      Math.max(0, comparison.values.length - 1) * 2 +
+      1
+    );
+  }
+  return (
+    fieldLength +
+    comparison.operator.length +
+    2 +
+    comparison.values.reduce((length, literal) => length + literalLength(literal), 0)
+  );
+};
+const managedQueryRenderedLength = (
+  query: ManagedQuery,
+  dataset: string,
+  signals: ReadonlyArray<string>,
+): number => {
+  let length = identifierLength(dataset);
+  for (const stage of query.stages) {
+    length += 3;
+    if (stage.kind === "where") {
+      length +=
+        6 +
+        stage.comparisons.reduce(
+          (total, comparison) => total + comparisonLength(comparison, query.binding.field, signals),
+          0,
+        ) +
+        Math.max(0, stage.comparisons.length - 1) * 5;
+      continue;
+    }
+    length += 10 + aggregationLength(stage.aggregation);
+    if (stage.groups.length > 0) {
+      length +=
+        4 +
+        stage.groups.reduce((total, group) => total + groupLength(group), 0) +
+        (stage.groups.length - 1) * 2;
+    }
+  }
+  return length;
+};
+
 const compilationInput = Effect.fn("managedQueryCompilationInput")(function* (
   query: ManagedQuery,
   target: ManagedQueryTarget,
 ): Effect.fn.Return<typeof ManagedQueryCompilationInput.Type, ManagedQueryError> {
+  const queryBudgetIssue = managedQueryBudgetIssue(query);
+  if (queryBudgetIssue !== undefined) {
+    return yield* invalidQuery(queryBudgetIssue, "query budget");
+  }
+  const targetBudgetIssue = managedQueryTargetBudgetIssue(target);
+  if (targetBudgetIssue !== undefined) {
+    return yield* invalidQuery(targetBudgetIssue, "target budget");
+  }
   const input = yield* decodeManagedQueryCompilationInput({ query, target }).pipe(
     Effect.mapError((cause) =>
       invalidQuery("The managed query cannot be compiled safely.", String(cause)),
@@ -635,6 +920,17 @@ export const compileManagedQuery = Effect.fn("compileManagedQuery")(
     target: ManagedQueryTarget,
   ): Effect.fn.Return<CompiledManagedQuery, ManagedQueryError> {
     const input = yield* compilationInput(query, target);
+    const renderedLength = managedQueryRenderedLength(
+      input.query,
+      input.target.dataset,
+      input.target.signals,
+    );
+    if (renderedLength > maximumManagedQueryRenderedSize) {
+      return yield* invalidQuery(
+        `The rendered managed query exceeds ${maximumManagedQueryRenderedSize} characters.`,
+        renderedLength,
+      );
+    }
     const renderedStages = input.query.stages.map((stage) => {
       if (stage.kind === "summarize") {
         const groups = stage.groups.map(renderGroup);
@@ -655,9 +951,9 @@ export const compileManagedQuery = Effect.fn("compileManagedQuery")(
       return `where ${comparisons.join(" and ")}`;
     });
     const text = [renderIdentifier(input.target.dataset), ...renderedStages].join(" | ");
-    if (text.length > maximumManagedQueryRenderedSize) {
+    if (text.length !== renderedLength) {
       return yield* invalidQuery(
-        `The rendered managed query exceeds ${maximumManagedQueryRenderedSize} characters.`,
+        "The managed query rendered length could not be verified.",
         text.length,
       );
     }

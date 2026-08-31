@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
+import { fileURLToPath } from "node:url";
 import { ManagedQueryError } from "../src/ManagedQuery.ts";
 import { OperationsManifestError } from "../src/OperationsManifest.ts";
 import { OperationsError } from "../src/OperationsPlan.ts";
@@ -45,6 +46,14 @@ const providerCodes = [
   "OBS_CLI_REMOTE_INVALID_RESPONSE",
   "OBS_CLI_AXIOM_DATASET_CONFLICT",
   "OBS_CLI_AXIOM_DATASET_OUTCOME_UNKNOWN",
+];
+
+const publicCodes = [
+  ...manifestCodes,
+  ...queryCodes,
+  ...operationCodes,
+  ...stateCodes,
+  ...providerCodes,
 ];
 
 describe("operations public error codes", () => {
@@ -101,6 +110,15 @@ describe("operations public error codes", () => {
           cause: code,
         }).code,
       );
+    }
+  });
+
+  test("documents every public operations error code", async () => {
+    const reference = await Bun.file(
+      fileURLToPath(new URL("../../../docs/cli-reference.md", import.meta.url)),
+    ).text();
+    for (const code of publicCodes) {
+      expect(reference).toContain(`\`${code}\``);
     }
   });
 });

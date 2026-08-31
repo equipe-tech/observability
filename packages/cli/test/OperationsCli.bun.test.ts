@@ -289,15 +289,7 @@ describe("operations CLI", () => {
         status: "outcome-unknown",
         updatedAt: "2026-01-02T00:00:00.000Z",
       };
-      const legacyIntent = {
-        id: "axiom.dataset.legacy-interrupted",
-        operation: "create",
-        resource: "checkout-legacy-interrupted",
-        desiredFingerprint: "legacy-interrupted-fingerprint",
-        status: "pending",
-        updatedAt: "2026-01-03T00:00:00.000Z",
-      };
-      beforeScopedApply.mutations.push(stagingIntent, prodIntent, legacyIntent);
+      beforeScopedApply.mutations.push(stagingIntent, prodIntent);
       await writeFile(statePath, `${JSON.stringify(beforeScopedApply, null, 2)}\n`, {
         mode: 0o600,
       });
@@ -326,23 +318,27 @@ describe("operations CLI", () => {
           scopedState.mutations.find((mutation: { id: string }) => mutation.id === prodIntent.id),
         ),
       ).toBe(JSON.stringify(prodIntent));
-      expect(
-        JSON.stringify(
-          scopedState.mutations.find((mutation: { id: string }) => mutation.id === legacyIntent.id),
-        ),
-      ).toBe(JSON.stringify(legacyIntent));
-      const legacyBlocked = await runCli(
+      const invalidState = structuredClone(scopedState);
+      invalidState.mutations.push({
+        id: "axiom.dataset.environment-missing",
+        operation: "create",
+        resource: "checkout-unknown-interrupted",
+        desiredFingerprint: "missing-environment-fingerprint",
+        status: "pending",
+        updatedAt: "2026-01-03T00:00:00.000Z",
+      });
+      await writeFile(statePath, `${JSON.stringify(invalidState, null, 2)}\n`, { mode: 0o600 });
+      const invalidStateResult = await runCli(
         ["ops", "verify", "--dir", project, "--environment", "staging"],
         home,
         baseUrl,
       );
-      expect(legacyBlocked.exitCode).not.toBe(0);
-      expect(legacyBlocked.stderr).toContain("OBS_CLI_MUTATION_UNRESOLVED");
+      expect(invalidStateResult.exitCode).not.toBe(0);
+      expect(invalidStateResult.stderr).toContain("OBS_CLI_OPERATIONS_STATE_INVALID");
+      expect(invalidStateResult.stderr).toContain("Remove the invalid file and rerun ops plan");
       scopedState.mutations = scopedState.mutations.filter(
         (mutation: { id: string }) =>
-          mutation.id !== stagingIntent.id &&
-          mutation.id !== prodIntent.id &&
-          mutation.id !== legacyIntent.id,
+          mutation.id !== stagingIntent.id && mutation.id !== prodIntent.id,
       );
       await writeFile(statePath, `${JSON.stringify(scopedState, null, 2)}\n`, { mode: 0o600 });
       await writeFile(manifestPath, manifestContent);

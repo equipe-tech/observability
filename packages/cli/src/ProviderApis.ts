@@ -265,6 +265,8 @@ const makeRemoteRequest = (timeoutMilliseconds: number) =>
           ),
       );
       return Effect.sync(() => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         controller.abort();
       });

@@ -75,18 +75,8 @@ const mutationWithStatus = (
   mutation: MutationIntent,
   status: MutationIntent["status"],
   updatedAt: string,
-): MutationIntent => {
-  if (mutation.environment === undefined) {
-    return new MutationIntent({
-      id: mutation.id,
-      operation: mutation.operation,
-      resource: mutation.resource,
-      desiredFingerprint: mutation.desiredFingerprint,
-      status,
-      updatedAt,
-    });
-  }
-  return new MutationIntent({
+): MutationIntent =>
+  new MutationIntent({
     id: mutation.id,
     operation: mutation.operation,
     resource: mutation.resource,
@@ -95,7 +85,6 @@ const mutationWithStatus = (
     status,
     updatedAt,
   });
-};
 
 const fingerprint = (value: string): string => {
   const hasher = new Bun.CryptoHasher("sha256");
@@ -593,7 +582,6 @@ export class OperationsPlanner extends Context.Service<
         }
         for (const unresolved of observed.state.mutations.filter(
           (mutation) =>
-            mutation.environment !== undefined &&
             current.environments.includes(mutation.environment) &&
             (mutation.status === "pending" || mutation.status === "outcome-unknown"),
         )) {
@@ -892,8 +880,7 @@ export class OperationsPlanner extends Context.Service<
         const state = yield* stateStore.load(current.service);
         const unresolved = state.mutations.find(
           (mutation) =>
-            (mutation.environment === undefined ||
-              current.environments.includes(mutation.environment)) &&
+            current.environments.includes(mutation.environment) &&
             (mutation.status === "pending" || mutation.status === "outcome-unknown"),
         );
         if (unresolved !== undefined) {

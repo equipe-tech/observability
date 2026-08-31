@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect";
-import { parseDocument } from "yaml";
+import { isMap, isScalar, isSeq, parseDocument } from "yaml";
 import { EnvironmentName, ServiceName, resourceNamePattern } from "./ResourceNamePolicy.ts";
 import { ManagedQueryError, parseManagedQuery, type ManagedQuery } from "./ManagedQuery.ts";
 
@@ -184,6 +184,27 @@ export const parseOperationsManifest = Effect.fn("parseOperationsManifest")(func
       ],
       parsed.errors,
     );
+  }
+  const retentionNode = parsed.get("retention", true);
+  if (isSeq(retentionNode)) {
+    for (const item of retentionNode.items) {
+      if (!isMap(item)) continue;
+      if (!item.has("days")) continue;
+      const days = item.get("days", true);
+      if (
+        !isScalar(days) ||
+        days.type !== "PLAIN" ||
+        days.anchor !== undefined ||
+        days.tag !== undefined ||
+        days.source === undefined ||
+        !/^[1-9][0-9]*$/.test(days.source)
+      ) {
+        return yield* manifestInvalid(
+          ["retention days must use canonical decimal integers"],
+          isScalar(days) ? days.source : "retention days",
+        );
+      }
+    }
   }
   const document: unknown = yield* Effect.try({
     try: () => parsed.toJS({ maxAliasCount: 100 }),
@@ -388,6 +409,17 @@ const validateQuery = Effect.fn("validateManagedSource")(function* (
           .filter((metric) => names.has(metric.name))
           .map((metric) => new Set(metric.attributes));
   });
+  const forbiddenAttributes = new Set(
+    sourceKind === "event"
+      ? contract.events
+          .filter((event) => expandedSourceNames.includes(event.name))
+          .flatMap((event) =>
+            event.attributeClassifications
+              .filter((attribute) => attribute.classification === "forbidden")
+              .map((attribute) => attribute.name),
+          )
+      : [],
+  );
   const declaredAttributes = new Set(targetAttributeSets[0] ?? []);
   for (const attributes of targetAttributeSets.slice(1)) {
     for (const attribute of declaredAttributes) {
@@ -396,6 +428,18 @@ const validateQuery = Effect.fn("validateManagedSource")(function* (
   }
   for (const stage of query.stages) {
     if (stage.kind === "where") {
+      const forbiddenField = stage.comparisons.find(
+        (comparison) =>
+          comparison.field !== query.binding.field && forbiddenAttributes.has(comparison.field),
+      );
+      if (forbiddenField !== undefined) {
+        return yield* new OperationsManifestError({
+          code: "OBS_CLI_SOURCE_INVALID",
+          message: `Query field ${forbiddenField.field} is forbidden by source policy.`,
+          issues: [`forbidden query field ${forbiddenField.field}`],
+          cause: forbiddenField.field,
+        });
+      }
       const invalidField = stage.comparisons.find(
         (comparison) =>
           comparison.field !== query.binding.field && !declaredAttributes.has(comparison.field),
@@ -410,6 +454,15 @@ const validateQuery = Effect.fn("validateManagedSource")(function* (
       }
       continue;
     }
+    const forbiddenGroup = stage.groups.find((group) => forbiddenAttributes.has(group.field));
+    if (forbiddenGroup !== undefined) {
+      return yield* new OperationsManifestError({
+        code: "OBS_CLI_SOURCE_INVALID",
+        message: `Query group ${forbiddenGroup.field} is forbidden by source policy.`,
+        issues: [`forbidden query group ${forbiddenGroup.field}`],
+        cause: forbiddenGroup.field,
+      });
+    }
     const invalidGroup = stage.groups.find(
       (group) => group.field !== "timestamp" && !declaredAttributes.has(group.field),
     );
@@ -419,6 +472,14 @@ const validateQuery = Effect.fn("validateManagedSource")(function* (
         message: `Query group ${invalidGroup.field} is not a declared source attribute.`,
         issues: [`undeclared query group ${invalidGroup.field}`],
         cause: invalidGroup.field,
+      });
+    }
+    if (stage.aggregation.kind !== "count" && forbiddenAttributes.has(stage.aggregation.field)) {
+      return yield* new OperationsManifestError({
+        code: "OBS_CLI_SOURCE_INVALID",
+        message: `Query aggregation ${stage.aggregation.field} is forbidden by source policy.`,
+        issues: [`forbidden query aggregation ${stage.aggregation.field}`],
+        cause: stage.aggregation.field,
       });
     }
     if (

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
 import { AxiomCredentials, SentryCredentials } from "../src/CredentialsStore.ts";
 import {
   AxiomApi,
@@ -104,6 +104,63 @@ describe("provider HTTP boundary", () => {
       await server.stop(true);
     }
   });
+
+  test.serial(
+    "aborts a hanging loopback request and releases its callback on interruption",
+    async () => {
+      let activeCallbacks = 0;
+      let requestAborted = false;
+      let startRequest = () => {};
+      const requestStarted = new Promise<void>((resolve) => {
+        startRequest = resolve;
+      });
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: (request) => {
+          activeCallbacks += 1;
+          startRequest();
+          return new Promise<Response>((_resolve, reject) => {
+            request.signal.addEventListener(
+              "abort",
+              () => {
+                requestAborted = true;
+                activeCallbacks -= 1;
+                reject(new Error("request interrupted"));
+              },
+              { once: true },
+            );
+          });
+        },
+      });
+      try {
+        await withAxiomEndpoint(`http://127.0.0.1:${server.port}`, async () => {
+          const fiber = Effect.runFork(
+            Effect.gen(function* () {
+              const api = yield* AxiomApi;
+              return yield* api.identity(credentials);
+            }).pipe(Effect.provide(AxiomApi.layer)),
+          );
+          await Promise.race([
+            requestStarted,
+            Bun.sleep(1_000).then(() => {
+              throw new Error("Loopback request did not start.");
+            }),
+          ]);
+          await Effect.runPromise(Fiber.interrupt(fiber));
+          for (let attempt = 0; attempt < 20 && !requestAborted; attempt += 1) {
+            await Bun.sleep(10);
+          }
+          expect(requestAborted).toBeTrue();
+          expect(activeCallbacks).toBe(0);
+          await Bun.sleep(150);
+          expect(activeCallbacks).toBe(0);
+        });
+      } finally {
+        await server.stop(true);
+      }
+    },
+  );
 
   test("reads Sentry project and client key existence without mutation", async () => {
     const requests: Array<string> = [];

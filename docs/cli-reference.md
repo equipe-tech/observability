@@ -128,7 +128,7 @@ Não volte para a CLI 0.2.0 após a migração. Ela não lê o formato 3. Restau
 
 A CLI serializa atualizações com um lock entre processos. Um comando espera no máximo 30 segundos por outra atualização.
 
-Estado de reconciliação sem segredos fica em `$OBSERVABILITY_HOME/operations/<service>.json`. O arquivo usa escrita atômica, lock exclusivo, geração monotônica e modo `0600`. Planos e estado não armazenam queries, tokens, DSNs ou corpos de resposta.
+Estado de reconciliação sem segredos fica em `$OBSERVABILITY_HOME/operations/<service>.json`. O arquivo usa escrita atômica, lock exclusivo, geração monotônica e modo `0600`. Esse estado pertence a uma única máquina. Não compartilhe `OBSERVABILITY_HOME` entre máquinas, pois os leases de heartbeat não suportam esse uso. Planos e estado não armazenam queries, tokens, DSNs ou corpos de resposta.
 
 ## Convenção de nomes
 
@@ -183,6 +183,7 @@ O nome do token Axiom segue este formato:
 | `OBS_CLI_READ_BACK_TIMEOUT`                    | A leitura limitada não convergiu para o estado desejado.                    |
 | `OBS_CLI_MANUAL_ACTION_PENDING`                | Uma ação manual ainda requer confirmação do operador.                       |
 | `OBS_CLI_APPLY_OUTCOME_UNKNOWN`                | O resultado atual é ambíguo e será reconciliado na próxima execução.        |
+| `OBS_CLI_MUTATION_UNRESOLVED`                  | Uma mutação selecionada continua pendente ou com resultado desconhecido.    |
 | `OBS_CLI_MANIFEST_NOT_FOUND`                   | O manifesto de operações não existe.                                        |
 | `OBS_CLI_MANIFEST_UNREADABLE`                  | O manifesto de operações não pode ser lido.                                 |
 | `OBS_CLI_MANIFEST_VERSION_UNSUPPORTED`         | A versão do manifesto não é suportada.                                      |

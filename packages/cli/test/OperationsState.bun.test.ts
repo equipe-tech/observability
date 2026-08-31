@@ -151,6 +151,47 @@ describe("operations state", () => {
     }
   });
 
+  test.serial("rejects mutation intents without an environment and gives recovery", async () => {
+    const home = await mkdtemp(join(tmpdir(), "observability-state-mutation-environment-"));
+    const previous = process.env.OBSERVABILITY_HOME;
+    process.env.OBSERVABILITY_HOME = home;
+    const operations = join(home, "operations");
+    await mkdir(operations, { recursive: true });
+    await writeFile(
+      join(operations, "checkout.json"),
+      `${JSON.stringify({
+        version: 1,
+        generation: 1,
+        service: "checkout",
+        manualActions: [],
+        mutations: [
+          {
+            id: "axiom.dataset.interrupted",
+            operation: "create",
+            resource: "checkout-prod-logs",
+            desiredFingerprint: "fingerprint",
+            status: "pending",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      })}\n`,
+    );
+    try {
+      const error = await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* OperationsState;
+          return yield* Effect.flip(store.load("checkout"));
+        }).pipe(Effect.provide(OperationsState.layer)),
+      );
+      expect(error.code).toBe("OBS_CLI_OPERATIONS_STATE_INVALID");
+      expect(error.message).toContain("Remove the invalid file and rerun ops plan");
+    } finally {
+      if (previous === undefined) delete process.env.OBSERVABILITY_HOME;
+      else process.env.OBSERVABILITY_HOME = previous;
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   test.serial("rejects generation increment overflow", async () => {
     const home = await mkdtemp(join(tmpdir(), "observability-state-overflow-"));
     const previous = process.env.OBSERVABILITY_HOME;

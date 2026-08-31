@@ -420,6 +420,146 @@ describe("managed query", () => {
     }
   });
 
+  test("enforces identical parser and compiler query budgets", async () => {
+    const binding = 'signal(logs) | where event.name == "payment.attempt"';
+    const comparisons = Array.from({ length: 64 }, (_, index) => `field_${index} == ${index}`);
+    const values = Array.from({ length: 257 }, (_, index) => `"signal.${index}"`);
+    const groups = Array.from({ length: 65 }, (_, index) => `group_${index}`);
+    const groupedStage = `summarize count() by ${Array.from({ length: 64 }, (_, index) => `group_${index}`).join(", ")}`;
+    const rejected = [
+      `${binding}${" | summarize count()".repeat(64)}`,
+      `${binding} and ${comparisons.join(" and ")}`,
+      `signal(logs) | where event.name in (${values.join(", ")})`,
+      `${binding} | summarize count() by ${groups.join(", ")}`,
+      `${binding} | where provider in (${values.slice(0, 256).join(", ")}) | where region in (${values.slice(0, 256).join(", ")})`,
+      `${binding}${` | ${groupedStage}`.repeat(16)}`,
+      `${binding} and note == "${"x".repeat(4_097)}"`,
+      `${binding} and note == "${"\u0001".repeat(3_000)}"`,
+      `signal(logs) | where event.name == "${"s".repeat(129)}"`,
+      `${binding} and ${"field".repeat(26)} == 1`,
+    ];
+    for (const text of rejected) {
+      const exit = await Effect.runPromiseExit(parseManagedQuery(text));
+      expect(Exit.isFailure(exit)).toBeTrue();
+    }
+
+    const accepted = [
+      `${binding}${" | summarize count()".repeat(63)}`,
+      `${binding} and ${comparisons.slice(0, 63).join(" and ")}`,
+      `signal(logs) | where event.name in (${values.slice(0, 256).join(", ")})`,
+      `${binding} | summarize count() by ${groups.slice(0, 64).join(", ")}`,
+    ];
+    for (const text of accepted) {
+      const query = await parse(text);
+      const firstIdentifier = query.binding.identifiers[0];
+      if (firstIdentifier === undefined) throw new Error("Expected a query binding.");
+      const compiled = await compile(query, {
+        dataset: "logs",
+        language: "apl",
+        signals: [firstIdentifier, ...query.binding.identifiers.slice(1)],
+      });
+      expect(compiled.text.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("rejects direct compiler inputs before oversized rendering work", async () => {
+    const query = await parse('signal(logs) | where event.name == "payment.attempt"');
+    const longField = `a${"a".repeat(128)}`;
+    const longLiteral = "x".repeat(4_097);
+    const directQueries: ReadonlyArray<ManagedQuery> = [
+      {
+        ...query,
+        stages: [
+          ...query.stages,
+          {
+            kind: "where",
+            comparisons: [
+              {
+                kind: "comparison",
+                field: longField,
+                operator: "==",
+                values: [{ kind: "string", value: "x" }],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        ...query,
+        stages: [
+          ...query.stages,
+          {
+            kind: "summarize",
+            aggregation: { kind: "field", function: "sum", field: longField },
+            groups: [],
+          },
+        ],
+      },
+      {
+        ...query,
+        stages: [
+          ...query.stages,
+          {
+            kind: "summarize",
+            aggregation: { kind: "count" },
+            groups: [{ kind: "field", field: longField }],
+          },
+        ],
+      },
+      {
+        ...query,
+        stages: [
+          ...query.stages,
+          {
+            kind: "where",
+            comparisons: [
+              {
+                kind: "comparison",
+                field: "note",
+                operator: "==",
+                values: [{ kind: "string", value: longLiteral }],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        ...query,
+        stages: [
+          ...query.stages,
+          {
+            kind: "where",
+            comparisons: [
+              {
+                kind: "comparison",
+                field: "note",
+                operator: "==",
+                values: [{ kind: "string", value: "\u0001".repeat(3_000) }],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const directInputs: ReadonlyArray<readonly [ManagedQuery, ManagedQueryTarget]> = [
+      ...directQueries.map((candidate): readonly [ManagedQuery, ManagedQueryTarget] => [
+        candidate,
+        { dataset: "logs", language: "apl", signals: ["payment.attempt"] },
+      ]),
+      [query, { dataset: "d".repeat(256), language: "apl", signals: ["payment.attempt"] }],
+      [query, { dataset: "logs", language: "apl", signals: ["s".repeat(129)] }],
+      [
+        query,
+        { dataset: "d".repeat(1_000_000), language: "apl", signals: ["s".repeat(1_000_000)] },
+      ],
+    ];
+    for (const [candidate, target] of directInputs) {
+      const error = await Effect.runPromise(Effect.flip(compileManagedQuery(candidate, target)));
+      expect(error).toBeInstanceOf(ManagedQueryError);
+      expect(error.code).toBe("OBS_CLI_QUERY_INVALID");
+    }
+  });
+
   test("rejects oversized and unterminated input", async () => {
     expect(Exit.isFailure(await Effect.runPromiseExit(parseManagedQuery("x".repeat(16_385))))).toBe(
       true,
