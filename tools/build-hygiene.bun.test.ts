@@ -12,7 +12,7 @@ const BuildConfig = Schema.Struct({
 const decodeBuildConfig = Schema.decodeUnknownSync(BuildConfig);
 
 test("package builds disable emit after type errors", async () => {
-  for (const packageName of ["telemetry", "nestjs", "cli"]) {
+  for (const packageName of ["telemetry", "nestjs", "evlog", "sentry", "cli"]) {
     const value: unknown = JSON.parse(
       await readFile(join(projectRoot, "packages", packageName, "tsconfig.build.json"), "utf8"),
     );

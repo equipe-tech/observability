@@ -1,7 +1,7 @@
 {
-  "name": "@equipe-tech/observability",
+  "name": "@equipe-tech/observability-sentry",
   "version": "0.3.0",
-  "description": "Nucleo neutro de observabilidade da Equipe Tech para OpenTelemetry, contratos, politicas e ciclo de vida",
+  "description": "Adaptadores Sentry para defeitos Node e browser da plataforma de observabilidade da Equipe Tech",
   "homepage": "https://github.com/equipe-tech/observability#readme",
   "bugs": {
     "url": "https://github.com/equipe-tech/observability/issues"
@@ -10,28 +10,17 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/equipe-tech/observability.git",
-    "directory": "packages/telemetry"
+    "directory": "packages/sentry"
   },
   "files": [
     "dist"
   ],
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./effect": {
-      "types": "./dist/effect/index.d.ts",
-      "import": "./dist/effect/index.js"
-    },
-    "./policy": {
-      "types": "./dist/policy/entrypoint.d.ts",
-      "import": "./dist/policy/entrypoint.js"
-    },
-    "./metrics": {
-      "types": "./dist/Metrics.d.ts",
-      "import": "./dist/Metrics.js"
     },
     "./node": {
       "types": "./dist/node/index.d.ts",
@@ -40,14 +29,6 @@
     "./browser": {
       "types": "./dist/browser/index.d.ts",
       "import": "./dist/browser/index.js"
-    },
-    "./browser/client": {
-      "types": "./dist/browser/client.d.ts",
-      "import": "./dist/browser/client.js"
-    },
-    "./testing": {
-      "types": "./dist/testing/index.d.ts",
-      "import": "./dist/testing/index.js"
     }
   },
   "scripts": {
@@ -55,9 +36,23 @@
     "prepack": "bun run build"
   },
   "devDependencies": {
+    "@equipe-tech/observability": "workspace:*",
+    "@sentry/browser": "10.72.0",
+    "@sentry/node-core": "10.72.0",
     "effect": "4.0.0-rc.111"
   },
   "peerDependencies": {
+    "@equipe-tech/observability": "0.3.x",
+    "@sentry/browser": "10.72.0",
+    "@sentry/node-core": "10.72.0",
     "effect": "4.0.0-rc.111"
+  },
+  "peerDependenciesMeta": {
+    "@sentry/browser": {
+      "optional": true
+    },
+    "@sentry/node-core": {
+      "optional": true
+    }
   }
 }

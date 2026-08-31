@@ -61,6 +61,7 @@ O Collector roda como accessory do [Kamal](https://kamal-deploy.org), com filas 
 packages/
   telemetry/          @equipe-tech/observability: núcleo neutro, contratos, política, identidade e lifecycle
   evlog/              @equipe-tech/observability-evlog: eventos tipados com fila e entrega OTLP do evlog
+  sentry/             @equipe-tech/observability-sentry: captura sanitizada de defeitos Node e browser
   nestjs/             @equipe-tech/observability-nestjs: integração HTTP e lifecycle do NestJS
   cli/                observability dev|provision: CLI, assets da stack local e do Collector de produção
 docs/                 padrões de código, erros, testes e workflow
@@ -82,6 +83,8 @@ O núcleo `@equipe-tech/observability` publica entrypoints explícitos:
 | `./testing`        | Captura em memória dos exports OTLP reais para asserts de spans, logs e métricas                  |
 
 A integração NestJS vive na raiz de `@equipe-tech/observability-nestjs`. Ela publica `TelemetryModule`, `TelemetryInterceptor`, `withRequestSpan`, `createBrowserEventsController` e a política HTTP. O adapter oficial de eventos vive em `@equipe-tech/observability-evlog` e fornece `registration`, `drops()` e `pending()`.
+
+Os [adaptadores Sentry](docs/sentry-adapters.md) publicam entrypoints separados para Node e browser, uma política compartilhada e um plano de upload de source maps sem credenciais.
 
 O [cliente imperativo do browser](docs/browser-client.md) publica `emit`, `flush`, `pending` e `dispose` sem tipos Effect e documenta o ciclo de vida React suportado. O contrato do endpoint `/_telemetry/events` vive em `BrowserEvents` no entrypoint raiz. O servidor faz o parse com `parseBrowserEventBatch` e re-emite os eventos como wide events com atributos de servidor (`event.source`, `browser.event.id`). O cliente sanitiza nomes e campos antes da fila conforme a [política de dados da telemetria do browser](docs/browser-telemetry-data-policy.md).
 
