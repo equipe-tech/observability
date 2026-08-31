@@ -55,7 +55,7 @@ describe("audit adapter handle type", () => {
     );
     assert.equal(
       await compile(
-        `${imports}\nconst handle: ObservabilityAdapterHandle = { ...base, auditLayer: Option.some(Layer.succeed(AuditPublisher, AuditPublisher.of({ publish: () => Effect.succeed({ kind: "published" }), report: () => ({ published: 0, deduplicated: 0, dropped: 0, firstDroppedAt: Option.none(), lastDroppedAt: Option.none(), reasons: { unbound: 0, closed: 0, queueOverflow: 0, policyRejected: 0, transport: 0 } }) }))) };\nvoid handle;`,
+        `${imports}\nconst handle: ObservabilityAdapterHandle = { ...base, auditLayer: Option.some(Layer.succeed(AuditPublisher, AuditPublisher.of({ publish: () => Effect.succeed({ kind: "published" }), report: () => ({ published: 0, deduplicated: 0, dropped: 0, firstDroppedAt: Option.none(), lastDroppedAt: Option.none(), reasons: { unbound: 0, closed: 0, queueOverflow: 0, contractRejected: 0, policyRejected: 0, transport: 0 } }) }))) };\nvoid handle;`,
       ),
       true,
     );

@@ -12,6 +12,9 @@ import {
   parseSpanId,
   parseTraceId,
   TelemetryEventSink,
+  type AuditRecordInput,
+  type TelemetryContract,
+  type TelemetryContractInput,
 } from "@equipe-tech/observability";
 import {
   createNodeObservabilityFromConfig,
@@ -346,6 +349,246 @@ describe("evlogAdapter", () => {
     expect(logBody).not.toContain(traceId);
     expect(publisher.report().deduplicated).toBe(1);
     expect(publisher.report().reasons.closed).toBe(1);
+  });
+
+  it("binds audit publication to the adapter contract before policy and queue admission", async () => {
+    const receiver = await startReceiver();
+    const boundContract = await Effect.runPromise(
+      defineTelemetryContract({
+        version: 1,
+        events: { AuditRecorded: Contract.organizationEvents.AuditRecorded },
+        metrics: {},
+        auditActions: {
+          AccessReviewed: {
+            action: "access.reviewed",
+            resourceType: "account",
+            allowedOutcomes: ["success"],
+            reasonCodes: ["approval.missing"],
+          },
+        },
+      }),
+    );
+    const unknownActionContract = await Effect.runPromise(
+      defineTelemetryContract({
+        version: 1,
+        events: { AuditRecorded: Contract.organizationEvents.AuditRecorded },
+        metrics: {},
+        auditActions: {
+          InvoiceRefunded: {
+            action: "invoice.refunded",
+            resourceType: "invoice",
+            allowedOutcomes: ["success"],
+          },
+        },
+      }),
+    );
+    const resourceDriftContract = await Effect.runPromise(
+      defineTelemetryContract({
+        version: 1,
+        events: { AuditRecorded: Contract.organizationEvents.AuditRecorded },
+        metrics: {},
+        auditActions: {
+          AccessReviewed: {
+            action: "access.reviewed",
+            resourceType: "invoice",
+            allowedOutcomes: ["success"],
+          },
+        },
+      }),
+    );
+    const outcomeDriftContract = await Effect.runPromise(
+      defineTelemetryContract({
+        version: 1,
+        events: { AuditRecorded: Contract.organizationEvents.AuditRecorded },
+        metrics: {},
+        auditActions: {
+          AccessReviewed: {
+            action: "access.reviewed",
+            resourceType: "account",
+            allowedOutcomes: ["denied"],
+          },
+        },
+      }),
+    );
+    const reasonDriftContract = await Effect.runPromise(
+      defineTelemetryContract({
+        version: 1,
+        events: { AuditRecorded: Contract.organizationEvents.AuditRecorded },
+        metrics: {},
+        auditActions: {
+          AccessReviewed: {
+            action: "access.reviewed",
+            resourceType: "account",
+            allowedOutcomes: ["success"],
+            reasonCodes: ["policy.changed"],
+          },
+        },
+      }),
+    );
+    const commitFor = async <Definition extends TelemetryContractInput>(
+      contract: TelemetryContract<Definition>,
+      input: AuditRecordInput,
+    ) => {
+      const record = await Effect.runPromise(parseAuditRecord(contract, input));
+      return Effect.runPromise(
+        commitAuditRecord(record, () => Effect.void).pipe(Effect.provide(layerNodeAuditDigest)),
+      );
+    };
+    const foreignRecords = [
+      await commitFor(unknownActionContract, {
+        recordId: "audit-foreign-action",
+        action: "invoice.refunded",
+        actor: { kind: "system" },
+        resource: { id: "invoice-1" },
+        outcome: "success",
+        occurredAt: "2026-01-02T03:04:05.000Z",
+      }),
+      await commitFor(resourceDriftContract, {
+        recordId: "audit-foreign-resource",
+        action: "access.reviewed",
+        actor: { kind: "system" },
+        resource: { id: "invoice-2" },
+        outcome: "success",
+        occurredAt: "2026-01-02T03:04:05.000Z",
+      }),
+      await commitFor(outcomeDriftContract, {
+        recordId: "audit-foreign-outcome",
+        action: "access.reviewed",
+        actor: { kind: "system" },
+        resource: { id: "account-3" },
+        outcome: "denied",
+        occurredAt: "2026-01-02T03:04:05.000Z",
+      }),
+      await commitFor(reasonDriftContract, {
+        recordId: "audit-foreign-reason",
+        action: "access.reviewed",
+        actor: { kind: "system" },
+        resource: { id: "account-4" },
+        outcome: "success",
+        reasonCode: "policy.changed",
+        occurredAt: "2026-01-02T03:04:05.000Z",
+      }),
+    ];
+    const sameContract = await commitFor(boundContract, {
+      recordId: "audit-same-contract",
+      action: "access.reviewed",
+      actor: { kind: "system" },
+      resource: { id: "account-5" },
+      outcome: "success",
+      reasonCode: "approval.missing",
+      occurredAt: "2026-01-02T03:04:05.000Z",
+    });
+    const config = await Effect.runPromise(
+      parseNodeObservabilityConfig({
+        enabled: true,
+        profile: "worker",
+        service: { name: "audit-contract-binding", version: "1.2.3", environment: "test" },
+        telemetry: { endpoint: receiver.endpoint },
+        evlog: {
+          contract: boundContract,
+          policy: { attributes: {}, blockedKeys: [], blockedValuePatterns: [] },
+        },
+        sentry: { enabled: false },
+      }),
+    );
+    const adapter = evlogAdapter({
+      installGlobalLogger: false,
+      batchSize: 5,
+      maximumBufferedEvents: 5,
+      transportRetries: 0,
+    });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    const publisher = await Effect.runPromise(
+      AuditPublisher.pipe(Effect.provide(observability.auditLayer)),
+    );
+    for (const committed of foreignRecords) {
+      expect(await Effect.runPromise(publisher.publish(committed.record))).toEqual({
+        kind: "dropped",
+        reason: "contract-rejected",
+      });
+    }
+    expect(await Effect.runPromise(publisher.publish(sameContract.record))).toEqual({
+      kind: "published",
+    });
+    await observability.close();
+    await receiver.close();
+    const wire = receiver.bodies.join("\n");
+    expect(wire).toContain("audit-same-contract");
+    for (const recordId of [
+      "audit-foreign-action",
+      "audit-foreign-resource",
+      "audit-foreign-outcome",
+      "audit-foreign-reason",
+    ]) {
+      expect(wire).not.toContain(recordId);
+    }
+    expect(publisher.report().published).toBe(1);
+    expect(publisher.report().dropped).toBe(4);
+    expect(publisher.report().reasons.contractRejected).toBe(4);
+  });
+
+  it("rejects foreign audit records when the adapter contract has no audit capability", async () => {
+    const receiver = await startReceiver();
+    const boundContract = await Effect.runPromise(
+      defineTelemetryContract({ version: 1, events: {}, metrics: {}, auditActions: {} }),
+    );
+    const foreignContract = await Effect.runPromise(
+      defineTelemetryContract({
+        version: 1,
+        events: { AuditRecorded: Contract.organizationEvents.AuditRecorded },
+        metrics: {},
+        auditActions: {
+          AccessReviewed: {
+            action: "access.reviewed",
+            resourceType: "account",
+            allowedOutcomes: ["success"],
+          },
+        },
+      }),
+    );
+    const record = await Effect.runPromise(
+      parseAuditRecord(foreignContract, {
+        recordId: "audit-no-capability",
+        action: "access.reviewed",
+        actor: { kind: "system" },
+        resource: { id: "account-1" },
+        outcome: "success",
+        occurredAt: "2026-01-02T03:04:05.000Z",
+      }),
+    );
+    const committed = await Effect.runPromise(
+      commitAuditRecord(record, () => Effect.void).pipe(Effect.provide(layerNodeAuditDigest)),
+    );
+    const config = await Effect.runPromise(
+      parseNodeObservabilityConfig({
+        enabled: true,
+        profile: "worker",
+        service: { name: "empty-contract-adapter", version: "1.2.3", environment: "test" },
+        telemetry: { endpoint: receiver.endpoint },
+        evlog: {
+          contract: boundContract,
+          policy: { attributes: {}, blockedKeys: [], blockedValuePatterns: [] },
+        },
+        sentry: { enabled: false },
+      }),
+    );
+    const adapter = evlogAdapter({ installGlobalLogger: false, batchSize: 1 });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    const publisher = await Effect.runPromise(
+      AuditPublisher.pipe(Effect.provide(observability.auditLayer)),
+    );
+    expect(await Effect.runPromise(publisher.publish(committed.record))).toEqual({
+      kind: "dropped",
+      reason: "contract-rejected",
+    });
+    await observability.close();
+    await receiver.close();
+    expect(receiver.bodies.join("\n")).not.toContain("audit-no-capability");
+    expect(publisher.report().published).toBe(0);
+    expect(publisher.report().dropped).toBe(1);
+    expect(publisher.report().reasons.contractRejected).toBe(1);
   });
 
   it("returns policy-rejected when policy changes an immutable audit anchor", async () => {

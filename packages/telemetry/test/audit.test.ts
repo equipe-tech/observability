@@ -177,6 +177,7 @@ describe("audit contracts", () => {
             unbound: 0,
             closed: 0,
             queueOverflow: 0,
+            contractRejected: 0,
             policyRejected: 0,
             transport: 0,
           },

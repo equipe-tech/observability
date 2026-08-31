@@ -499,6 +499,7 @@ type MutableAuditPublishState = {
   unbound: number;
   closed: number;
   queueOverflow: number;
+  contractRejected: number;
   policyRejected: number;
   transport: number;
 };
@@ -512,6 +513,7 @@ const emptyAuditPublishState = (): MutableAuditPublishState => ({
   unbound: 0,
   closed: 0,
   queueOverflow: 0,
+  contractRejected: 0,
   policyRejected: 0,
   transport: 0,
 });
@@ -526,6 +528,7 @@ const auditPublishReport = (state: MutableAuditPublishState): AuditPublishReport
     unbound: state.unbound,
     closed: state.closed,
     queueOverflow: state.queueOverflow,
+    contractRejected: state.contractRejected,
     policyRejected: state.policyRejected,
     transport: state.transport,
   },
@@ -533,7 +536,7 @@ const auditPublishReport = (state: MutableAuditPublishState): AuditPublishReport
 
 const incrementAuditDrop = (
   state: MutableAuditPublishState,
-  reason: "closed" | "queue-overflow" | "policy-rejected" | "transport",
+  reason: "closed" | "queue-overflow" | "contract-rejected" | "policy-rejected" | "transport",
   droppedAt: string,
 ): AuditPublishReceipt => {
   state.dropped += 1;
@@ -545,6 +548,9 @@ const incrementAuditDrop = (
       break;
     case "queue-overflow":
       state.queueOverflow += 1;
+      break;
+    case "contract-rejected":
+      state.contractRejected += 1;
       break;
     case "policy-rejected":
       state.policyRejected += 1;
@@ -1085,6 +1091,16 @@ export const makeEvlogAdapter = (
 
         const admitAudit = (record: CommittedAuditRecord): Effect.Effect<AuditPublishReceipt> =>
           Effect.promise<AuditPublishReceipt>(async () => {
+            const declaredAction = context.contract.auditActionByName.get(record.action);
+            if (
+              declaredAction === undefined ||
+              declaredAction.resourceType !== record.resource.type ||
+              !declaredAction.allowedOutcomes.includes(record.outcome) ||
+              (Option.isSome(record.reasonCode) &&
+                !declaredAction.reasonCodes.includes(record.reasonCode.value))
+            ) {
+              return incrementAuditDrop(auditState, "contract-rejected", dropTimestamp());
+            }
             while (true) {
               const now = clock.currentTimeMillisUnsafe();
               for (const [recordId, deliveredAt] of deliveredAuditRecords) {
@@ -1158,7 +1174,6 @@ export const makeEvlogAdapter = (
               };
               const requiredFieldNames = [
                 ...immutableAnchorNames,
-                "audit.actor.kind",
                 "audit.actor.id",
                 "audit.resource.id",
                 "audit.occurred_at",

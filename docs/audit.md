@@ -4,7 +4,7 @@
 
 ## Contrato
 
-Cada ação em `auditActions` declara `action`, `resourceType`, `allowedOutcomes` e um catálogo opcional `reasonCodes`. `AuditOutcome` aceita `success`, `failure`, `cancelled` e `denied`. `EventOutcome` continua aceitando somente `success`, `failure` e `cancelled`.
+Cada ação em `auditActions` declara `action`, `resourceType`, `allowedOutcomes` e um catálogo opcional `reasonCodes`. `AuditOutcome` aceita `success`, `failure`, `cancelled` e `denied`. `EventOutcome` continua aceitando somente `success`, `failure` e `cancelled`. `resourceType` aceita de 1 a 64 caracteres sem controles. Cada segmento separado por ponto começa com uma letra minúscula e continua com letras minúsculas, números ou sublinhados.
 
 `parseAuditRecord` recebe o ID do recurso. O parser deriva o tipo do recurso pela ação selecionada. O parser também limita identificadores, rejeita caracteres de controle e verifica o resultado e o código de razão. `occurredAt` aceita somente RFC 3339 UTC canônico com três dígitos de milissegundos, como `2026-01-02T03:04:05.000Z`. O registro não aceita email, nome de exibição, razão livre, metadata, snapshots de mudança, patches ou objetos da aplicação.
 
@@ -21,7 +21,7 @@ const result = yield * recordAudit(record, (document) => durableLedgerWrite(docu
 
 `commitAuditRecord` cria `committedAt`, calcula o hash e entrega um único `AuditCommitDocument` plano ao callback durável. A aplicação persiste exatamente esse documento junto ao ledger na mesma operação atômica. A função só constrói `CommittedAuditRecord` depois que o callback termina com sucesso. O tipo não tem construtor público. Uma falha do ledger mantém o canal de erro original e não publica uma cópia.
 
-`recordAudit` devolve o valor do ledger, o registro comprometido e o recibo de publicação. A publicação não falha no canal Effect. O recibo é `published`, `deduplicated` ou `dropped`. Os motivos de descarte são `unbound`, `closed`, `queue-overflow`, `policy-rejected` e `transport`.
+`recordAudit` devolve o valor do ledger, o registro comprometido e o recibo de publicação. A publicação não falha no canal Effect. O recibo é `published`, `deduplicated` ou `dropped`. Os motivos de descarte são `unbound`, `closed`, `queue-overflow`, `contract-rejected`, `policy-rejected` e `transport`. `contract-rejected` indica que a ação, o tipo de recurso derivado, o resultado ou o código de razão não pertence ao contrato do adapter. O relatório registra somente a contagem e os timestamps desse descarte.
 
 ## Outbox da aplicação
 
@@ -33,7 +33,7 @@ Use `recordId` como a única chave de idempotência. Uma repetição dentro da j
 
 O adapter evlog existente fornece `observability.auditLayer`. A cópia usa a mesma fila, os mesmos limites, retry, fallback, flush, close e contagem de perdas dos eventos.
 
-Um contrato que declara `auditActions` também deve registrar `Contract.organizationEvents.AuditRecorded` em `events` antes de iniciar o adapter. Sem esse evento obrigatório, sem amostragem e com severidade `info`, o startup falha com `OBS_EVLOG_AUDIT_CONTRACT_INVALID`.
+Um contrato que declara `auditActions` também deve registrar `Contract.organizationEvents.AuditRecorded` em `events` antes de iniciar o adapter. O evento deve ser obrigatório, usar amostragem `always`, severidade `info` e zero atributos customizados. Sem esse contrato exato, o startup falha com `OBS_EVLOG_AUDIT_CONTRACT_INVALID`.
 
 A política sanitiza todos os campos antes da fila e a projeção nativa lê somente o resultado transformado. A superfície `audit` aceita no máximo 64 campos e 4.096 caracteres por texto. Nove âncoras são imutáveis: `event.outcome`, `event.timestamp`, `audit.record.id`, `audit.record.hash`, `audit.action`, `audit.actor.kind`, `audit.resource.type`, `audit.outcome` e `audit.schema_version`. Se a política remover ou alterar uma dessas âncoras, o adapter descarta a cópia inteira como `policy-rejected`. Três campos obrigatórios não são âncoras: `audit.actor.id`, `audit.resource.id` e `audit.occurred_at`. A política pode mascará-los, mas não removê-los. A política pode remover os campos opcionais `audit.reason_code`, `audit.tenant.id`, `request.id`, `run.id`, `trace.id` e `span.id`. O envelope nativo recebe os mesmos valores mascarados ou removidos dos campos canônicos.
 

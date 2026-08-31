@@ -415,6 +415,102 @@ describe("defineTelemetryContract", () => {
     }),
   );
 
+  it.effect("reports the exact failed audit action rule for every invalid matrix", () =>
+    Effect.gen(function* () {
+      const actionMessage =
+        'Audit action alias "AccessReviewed" has an invalid canonical action. Use 2 to 128 characters in dotted lowercase form with at least two segments.';
+      for (const action of [
+        "access",
+        "Access.reviewed",
+        "access-reviewed",
+        "access.\nreviewed",
+        `a.${"a".repeat(127)}`,
+      ]) {
+        const error = yield* defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {},
+          auditActions: {
+            AccessReviewed: {
+              action,
+              resourceType: "account",
+              allowedOutcomes: ["success"],
+            },
+          },
+        }).pipe(Effect.flip);
+        assert.deepStrictEqual(error.issues, [
+          {
+            code: "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+            message: actionMessage,
+            auditActionAlias: "AccessReviewed",
+            auditActionName: action,
+          },
+        ]);
+      }
+
+      const resourceMessage =
+        'Audit action "access.reviewed" has an invalid resourceType. Use 1 to 64 characters without control characters, starting each dot-separated segment with a lowercase letter and continuing with lowercase letters, digits, or underscores.';
+      for (const resourceType of [
+        "",
+        "Invoice",
+        "invoice-item",
+        "some resource",
+        "a".repeat(65),
+        "account\n",
+      ]) {
+        const error = yield* defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {},
+          auditActions: {
+            AccessReviewed: {
+              action: "access.reviewed",
+              resourceType,
+              allowedOutcomes: ["success"],
+            },
+          },
+        }).pipe(Effect.flip);
+        assert.deepStrictEqual(error.issues, [
+          {
+            code: "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+            message: resourceMessage,
+            auditActionAlias: "AccessReviewed",
+            auditActionName: "access.reviewed",
+          },
+        ]);
+      }
+
+      const outcomesMessage =
+        'Audit action "access.reviewed" has invalid allowedOutcomes. Use a non-empty list containing only success, failure, cancelled, or denied.';
+      for (const allowedOutcomes of [[], ["unknown"]]) {
+        const error = yield* defineTelemetryContract(
+          JSON.parse(
+            JSON.stringify({
+              version: 1,
+              events: {},
+              metrics: {},
+              auditActions: {
+                AccessReviewed: {
+                  action: "access.reviewed",
+                  resourceType: "account",
+                  allowedOutcomes,
+                },
+              },
+            }),
+          ),
+        ).pipe(Effect.flip);
+        assert.deepStrictEqual(error.issues, [
+          {
+            code: "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+            message: outcomesMessage,
+            auditActionAlias: "AccessReviewed",
+            auditActionName: "access.reviewed",
+          },
+        ]);
+      }
+    }),
+  );
+
   it.effect("rejects malformed and duplicate audit reason codes with action context", () =>
     Effect.gen(function* () {
       const error = yield* defineTelemetryContract({
@@ -759,6 +855,8 @@ describe("defineTelemetryContract", () => {
         "OBS_CONTRACT_INVALID_ATTRIBUTE_NAME",
         "OBS_CONTRACT_INVALID_ATTRIBUTE_DEFINITION",
         "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+        "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+        "OBS_CONTRACT_INVALID_AUDIT_ACTION",
       ]);
       const messageFragments = new Map([
         ["OBS_CONTRACT_INVALID_VERSION", "version is invalid"],
@@ -771,7 +869,7 @@ describe("defineTelemetryContract", () => {
           "OBS_CONTRACT_INVALID_ATTRIBUTE_DEFINITION",
           "invalid classification or incompatible flags",
         ],
-        ["OBS_CONTRACT_INVALID_AUDIT_ACTION", "is invalid"],
+        ["OBS_CONTRACT_INVALID_AUDIT_ACTION", "invalid"],
       ]);
       for (const entry of error.issues) {
         assert.include(entry.message, messageFragments.get(entry.code) ?? "unreachable");

@@ -530,18 +530,34 @@ const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<Contra
     } else {
       auditActionAliasesByName.set(action.action, alias);
     }
+    const actionContext = { auditActionAlias: alias, auditActionName: action.action };
+    if (action.action.length > 128 || !auditActionPattern.test(action.action)) {
+      issues.push(
+        issue(
+          "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+          `Audit action alias "${alias}" has an invalid canonical action. Use 2 to 128 characters in dotted lowercase form with at least two segments.`,
+          actionContext,
+        ),
+      );
+    }
+    if (!isAuditResourceType(action.resourceType)) {
+      issues.push(
+        issue(
+          "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+          `Audit action "${action.action}" has an invalid resourceType. Use 1 to 64 characters without control characters, starting each dot-separated segment with a lowercase letter and continuing with lowercase letters, digits, or underscores.`,
+          actionContext,
+        ),
+      );
+    }
     if (
-      action.action.length > 128 ||
-      !auditActionPattern.test(action.action) ||
-      !isAuditResourceType(action.resourceType) ||
       action.allowedOutcomes.length === 0 ||
       action.allowedOutcomes.some((outcome) => !isAuditOutcome(outcome))
     ) {
       issues.push(
         issue(
           "OBS_CONTRACT_INVALID_AUDIT_ACTION",
-          `Audit action "${alias}" is invalid. Use a dotted lowercase action, a resource type, and at least one allowed outcome.`,
-          { auditActionAlias: alias, auditActionName: action.action },
+          `Audit action "${action.action}" has invalid allowedOutcomes. Use a non-empty list containing only success, failure, cancelled, or denied.`,
+          actionContext,
         ),
       );
     }

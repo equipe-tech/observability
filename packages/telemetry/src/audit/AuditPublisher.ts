@@ -14,6 +14,7 @@ export type AuditDropReason =
   | "unbound"
   | "closed"
   | "queue-overflow"
+  | "contract-rejected"
   | "policy-rejected"
   | "transport";
 
@@ -26,6 +27,7 @@ export type AuditPublishReasonCounts = {
   readonly unbound: number;
   readonly closed: number;
   readonly queueOverflow: number;
+  readonly contractRejected: number;
   readonly policyRejected: number;
   readonly transport: number;
 };
@@ -49,6 +51,7 @@ const emptyReport = (): AuditPublishReport => ({
     unbound: 0,
     closed: 0,
     queueOverflow: 0,
+    contractRejected: 0,
     policyRejected: 0,
     transport: 0,
   },
