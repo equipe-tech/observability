@@ -592,7 +592,10 @@ export class OperationsPlanner extends Context.Service<
           stateGeneration = cleaned.generation;
         }
         for (const unresolved of observed.state.mutations.filter(
-          (mutation) => mutation.status === "pending" || mutation.status === "outcome-unknown",
+          (mutation) =>
+            mutation.environment !== undefined &&
+            current.environments.includes(mutation.environment) &&
+            (mutation.status === "pending" || mutation.status === "outcome-unknown"),
         )) {
           const next = yield* stateStore.update(
             current.service,

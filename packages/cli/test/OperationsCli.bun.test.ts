@@ -270,6 +270,37 @@ describe("operations CLI", () => {
       );
       const stagingPlan = JSON.parse(stagingPlanResult.stdout);
       const stagingPath = join(project, ".observability", `plan-${stagingPlan.digest}.json`);
+      const beforeScopedApply = JSON.parse(await readFile(statePath, "utf8"));
+      const stagingIntent = {
+        id: "axiom.dataset.staging-interrupted",
+        operation: "create",
+        resource: "checkout-staging-interrupted",
+        environment: "staging",
+        desiredFingerprint: "staging-interrupted-fingerprint",
+        status: "pending",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      };
+      const prodIntent = {
+        id: "axiom.dataset.prod-interrupted",
+        operation: "create",
+        resource: "checkout-prod-interrupted",
+        environment: "prod",
+        desiredFingerprint: "prod-interrupted-fingerprint",
+        status: "outcome-unknown",
+        updatedAt: "2026-01-02T00:00:00.000Z",
+      };
+      const legacyIntent = {
+        id: "axiom.dataset.legacy-interrupted",
+        operation: "create",
+        resource: "checkout-legacy-interrupted",
+        desiredFingerprint: "legacy-interrupted-fingerprint",
+        status: "pending",
+        updatedAt: "2026-01-03T00:00:00.000Z",
+      };
+      beforeScopedApply.mutations.push(stagingIntent, prodIntent, legacyIntent);
+      await writeFile(statePath, `${JSON.stringify(beforeScopedApply, null, 2)}\n`, {
+        mode: 0o600,
+      });
       expect(
         (
           await runCli(
@@ -286,6 +317,34 @@ describe("operations CLI", () => {
           .map((action: { id: string }) => action.id)
           .sort(),
       ).toEqual(["axiom.correlation.prod", "axiom.retention.prod"]);
+      expect(
+        scopedState.mutations.find((mutation: { id: string }) => mutation.id === stagingIntent.id)
+          ?.status,
+      ).toBe("resolved");
+      expect(
+        JSON.stringify(
+          scopedState.mutations.find((mutation: { id: string }) => mutation.id === prodIntent.id),
+        ),
+      ).toBe(JSON.stringify(prodIntent));
+      expect(
+        JSON.stringify(
+          scopedState.mutations.find((mutation: { id: string }) => mutation.id === legacyIntent.id),
+        ),
+      ).toBe(JSON.stringify(legacyIntent));
+      const legacyBlocked = await runCli(
+        ["ops", "verify", "--dir", project, "--environment", "staging"],
+        home,
+        baseUrl,
+      );
+      expect(legacyBlocked.exitCode).not.toBe(0);
+      expect(legacyBlocked.stderr).toContain("OBS_CLI_MUTATION_UNRESOLVED");
+      scopedState.mutations = scopedState.mutations.filter(
+        (mutation: { id: string }) =>
+          mutation.id !== stagingIntent.id &&
+          mutation.id !== prodIntent.id &&
+          mutation.id !== legacyIntent.id,
+      );
+      await writeFile(statePath, `${JSON.stringify(scopedState, null, 2)}\n`, { mode: 0o600 });
       await writeFile(manifestPath, manifestContent);
 
       const stateWithRemovedResource = JSON.parse(await readFile(statePath, "utf8"));

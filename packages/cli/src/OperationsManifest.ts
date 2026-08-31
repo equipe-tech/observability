@@ -1,4 +1,5 @@
 import { Effect, Schema } from "effect";
+import { parseDocument } from "yaml";
 import { EnvironmentName, ServiceName, resourceNamePattern } from "./ResourceNamePolicy.ts";
 import { ManagedQueryError, parseManagedQuery, type ManagedQuery } from "./ManagedQuery.ts";
 
@@ -77,10 +78,15 @@ const ContractIndexMetric = Schema.Struct({
   unit: Schema.String,
   attributes: Schema.Array(Schema.NonEmptyString),
 });
+const signalNamePattern = /^[a-z][a-z0-9_]*(?:[.][a-z][a-z0-9_]*)+$/;
+const ContractSignalName = Schema.String.check(
+  Schema.isPattern(signalNamePattern),
+  Schema.isMaxLength(128),
+);
 const ContractIndexAlias = Schema.Struct({
   kind: Schema.Literals(["event", "metric"]),
-  from: Schema.NonEmptyString,
-  to: Schema.NonEmptyString,
+  from: ContractSignalName,
+  to: ContractSignalName,
 });
 export const maximumContractAliasCount = 4_096;
 export const maximumContractAliasDepth = 128;
@@ -156,8 +162,31 @@ export const parseOperationsManifest = Effect.fn("parseOperationsManifest")(func
   if (content.length > 1_048_576) {
     return yield* manifestInvalid(["manifest exceeds 1048576 bytes"], content.length);
   }
-  const document = yield* Effect.try({
-    try: () => Bun.YAML.parse(content),
+  const parsed = yield* Effect.try({
+    try: () =>
+      parseDocument(content, {
+        prettyErrors: false,
+        strict: true,
+        stringKeys: true,
+        uniqueKeys: true,
+      }),
+    catch: (cause) => manifestInvalid(["YAML could not be decoded"], cause),
+  });
+  if (parsed.errors.length > 0) {
+    const mappingKeyError = parsed.errors.some(
+      (error) => error.code === "DUPLICATE_KEY" || error.code === "NON_STRING_KEY",
+    );
+    return yield* manifestInvalid(
+      [
+        mappingKeyError
+          ? "YAML contains duplicate or unsupported mapping keys"
+          : "YAML could not be decoded",
+      ],
+      parsed.errors,
+    );
+  }
+  const document: unknown = yield* Effect.try({
+    try: () => parsed.toJS({ maxAliasCount: 100 }),
     catch: (cause) => manifestInvalid(["YAML could not be decoded"], cause),
   });
   const version = yield* decodeManifestVersion(document).pipe(
@@ -390,6 +419,18 @@ const validateQuery = Effect.fn("validateManagedSource")(function* (
         message: `Query group ${invalidGroup.field} is not a declared source attribute.`,
         issues: [`undeclared query group ${invalidGroup.field}`],
         cause: invalidGroup.field,
+      });
+    }
+    if (
+      sources[0]?.kind === "event" &&
+      stage.aggregation.kind !== "count" &&
+      !declaredAttributes.has(stage.aggregation.field)
+    ) {
+      return yield* new OperationsManifestError({
+        code: "OBS_CLI_SOURCE_INVALID",
+        message: `Query aggregation ${stage.aggregation.field} is not a declared source attribute.`,
+        issues: [`undeclared query aggregation ${stage.aggregation.field}`],
+        cause: stage.aggregation.field,
       });
     }
     if (sources[0]?.kind === "metric" && stage.aggregation.kind !== "count") {

@@ -129,6 +129,44 @@ describe("operations manifest", () => {
     expect(error.code).toBe("OBS_CLI_MANIFEST_INVALID");
   });
 
+  test("rejects duplicate YAML keys at every mapping depth", async () => {
+    const duplicates = [
+      validManifest.replace("service: checkout", "service: checkout\nservice: attacker"),
+      validManifest.replace("  enabled: true", "  enabled: true\n  enabled: false"),
+      validManifest.replace("      - id: attempts", "      - id: attempts\n        id: attacker"),
+    ];
+    for (const duplicate of duplicates) {
+      const error = await Effect.runPromise(Effect.flip(parseOperationsManifest(duplicate)));
+      expect(error.code).toBe("OBS_CLI_MANIFEST_INVALID");
+      expect(error.issues).toContain("YAML contains duplicate or unsupported mapping keys");
+    }
+  });
+
+  test("allows repeated keys in separate list items and block query scalar syntax", async () => {
+    const content = validManifest
+      .replace("environments: [staging]", "environments: [staging, prod]")
+      .replace("    days: 30", "    days: 30\n  - environment: prod\n    days: 14")
+      .replace(
+        '        query: signal(logs) | where event.name == "payment.attempt" | summarize count()',
+        '        query: |\n          signal(logs) | where event.name == "payment.attempt" and note == "colon: AND text" | summarize count()',
+      );
+    const manifest = await Effect.runPromise(parseOperationsManifest(content));
+    expect(manifest.retention.map((entry) => entry.days)).toEqual([30, 14]);
+    expect(manifest.dashboards[0]?.panels[0]?.query).toContain("colon: AND text");
+  });
+
+  test("rejects ambiguous complex YAML mapping keys", async () => {
+    const error = await Effect.runPromise(
+      Effect.flip(
+        parseOperationsManifest(
+          validManifest.replace("service: checkout", "? [service, checkout]\n: rejected"),
+        ),
+      ),
+    );
+    expect(error.code).toBe("OBS_CLI_MANIFEST_INVALID");
+    expect(error.issues).toContain("YAML contains duplicate or unsupported mapping keys");
+  });
+
   test("rejects unsupported version before semantic validation", async () => {
     const error = await Effect.runPromise(
       Effect.flip(parseOperationsManifest(validManifest.replace("version: 1", "version: 2"))),
@@ -178,6 +216,22 @@ describe("operations manifest", () => {
       throw new Error("Expected source error.");
     }
     expect(aggregationError.issues).toContain("illegal metric aggregation");
+
+    const undeclaredEventAggregation = await Effect.runPromise(
+      parseOperationsManifest(validManifest.replace("count()", "sum(payment.secret)")),
+    );
+    const eventAggregationError = await Effect.runPromise(
+      Effect.flip(validateOperationsManifest(undeclaredEventAggregation, index)),
+    );
+    if (eventAggregationError._tag !== "OperationsManifestError") {
+      throw new Error("Expected source error.");
+    }
+    expect(eventAggregationError.issues).toContain("undeclared query aggregation payment.secret");
+
+    const declaredEventAggregation = await Effect.runPromise(
+      parseOperationsManifest(validManifest.replace("count()", "sum(payment.provider)")),
+    );
+    await Effect.runPromise(validateOperationsManifest(declaredEventAggregation, index));
   });
 
   test("rejects uppercase, tab and newline AND undeclared-field smuggling", async () => {
@@ -291,6 +345,19 @@ describe("operations manifest", () => {
       ),
     );
     await Effect.runPromise(validateOperationsManifest(counterManifest, index));
+  });
+
+  test("rejects alias names outside the telemetry signal grammar", async () => {
+    const aliases: ReadonlyArray<TestAlias> = [
+      { kind: "event", from: "Not Signal Grammar", to: "payment.attempt" },
+      { kind: "event", from: "payment.old", to: "Not Signal Grammar" },
+    ];
+    for (const alias of aliases) {
+      const error = await Effect.runPromise(
+        Effect.flip(parseOperationsContractIndex(contractWithAliases([alias]))),
+      );
+      expect(error.code).toBe("OBS_CLI_CONTRACT_INDEX_INVALID");
+    }
   });
 
   test("rejects alias counts above the decoder limit", async () => {

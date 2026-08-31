@@ -5,6 +5,10 @@ import {
   ManagedQueryError,
   parseManagedQuery,
   type ManagedQuery,
+  type ManagedQueryComparison,
+  type ManagedQueryLiteral,
+  type ManagedQueryStage,
+  type ManagedQueryTarget,
 } from "../src/ManagedQuery.ts";
 
 const parse = (query: string) => Effect.runPromise(parseManagedQuery(query));
@@ -109,6 +113,35 @@ describe("managed query", () => {
         })
       ).text,
     ).toContain(String.raw`['note'] == 'quote\' slash\\ newline\nnext'`);
+
+    const hazards =
+      "\u0000\u001f\u007f\u0085\u009f\u00ad\u061c\u200e\u2028\u2029\u202e\u2066\ufeff\u{1bca0}\u{e0001}";
+    const hazardousQuery: ManagedQuery = {
+      ...query,
+      stages: query.stages.map((stage) =>
+        stage.kind === "where"
+          ? {
+              ...stage,
+              comparisons: stage.comparisons.map((comparison) =>
+                comparison.field === "note"
+                  ? { ...comparison, values: [{ kind: "string", value: hazards }] }
+                  : comparison,
+              ),
+            }
+          : stage,
+      ),
+    };
+    const rendered = (
+      await compile(hazardousQuery, {
+        dataset: "logs",
+        language: "apl",
+        signals: ["payment.attempt"],
+      })
+    ).text;
+    expect(rendered).not.toMatch(/[\p{Cc}\p{Cf}\u2028\u2029]/u);
+    expect(rendered).toContain(
+      String.raw`\u0000\u001f\u007f\u0085\u009f\u00ad\u061c\u200e\u2028\u2029\u202e\u2066\ufeff\ud82f\udca0\udb40\udc01`,
+    );
   });
 
   test("rejects unsafe numeric representations", async () => {
@@ -286,6 +319,105 @@ describe("managed query", () => {
     );
     expect(targetError).toBeInstanceOf(ManagedQueryError);
     expect(targetError.code).toBe("OBS_CLI_QUERY_INVALID");
+  });
+
+  test("returns typed failures for hostile getters, proxies and rendering defects", async () => {
+    const query = await parse('signal(logs) | where event.name == "payment.attempt"');
+    const hostileTarget: ManagedQueryTarget = {
+      get dataset(): string {
+        throw new Error("hostile dataset getter");
+      },
+      language: "apl",
+      signals: ["payment.attempt"],
+    };
+    const hostileQuery = new Proxy(query, {
+      ownKeys() {
+        throw new Error("hostile query proxy");
+      },
+    });
+    for (const effect of [
+      compileManagedQuery(query, hostileTarget),
+      compileManagedQuery(hostileQuery, {
+        dataset: "logs",
+        language: "apl",
+        signals: ["payment.attempt"],
+      }),
+    ]) {
+      const error = await Effect.runPromise(Effect.flip(effect));
+      expect(error).toBeInstanceOf(ManagedQueryError);
+      expect(error.code).toBe("OBS_CLI_QUERY_INVALID");
+    }
+  });
+
+  test("bounds direct AST stages, comparisons, values and rendered text", async () => {
+    const query = await parse('signal(logs) | where event.name == "payment.attempt"');
+    const binding = query.stages[0];
+    if (binding?.kind !== "where") throw new Error("Expected binding stage.");
+    const comparison = binding.comparisons[0];
+    if (comparison === undefined) throw new Error("Expected binding comparison.");
+    const summary: ManagedQueryStage = {
+      kind: "summarize",
+      aggregation: { kind: "count" },
+      groups: [],
+    };
+    const ordinaryComparison: ManagedQueryComparison = {
+      kind: "comparison",
+      field: "payment.provider",
+      operator: "==",
+      values: [{ kind: "string", value: "stripe" }],
+    };
+    const excessiveStages: ManagedQuery = {
+      ...query,
+      stages: [binding, ...Array.from({ length: 64 }, () => summary)],
+    };
+    const excessiveComparisons: ManagedQuery = {
+      ...query,
+      stages: [
+        {
+          kind: "where",
+          comparisons: [comparison, ...Array.from({ length: 64 }, () => ordinaryComparison)],
+        },
+      ],
+    };
+    const excessiveValues: ManagedQuery = {
+      ...query,
+      stages: [
+        binding,
+        {
+          kind: "where",
+          comparisons: [
+            {
+              kind: "comparison",
+              field: "payment.provider",
+              operator: "in",
+              values: Array.from({ length: 257 }, (_, index): ManagedQueryLiteral => ({
+                kind: "string",
+                value: `provider.${index}`,
+              })),
+            },
+          ],
+        },
+      ],
+    };
+    const cases: ReadonlyArray<readonly [ManagedQuery, ManagedQueryTarget["signals"]]> = [
+      [excessiveStages, ["payment.attempt"]],
+      [excessiveComparisons, ["payment.attempt"]],
+      [excessiveValues, ["payment.attempt"]],
+      [query, ["x".repeat(16_384)]],
+    ];
+    for (const [candidate, signals] of cases) {
+      const error = await Effect.runPromise(
+        Effect.flip(
+          compileManagedQuery(candidate, {
+            dataset: "logs",
+            language: "apl",
+            signals,
+          }),
+        ),
+      );
+      expect(error).toBeInstanceOf(ManagedQueryError);
+      expect(error.code).toBe("OBS_CLI_QUERY_INVALID");
+    }
   });
 
   test("rejects oversized and unterminated input", async () => {
