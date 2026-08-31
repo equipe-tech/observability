@@ -92,6 +92,7 @@ describe("defineTelemetryContract", () => {
       "OBS_CONTRACT_INVALID_SAMPLING_RATE",
       "OBS_CONTRACT_INVALID_AUDIT_ACTION",
       "OBS_CONTRACT_DUPLICATE_AUDIT_ACTION",
+      "OBS_CONTRACT_INVALID_AUDIT_REASON_CODE",
       "OBS_CONTRACT_INVALID_METRIC_NAME",
       "OBS_CONTRACT_DUPLICATE_METRIC_NAME",
       "OBS_CONTRACT_INVALID_METRIC_KIND",
@@ -110,7 +111,7 @@ describe("defineTelemetryContract", () => {
       const contract = yield* compileApplicationContract;
       assert.strictEqual(contract.version, 1);
       assert.strictEqual(contract.eventByAlias.get("BrowserError")?.name, "browser.error");
-      assert.strictEqual(contract.eventByName.size, 11);
+      assert.strictEqual(contract.eventByName.size, 12);
       assert.strictEqual(
         contract.auditActionByAlias.get("AccessReviewed")?.resourceType,
         "account",
@@ -399,6 +400,32 @@ describe("defineTelemetryContract", () => {
           auditActionName: "access.reviewed",
         },
       ]);
+    }),
+  );
+
+  it.effect("rejects malformed and duplicate audit reason codes with action context", () =>
+    Effect.gen(function* () {
+      const error = yield* defineTelemetryContract({
+        version: 1,
+        events: {},
+        metrics: {},
+        auditActions: {
+          AccessReviewed: {
+            action: "access.reviewed",
+            resourceType: "account",
+            allowedOutcomes: ["success"],
+            reasonCodes: ["approval.missing", "approval.missing", "free text"],
+          },
+        },
+      }).pipe(Effect.flip);
+      const reasons = error.issues.filter(
+        (entry) => entry.code === "OBS_CONTRACT_INVALID_AUDIT_REASON_CODE",
+      );
+      assert.lengthOf(reasons, 2);
+      for (const reason of reasons) {
+        assert.strictEqual(reason.auditActionAlias, "AccessReviewed");
+        assert.strictEqual(reason.auditActionName, "access.reviewed");
+      }
     }),
   );
 
@@ -811,9 +838,9 @@ describe("defineTelemetryContract", () => {
 });
 
 describe("organization contracts", () => {
-  it("exports the independent version identity and eight product-neutral boundary contracts", () => {
+  it("exports the independent version identity and product-neutral boundary contracts", () => {
     assert.strictEqual(organizationContractVersion, 1);
-    assert.lengthOf(organizationEventFixtures, 8);
+    assert.lengthOf(organizationEventFixtures, 9);
     const serialized = JSON.stringify(organizationEventFixtures).toLowerCase();
     for (const deniedName of [
       "hibou",
@@ -834,6 +861,7 @@ describe("organization contracts", () => {
         "queue.job",
         "payment.attempt",
         "usage.recorded",
+        "audit.recorded",
         "browser.error",
       ],
     );
@@ -872,6 +900,7 @@ describe("contract event producer", () => {
       "OBS_EVENT_UNKNOWN_AUDIT_ACTION",
       "OBS_EVENT_INVALID_AUDIT_RESOURCE",
       "OBS_EVENT_INVALID_AUDIT_OUTCOME",
+      "OBS_EVENT_INVALID_AUDIT_REASON",
     ]);
   });
 
@@ -1370,6 +1399,21 @@ describe("contract event producer", () => {
       assert.strictEqual(wrongOutcome.eventName, "access.reviewed");
       assert.strictEqual(wrongOutcome.attributeName, "event.outcome");
       assert.include(wrongOutcome.message, "does not allow outcome");
+      const wrongReason = yield* producer
+        .emit("AuditTracked", {
+          outcome: "success",
+          audit: {
+            action: "access.reviewed",
+            actor: { kind: "system" },
+            resourceType: "account",
+            resourceId: "account-1",
+            reasonCode: "free text",
+          },
+          attributes: {},
+        })
+        .pipe(Effect.provide(sink.layer), Effect.flip);
+      assert.strictEqual(wrongReason.code, "OBS_EVENT_INVALID_AUDIT_REASON");
+      assert.strictEqual(wrongReason.attributeName, "audit.reason_code");
       assert.lengthOf(yield* sink.events, 0);
     }),
   );

@@ -55,6 +55,7 @@ export type ObservabilityAdapterHandle = {
   readonly flush: Effect.Effect<void, AdapterFailure>;
   readonly close: Effect.Effect<void, AdapterFailure>;
   readonly eventLayer: Option.Option<Layer.Layer<TelemetryEventSink>>;
+  readonly auditLayer?: Option.Option<Layer.Layer<never>>;
   readonly degraded: () => boolean;
 };
 

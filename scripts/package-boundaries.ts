@@ -28,7 +28,13 @@ type PathOwnership = {
   readonly role: BoundaryRole;
 };
 
-type DependencyKind = "framework" | "metric-api" | "otlp" | "provider" | "runtime-platform";
+type DependencyKind =
+  | "database"
+  | "framework"
+  | "metric-api"
+  | "otlp"
+  | "provider"
+  | "runtime-platform";
 
 export const defineOwnership = (
   entries: ReadonlyArray<PathOwnership>,
@@ -101,15 +107,29 @@ const frameworkPackages = new Set([
 ]);
 
 const forbiddenByRole = new Map<BoundaryRole, ReadonlySet<DependencyKind>>([
-  ["core", new Set(["framework", "metric-api", "otlp", "provider", "runtime-platform"])],
-  ["domain", new Set(["metric-api", "otlp", "provider", "runtime-platform"])],
+  [
+    "core",
+    new Set(["database", "framework", "metric-api", "otlp", "provider", "runtime-platform"]),
+  ],
+  ["domain", new Set(["database", "metric-api", "otlp", "provider", "runtime-platform"])],
   ["bootstrap", new Set(["framework", "provider"])],
-  ["adapter", new Set()],
-  ["react", new Set(["framework", "otlp", "provider", "runtime-platform"])],
+  ["adapter", new Set(["database"])],
+  ["react", new Set(["database", "framework", "otlp", "provider", "runtime-platform"])],
 ]);
 
 const dependencyKind = (specifier: string): DependencyKind | undefined => {
   const dependency = packageNameForSpecifier(specifier);
+  if (
+    specifier === "bun:sqlite" ||
+    dependency === "pg" ||
+    dependency === "postgres" ||
+    dependency === "drizzle-orm" ||
+    dependency === "@prisma/client" ||
+    dependency === "typeorm" ||
+    dependency === "sequelize"
+  ) {
+    return "database";
+  }
   if (dependency.startsWith("@effect/platform-")) return "runtime-platform";
   if (
     specifier === "effect/Metric" ||

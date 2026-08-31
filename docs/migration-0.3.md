@@ -57,6 +57,8 @@ Cada instrumento aceita no máximo 100 valores distintos por rótulo durante a v
 
 A versão 0.3 reserva campos preenchidos pelos sinks. Remova das definições de atributos da aplicação `event.source`, `event.policy_dropped_attributes`, `browser.event.id`, `browser.event.occurred_at`, `error.name` e `error.status`. Esses nomes, junto com os demais campos canônicos listados no contrato de telemetria, produzem `OBS_CONTRACT_RESERVED_ATTRIBUTE_NAME` durante a compilação do contrato.
 
+Remova também os atributos da aplicação `audit.reason_code`, `audit.tenant.id`, `audit.record.id`, `audit.record.hash`, `audit.occurred_at` e `audit.schema_version`. A versão 0.3 reserva esses campos para cópias operacionais de auditoria.
+
 ## Limitar timestamps ao intervalo do OTLP
 
 Eventos de servidor e browser aceitam timestamps entre `1970-01-01T00:00:00.000Z` e `2554-07-21T23:34:33.709Z`, inclusive. O limite superior corresponde a `18446744073709` milissegundos desde o epoch. Corrija relógios de dispositivo e timestamps fornecidos pela aplicação antes da emissão. Valores fora desse intervalo podem fazer o Collector rejeitar o lote inteiro.
@@ -132,6 +134,12 @@ O núcleo mantém `./metrics`, `./node`, `./browser`, `./browser/client` e `./te
 Instale `@equipe-tech/observability-evlog@0.3.x` e registre `evlogAdapter().registration` em `createNodeObservability`. Forneça `observability.eventLayer` ao `EventProducer.emit`. O adapter depende diretamente de `evlog@2.27.1`; a aplicação não monta fila, retry ou transporte.
 
 O ingest HTTP do browser agora exige a mesma layer. Passe `{ eventLayer: observability.eventLayer }` para `createBrowserEventsController`. Implementações próprias de `TelemetryEventSink` devem trocar `recordBrowser` por `recordBrowserBatch` e validar o lote inteiro antes de produzir qualquer efeito. Remova a composição manual de `EvlogModule` para o fluxo de eventos de contrato.
+
+## Migrar auditorias do servidor
+
+Declare ações em `auditActions` e use `AuditOutcome` quando uma auditoria precisa representar `denied`. `EventOutcome` não mudou. Troque razões livres por códigos fechados em `reasonCodes`.
+
+Mantenha o ledger no banco de dados da aplicação. Use `commitAuditRecord` ou `recordAudit` para impedir a publicação antes da escrita durável. Forneça `layerNodeAuditDigest` e `observability.auditLayer` no runtime Node. Não publique auditorias pelo browser ou pelo pacote React.
 
 ## Usar releases independentes
 

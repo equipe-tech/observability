@@ -1,4 +1,5 @@
 export * as BrowserEvents from "./BrowserEvents.ts";
+export * from "./audit/index.ts";
 export * as Contract from "./contract/index.ts";
 export {
   CorrelationContext,
@@ -38,7 +39,12 @@ export type {
 } from "./contract/MetricProducer.ts";
 export { InvalidMetricMeasurement } from "./contract/MetricContractError.ts";
 export type { MetricMeasurementErrorCode } from "./contract/MetricContractError.ts";
-export type { TelemetryContract, TelemetryContractInput } from "./contract/TelemetryContract.ts";
+export type {
+  AuditActionDefinition,
+  AuditActionDefinitionInput,
+  TelemetryContract,
+  TelemetryContractInput,
+} from "./contract/TelemetryContract.ts";
 export type { EventAttributes, TelemetryEvent } from "./contract/TelemetryEvent.ts";
 export * as Telemetry from "./Telemetry.ts";
 export * from "./profile/index.ts";

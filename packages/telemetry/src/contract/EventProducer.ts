@@ -1,4 +1,5 @@
 import { Clock, Context, DateTime, Effect, Predicate, Random, Schema } from "effect";
+import { AuditOutcome, type AuditActor } from "../audit/AuditRecord.ts";
 import { CorrelationContext, CurrentCorrelation } from "../Correlation.ts";
 import {
   type AttributeDefinitionsInput,
@@ -11,7 +12,6 @@ import {
 import type { BrowserEventError } from "../BrowserEvents.ts";
 import {
   AuditContext,
-  type AuditActor,
   type AttributeValue,
   ErrorContext,
   EventDuration,
@@ -78,6 +78,7 @@ type AuditPayloadForAction<Action extends AuditActionDefinitionInput> = {
     readonly actor: AuditActor;
     readonly resourceType: Action["resourceType"];
     readonly resourceId: string;
+    readonly reasonCode?: string;
   };
 };
 
@@ -242,6 +243,7 @@ const parseAttributes = (
 
 const decodeSeverity = Schema.decodeUnknownEffect(EventSeverity);
 const decodeOutcome = Schema.decodeUnknownEffect(EventOutcome);
+const decodeAuditOutcome = Schema.decodeUnknownEffect(AuditOutcome);
 const decodeTimestamp = Schema.decodeUnknownEffect(EventTimestamp);
 const decodeDuration = Schema.decodeUnknownEffect(EventDuration);
 const decodeHttp = Schema.decodeUnknownEffect(HttpContext);
@@ -322,7 +324,7 @@ const parseCorrelation = (
   );
 };
 
-const parseOutcome = (definition: CompiledEventDefinition, outcome: EventOutcome) =>
+const parseOutcome = (definition: CompiledEventDefinition, outcome: EventOutcome | AuditOutcome) =>
   decodeOutcome(outcome).pipe(
     Effect.mapError(() =>
       eventError(
@@ -346,7 +348,7 @@ const parseSeverity = (eventName: string, severity: EventSeverity) =>
 
 const shouldRecord = Effect.fn("shouldRecord")(function* (
   definition: CompiledEventDefinition,
-  outcome: EventOutcome,
+  outcome: EventOutcome | AuditOutcome,
 ): Effect.fn.Return<boolean> {
   if (
     definition.mandatory ||
@@ -449,7 +451,15 @@ const buildEvent = Effect.fn("buildEvent")(function* (
           { eventName: definition.name },
         );
       }
-      const outcome = yield* parseOutcome(definition, payload.outcome);
+      const outcome = yield* decodeAuditOutcome(payload.outcome).pipe(
+        Effect.mapError(() =>
+          eventError(
+            "OBS_EVENT_INVALID_AUDIT_OUTCOME",
+            `Audit event "${definition.name}" has an invalid outcome. Use success, failure, cancelled, or denied.`,
+            { eventName: definition.name, attributeName: "event.outcome" },
+          ),
+        ),
+      );
       const audit = yield* parseAudit(definition.name, payload.audit);
       const action = contract.auditActionByName.get(audit.action);
       if (action === undefined) {
@@ -471,6 +481,13 @@ const buildEvent = Effect.fn("buildEvent")(function* (
           "OBS_EVENT_INVALID_AUDIT_OUTCOME",
           `Audit action "${audit.action}" does not allow outcome "${outcome}". Use one of its declared outcomes.`,
           { eventName: definition.name, attributeName: "event.outcome" },
+        );
+      }
+      if (audit.reasonCode !== undefined && !action.reasonCodes.includes(audit.reasonCode)) {
+        return yield* eventError(
+          "OBS_EVENT_INVALID_AUDIT_REASON",
+          `Audit action "${audit.action}" does not declare reason code "${audit.reasonCode}". Use a declared reason code or omit it.`,
+          { eventName: definition.name, attributeName: "audit.reason_code" },
         );
       }
       return { ...base, kind: "audit", outcome, audit };

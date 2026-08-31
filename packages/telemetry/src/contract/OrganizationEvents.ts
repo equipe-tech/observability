@@ -82,6 +82,14 @@ export const organizationEvents = defineEventDefinitions({
       "usage.unit": publicRequired,
     },
   },
+  AuditRecorded: {
+    name: "audit.recorded",
+    kind: "audit",
+    defaultSeverity: "info",
+    mandatory: true,
+    sampling: { kind: "always" },
+    attributes: {},
+  },
   BrowserError: {
     name: "browser.error",
     kind: "defect",

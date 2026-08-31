@@ -1,5 +1,7 @@
 import { DateTime, Option, Schema } from "effect";
+import { AuditOutcome } from "../audit/AuditRecord.ts";
 import type { CorrelationContext } from "../Correlation.ts";
+
 import type { EventName } from "./EventName.ts";
 
 export const EventSeverity = Schema.Literals(["debug", "info", "warn", "error", "fatal"]);
@@ -47,6 +49,7 @@ export const AuditContext = Schema.Struct({
   actor: AuditActor,
   resourceType: Schema.NonEmptyString,
   resourceId: Schema.NonEmptyString,
+  reasonCode: Schema.String.pipe(Schema.optionalKey),
 });
 export type AuditContext = typeof AuditContext.Type;
 
@@ -132,6 +135,6 @@ export type TelemetryEvent =
     })
   | (EventBase & {
       readonly kind: "audit";
-      readonly outcome: EventOutcome;
+      readonly outcome: AuditOutcome;
       readonly audit: AuditContext;
     });

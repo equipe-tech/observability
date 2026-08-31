@@ -1,0 +1,156 @@
+import { describe, expect, it } from "vite-plus/test";
+import { Effect, Layer, Option, Schema } from "effect";
+import {
+  AuditDigest,
+  AuditHash,
+  AuditPublisher,
+  canonicalAuditPayload,
+  commitAuditRecord,
+  defineTelemetryContract,
+  InvalidAuditRecord,
+  parseAuditRecord,
+  recordAudit,
+  type AuditRecordInput,
+} from "../src/index.ts";
+import { layerNodeAuditDigest } from "../src/node/index.ts";
+
+const contractEffect = defineTelemetryContract({
+  version: 1,
+  events: {},
+  metrics: {},
+  auditActions: {
+    InvoiceRefunded: {
+      action: "invoice.refunded",
+      resourceType: "invoice",
+      allowedOutcomes: ["success", "failure", "denied"],
+      reasonCodes: ["approval.missing", "policy.limit_exceeded"],
+    },
+  },
+});
+
+const input = {
+  recordId: "audit-1",
+  action: "invoice.refunded",
+  actor: { kind: "user", id: "user-1" },
+  resource: { id: "invoice-1" },
+  outcome: "denied",
+  reasonCode: "approval.missing",
+  tenantId: "tenant-1",
+  occurredAt: "2026-01-02T03:04:05.000Z",
+} satisfies AuditRecordInput;
+
+const parsedRecord = Effect.gen(function* () {
+  const contract = yield* contractEffect;
+  return yield* parseAuditRecord(contract, input);
+});
+
+describe("audit contracts", () => {
+  it("binds action-owned resource, outcome, reason, and immutable snapshots", async () => {
+    const record = await Effect.runPromise(parsedRecord);
+    expect(record.resource.type).toBe("invoice");
+    expect(Option.getOrUndefined(record.reasonCode)).toBe("approval.missing");
+    expect(Object.isFrozen(record)).toBe(true);
+    expect(Object.isFrozen(record.actor)).toBe(true);
+    expect(Object.isFrozen(record.resource)).toBe(true);
+  });
+
+  it("returns distinct typed parse failures", async () => {
+    const contract = await Effect.runPromise(contractEffect);
+    const cases: ReadonlyArray<readonly [AuditRecordInput, InvalidAuditRecord["code"]]> = [
+      [{ ...input, action: "invoice.unknown" }, "OBS_AUDIT_UNKNOWN_ACTION"],
+      [{ ...input, actor: { kind: "user", id: "\n" } }, "OBS_AUDIT_INVALID_ACTOR"],
+      [{ ...input, resource: { id: "\n" } }, "OBS_AUDIT_INVALID_RESOURCE"],
+      [{ ...input, outcome: "cancelled" }, "OBS_AUDIT_INVALID_OUTCOME"],
+      [{ ...input, reasonCode: "because I said so" }, "OBS_AUDIT_UNKNOWN_REASON_CODE"],
+      [{ ...input, recordId: "\n" }, "OBS_AUDIT_INVALID_FIELD"],
+    ];
+    for (const [candidate, code] of cases) {
+      const error = await Effect.runPromise(
+        parseAuditRecord(contract, candidate).pipe(Effect.flip),
+      );
+      expect(error).toBeInstanceOf(InvalidAuditRecord);
+      expect(error.code).toBe(code);
+    }
+  });
+
+  it("does not publish when the durable write fails", async () => {
+    const record = await Effect.runPromise(parsedRecord);
+    let published = 0;
+    const publisher = Layer.succeed(
+      AuditPublisher,
+      AuditPublisher.of({
+        publish: () =>
+          Effect.sync(() => {
+            published += 1;
+            return { kind: "published" };
+          }),
+        report: () => ({
+          published,
+          deduplicated: 0,
+          dropped: 0,
+          firstDroppedAt: Option.none(),
+          lastDroppedAt: Option.none(),
+          reasons: {
+            unbound: 0,
+            closed: 0,
+            queueOverflow: 0,
+            policyRejected: 0,
+            transport: 0,
+          },
+        }),
+      }),
+    );
+    const failure = { code: "DATABASE_DOWN" };
+    const error = await Effect.runPromise(
+      recordAudit(record, Effect.fail(failure)).pipe(
+        Effect.provide(layerNodeAuditDigest),
+        Effect.provide(publisher),
+        Effect.flip,
+      ),
+    );
+    expect(error).toBe(failure);
+    expect(published).toBe(0);
+  });
+
+  it("constructs a committed record only after the durable write", async () => {
+    const record = await Effect.runPromise(parsedRecord);
+    const order: Array<string> = [];
+    const digest = Layer.succeed(
+      AuditDigest,
+      AuditDigest.of({
+        hash: () =>
+          Effect.sync(() => {
+            order.push("digest");
+            return Schema.decodeUnknownSync(AuditHash)("a".repeat(64));
+          }),
+      }),
+    );
+    const result = await Effect.runPromise(
+      commitAuditRecord(
+        record,
+        Effect.sync(() => {
+          order.push("durable");
+          return "row";
+        }),
+      ).pipe(Effect.provide(digest)),
+    );
+    expect(order).toEqual(["durable", "digest"]);
+    expect(result.committed).toBe("row");
+    expect(Object.isFrozen(result.record)).toBe(true);
+  });
+
+  it("keeps canonical payload and SHA-256 stable", async () => {
+    const record = await Effect.runPromise(parsedRecord);
+    const payload = canonicalAuditPayload(record);
+    const digest = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* AuditDigest;
+        return yield* service.hash(payload);
+      }).pipe(Effect.provide(layerNodeAuditDigest)),
+    );
+    expect(canonicalAuditPayload(record)).toBe(payload);
+    expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(payload).not.toContain("email");
+    expect(payload).not.toContain("metadata");
+  });
+});

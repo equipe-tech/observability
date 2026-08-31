@@ -1,3 +1,4 @@
+export { layerNodeAuditDigest } from "./AuditDigest.ts";
 export {
   ingestBrowserEventBatch,
   ingestBrowserEvents,
