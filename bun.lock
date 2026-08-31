@@ -72,18 +72,22 @@
     "packages/sentry": {
       "name": "@equipe-tech/observability-sentry",
       "version": "0.3.0",
-      "dependencies": {
-        "@sentry/browser": "10.72.0",
-        "@sentry/node-core": "10.72.0",
-      },
       "devDependencies": {
         "@equipe-tech/observability": "workspace:*",
+        "@sentry/browser": "10.72.0",
+        "@sentry/node-core": "10.72.0",
         "effect": "4.0.0-rc.111",
       },
       "peerDependencies": {
         "@equipe-tech/observability": "0.3.x",
+        "@sentry/browser": "10.72.0",
+        "@sentry/node-core": "10.72.0",
         "effect": "4.0.0-rc.111",
       },
+      "optionalPeers": [
+        "@sentry/browser",
+        "@sentry/node-core",
+      ],
     },
     "packages/telemetry": {
       "name": "@equipe-tech/observability",

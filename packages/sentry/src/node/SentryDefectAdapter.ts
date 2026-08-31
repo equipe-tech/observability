@@ -130,11 +130,19 @@ export const sentryDefectAdapter = (
 ): SentryDefectAdapter => {
   const reportState = sentryReportState();
   let active: ActiveClient | undefined;
+  let startReservation: symbol | undefined;
   let closed = false;
   let flushInFlight: Promise<boolean> | undefined;
   let closeInFlight: Promise<boolean> | undefined;
   let closeResult: boolean | undefined;
   let verificationTail: Promise<void> = Promise.resolve();
+
+  const reserveStart = (reservation: symbol) =>
+    Effect.sync(() => {
+      if (startReservation !== undefined || active !== undefined) return false;
+      startReservation = reservation;
+      return true;
+    });
 
   const captureNow = (input: SentryDefectCapture): CaptureResult => {
     const current = active;
@@ -185,6 +193,7 @@ export const sentryDefectAdapter = (
       .catch(() => false)
       .then((completed) => {
         current.settlements.clear();
+        if (!completed) reportState.increment("flushIncomplete");
         active = undefined;
         closed = true;
         closeResult = completed;
@@ -197,8 +206,19 @@ export const sentryDefectAdapter = (
     name: AdapterName.make("sentry-defects"),
     capability: "defects",
     stage: "server",
-    start: (context) =>
-      Effect.gen(function* () {
+    start: (context) => {
+      const reservation = Symbol();
+      return Effect.gen(function* () {
+        if (!(yield* reserveStart(reservation))) {
+          return yield* adapterFailure(
+            new SentryAdapterError({
+              code: "OBS_SENTRY_CONFIG_INVALID",
+              message:
+                "The Sentry adapter instance is already started. Close its runtime before starting another.",
+              cause: "Sentry adapter instance already started",
+            }),
+          );
+        }
         const resolved = yield* resolveOptions(options).pipe(Effect.mapError(adapterFailure));
         if (!context.sentry.enabled) {
           return yield* adapterFailure(
@@ -295,9 +315,19 @@ export const sentryDefectAdapter = (
           flush: Effect.promise(flush).pipe(Effect.asVoid),
           close: Effect.promise(close).pipe(Effect.asVoid),
           eventLayer: Option.none(),
-          degraded: () => reportState.report().reasons.flushIncomplete > 0,
+          degraded: () => {
+            const reasons = reportState.report().reasons;
+            return reasons.transport > 0 || reasons.flushIncomplete > 0;
+          },
         };
-      }),
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (startReservation === reservation) startReservation = undefined;
+          }),
+        ),
+      );
+    },
   });
 
   const capture = (input: SentryDefectCapture): Effect.Effect<SentryCaptureOutcome> =>

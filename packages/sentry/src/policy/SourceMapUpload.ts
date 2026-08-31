@@ -16,16 +16,11 @@ export type SentrySourceMapPlan = {
   readonly environment: { readonly authTokenVariable: "SENTRY_AUTH_TOKEN" };
 };
 
+const UnsafeArgumentCharacter = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 const SafeArgument = Schema.NonEmptyString.check(
-  Schema.makeFilter(
-    (value) =>
-      !value.startsWith("-") &&
-      !Array.from(value).some((character) => {
-        const codePoint = character.codePointAt(0);
-        return codePoint !== undefined && (codePoint <= 31 || codePoint === 127);
-      }),
-    { expected: "a value without leading flags or control characters" },
-  ),
+  Schema.makeFilter((value) => !value.startsWith("-") && !UnsafeArgumentCharacter.test(value), {
+    expected: "a value without leading flags or control characters",
+  }),
 );
 const Name = SafeArgument.check(Schema.isPattern(/^[a-zA-Z0-9._-]+$/));
 const Path = SafeArgument;

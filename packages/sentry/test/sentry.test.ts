@@ -119,7 +119,16 @@ describe("Sentry adapter policy", () => {
       environment: { authTokenVariable: "SENTRY_AUTH_TOKEN" },
     });
     expect(JSON.stringify(plan)).not.toContain("AUTH_TOKEN=");
-    for (const unsafe of ["--auth-token=secret", "dist\n--org", "dist\u0000map"]) {
+    for (const unsafe of [
+      "--auth-token=secret",
+      "dist\n--org",
+      "dist\u0000map",
+      "dist\u0085map",
+      "dist\u202Emap",
+      "dist\u2066map",
+      "dist\u2028map",
+      "dist\u2029map",
+    ]) {
       expect(() =>
         sentrySourceMapUpload({
           organization: "equipe-tech",
@@ -452,7 +461,7 @@ describe("Sentry adapter policy", () => {
     expect(await sentry.sendVerificationDefect({ envelope: retry })).toMatchObject({
       flushed: true,
     });
-    await runtime.close();
+    expect((await runtime.close()).degraded).toBe(true);
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error === undefined ? resolve() : reject(error))),
     );
@@ -590,6 +599,79 @@ describe("Sentry adapter policy", () => {
     );
   });
 
+  it("preserves an active Node generation and permits reuse only after close", async () => {
+    const bodies: Array<string> = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        bodies.push(body);
+        response.writeHead(200);
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    const contract = await Effect.runPromise(
+      defineTelemetryContract({ version: 1, events: {}, metrics: {}, auditActions: {} }),
+    );
+    const sentry = sentryDefectAdapter();
+    const env = {
+      OTEL_SERVICE_VERSION: "1.4.0",
+      OTEL_DEPLOYMENT_ENVIRONMENT: "test",
+      OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${address.port}`,
+      SENTRY_DSN: `http://public@127.0.0.1:${address.port}/1`,
+    };
+    const firstEvents = evlogAdapter({ installGlobalLogger: false, stdout: { write: () => true } });
+    const firstRuntime = await createNodeObservability({
+      profile: "worker",
+      env: { ...env, OTEL_SERVICE_NAME: "first-runtime" },
+      contract,
+      policy,
+      adapters: [firstEvents.registration, sentry.registration],
+    });
+    const secondEvents = evlogAdapter({
+      installGlobalLogger: false,
+      stdout: { write: () => true },
+    });
+    await expect(
+      createNodeObservability({
+        profile: "worker",
+        env: { ...env, OTEL_SERVICE_NAME: "rejected-runtime" },
+        contract,
+        policy,
+        adapters: [secondEvents.registration, sentry.registration],
+      }),
+    ).rejects.toMatchObject({ cause: { cause: { code: "OBS_SENTRY_CONFIG_INVALID" } } });
+    expect(await sentry.sendVerificationDefect({ envelope: envelope("first-runtime") })).toEqual({
+      eventId: expect.any(String),
+      flushed: true,
+    });
+    expect((await firstRuntime.close()).degraded).toBe(false);
+    const thirdEvents = evlogAdapter({ installGlobalLogger: false, stdout: { write: () => true } });
+    const thirdRuntime = await createNodeObservability({
+      profile: "worker",
+      env: { ...env, OTEL_SERVICE_NAME: "third-runtime" },
+      contract,
+      policy,
+      adapters: [thirdEvents.registration, sentry.registration],
+    });
+    expect(await sentry.sendVerificationDefect({ envelope: envelope("third-runtime") })).toEqual({
+      eventId: expect.any(String),
+      flushed: true,
+    });
+    expect((await thirdRuntime.close()).degraded).toBe(false);
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+    expect(bodies.some((body) => body.includes('"service.name":"first-runtime"'))).toBe(true);
+    expect(bodies.some((body) => body.includes('"service.name":"third-runtime"'))).toBe(true);
+    expect(bodies.some((body) => body.includes('"service.name":"rejected-runtime"'))).toBe(false);
+  });
+
   it("reports degraded Node lifecycle and suppresses capture after close timeout", async () => {
     const server = createServer(() => {});
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -597,10 +679,7 @@ describe("Sentry adapter policy", () => {
     const contract = await Effect.runPromise(
       defineTelemetryContract({ version: 1, events: {}, metrics: {}, auditActions: {} }),
     );
-    const sentry = sentryDefectAdapter({
-      flushDeadlineMillis: 20,
-      closeDeadlineMillis: 20,
-    });
+    const sentry = sentryDefectAdapter({ closeDeadlineMillis: 20 });
     const events = evlogAdapter({ installGlobalLogger: false, stdout: { write: () => true } });
     const runtime = await createNodeObservability({
       profile: "worker",
@@ -616,9 +695,10 @@ describe("Sentry adapter policy", () => {
       adapters: [events.registration, sentry.registration],
     });
     expect((await sentry.captureAsync({ envelope: envelope("node-hang") })).kind).toBe("queued");
-    expect((await runtime.flush()).degraded).toBe(true);
-    expect(sentry.reports().reasons.flushIncomplete).toBe(1);
-    await runtime.close();
+    const report = await runtime.close();
+    expect(report.operation).toBe("close");
+    expect(report.degraded).toBe(true);
+    expect(sentry.reports().reasons).toMatchObject({ transport: 1, flushIncomplete: 1 });
     expect(await sentry.captureAsync({ envelope: envelope("node-closed") })).toEqual({
       kind: "suppressed",
       reason: "closed",
