@@ -543,7 +543,10 @@ export class OperationsPlanner extends Context.Service<
           });
         }
         let stateGeneration = observed.state.generation;
-        const activeManualIds = manualDefinitionIds(request.validated, observed.environments);
+        const activeManualIds = manualDefinitionIds(
+          request.validated,
+          request.validated.manifest.environments,
+        );
         if (observed.state.manualActions.some((action) => !activeManualIds.has(action.id))) {
           const cleaned = yield* stateStore.update(
             current.service,
@@ -833,9 +836,20 @@ export class OperationsPlanner extends Context.Service<
           let lastResponse = `status=200 name=${created.name} kind=${created.kind}`.slice(0, 512);
           while (!matched && attempts < 6) {
             attempts += 1;
-            const datasets = yield* axiom
-              .datasets(observed.axiomCredentials)
-              .pipe(Effect.onInterrupt(persistInterruptedOutcome));
+            const datasets = yield* axiom.datasets(observed.axiomCredentials).pipe(
+              Effect.onInterrupt(persistInterruptedOutcome),
+              Effect.catchTag("RemoteApiError", (error) =>
+                handleMutationError(
+                  new RemoteApiError({
+                    code: "OBS_CLI_AXIOM_DATASET_OUTCOME_UNKNOWN",
+                    message: `The outcome of creating Axiom dataset ${action.resource} is unknown because read-back failed.`,
+                    provider: "Axiom",
+                    status: error.status,
+                    cause: error,
+                  }),
+                ),
+              ),
+            );
             const readBack = datasets.find(
               (dataset) => dataset.name === action.resource && dataset.kind === kind,
             );

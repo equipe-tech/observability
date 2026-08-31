@@ -50,6 +50,7 @@ describe("contract index", () => {
         name: "payment.attempt",
         kind: "operation",
         attributes: ["payment.provider"],
+        attributeClassifications: [{ name: "payment.provider", classification: "public" }],
       },
     ]);
     expect(index.metrics).toEqual([
@@ -77,7 +78,13 @@ describe("contract index", () => {
             defaultSeverity: "info",
             mandatory: true,
             sampling: { kind: "always" },
-            attributes: {},
+            attributes: {
+              "payment.provider": {
+                classification: "public",
+                required: true,
+                metricLabel: false,
+              },
+            },
           },
           Second: {
             name: "payment.second",
@@ -85,7 +92,13 @@ describe("contract index", () => {
             defaultSeverity: "info",
             mandatory: true,
             sampling: { kind: "always" },
-            attributes: {},
+            attributes: {
+              "payment.provider": {
+                classification: "internal",
+                required: true,
+                metricLabel: false,
+              },
+            },
           },
         },
         metrics: {
@@ -119,36 +132,42 @@ describe("contract index", () => {
         ],
       }),
     ).toThrow("kinds must match");
-    expect(
-      Contract.contractIndex(contract, "checkout", {
-        version: 1,
-        aliases: [
-          {
-            source: { kind: "event", name: "payment.old" },
-            target: { kind: "event", name: "payment.first" },
-          },
-          {
-            source: { kind: "event", name: "payment.old" },
-            target: { kind: "event", name: "payment.second" },
-          },
-        ],
-      }).aliases,
-    ).toHaveLength(2);
-    expect(() =>
-      Contract.contractIndex(contract, "checkout", {
-        version: 1,
-        aliases: [
-          {
-            source: { kind: "metric", name: "payment.old" },
-            target: { kind: "metric", name: "payment.duration" },
-          },
-          {
-            source: { kind: "metric", name: "payment.old" },
-            target: { kind: "metric", name: "payment.count_total" },
-          },
-        ],
-      }),
-    ).toThrow("incompatible kind, unit, or attributes");
+    const eventAlias = (
+      source: string,
+      target: string,
+    ): Contract.ContractSignalAliasDefinition => ({
+      source: { kind: "event", name: source },
+      target: { kind: "event", name: target },
+    });
+    for (const aliases of [
+      [eventAlias("payment.old", "payment.first"), eventAlias("payment.old", "payment.second")],
+      [eventAlias("payment.old", "payment.first"), eventAlias("payment.first", "payment.second")],
+    ]) {
+      expect(() => Contract.contractIndex(contract, "checkout", { version: 1, aliases })).toThrow(
+        "incompatible attributes or classifications",
+      );
+    }
+    const metricAlias = (
+      source: string,
+      target: string,
+    ): Contract.ContractSignalAliasDefinition => ({
+      source: { kind: "metric", name: source },
+      target: { kind: "metric", name: target },
+    });
+    for (const aliases of [
+      [
+        metricAlias("payment.old", "payment.duration"),
+        metricAlias("payment.old", "payment.count_total"),
+      ],
+      [
+        metricAlias("payment.old", "payment.duration"),
+        metricAlias("payment.duration", "payment.count_total"),
+      ],
+    ]) {
+      expect(() => Contract.contractIndex(contract, "checkout", { version: 1, aliases })).toThrow(
+        "incompatible kind, unit, or attributes",
+      );
+    }
     expect(() =>
       Contract.contractIndex(contract, "checkout", {
         version: 1,

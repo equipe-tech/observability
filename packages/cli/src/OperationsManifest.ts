@@ -61,10 +61,15 @@ export class OperationsManifest extends Schema.Class<OperationsManifest>(
   sentry: Schema.Struct({ enabled: Schema.Boolean }),
 }) {}
 
+const ContractIndexEventAttribute = Schema.Struct({
+  name: Schema.NonEmptyString,
+  classification: Schema.Literals(["public", "internal", "sensitive", "forbidden"]),
+});
 const ContractIndexEvent = Schema.Struct({
   name: Schema.NonEmptyString,
   kind: Schema.NonEmptyString,
   attributes: Schema.Array(Schema.NonEmptyString),
+  attributeClassifications: Schema.Array(ContractIndexEventAttribute),
 });
 const ContractIndexMetric = Schema.Struct({
   name: Schema.NonEmptyString,
@@ -237,8 +242,18 @@ const validateQuery = Effect.fn("validateManagedSource")(function* (
 ): Effect.fn.Return<ManagedQuery, OperationsManifestError | ManagedQueryError> {
   const query = yield* parseManagedQuery(queryText);
   const kinds = new Set(sources.map((source) => source.kind));
-  const expectedStream = kinds.has("metric") ? "metrics" : query.stream;
-  if (kinds.size !== 1 || query.stream !== expectedStream) {
+  const sourceKind = sources[0]?.kind;
+  const streamMatches =
+    sourceKind === "metric"
+      ? query.stream === "metrics"
+      : query.stream === "logs" || query.stream === "traces";
+  const expectedBinding = sourceKind === "metric" ? "metric.name" : "event.name";
+  if (
+    kinds.size !== 1 ||
+    sourceKind === undefined ||
+    !streamMatches ||
+    query.binding.field !== expectedBinding
+  ) {
     return yield* new OperationsManifestError({
       code: "OBS_CLI_SOURCE_INVALID",
       message: "The managed query stream does not match its declared sources.",
@@ -258,18 +273,22 @@ const validateQuery = Effect.fn("validateManagedSource")(function* (
     });
   }
   const expandedSourceNames = sources.flatMap((source) => expandedSignals(contract, source));
-  const declaredAttributes = new Set(
-    sources.flatMap((source) => {
-      const names = new Set(expandedSignals(contract, source));
-      return source.kind === "event"
-        ? contract.events
-            .filter((event) => names.has(event.name))
-            .flatMap((event) => event.attributes)
-        : contract.metrics
-            .filter((metric) => names.has(metric.name))
-            .flatMap((metric) => metric.attributes);
-    }),
-  );
+  const targetAttributeSets = sources.flatMap((source) => {
+    const names = new Set(expandedSignals(contract, source));
+    return source.kind === "event"
+      ? contract.events
+          .filter((event) => names.has(event.name))
+          .map((event) => new Set(event.attributes))
+      : contract.metrics
+          .filter((metric) => names.has(metric.name))
+          .map((metric) => new Set(metric.attributes));
+  });
+  const declaredAttributes = new Set(targetAttributeSets[0] ?? []);
+  for (const attributes of targetAttributeSets.slice(1)) {
+    for (const attribute of declaredAttributes) {
+      if (!attributes.has(attribute)) declaredAttributes.delete(attribute);
+    }
+  }
   for (const stage of query.stages) {
     if (stage.kind === "where") {
       const invalidField = stage.comparisons.find(
@@ -367,6 +386,24 @@ export const validateOperationsManifest = Effect.fn("validateOperationsManifest"
   }
   const eventNames = new Set(contract.events.map((event) => event.name));
   const metricNames = new Set(contract.metrics.map((metric) => metric.name));
+  for (const event of contract.events) {
+    const attributes = [...event.attributes].sort();
+    const classifications = event.attributeClassifications
+      .map((attribute) => attribute.name)
+      .sort();
+    if (
+      duplicates(event.attributes).length > 0 ||
+      duplicates(classifications).length > 0 ||
+      attributes.join("\u0000") !== classifications.join("\u0000")
+    ) {
+      issues.push(`inconsistent event attributes event ${event.name}`);
+    }
+  }
+  for (const metric of contract.metrics) {
+    if (duplicates(metric.attributes).length > 0) {
+      issues.push(`duplicate metric attributes metric ${metric.name}`);
+    }
+  }
   for (const alias of contract.aliases) {
     const names = alias.kind === "event" ? eventNames : metricNames;
     if (!names.has(alias.to)) issues.push(`unknown alias target ${alias.kind} ${alias.to}`);
@@ -385,6 +422,29 @@ export const validateOperationsManifest = Effect.fn("validateOperationsManifest"
         }
         paths.push([...path, next.to]);
       }
+    }
+  }
+  const eventAliasSources = new Set(
+    contract.aliases.filter((alias) => alias.kind === "event").map((alias) => alias.from),
+  );
+  for (const source of eventAliasSources) {
+    const names = new Set(expandedSignals(contract, { kind: "event", name: source }));
+    const targets = contract.events.filter((event) => names.has(event.name));
+    const first = targets[0];
+    const signature = (event: (typeof targets)[number]): string =>
+      [...event.attributeClassifications]
+        .map((attribute) => `${attribute.name}\u0000${attribute.classification}`)
+        .sort()
+        .join("\u0001");
+    if (
+      first !== undefined &&
+      targets.some(
+        (target) =>
+          [...target.attributes].sort().join("\u0000") !==
+            [...first.attributes].sort().join("\u0000") || signature(target) !== signature(first),
+      )
+    ) {
+      issues.push(`incompatible event alias targets event ${source}`);
     }
   }
   const metricAliasSources = new Set(

@@ -15,6 +15,7 @@ const contract = JSON.stringify({
       name: "payment.attempt",
       kind: "operation",
       attributes: ["payment.provider"],
+      attributeClassifications: [{ name: "payment.provider", classification: "public" }],
     },
   ],
   metrics: [
@@ -137,7 +138,7 @@ describe("operations manifest", () => {
     expect(aggregationError.issues).toContain("illegal metric aggregation");
   });
 
-  test("rejects stale contract and source mismatch", async () => {
+  test("rejects stale contract, source mismatch and cross-kind predicates", async () => {
     const manifest = await Effect.runPromise(parseOperationsManifest(validManifest));
     const stale = await Effect.runPromise(
       parseOperationsContractIndex(contract.replace('"contractVersion":1', '"contractVersion":2')),
@@ -163,6 +164,27 @@ describe("operations manifest", () => {
         )
       ).code,
     ).toBe("OBS_CLI_QUERY_SIGNAL_MISMATCH");
+
+    const crossKind = await Effect.runPromise(
+      parseOperationsManifest(
+        validManifest.replace(
+          'signal(logs) | where event.name == "payment.attempt"',
+          'signal(metrics) | where metric.name == "payment.attempt"',
+        ),
+      ),
+    );
+    expect(
+      (
+        await Effect.runPromise(
+          Effect.flip(
+            validateOperationsManifest(
+              crossKind,
+              await Effect.runPromise(parseOperationsContractIndex(contract)),
+            ),
+          ),
+        )
+      ).code,
+    ).toBe("OBS_CLI_SOURCE_INVALID");
   });
 
   test("inherits aliased event fields and metric aggregation semantics", async () => {
@@ -207,7 +229,7 @@ describe("operations manifest", () => {
     await Effect.runPromise(validateOperationsManifest(counterManifest, index));
   });
 
-  test("rejects incompatible metric alias targets and alias cycles", async () => {
+  test("rejects incompatible transitive aliases and alias cycles", async () => {
     const aliasedContract = contract.replace(
       '"aliases":[]',
       '"aliases":[{"kind":"event","from":"payment.charge","to":"payment.attempt"}]',
@@ -250,6 +272,49 @@ describe("operations manifest", () => {
     }
     expect(incompatibleError.issues).toContain(
       "incompatible metric alias targets metric payment.old",
+    );
+
+    const transitive = contract.replace(
+      '"aliases":[]',
+      '"aliases":[{"kind":"metric","from":"payment.old","to":"payment.latency"},{"kind":"metric","from":"payment.latency","to":"payment.count"}]',
+    );
+    const transitiveError = await Effect.runPromise(
+      Effect.flip(
+        validateOperationsManifest(
+          await Effect.runPromise(parseOperationsManifest(validManifest)),
+          await Effect.runPromise(parseOperationsContractIndex(transitive)),
+        ),
+      ),
+    );
+    if (transitiveError._tag !== "OperationsManifestError") {
+      throw new Error("Expected transitive alias error.");
+    }
+    expect(transitiveError.issues).toContain(
+      "incompatible metric alias targets metric payment.old",
+    );
+
+    const incompatibleEvents = contract
+      .replace(
+        '],"metrics"',
+        ',{"name":"payment.completed","kind":"operation","attributes":["payment.region"],"attributeClassifications":[{"name":"payment.region","classification":"internal"}]}],"metrics"',
+      )
+      .replace(
+        '"aliases":[]',
+        '"aliases":[{"kind":"event","from":"payment.old","to":"payment.attempt"},{"kind":"event","from":"payment.old","to":"payment.completed"}]',
+      );
+    const incompatibleEventError = await Effect.runPromise(
+      Effect.flip(
+        validateOperationsManifest(
+          await Effect.runPromise(parseOperationsManifest(validManifest)),
+          await Effect.runPromise(parseOperationsContractIndex(incompatibleEvents)),
+        ),
+      ),
+    );
+    if (incompatibleEventError._tag !== "OperationsManifestError") {
+      throw new Error("Expected incompatible event alias error.");
+    }
+    expect(incompatibleEventError.issues).toContain(
+      "incompatible event alias targets event payment.old",
     );
   });
 });

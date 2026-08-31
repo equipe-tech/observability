@@ -11,6 +11,7 @@ import viteConfig from "../vite.config.ts";
 
 const expected = new Map([
   ["@equipe-tech/observability-cli/query", "packages/cli/src/query.ts"],
+  ["@equipe-tech/observability-cli", "packages/cli/src/index.ts"],
   ["@equipe-tech/observability-react", "packages/react/src/index.ts"],
   ["@equipe-tech/observability-sentry/browser", "packages/sentry/src/browser/index.ts"],
   ["@equipe-tech/observability-sentry/node", "packages/sentry/src/node/index.ts"],
@@ -49,8 +50,10 @@ const packageEntrypoints = (
   packageName: string,
   exports: ReadonlyArray<string>,
 ): ReadonlyArray<string> =>
-  exports.map((entrypoint) =>
-    entrypoint === "." ? packageName : `${packageName}/${entrypoint.slice(2)}`,
+  exports.flatMap((entrypoint) =>
+    entrypoint === "./package.json"
+      ? []
+      : [entrypoint === "." ? packageName : `${packageName}/${entrypoint.slice(2)}`],
   );
 
 describe("development entrypoint mappings", () => {

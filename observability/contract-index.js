@@ -18,8 +18,9 @@ const contract = await Effect.runPromise(
     auditActions: {},
   }),
 );
+const output = process.argv[2] ?? new URL("contract.json", import.meta.url);
 await Bun.write(
-  new URL("contract.json", import.meta.url),
+  output,
   Contract.encodeContractIndex(
     Contract.contractIndex(contract, "observability", {
       version: 1,

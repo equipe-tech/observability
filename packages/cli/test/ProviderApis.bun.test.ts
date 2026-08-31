@@ -1,15 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { AxiomCredentials, SentryCredentials } from "../src/CredentialsStore.ts";
-import { AxiomApi, AxiomToken, SentryApi } from "../src/ProviderApis.ts";
+import {
+  AxiomApi,
+  AxiomToken,
+  providerRequestTimeoutDefaultMilliseconds,
+  SentryApi,
+} from "../src/ProviderApis.ts";
 
 const credentials = new AxiomCredentials({ token: "test-token", organizationId: "test-org" });
 
 const withAxiomEndpoint = async <A>(url: string, use: () => Promise<A>): Promise<A> => {
   const previousNodeEnvironment = process.env.NODE_ENV;
   const previousEndpoint = process.env.OBSERVABILITY_CLI_TEST_AXIOM_BASE_URL;
+  const previousTimeout = process.env.OBSERVABILITY_CLI_REQUEST_TIMEOUT_MILLISECONDS;
   process.env.NODE_ENV = "test";
   process.env.OBSERVABILITY_CLI_TEST_AXIOM_BASE_URL = url;
+  process.env.OBSERVABILITY_CLI_REQUEST_TIMEOUT_MILLISECONDS = "100";
   try {
     return await use();
   } finally {
@@ -22,6 +29,11 @@ const withAxiomEndpoint = async <A>(url: string, use: () => Promise<A>): Promise
       delete process.env.OBSERVABILITY_CLI_TEST_AXIOM_BASE_URL;
     } else {
       process.env.OBSERVABILITY_CLI_TEST_AXIOM_BASE_URL = previousEndpoint;
+    }
+    if (previousTimeout === undefined) {
+      delete process.env.OBSERVABILITY_CLI_REQUEST_TIMEOUT_MILLISECONDS;
+    } else {
+      process.env.OBSERVABILITY_CLI_REQUEST_TIMEOUT_MILLISECONDS = previousTimeout;
     }
   }
 };
@@ -69,18 +81,25 @@ const startTruncatedResponseServer = (status: number, statusText: string) => {
 };
 
 describe("provider HTTP boundary", () => {
-  test.serial("bounds a provider transport that never settles", async () => {
+  test("uses a bounded provider deadline default", () => {
+    expect(providerRequestTimeoutDefaultMilliseconds).toBe(10_000);
+  });
+
+  test.serial("bounds a provider transport with the decoded override", async () => {
     const server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
-      fetch: () => new Promise<Response>(() => {}),
+      fetch: async () => {
+        await Bun.sleep(500);
+        return Response.json({ id: "late", email: "late@example.com" });
+      },
     });
     const startedAt = Date.now();
     try {
       const error = await identityError(`http://127.0.0.1:${server.port}`);
       expect(error.code).toBe("OBS_CLI_REMOTE_FAILED");
       expect(error.message).toContain("deadline");
-      expect(Date.now() - startedAt).toBeLessThan(3_000);
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
     } finally {
       await server.stop(true);
     }

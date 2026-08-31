@@ -6,7 +6,8 @@
     {
       "name": "cli.operation",
       "kind": "operation",
-      "attributes": []
+      "attributes": [],
+      "attributeClassifications": []
     }
   ],
   "metrics": [],

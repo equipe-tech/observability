@@ -1,11 +1,21 @@
-import type { TelemetryContract, TelemetryContractInput } from "./TelemetryContract.ts";
+import type {
+  AttributeClassification,
+  TelemetryContract,
+  TelemetryContractInput,
+} from "./TelemetryContract.ts";
 import type { EventKind } from "./TelemetryEvent.ts";
 import type { MetricKind } from "./MetricDefinition.ts";
+
+export type ContractIndexEventAttribute = {
+  readonly name: string;
+  readonly classification: AttributeClassification;
+};
 
 export type ContractIndexEvent = {
   readonly name: string;
   readonly kind: EventKind;
   readonly attributes: ReadonlyArray<string>;
+  readonly attributeClassifications: ReadonlyArray<ContractIndexEventAttribute>;
 };
 
 export type ContractIndexMetric = {
@@ -91,16 +101,26 @@ const validatedAliases = <Definition extends TelemetryContractInput>(
       }
     }
   }
+  const expandedTargets = (source: string, kind: "event" | "metric"): ReadonlySet<string> => {
+    const targets = new Set([source]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const alias of aliases) {
+        if (alias.kind === kind && targets.has(alias.from) && !targets.has(alias.to)) {
+          targets.add(alias.to);
+          changed = true;
+        }
+      }
+    }
+    return targets;
+  };
   const metricSources = new Set(
     aliases.filter((alias) => alias.kind === "metric").map((alias) => alias.from),
   );
   for (const source of metricSources) {
-    const targets = aliases
-      .filter((alias) => alias.kind === "metric" && alias.from === source)
-      .map((alias) =>
-        [...contract.metricByName.values()].find((metric) => metric.name === alias.to),
-      )
-      .filter((metric) => metric !== undefined);
+    const names = expandedTargets(source, "metric");
+    const targets = [...contract.metricByName.values()].filter((metric) => names.has(metric.name));
     const first = targets[0];
     if (
       first !== undefined &&
@@ -114,6 +134,24 @@ const validatedAliases = <Definition extends TelemetryContractInput>(
     ) {
       throw new TypeError(
         `Contract metric alias source ${source} targets incompatible kind, unit, or attributes.`,
+      );
+    }
+  }
+  const eventSources = new Set(
+    aliases.filter((alias) => alias.kind === "event").map((alias) => alias.from),
+  );
+  for (const source of eventSources) {
+    const names = expandedTargets(source, "event");
+    const targets = [...contract.eventByName.values()].filter((event) => names.has(event.name));
+    const first = targets[0];
+    const signature = (event: (typeof targets)[number]): string =>
+      [...event.attributes.entries()]
+        .map(([name, attribute]) => `${name}\u0000${attribute.classification}`)
+        .sort()
+        .join("\u0001");
+    if (first !== undefined && targets.some((target) => signature(target) !== signature(first))) {
+      throw new TypeError(
+        `Contract event alias source ${source} targets incompatible attributes or classifications.`,
       );
     }
   }
@@ -137,6 +175,9 @@ export const contractIndex = <Definition extends TelemetryContractInput>(
       name: event.name,
       kind: event.kind,
       attributes: [...event.attributes.keys()].sort(),
+      attributeClassifications: [...event.attributes.entries()]
+        .map(([name, attribute]) => ({ name, classification: attribute.classification }))
+        .sort((left, right) => left.name.localeCompare(right.name)),
     }))
     .sort(byName),
   metrics: [...contract.metricByName.values()]

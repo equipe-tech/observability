@@ -27,6 +27,7 @@ const runCli = async (
       NODE_ENV: "test",
       OBSERVABILITY_HOME: home,
       OBSERVABILITY_CLI_TEST_AXIOM_BASE_URL: baseUrl,
+      OBSERVABILITY_CLI_REQUEST_TIMEOUT_MILLISECONDS: "100",
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -47,10 +48,10 @@ describe("operations CLI", () => {
     const home = join(root, "home");
     await mkdir(join(project, "observability"), { recursive: true });
     await mkdir(home, { recursive: true });
-    await writeFile(
-      join(project, "observability", "operations.yaml"),
-      "version: 1\ncontractVersion: 1\nservice: checkout\nenvironments: [prod]\nretention:\n  - environment: prod\n    days: 30\ndashboards: []\nmonitors: []\nsentry:\n  enabled: false\n",
-    );
+    const manifestPath = join(project, "observability", "operations.yaml");
+    const manifestContent =
+      "version: 1\ncontractVersion: 1\nservice: checkout\nenvironments: [prod]\nretention:\n  - environment: prod\n    days: 30\ndashboards: []\nmonitors: []\nsentry:\n  enabled: false\n";
+    await writeFile(manifestPath, manifestContent);
     await writeFile(
       join(project, "observability", "contract.json"),
       '{"index":1,"contractVersion":1,"service":"checkout","events":[],"metrics":[],"aliases":[]}\n',
@@ -83,15 +84,23 @@ describe("operations CLI", () => {
     let mutations = 0;
     let skipReadBack = false;
     let mutationStatus = 201;
+    let readStatus = 200;
     const server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       async fetch(request) {
         const url = new URL(request.url);
         if (url.pathname !== "/v2/datasets") return new Response("missing", { status: 404 });
-        if (request.method === "GET") return Response.json(datasets);
+        if (request.method === "GET") {
+          return readStatus === 200
+            ? Response.json(datasets)
+            : Response.json({ error: "read failed" }, { status: readStatus });
+        }
         mutations += 1;
-        if (mutationStatus !== 201) return new Response("rejected", { status: mutationStatus });
+        if (mutationStatus !== 201) {
+          if (mutationStatus === 503) readStatus = 500;
+          return new Response("rejected", { status: mutationStatus });
+        }
         const body = await request.json();
         const document = JSON.stringify(body);
         const name = /"name":"([^"]+)"/.exec(document)?.[1] ?? "invalid";
@@ -141,6 +150,8 @@ describe("operations CLI", () => {
       expect(secondPlan.actions).toEqual([]);
       expect(secondPlan.pendingManualActions).toHaveLength(2);
       const statePath = join(home, "operations", "checkout.json");
+      expect((await stat(join(home, "operations"))).mode & 0o777).toBe(0o700);
+      expect((await stat(join(project, ".observability"))).mode & 0o777).toBe(0o700);
       expect((await stat(statePath)).mode & 0o777).toBe(0o600);
       expect(await readFile(statePath, "utf8")).not.toContain("secret-token");
 
@@ -177,6 +188,46 @@ describe("operations CLI", () => {
       );
       expect(confirmed.exitCode).toBe(0);
       expect((await runCli(["ops", "verify", "--dir", project], home, baseUrl)).exitCode).toBe(0);
+
+      await writeFile(
+        manifestPath,
+        manifestContent
+          .replace("environments: [prod]", "environments: [prod, staging]")
+          .replace("    days: 30", "    days: 30\n  - environment: staging\n    days: 30"),
+      );
+      for (const suffix of ["logs", "metrics", "traces"]) {
+        const prodDataset = datasets.find((dataset) => dataset.name === `checkout-prod-${suffix}`);
+        if (prodDataset === undefined) throw new Error(`Missing prod ${suffix} dataset.`);
+        datasets.push({
+          ...prodDataset,
+          id: `staging-${suffix}`,
+          name: `checkout-staging-${suffix}`,
+        });
+      }
+      const stagingPlanResult = await runCli(
+        ["ops", "plan", "--dir", project, "--environment", "staging", "--json"],
+        home,
+        baseUrl,
+      );
+      const stagingPlan = JSON.parse(stagingPlanResult.stdout);
+      const stagingPath = join(project, ".observability", `plan-${stagingPlan.digest}.json`);
+      expect(
+        (
+          await runCli(
+            ["ops", "apply", "--dir", project, "--environment", "staging", "--plan", stagingPath],
+            home,
+            baseUrl,
+          )
+        ).exitCode,
+      ).toBe(0);
+      const scopedState = JSON.parse(await readFile(statePath, "utf8"));
+      expect(
+        scopedState.manualActions
+          .filter((action: { environment: string }) => action.environment === "prod")
+          .map((action: { id: string }) => action.id)
+          .sort(),
+      ).toEqual(["axiom.correlation.prod", "axiom.retention.prod"]);
+      await writeFile(manifestPath, manifestContent);
 
       const stateWithRemovedResource = JSON.parse(await readFile(statePath, "utf8"));
       stateWithRemovedResource.manualActions.push({
@@ -257,6 +308,24 @@ describe("operations CLI", () => {
       expect(reconciled.exitCode).toBe(0);
 
       datasets.splice(0);
+      const ambiguousPlanResult = await runCli(
+        ["ops", "plan", "--dir", project, "--json"],
+        home,
+        baseUrl,
+      );
+      const ambiguousPlan = JSON.parse(ambiguousPlanResult.stdout);
+      const ambiguousPath = join(project, ".observability", `plan-${ambiguousPlan.digest}.json`);
+      mutationStatus = 503;
+      const ambiguous = await runCli(
+        ["ops", "apply", "--dir", project, "--plan", ambiguousPath],
+        home,
+        baseUrl,
+      );
+      expect(ambiguous.stderr).toContain("OBS_CLI_APPLY_OUTCOME_UNKNOWN");
+      expect(await readFile(statePath, "utf8")).toContain('"status": "outcome-unknown"');
+      mutationStatus = 201;
+      readStatus = 200;
+
       const rejectedPlanResult = await runCli(
         ["ops", "plan", "--dir", project, "--json"],
         home,

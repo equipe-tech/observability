@@ -53,7 +53,8 @@ export const persistOperationsPlan = Effect.fn("persistOperationsPlan")(function
   const outputPath = resolve(outputDirectory, `plan-${digest}.json`);
   yield* Effect.tryPromise({
     try: async () => {
-      await mkdir(outputDirectory, { recursive: true });
+      await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
+      await chmod(outputDirectory, 0o700);
       await writeFile(outputPath, content, { mode: 0o600 });
       await chmod(outputPath, 0o600);
     },

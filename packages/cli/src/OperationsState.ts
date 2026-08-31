@@ -161,7 +161,10 @@ export class OperationsState extends Context.Service<OperationsState, Operations
         transform: (state: OperationsStateDocument) => OperationsStateDocument,
       ) {
         yield* Effect.tryPromise({
-          try: () => mkdir(root, { recursive: true }),
+          try: async () => {
+            await mkdir(root, { recursive: true, mode: 0o700 });
+            await chmod(root, 0o700);
+          },
           catch: stateFailure,
         });
         const leaseMilliseconds = 5_000;

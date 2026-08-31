@@ -34,6 +34,48 @@ describe("managed query", () => {
     }
   });
 
+  test("keeps quoted comment and OR text while rejecting syntax outside strings", async () => {
+    await parse(
+      'signal(logs) | where event.name == "payment.attempt" and note == "x -- y" and category == "cats or dogs"',
+    );
+    for (const query of [
+      'signal(logs) | where event.name == "payment.attempt" -- comment',
+      'signal(logs) | where event.name == "payment.attempt" or note == "accepted"',
+    ]) {
+      expect(Exit.isFailure(await Effect.runPromiseExit(parseManagedQuery(query)))).toBe(true);
+    }
+  });
+
+  test("renders decimal-stable quantiles and escapes APL literals", async () => {
+    for (const [quantile, percentile] of [
+      ["0.29", "29"],
+      ["0.07", "7"],
+      ["0.007", "0.7"],
+      ["0.1234", "12.34"],
+    ]) {
+      const query = await parse(
+        `signal(metrics) | where metric.name == "payment.latency" | summarize quantile(value, ${quantile})`,
+      );
+      expect(
+        compileManagedQuery(query, {
+          dataset: "metrics",
+          language: "apl",
+          signals: ["payment.latency"],
+        }).text,
+      ).toContain(`percentile(['value'], ${percentile})`);
+    }
+    const query = await parse(
+      `signal(logs) | where event.name == "payment.attempt" and note == "quote' slash\\\\ newline\nnext"`,
+    );
+    expect(
+      compileManagedQuery(query, {
+        dataset: "logs",
+        language: "apl",
+        signals: ["payment.attempt"],
+      }).text,
+    ).toContain(String.raw`['note'] == 'quote\' slash\\ newline\nnext'`);
+  });
+
   test("rejects oversized and unterminated input", async () => {
     expect(Exit.isFailure(await Effect.runPromiseExit(parseManagedQuery("x".repeat(16_385))))).toBe(
       true,

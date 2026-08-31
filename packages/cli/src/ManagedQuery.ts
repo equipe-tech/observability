@@ -22,7 +22,7 @@ export type ManagedQueryAggregation =
       readonly function: "sum" | "avg" | "min" | "max";
       readonly field: string;
     }
-  | { readonly kind: "quantile"; readonly field: string; readonly quantile: number };
+  | { readonly kind: "quantile"; readonly field: string; readonly percentile: string };
 
 export type ManagedQueryGroup =
   | { readonly kind: "field"; readonly field: string }
@@ -172,7 +172,7 @@ const parseComparison = (input: string): ManagedQueryComparison | ManagedQueryEr
     }
     return { kind: "comparison", field, operator: "in", values };
   }
-  const match = /^([a-z][a-z0-9_.]*)\s*(==|!=|>=|<=|>|<)\s*(.+)$/.exec(input);
+  const match = /^([a-z][a-z0-9_.]*)\s*(==|!=|>=|<=|>|<)\s*([\s\S]+)$/.exec(input);
   const field = match?.[1];
   const operator = match?.[2];
   const raw = match?.[3];
@@ -195,8 +195,28 @@ const parseComparison = (input: string): ManagedQueryComparison | ManagedQueryEr
   return { kind: "comparison", field, operator, values: [literal] };
 };
 
+const textOutsideStrings = (input: string): string => {
+  let output = "";
+  let quoted = false;
+  let escaped = false;
+  for (const character of input) {
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quoted = false;
+      output += " ";
+    } else if (character === '"') {
+      quoted = true;
+      output += " ";
+    } else {
+      output += character;
+    }
+  }
+  return output;
+};
+
 const parseWhere = (input: string): ManagedQueryStage | ManagedQueryError => {
-  if (/\bor\b/i.test(input)) {
+  if (/\bor\b/i.test(textOutsideStrings(input))) {
     return new ManagedQueryError({
       code: "OBS_CLI_QUERY_SIGNAL_AMBIGUOUS",
       message: "Managed queries do not allow ambiguous OR predicates.",
@@ -223,7 +243,12 @@ const parseAggregation = (input: string): ManagedQueryAggregation | ManagedQuery
     const field = quantile[1];
     const value = quantile[2];
     if (field !== undefined && value !== undefined && fieldPattern.test(field)) {
-      return { kind: "quantile", field, quantile: Number(value) };
+      const [whole = "0", fraction = ""] = value.split(".");
+      const digits = `${whole}${fraction.padEnd(2, "0")}`;
+      const integer = digits.slice(0, whole.length + 2).replace(/^0+(?=\d)/, "");
+      const remainder = digits.slice(whole.length + 2).replace(/0+$/, "");
+      const percentile = remainder.length === 0 ? integer : `${integer}.${remainder}`;
+      return { kind: "quantile", field, percentile };
     }
   }
   const fieldAggregation = /^(sum|avg|min|max)\(([a-z][a-z0-9_.]*)\)$/.exec(input);
@@ -281,11 +306,12 @@ const parseSummarize = (input: string): ManagedQueryStage | ManagedQueryError =>
 };
 
 const parseManagedQuerySync = (text: string): ManagedQuery | ManagedQueryError => {
+  const syntax = textOutsideStrings(text);
   if (
     text.length === 0 ||
     text.length > 16_384 ||
     text.includes("\u0000") ||
-    /\/\/|\/\*|--/.test(text)
+    /\/\/|\/\*|--/.test(syntax)
   ) {
     return invalidQuery("The managed query is empty, oversized, or contains comments.", "query");
   }
@@ -347,7 +373,26 @@ export const parseManagedQuery = (text: string): Effect.Effect<ManagedQuery, Man
   return result instanceof ManagedQueryError ? Effect.fail(result) : Effect.succeed(result);
 };
 
-const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
+const quote = (value: string): string => {
+  let escaped = "";
+  for (const character of value) {
+    if (character === "\\") escaped += "\\\\";
+    else if (character === "'") escaped += "\\'";
+    else if (character === "\n") escaped += "\\n";
+    else if (character === "\r") escaped += "\\r";
+    else if (character === "\t") escaped += "\\t";
+    else if (character === "\b") escaped += "\\b";
+    else if (character === "\f") escaped += "\\f";
+    else {
+      const codePoint = character.codePointAt(0) ?? 0;
+      escaped +=
+        codePoint < 32 || codePoint === 127
+          ? `\\u${codePoint.toString(16).padStart(4, "0")}`
+          : character;
+    }
+  }
+  return `'${escaped}'`;
+};
 const renderLiteral = (literal: ManagedQueryLiteral): string => {
   if (literal.kind === "string") return quote(literal.value);
   if (literal.kind === "boolean") return literal.value ? "true" : "false";
@@ -357,7 +402,7 @@ const renderLiteral = (literal: ManagedQueryLiteral): string => {
 const renderAggregation = (aggregation: ManagedQueryAggregation): string => {
   if (aggregation.kind === "count") return "count()";
   if (aggregation.kind === "quantile") {
-    return `percentile(['${aggregation.field}'], ${aggregation.quantile * 100})`;
+    return `percentile(['${aggregation.field}'], ${aggregation.percentile})`;
   }
   return `${aggregation.function}(['${aggregation.field}'])`;
 };

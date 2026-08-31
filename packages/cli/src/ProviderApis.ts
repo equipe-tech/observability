@@ -84,11 +84,21 @@ const decodeAxiomTokenSecret = Schema.decodeUnknownEffect(AxiomTokenSecret);
 const decodeSentryOrganization = Schema.decodeUnknownEffect(SentryOrganization);
 const decodeSentryProject = Schema.decodeUnknownEffect(SentryProject);
 const decodeSentryClientKeys = Schema.decodeUnknownEffect(SentryClientKeys);
-const AxiomTestEnvironment = Schema.Struct({
+export const providerRequestTimeoutDefaultMilliseconds = 10_000;
+
+const RequestTimeoutMilliseconds = Schema.NumberFromString.check(
+  Schema.isInt(),
+  Schema.isGreaterThanOrEqualTo(100),
+  Schema.isLessThanOrEqualTo(120_000),
+);
+const ProviderAdapterEnvironment = Schema.Struct({
   NODE_ENV: Schema.NonEmptyString.pipe(Schema.optionalKey),
   OBSERVABILITY_CLI_TEST_AXIOM_BASE_URL: Schema.NonEmptyString.pipe(Schema.optionalKey),
+  OBSERVABILITY_CLI_REQUEST_TIMEOUT_MILLISECONDS: RequestTimeoutMilliseconds.pipe(
+    Schema.optionalKey,
+  ),
 });
-const decodeAxiomTestEnvironment = Schema.decodeUnknownEffect(AxiomTestEnvironment);
+const decodeProviderAdapterEnvironment = Schema.decodeUnknownEffect(ProviderAdapterEnvironment);
 const decodeAxiomTestUrl = Schema.decodeUnknownEffect(Schema.URLFromString);
 
 export type AxiomDatasetCreateOptions = {
@@ -123,7 +133,7 @@ const invalidAxiomTestEndpoint = (cause: unknown): RemoteApiError =>
   });
 
 const resolveAxiomBaseUrl = Effect.fn("resolveAxiomBaseUrl")(function* () {
-  const environment = yield* decodeAxiomTestEnvironment(process.env).pipe(
+  const environment = yield* decodeProviderAdapterEnvironment(process.env).pipe(
     Effect.mapError(invalidAxiomTestEndpoint),
   );
   const configured = environment.OBSERVABILITY_CLI_TEST_AXIOM_BASE_URL;
@@ -166,52 +176,95 @@ const remoteRequest = Effect.fn("remoteRequest")(function (
   init: RequestInit,
 ) {
   return Effect.gen(function* () {
-    const response = yield* Effect.tryPromise({
-      try: (signal) => fetch(url, { ...init, redirect: "error", signal }),
-      catch: (cause) =>
-        new RemoteApiError({
-          code: "OBS_CLI_REMOTE_FAILED",
-          message: `${provider} could not be reached. Check the network connection and retry.`,
-          provider,
-          status: 0,
-          cause,
-        }),
-    });
-    if (response.status === 401 || response.status === 403) {
-      return yield* new RemoteApiError({
-        code: "OBS_CLI_REMOTE_UNAUTHORIZED",
-        message: `${provider} rejected the stored credentials. Run observability auth login again.`,
-        provider,
-        status: response.status,
-        cause: response.status,
+    const environment = yield* decodeProviderAdapterEnvironment(process.env).pipe(
+      Effect.mapError(
+        (cause) =>
+          new RemoteApiError({
+            code: "OBS_CLI_REMOTE_FAILED",
+            message: "The provider request timeout configuration is invalid.",
+            provider,
+            status: 0,
+            cause,
+          }),
+      ),
+    );
+    const timeoutMilliseconds =
+      environment.OBSERVABILITY_CLI_REQUEST_TIMEOUT_MILLISECONDS ??
+      providerRequestTimeoutDefaultMilliseconds;
+    return yield* Effect.callback<RemoteResponse, RemoteApiError>((resume) => {
+      const controller = new AbortController();
+      let settled = false;
+      const finish = (effect: Effect.Effect<RemoteResponse, RemoteApiError>): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resume(effect);
+      };
+      const timer = setTimeout(() => {
+        controller.abort();
+        finish(
+          Effect.fail(
+            new RemoteApiError({
+              code: "OBS_CLI_REMOTE_FAILED",
+              message: `${provider} request exceeded its ${timeoutMilliseconds} millisecond deadline. Retry the command.`,
+              provider,
+              status: 0,
+              cause: timeoutMilliseconds,
+            }),
+          ),
+        );
+      }, timeoutMilliseconds);
+      fetch(url, { ...init, redirect: "error", signal: controller.signal }).then(
+        (response) => {
+          if (response.status === 401 || response.status === 403) {
+            finish(
+              Effect.fail(
+                new RemoteApiError({
+                  code: "OBS_CLI_REMOTE_UNAUTHORIZED",
+                  message: `${provider} rejected the stored credentials. Run observability auth login again.`,
+                  provider,
+                  status: response.status,
+                  cause: response.status,
+                }),
+              ),
+            );
+            return;
+          }
+          response.text().then(
+            (content) => finish(Effect.succeed({ status: response.status, content })),
+            (cause) =>
+              finish(
+                Effect.fail(
+                  new RemoteApiError({
+                    code: "OBS_CLI_REMOTE_FAILED",
+                    message: `${provider} returned an unreadable response. Retry the command.`,
+                    provider,
+                    status: response.status,
+                    cause,
+                  }),
+                ),
+              ),
+          );
+        },
+        (cause) =>
+          finish(
+            Effect.fail(
+              new RemoteApiError({
+                code: "OBS_CLI_REMOTE_FAILED",
+                message: `${provider} could not be reached. Check the network connection and retry.`,
+                provider,
+                status: 0,
+                cause,
+              }),
+            ),
+          ),
+      );
+      return Effect.sync(() => {
+        clearTimeout(timer);
+        controller.abort();
       });
-    }
-    const content = yield* Effect.tryPromise({
-      try: () => response.text(),
-      catch: (cause) =>
-        new RemoteApiError({
-          code: "OBS_CLI_REMOTE_FAILED",
-          message: `${provider} returned an unreadable response. Retry the command.`,
-          provider,
-          status: response.status,
-          cause,
-        }),
     });
-    return { status: response.status, content };
-  }).pipe(
-    Effect.timeout("2 seconds"),
-    Effect.catchTag(
-      "TimeoutError",
-      (cause) =>
-        new RemoteApiError({
-          code: "OBS_CLI_REMOTE_FAILED",
-          message: `${provider} request exceeded its 2 second deadline. Retry the command.`,
-          provider,
-          status: 0,
-          cause,
-        }),
-    ),
-  );
+  });
 });
 
 const parseRemoteJson = Effect.fn("parseRemoteJson")(function* (
@@ -265,6 +318,21 @@ const axiomHeaders = (credentials: AxiomCredentials) => ({
 
 const desiredDatasetKind = (options: AxiomDatasetCreateOptions): AxiomDatasetKind =>
   options.kind ?? "axiom:events:v1";
+
+const ambiguousMutation = (error: RemoteApiError): boolean =>
+  error.status === 0 ||
+  error.status >= 500 ||
+  error.code === "OBS_CLI_REMOTE_INVALID_RESPONSE" ||
+  (error.status >= 200 && error.status < 300);
+
+const unknownDatasetOutcome = (name: string, original: RemoteApiError): RemoteApiError =>
+  new RemoteApiError({
+    code: "OBS_CLI_AXIOM_DATASET_OUTCOME_UNKNOWN",
+    message: `The outcome of creating Axiom dataset ${name} is unknown. Verify the remote dataset before retrying.`,
+    provider: "Axiom",
+    status: original.status,
+    cause: original,
+  });
 
 const datasetMatches = (dataset: AxiomDataset, options: AxiomDatasetCreateOptions): boolean => {
   if (dataset.kind !== desiredDatasetKind(options)) {
@@ -352,9 +420,15 @@ export class AxiomApi extends Context.Service<
         options: AxiomDatasetCreateOptions,
         original: RemoteApiError,
       ): Effect.fn.Return<AxiomDataset, RemoteApiError> {
-        const matches = (yield* listDatasets(credentials)).filter(
-          (dataset) => dataset.name === name,
+        if (!ambiguousMutation(original) && original.status !== 409) return yield* original;
+        const datasets = yield* listDatasets(credentials).pipe(
+          Effect.catchTag("RemoteApiError", () =>
+            ambiguousMutation(original)
+              ? Effect.fail(unknownDatasetOutcome(name, original))
+              : Effect.fail(original),
+          ),
         );
+        const matches = datasets.filter((dataset) => dataset.name === name);
         const match = matches[0];
         if (matches.length === 1 && match !== undefined && datasetMatches(match, options)) {
           return match;
@@ -368,20 +442,7 @@ export class AxiomApi extends Context.Service<
             cause: original,
           });
         }
-        if (
-          original.status === 0 ||
-          original.status >= 500 ||
-          original.code === "OBS_CLI_REMOTE_INVALID_RESPONSE" ||
-          (original.status >= 200 && original.status < 300)
-        ) {
-          return yield* new RemoteApiError({
-            code: "OBS_CLI_AXIOM_DATASET_OUTCOME_UNKNOWN",
-            message: `The outcome of creating Axiom dataset ${name} is unknown. Verify the remote dataset before retrying.`,
-            provider: "Axiom",
-            status: original.status,
-            cause: original,
-          });
-        }
+        if (ambiguousMutation(original)) return yield* unknownDatasetOutcome(name, original);
         return yield* original;
       });
 
