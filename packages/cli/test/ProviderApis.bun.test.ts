@@ -80,6 +80,37 @@ const startTruncatedResponseServer = (status: number, statusText: string) => {
   return { listener, responses: () => responses };
 };
 
+const startOpenResponseServer = (status: number, statusText: string) => {
+  const responded = new WeakSet<object>();
+  let activeSockets = 0;
+  let closedSockets = 0;
+  const listener = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      open() {
+        activeSockets += 1;
+      },
+      data(socket) {
+        if (responded.has(socket)) return;
+        responded.add(socket);
+        socket.write(
+          `HTTP/1.1 ${status} ${statusText}\r\nContent-Type: application/json\r\nContent-Length: 1000000\r\nConnection: keep-alive\r\n\r\n{`,
+        );
+      },
+      close() {
+        activeSockets -= 1;
+        closedSockets += 1;
+      },
+    },
+  });
+  return {
+    listener,
+    activeSockets: () => activeSockets,
+    closedSockets: () => closedSockets,
+  };
+};
+
 describe("provider HTTP boundary", () => {
   test("uses a bounded provider deadline default", () => {
     expect(providerRequestTimeoutDefaultMilliseconds).toBe(10_000);
@@ -777,6 +808,27 @@ describe("provider HTTP boundary", () => {
       expect(server.responses()).toBe(2);
     } finally {
       server.listener.stop(true);
+    }
+  });
+
+  test.serial("cancels unauthorized response bodies and closes loopback sockets", async () => {
+    for (const [status, statusText] of [
+      [401, "Unauthorized"],
+      [403, "Forbidden"],
+    ] satisfies ReadonlyArray<readonly [number, string]>) {
+      const server = startOpenResponseServer(status, statusText);
+      try {
+        const error = await identityError(`http://127.0.0.1:${server.listener.port}`);
+        expect(error.code).toBe("OBS_CLI_REMOTE_UNAUTHORIZED");
+        expect(error.status).toBe(status);
+        for (let attempt = 0; attempt < 20 && server.activeSockets() > 0; attempt += 1) {
+          await Bun.sleep(10);
+        }
+        expect(server.activeSockets()).toBe(0);
+        expect(server.closedSockets()).toBe(1);
+      } finally {
+        server.listener.stop(true);
+      }
     }
   });
 

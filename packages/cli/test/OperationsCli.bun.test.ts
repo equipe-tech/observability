@@ -41,6 +41,52 @@ const runCli = async (
 };
 
 describe("operations CLI", () => {
+  test("rejects unsupported YAML before planning or provider calls", async () => {
+    const root = await mkdtemp(join(tmpdir(), "observability-operations-yaml-"));
+    roots.push(root);
+    const project = join(root, "project");
+    const home = join(root, "home");
+    await mkdir(join(project, "observability"), { recursive: true });
+    await mkdir(home, { recursive: true });
+    await writeFile(
+      join(project, "observability", "operations.yaml"),
+      "%YAML 1.1\n---\nversion: 1\ncontractVersion: 1\nservice: checkout\nenvironments: [staging, prod]\nretention:\n  - environment: staging\n    <<: &retention\n      days: 3:00\n  - environment: prod\n    <<: *retention\ndashboards: []\nmonitors: []\nsentry: { enabled: false }\n",
+    );
+    await writeFile(
+      join(project, "observability", "contract.json"),
+      '{"index":1,"contractVersion":1,"service":"checkout","events":[],"metrics":[],"aliases":[]}\n',
+    );
+    const credentialsPath = join(home, "credentials.json");
+    await writeFile(
+      credentialsPath,
+      '{"version":3,"axiom":{"token":"secret-token","organizationId":"org"},"environments":[],"pendingAxiomMutations":[]}\n',
+      { mode: 0o600 },
+    );
+    await chmod(credentialsPath, 0o600);
+    let providerCalls = 0;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => {
+        providerCalls += 1;
+        return Response.json([]);
+      },
+    });
+    try {
+      const result = await runCli(
+        ["ops", "plan", "--dir", project, "--json"],
+        home,
+        `http://127.0.0.1:${server.port}`,
+      );
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("OBS_CLI_MANIFEST_INVALID");
+      expect(providerCalls).toBe(0);
+      expect(await readdir(project)).toEqual(["observability"]);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("plans without mutation, applies with read-back, and produces an empty second plan", async () => {
     const root = await mkdtemp(join(tmpdir(), "observability-operations-"));
     roots.push(root);

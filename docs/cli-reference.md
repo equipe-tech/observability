@@ -75,11 +75,20 @@ observability ops apply [--dir <path>] [--environment <name>]... --plan <file> [
 observability ops verify [--dir <path>] [--environment <name>]... [--json]
 ```
 
-`plan` decodifica `observability/operations.yaml`, `observability/contract.json` e todas as queries antes de carregar credenciais. Ele faz somente leituras remotas e grava `.observability/plan-<sha256>.json` com modo `0600`.
+`plan` decodifica `observability/operations.yaml`, `observability/contract.json` e todas as queries antes de carregar credenciais. O manifesto rejeita diretivas YAML, tags, anchors, aliases e merge keys. O comando faz somente leituras remotas e grava `.observability/plan-<sha256>.json` com modo `0600`.
 
 `apply` exige esse arquivo exato. A CLI recalcula as precondições e rejeita manifesto, contrato ou provider alterado. `--allow-destructive` vale somente para o digest fornecido. `--confirm-manual` registra confirmação do operador somente para um ID contido no mesmo plano. Cada mutação grava intenção antes da chamada e executa read-back limitado. Após uma interrupção ou resposta ambígua, a próxima execução lê o dataset. O estado desejado conclui a intenção e a ausência permite repetir a criação idempotente.
 
 `verify` faz somente leituras. Drift, mutação sem resultado conhecido e ação manual pendente causam falha. Consulte [Manifesto de operações](operations-manifest.md) para o schema, a gramática de queries e a tabela de capacidades.
+
+As queries gerenciadas têm estes limites:
+
+- 16384 caracteres no texto de entrada e no texto compilado;
+- 64 estágios, 64 comparações por estágio `where` e 64 campos de agrupamento por estágio `summarize`;
+- 256 valores por predicado `in`, binding ou destino, e 512 valores de predicado no total;
+- 1024 nós na AST e 4096 bytes UTF-8 cumulativos em literais;
+- 128 caracteres por campo e 32 caracteres por token de quantil ou duração;
+- 255 bytes UTF-8 no nome do dataset e 128 bytes UTF-8 por nome de sinal.
 
 ## `env list`
 

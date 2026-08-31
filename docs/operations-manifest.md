@@ -1,6 +1,6 @@
 # Manifesto de operações
 
-`observability/operations.yaml` declara o estado desejado dos providers. A CLI aceita somente `version: 1`. Ela decodifica YAML, o índice de contrato e todas as queries antes de carregar credenciais ou chamar um provider.
+`observability/operations.yaml` declara o estado desejado dos providers. A CLI aceita somente `version: 1`. O manifesto não aceita diretivas YAML, tags, anchors, aliases ou merge keys. A CLI decodifica o YAML, o índice de contrato e todas as queries antes de carregar credenciais ou chamar um provider.
 
 `observability/contract.json` é um artefato gerado e versionado. Gere-o com `Contract.contractIndex` e `Contract.encodeContractIndex`. O terceiro argumento de `contractIndex` aceita metadados de aliases na versão 1, com sinais `source` e `target`. Uma origem pode apontar para vários eventos somente quando todos os destinos transitivos declaram os mesmos atributos e classificações. Origens métricas exigem o mesmo tipo, unidade e conjunto de atributos em todos os destinos transitivos. O gerador limita o índice a 4096 aliases, profundidade 128 e 256 destinos expandidos por origem. Ele rejeita limites excedidos com `ContractIndexAliasError`. Também rejeita conjuntos incompatíveis, nomes inválidos, destinos ausentes e ciclos, e ordena a saída. A CLI aplica os mesmos limites ao decodificar e validar o índice. O campo `contractVersion` do manifesto deve ser igual ao índice. A CLI mantém uma cópia pequena do schema do índice e da gramática de nomes para não depender do pacote de runtime.
 
@@ -26,7 +26,16 @@ Falhas HTTP 4xx que provam que a criação não ocorreu encerram a intenção an
 
 Uma query começa com `signal(logs)`, `signal(traces)` ou `signal(metrics)`. Os estágios aceitos são `where` e `summarize`. Predicados aceitam comparações literais e `in`. Agregações aceitam `count`, `sum`, `avg`, `min`, `max` e `quantile`. Agrupamentos aceitam campos e `bin` com duração fixa.
 
-Fontes de evento exigem `event.name` em `logs` ou `traces`. Fontes métricas exigem `metric.name` em `metrics`. O predicado deve corresponder às fontes declaradas e a todos os destinos expandidos de cada alias. Filtros, agrupamentos e agregações não podem usar atributos classificados como `forbidden`. Atributos `public` e `sensitive` continuam disponíveis quando estão presentes em todos os destinos. Agregações métricas precisam ser legais para todos eles. A CLI tokeniza `AND` sem diferenciar maiúsculas de minúsculas e aceita espaços, tabs e quebras de linha limitados ao redor do separador. Ela rejeita operadores OR, comentários, joins, subqueries, regex, funções dinâmicas e texto arbitrário de provider somente quando aparecem fora de strings. `parseManagedQuery` e `compileManagedQuery` retornam `Effect` com `ManagedQueryError` no canal de erro. O compilador valida a AST e o destino recebidos, preserva a precisão decimal de quantis e escapa aspas, barras invertidas e controles em literais APL.
+Fontes de evento exigem `event.name` em `logs` ou `traces`. Fontes métricas exigem `metric.name` em `metrics`. O predicado deve corresponder às fontes declaradas e a todos os destinos expandidos de cada alias. Filtros, agrupamentos e agregações não podem usar atributos classificados como `forbidden`. Atributos `internal`, `public` e `sensitive` continuam disponíveis quando estão presentes em todos os destinos. Agregações métricas precisam ser legais para todos eles. A CLI tokeniza `AND` sem diferenciar maiúsculas de minúsculas e aceita até 32 caracteres de espaço em branco em cada lado do separador. Ela rejeita operadores OR, comentários, joins, subqueries, regex, funções dinâmicas e texto arbitrário de provider somente quando aparecem fora de strings. `parseManagedQuery` e `compileManagedQuery` retornam `Effect` com `ManagedQueryError` no canal de erro. O compilador valida a AST e o destino recebidos, preserva a precisão decimal de quantis e escapa aspas, barras invertidas e controles em literais APL.
+
+As queries gerenciadas aplicam estes limites:
+
+- 16384 caracteres no texto de entrada e no texto compilado;
+- 64 estágios, 64 comparações por estágio `where` e 64 campos de agrupamento por estágio `summarize`;
+- 256 valores por predicado `in`, binding ou destino, e 512 valores de predicado no total;
+- 1024 nós na AST e 4096 bytes UTF-8 cumulativos em literais;
+- 128 caracteres por campo e 32 caracteres por token de quantil ou duração;
+- 255 bytes UTF-8 no nome do dataset e 128 bytes UTF-8 por nome de sinal.
 
 ## Evidência de capacidades
 

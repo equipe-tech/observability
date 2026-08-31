@@ -143,7 +143,18 @@ describe("operations manifest", () => {
   });
 
   test("rejects non-canonical YAML retention integers", async () => {
-    for (const spelling of ["0o30", "0x1e", "3e1", "030", "30.0", "+30"]) {
+    for (const spelling of [
+      "0x1E",
+      "0b11111",
+      "0o17",
+      "017",
+      "1_0_0",
+      "+7",
+      "07",
+      "3:00",
+      "3e1",
+      "30.0",
+    ]) {
       const error = await Effect.runPromise(
         Effect.flip(
           parseOperationsManifest(validManifest.replace("days: 30", `days: ${spelling}`)),
@@ -151,6 +162,49 @@ describe("operations manifest", () => {
       );
       expect(error.code).toBe("OBS_CLI_MANIFEST_INVALID");
       expect(error.issues).toContain("retention days must use canonical decimal integers");
+    }
+  });
+
+  test("rejects YAML directives, tags, anchors, aliases and merge keys", async () => {
+    const unsupported = [
+      validManifest.replace("version: 1", "%YAML 1.2\n---\nversion: 1"),
+      validManifest.replace("version: 1", "%TAG !! tag:yaml.org,2002:\n---\nversion: 1"),
+      validManifest.replace("days: 30", "days: !!int 30"),
+      validManifest.replace("days: 30", "days: &retention-days 30"),
+      validManifest
+        .replace("environments: [staging]", "environments: [staging, prod]")
+        .replace(
+          "    days: 30",
+          "    days: &retention-days 30\n  - environment: prod\n    days: *retention-days",
+        ),
+      validManifest.replace(
+        "  - environment: staging\n    days: 30",
+        "  - <<: { environment: staging, days: 30 }",
+      ),
+    ];
+    for (const content of unsupported) {
+      const error = await Effect.runPromise(Effect.flip(parseOperationsManifest(content)));
+      expect(error.code).toBe("OBS_CLI_MANIFEST_INVALID");
+      expect(error.issues).toContain(
+        "YAML directives, tags, anchors, aliases and merge keys are unsupported",
+      );
+    }
+  });
+
+  test("rejects YAML 1.1 retention values hidden by merged and aliased mappings", async () => {
+    for (const spelling of ["0x1E", "0b11111", "017", "1_0_0", "+7", "07", "3:00"]) {
+      const content = validManifest
+        .replace("version: 1", "%YAML 1.1\n---\nversion: 1")
+        .replace("environments: [staging]", "environments: [staging, prod]")
+        .replace(
+          "  - environment: staging\n    days: 30",
+          `  - environment: staging\n    <<: &retention\n      days: ${spelling}\n  - environment: prod\n    <<: *retention`,
+        );
+      const error = await Effect.runPromise(Effect.flip(parseOperationsManifest(content)));
+      expect(error.code).toBe("OBS_CLI_MANIFEST_INVALID");
+      expect(error.issues).toContain(
+        "YAML directives, tags, anchors, aliases and merge keys are unsupported",
+      );
     }
   });
 

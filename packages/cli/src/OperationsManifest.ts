@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect";
-import { isMap, isScalar, isSeq, parseDocument } from "yaml";
+import { isAlias, isMap, isScalar, isSeq, Parser, parseDocument, visit } from "yaml";
 import { EnvironmentName, ServiceName, resourceNamePattern } from "./ResourceNamePolicy.ts";
 import { ManagedQueryError, parseManagedQuery, type ManagedQuery } from "./ManagedQuery.ts";
 
@@ -147,6 +147,9 @@ const manifestInvalid = (issues: ReadonlyArray<string>, cause: unknown): Operati
     cause,
   });
 
+const unsupportedYamlIssue =
+  "YAML directives, tags, anchors, aliases and merge keys are unsupported";
+
 const ManifestVersion = Schema.Struct({ version: Schema.Number });
 const decodeManifestVersion = Schema.decodeUnknownEffect(ManifestVersion);
 const decodeManifest = Schema.decodeUnknownEffect(OperationsManifest, {
@@ -161,6 +164,14 @@ export const parseOperationsManifest = Effect.fn("parseOperationsManifest")(func
 ): Effect.fn.Return<OperationsManifest, OperationsManifestError> {
   if (content.length > 1_048_576) {
     return yield* manifestInvalid(["manifest exceeds 1048576 bytes"], content.length);
+  }
+  for (const token of new Parser().parse(content)) {
+    if (
+      token.type === "directive" &&
+      (token.source.startsWith("%YAML") || token.source.startsWith("%TAG"))
+    ) {
+      return yield* manifestInvalid([unsupportedYamlIssue], token.source);
+    }
   }
   const parsed = yield* Effect.try({
     try: () =>
@@ -185,6 +196,28 @@ export const parseOperationsManifest = Effect.fn("parseOperationsManifest")(func
       parsed.errors,
     );
   }
+  let unsupportedYaml = false;
+  visit(parsed, {
+    Alias: () => {
+      unsupportedYaml = true;
+      return visit.BREAK;
+    },
+    Node: (_key, node) => {
+      if (node.tag !== undefined || (!isAlias(node) && node.anchor !== undefined)) {
+        unsupportedYaml = true;
+        return visit.BREAK;
+      }
+    },
+    Pair: (_key, pair) => {
+      if (isScalar(pair.key) && pair.key.value === "<<") {
+        unsupportedYaml = true;
+        return visit.BREAK;
+      }
+    },
+  });
+  if (unsupportedYaml) {
+    return yield* manifestInvalid([unsupportedYamlIssue], unsupportedYamlIssue);
+  }
   const retentionNode = parsed.get("retention", true);
   if (isSeq(retentionNode)) {
     for (const item of retentionNode.items) {
@@ -194,8 +227,6 @@ export const parseOperationsManifest = Effect.fn("parseOperationsManifest")(func
       if (
         !isScalar(days) ||
         days.type !== "PLAIN" ||
-        days.anchor !== undefined ||
-        days.tag !== undefined ||
         days.source === undefined ||
         !/^[1-9][0-9]*$/.test(days.source)
       ) {

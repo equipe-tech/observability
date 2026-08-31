@@ -222,17 +222,22 @@ const makeRemoteRequest = (timeoutMilliseconds: number) =>
       fetch(url, { ...init, redirect: "error", signal: controller.signal }).then(
         (response) => {
           if (response.status === 401 || response.status === 403) {
-            finish(
-              Effect.fail(
-                new RemoteApiError({
-                  code: "OBS_CLI_REMOTE_UNAUTHORIZED",
-                  message: `${provider} rejected the stored credentials. Run observability auth login again.`,
-                  provider,
-                  status: response.status,
-                  cause: response.status,
-                }),
-              ),
+            const unauthorized = Effect.fail(
+              new RemoteApiError({
+                code: "OBS_CLI_REMOTE_UNAUTHORIZED",
+                message: `${provider} rejected the stored credentials. Run observability auth login again.`,
+                provider,
+                status: response.status,
+                cause: response.status,
+              }),
             );
+            const settleUnauthorized = () => finish(unauthorized);
+            const body = response.body;
+            if (body === null) {
+              settleUnauthorized();
+            } else {
+              body.cancel().then(settleUnauthorized, settleUnauthorized);
+            }
             return;
           }
           response.text().then(
