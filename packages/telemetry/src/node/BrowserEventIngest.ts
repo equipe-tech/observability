@@ -43,16 +43,34 @@ export const ingestBrowserEventBatch = Effect.fn("ingestBrowserEventBatch")(func
   let dropped = 0;
   const events = batch.events.map((event) => {
     const decision = transformSignalFields(policy, "browser-ingest", event.fields);
-    dropped += decision.dropped;
-    redacted += decision.redactions.filter((redaction) => redaction.action !== "dropped").length;
+    const errorDecision =
+      event.error === undefined
+        ? undefined
+        : transformSignalFields(policy, "browser-ingest", {
+            "error.type": event.error.type,
+            "error.message": event.error.message,
+          });
+    const eventDropped = decision.dropped + (errorDecision?.dropped ?? 0);
+    dropped += eventDropped;
+    redacted += [...decision.redactions, ...(errorDecision?.redactions ?? [])].filter(
+      (redaction) => redaction.action !== "dropped",
+    ).length;
     const ingested = {
       id: event.id,
       name: event.name,
       occurredAt: event.occurredAt,
       attributes: decision.value,
-      admission: { policyDroppedAttributes: decision.dropped },
+      admission: { policyDroppedAttributes: eventDropped },
     };
-    return event.error === undefined ? ingested : { ...ingested, error: event.error };
+    if (event.error === undefined || errorDecision === undefined) return ingested;
+    return {
+      ...ingested,
+      error: {
+        type: String(errorDecision.value["error.type"] ?? "Error"),
+        message: String(errorDecision.value["error.message"] ?? ""),
+        retryable: event.error.retryable,
+      },
+    };
   });
   yield* sink.recordBrowserBatch(events);
   return { accepted: events.length, redacted, dropped };

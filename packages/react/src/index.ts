@@ -3,6 +3,7 @@ import {
   createBrowserTelemetryClient,
   type BrowserTelemetryClient,
   type BrowserTelemetryClientConfig,
+  type BrowserTelemetryClientTransport,
 } from "@equipe-tech/observability/browser/client";
 import {
   defectDeduplicator,
@@ -15,8 +16,10 @@ import {
   type DataPolicyInput,
   type ResourceIdentity,
 } from "@equipe-tech/observability/policy";
+import { parseSentryDsn } from "@equipe-tech/observability-sentry";
 import {
   createBrowserSentryDefectReporter,
+  type BrowserSentryDefectReporter,
   type BrowserSentryDefectReporterConfig,
   type SentryDefectReport,
 } from "@equipe-tech/observability-sentry/browser";
@@ -93,6 +96,7 @@ export type BrowserObservabilityReport = {
   readonly suppressed: number;
   readonly failed: number;
   readonly pendingEvents: number;
+  readonly deliveryDropped: number;
   readonly sentry: SentryDefectReport;
 };
 
@@ -127,23 +131,32 @@ export class BrowserObservabilityError extends Schema.TaggedError<BrowserObserva
   },
 ) {}
 
-const activeHostsKey = Symbol.for("@equipe-tech/observability-react/active-hosts");
-const activeHosts = (() => {
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, activeHostsKey);
+const activeHosts = (): WeakSet<object> => {
+  const key = Symbol.for("@equipe-tech/observability-react/active-hosts");
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, key);
   if (descriptor !== undefined) {
     try {
       return Schema.decodeUnknownSync(Schema.instanceOf(WeakSet))(descriptor.value);
     } catch {
-      Object.defineProperty(globalThis, activeHostsKey, {
+      const hosts = new WeakSet<object>();
+      Object.defineProperty(globalThis, key, {
         configurable: false,
-        value: new WeakSet<object>(),
+        enumerable: false,
+        value: hosts,
+        writable: false,
       });
+      return hosts;
     }
   }
   const hosts = new WeakSet<object>();
-  Object.defineProperty(globalThis, activeHostsKey, { configurable: false, value: hosts });
+  Object.defineProperty(globalThis, key, {
+    configurable: false,
+    enumerable: false,
+    value: hosts,
+    writable: false,
+  });
   return hosts;
-})();
+};
 const componentStackLimit = 4_096;
 
 const nativeHost = (): { readonly host: BrowserEventHost; readonly owner: object } | undefined => {
@@ -205,6 +218,7 @@ const inertHandle = (service: BrowserServiceIdentity): BrowserObservability => {
       suppressed: 0,
       failed: 0,
       pendingEvents: 0,
+      deliveryDropped: 0,
       sentry: {
         total: 0,
         firstOutcomeAt: Option.none(),
@@ -241,41 +255,154 @@ const invalidConfig = (cause: unknown): never => {
 const validPositiveOption = (value: number | undefined): boolean =>
   value === undefined || (Number.isSafeInteger(value) && value > 0);
 
-export const createBrowserObservability = (
-  config: BrowserObservabilityConfig,
-): BrowserObservability => {
-  let identity: ResourceIdentity;
-  let policy: DataPolicy;
+type PreparedBrowserEventConfig = {
+  endpoint?: string;
+  maxBatchSize?: number;
+  maxQueueSize?: number;
+  flushIntervalMs?: number;
+  transport?: BrowserTelemetryClientTransport;
+};
+
+type PreparedBrowserSentryConfig = {
+  dsn?: string;
+  disabled?: boolean;
+  componentStack?: boolean;
+};
+
+type PreparedBrowserObservabilityConfig = {
+  readonly service: BrowserServiceIdentity;
+  readonly identity: ResourceIdentity;
+  readonly policy: DataPolicy;
+  readonly events: PreparedBrowserEventConfig;
+  readonly sentry: PreparedBrowserSentryConfig;
+  readonly dedupeWindowMillis: number | undefined;
+  readonly dedupeCapacity: number | undefined;
+  readonly selected: { readonly host: BrowserEventHost; readonly owner: object } | undefined;
+};
+
+const prepareConfig = (config: BrowserObservabilityConfig): PreparedBrowserObservabilityConfig => {
   try {
+    const serviceInput = config.service;
+    const service = {
+      name: serviceInput.name,
+      version: serviceInput.version,
+      environment: serviceInput.environment,
+    };
+    const policyInput = config.policy;
+    const eventInput = config.events;
+    const endpoint = eventInput?.endpoint;
+    const maxBatchSize = eventInput?.maxBatchSize;
+    const maxQueueSize = eventInput?.maxQueueSize;
+    const flushIntervalMs = eventInput?.flushIntervalMs;
+    const transport = eventInput?.transport;
+    const events: PreparedBrowserEventConfig = {};
+    if (endpoint !== undefined) events.endpoint = endpoint;
+    if (maxBatchSize !== undefined) events.maxBatchSize = maxBatchSize;
+    if (maxQueueSize !== undefined) events.maxQueueSize = maxQueueSize;
+    if (flushIntervalMs !== undefined) events.flushIntervalMs = flushIntervalMs;
+    if (transport !== undefined) events.transport = transport;
+    const sentryInput = config.sentry;
+    const dsn = sentryInput?.dsn;
+    const disabled = sentryInput?.disabled;
+    const componentStack = sentryInput?.componentStack;
+    const sentry: PreparedBrowserSentryConfig = {};
+    if (dsn !== undefined) sentry.dsn = dsn;
+    if (disabled !== undefined) sentry.disabled = disabled;
+    if (componentStack !== undefined) sentry.componentStack = componentStack;
+    const dedupeWindowMillis = config.dedupeWindowMillis;
+    const dedupeCapacity = config.dedupeCapacity;
+    const hostInput = config.host;
+    let selected: PreparedBrowserObservabilityConfig["selected"];
+    if (hostInput === undefined) {
+      selected = nativeHost();
+    } else {
+      const addEventListener = hostInput.addEventListener;
+      const removeEventListener = hostInput.removeEventListener;
+      if (!Predicate.isFunction(addEventListener) || !Predicate.isFunction(removeEventListener)) {
+        return invalidConfig("invalid browser event host");
+      }
+      selected = {
+        owner: hostInput,
+        host: {
+          addEventListener: (name, listener) => addEventListener.call(hostInput, name, listener),
+          removeEventListener: (name, listener) =>
+            removeEventListener.call(hostInput, name, listener),
+        },
+      };
+    }
     if (
-      !validPositiveOption(config.dedupeWindowMillis) ||
-      !validPositiveOption(config.dedupeCapacity) ||
-      !validPositiveOption(config.events?.maxBatchSize) ||
-      !validPositiveOption(config.events?.maxQueueSize) ||
-      !validPositiveOption(config.events?.flushIntervalMs) ||
-      (config.host !== undefined &&
-        (!Predicate.isFunction(config.host.addEventListener) ||
-          !Predicate.isFunction(config.host.removeEventListener))) ||
-      (config.service.environment === reactWebLifecycle.environmentRequiringDefects &&
-        (config.sentry?.dsn === undefined || config.sentry.disabled === true))
+      !validPositiveOption(dedupeWindowMillis) ||
+      !validPositiveOption(dedupeCapacity) ||
+      !validPositiveOption(events.maxBatchSize) ||
+      !validPositiveOption(events.maxQueueSize) ||
+      !validPositiveOption(events.flushIntervalMs) ||
+      (events.endpoint !== undefined && !Predicate.isString(events.endpoint)) ||
+      (events.transport !== undefined && !Predicate.isFunction(events.transport)) ||
+      (sentry.dsn !== undefined && !Predicate.isString(sentry.dsn)) ||
+      (sentry.disabled !== undefined && !Predicate.isBoolean(sentry.disabled)) ||
+      (sentry.componentStack !== undefined && !Predicate.isBoolean(sentry.componentStack))
     ) {
       return invalidConfig("invalid React browser observability options");
     }
-    identity = Effect.runSync(
+    const identity = Effect.runSync(
       parseResourceIdentity({
-        serviceName: config.service.name,
-        serviceVersion: config.service.version,
-        environment: config.service.environment,
+        serviceName: service.name,
+        serviceVersion: service.version,
+        environment: service.environment,
       }),
     );
-    policy = Effect.runSync(parseDataPolicy(config.policy));
+    const policy = Effect.runSync(parseDataPolicy(policyInput));
+    let dsnUrl: URL | undefined;
+    if (sentry.dsn !== undefined) {
+      dsnUrl = Schema.decodeUnknownSync(Schema.URLFromString)(sentry.dsn);
+      Effect.runSync(parseSentryDsn(dsnUrl));
+    }
+    if (
+      service.environment === reactWebLifecycle.environmentRequiringDefects &&
+      (sentry.dsn === undefined || sentry.disabled === true || dsnUrl?.protocol !== "https:")
+    ) {
+      return invalidConfig("production browser observability requires an HTTPS Sentry DSN");
+    }
+    return {
+      service,
+      identity,
+      policy,
+      events,
+      sentry,
+      dedupeWindowMillis,
+      dedupeCapacity,
+      selected,
+    };
   } catch (cause) {
     return invalidConfig(cause);
   }
-  const selected =
-    config.host === undefined ? nativeHost() : { host: config.host, owner: config.host };
-  if (selected === undefined) return inertHandle(config.service);
-  if (activeHosts.has(selected.owner)) {
+};
+
+export const createBrowserObservability = (
+  config: BrowserObservabilityConfig,
+): BrowserObservability => {
+  const prepared = prepareConfig(config);
+  const {
+    service,
+    identity,
+    policy,
+    events: eventConfig,
+    sentry: sentryInput,
+    selected,
+  } = prepared;
+  if (selected === undefined) return inertHandle(service);
+  let dedupe: ReturnType<typeof defectDeduplicator>;
+  let hosts: WeakSet<object>;
+  try {
+    dedupe = defectDeduplicator(
+      prepared.dedupeWindowMillis ?? 60_000,
+      prepared.dedupeCapacity ?? 256,
+    );
+    hosts = activeHosts();
+  } catch (cause) {
+    return invalidConfig(cause);
+  }
+  if (hosts.has(selected.owner)) {
     throw new BrowserObservabilityError({
       code: "OBS_REACT_ALREADY_INSTALLED",
       message:
@@ -283,14 +410,35 @@ export const createBrowserObservability = (
       cause: "active browser observability host",
     });
   }
-  activeHosts.add(selected.owner);
-  const events = createBrowserTelemetryClient({
-    ...config.events,
-    policy: (fields) => transformSignalFields(policy, "browser-ingest", fields).value,
-    shutdownTimeoutMs: reactWebLifecycle.eventShutdownDeadlineMillis,
-  });
+  hosts.add(selected.owner);
+  let createdEvents: BrowserTelemetryClient | undefined;
+  let createdSentry: BrowserSentryDefectReporter | undefined;
+  const cleanupConstruction = (
+    listeners: ReadonlyArray<readonly [string, (event: Event) => void]> = [],
+  ): void => {
+    for (const [name, listener] of [...listeners].reverse()) {
+      try {
+        selected.host.removeEventListener(name, listener);
+      } catch {}
+    }
+    try {
+      const sentryToDispose = createdSentry;
+      if (sentryToDispose !== undefined) {
+        const cleanup = sentryToDispose.dispose();
+        Effect.runFork(Effect.promise(() => cleanup));
+      }
+    } catch {}
+    try {
+      const eventsToDispose = createdEvents;
+      if (eventsToDispose !== undefined) {
+        const cleanup = eventsToDispose.dispose();
+        Effect.runFork(Effect.promise(() => cleanup));
+      }
+    } catch {}
+    hosts.delete(selected.owner);
+  };
   const sentryConfig: Omit<BrowserSentryDefectReporterConfig, "dsn"> = {
-    disabled: config.sentry?.disabled ?? config.sentry?.dsn === undefined,
+    disabled: sentryInput.disabled ?? sentryInput.dsn === undefined,
     service: {
       name: identity.serviceName,
       version: identity.serviceVersion,
@@ -301,13 +449,25 @@ export const createBrowserObservability = (
     flushDeadlineMillis: reactWebLifecycle.sentryDeadlineMillis,
     deduplication: "delegated",
   };
-  const sentry = createBrowserSentryDefectReporter(
-    config.sentry?.dsn === undefined ? sentryConfig : { ...sentryConfig, dsn: config.sentry.dsn },
-  );
-  const dedupe = defectDeduplicator(
-    config.dedupeWindowMillis ?? 60_000,
-    config.dedupeCapacity ?? 256,
-  );
+  try {
+    createdEvents = createBrowserTelemetryClient({
+      ...eventConfig,
+      policy: (fields) => transformSignalFields(policy, "browser-ingest", fields).value,
+      shutdownTimeoutMs: reactWebLifecycle.eventShutdownDeadlineMillis,
+    });
+    createdSentry = createBrowserSentryDefectReporter(
+      sentryInput.dsn === undefined ? sentryConfig : { ...sentryConfig, dsn: sentryInput.dsn },
+    );
+  } catch (cause) {
+    cleanupConstruction();
+    return invalidConfig(cause);
+  }
+  if (createdEvents === undefined || createdSentry === undefined) {
+    cleanupConstruction();
+    return invalidConfig("browser observability clients were not created");
+  }
+  const events = createdEvents;
+  const sentry = createdSentry;
   let closed = false;
   let recorded = 0;
   let deduplicated = 0;
@@ -326,7 +486,7 @@ export const createBrowserObservability = (
         return { kind: "suppressed", reason: "closed" };
       }
       const context = new Map<string, string>();
-      if (config.sentry?.componentStack === true && input.componentStack !== undefined) {
+      if (sentryInput.componentStack === true && input.componentStack !== undefined) {
         context.set("react.component_stack", input.componentStack.slice(0, componentStackLimit));
       }
       const previousEnvelope = defectEnvelopes.get(input.error);
@@ -451,9 +611,20 @@ export const createBrowserObservability = (
       failed += 1;
     }
   };
-  selected.host.addEventListener("error", onError);
-  selected.host.addEventListener("unhandledrejection", onUnhandledRejection);
-  selected.host.addEventListener("pagehide", onPageHide);
+  const installedListeners: Array<readonly [string, (event: Event) => void]> = [];
+  try {
+    for (const listener of [
+      ["error", onError],
+      ["unhandledrejection", onUnhandledRejection],
+      ["pagehide", onPageHide],
+    ] satisfies ReadonlyArray<readonly [string, (event: Event) => void]>) {
+      installedListeners.push(listener);
+      selected.host.addEventListener(listener[0], listener[1]);
+    }
+  } catch (cause) {
+    cleanupConstruction(installedListeners);
+    return invalidConfig(cause);
+  }
 
   let flushInFlight: Promise<void> | undefined;
   const flush = (): Promise<void> => {
@@ -492,7 +663,7 @@ export const createBrowserObservability = (
         failed += 1;
       }
     }
-    activeHosts.delete(selected.owner);
+    hosts.delete(selected.owner);
     disposal = Promise.allSettled([
       Promise.resolve().then(() => events.dispose()),
       Promise.resolve().then(() => sentry.dispose()),
@@ -508,7 +679,7 @@ export const createBrowserObservability = (
 
   return {
     installed: true,
-    service: config.service,
+    service,
     events,
     defects: { report },
     reactRootOptions: {
@@ -522,6 +693,7 @@ export const createBrowserObservability = (
       suppressed,
       failed,
       pendingEvents: events.pending(),
+      deliveryDropped: events.dropped(),
       sentry: sentry.reports(),
     }),
     flush,

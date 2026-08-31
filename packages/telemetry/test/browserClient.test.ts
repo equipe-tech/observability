@@ -260,7 +260,8 @@ describe("browser telemetry client", () => {
       timeoutMs: 20,
     });
     expect(aborted).toBe(true);
-    expect(client.pending()).toBe(1);
+    expect(client.pending()).toBe(0);
+    expect(client.dropped()).toBe(1);
   });
 
   it("bounds disposal when a custom transport ignores abort", async () => {
@@ -274,7 +275,8 @@ describe("browser telemetry client", () => {
     const startedAt = Date.now();
     await expect(client.dispose()).rejects.toBeInstanceOf(BrowserTelemetryClientShutdownError);
     expect(Date.now() - startedAt).toBeLessThan(200);
-    expect(client.pending()).toBe(1);
+    expect(client.pending()).toBe(0);
+    expect(client.dropped()).toBe(1);
   });
 
   it("uses a valid bounded fallback for empty names", async () => {
@@ -309,7 +311,7 @@ describe("browser telemetry client", () => {
     expect(client.pending()).toBe(0);
   });
 
-  it("keeps a failed final batch sanitized and stays disposed", async () => {
+  it("accounts for a failed final batch and stays disposed", async () => {
     const failure = new BrowserTelemetryClientDeliveryError("offline", true, { cause: "network" });
     const client = createBrowserTelemetryClient({
       transport: async () => {
@@ -319,9 +321,40 @@ describe("browser telemetry client", () => {
     });
     client.emit("retained");
     await expect(client.dispose()).rejects.toBe(failure);
-    expect(client.pending()).toBe(1);
+    expect(client.pending()).toBe(0);
+    expect(client.dropped()).toBe(1);
     await client.flush();
-    expect(client.pending()).toBe(1);
+    expect(client.pending()).toBe(0);
+  });
+
+  it("accounts for queue evictions and permanent transport drops", async () => {
+    const queue = createBrowserTelemetryClient({
+      maxQueueSize: 2,
+      flushIntervalMs: 60_000,
+      transport: async () => undefined,
+    });
+    for (let index = 0; index < 100; index += 1) queue.emit(`event.${index}`);
+    expect(queue.pending()).toBe(2);
+    expect(queue.dropped()).toBe(98);
+    await queue.flush();
+    expect(queue.pending()).toBe(0);
+    expect(queue.dropped()).toBe(98);
+    await queue.dispose();
+
+    const permanent = new BrowserTelemetryClientDeliveryError("rejected", false, {
+      cause: 400,
+    });
+    const client = createBrowserTelemetryClient({
+      flushIntervalMs: 60_000,
+      transport: async () => {
+        throw permanent;
+      },
+    });
+    client.emit("permanent");
+    await expect(client.flush()).rejects.toBe(permanent);
+    expect(client.pending()).toBe(0);
+    expect(client.dropped()).toBe(1);
+    await client.dispose();
   });
 
   it("owns periodic delivery until disposal", async () => {

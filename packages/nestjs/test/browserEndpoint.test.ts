@@ -206,6 +206,11 @@ describe("browser events endpoint", () => {
               "cart.total": 42,
               "http.authorization": `Bearer ${secret}`,
             },
+            error: {
+              type: `Bearer ${secret}`,
+              message: `authorization: Bearer ${secret}`,
+              retryable: false,
+            },
           },
           { id: "evt-2", name: "page.viewed", occurredAt: 1700000000500, fields: {} },
         ],
@@ -213,7 +218,7 @@ describe("browser events endpoint", () => {
     );
 
     assert.strictEqual(response.status, 202);
-    assert.deepStrictEqual(await response.json(), { accepted: 2, redacted: 1, dropped: 0 });
+    assert.deepStrictEqual(await response.json(), { accepted: 2, redacted: 3, dropped: 0 });
 
     const telemetry = await harness.close();
     const boundary = telemetry.spans.find((span) => span.name.includes("/_telemetry/events"));
@@ -224,6 +229,7 @@ describe("browser events endpoint", () => {
     );
     assert.isDefined(checkout);
     assert.strictEqual(attributeOrUndefined(checkout.attributes, "event.source"), "browser");
+    assert.strictEqual(attributeOrUndefined(checkout.attributes, "event.outcome"), "failure");
     assert.notInclude(JSON.stringify(telemetry), secret);
   }, 30_000);
 

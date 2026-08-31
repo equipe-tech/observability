@@ -60,6 +60,7 @@ export type BrowserTelemetryClient = {
   emitDefect(input: BrowserTelemetryDefectInput): void;
   flush(): Promise<void>;
   pending(): number;
+  dropped(): number;
   dispose(): Promise<void>;
 };
 
@@ -82,7 +83,7 @@ export class BrowserTelemetryClientShutdownError extends Error {
 
   constructor(readonly timeoutMs: number) {
     super(
-      `Browser telemetry shutdown exceeded ${timeoutMs} milliseconds; the sanitized batch remains queued.`,
+      `Browser telemetry shutdown exceeded ${timeoutMs} milliseconds; pending sanitized events were dropped.`,
     );
     this.name = "BrowserTelemetryClientShutdownError";
   }
@@ -267,11 +268,16 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
   }
 
   private enqueue(event: BrowserTelemetryClientEvent): void {
+    const fitted = fitEventToRequestBudget(event);
+    if (browserBatchByteLength({ version: 1, events: [fitted] }) > browserRequestByteBudget) {
+      this.droppedEvents += 1;
+      return;
+    }
     if (this.events.length >= this.options.maxQueueSize) {
       this.events.shift();
       this.droppedEvents += 1;
     }
-    this.events.push(fitEventToRequestBudget(event));
+    this.events.push(fitted);
   }
 
   flush(): Promise<void> {
@@ -294,7 +300,12 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
       clearInterval(this.timer);
       this.timer = undefined;
     }
-    this.disposal = this.options.disabled ? Promise.resolve() : this.shutdown();
+    this.disposal = this.options.disabled
+      ? Promise.resolve()
+      : this.shutdown().catch((cause) => {
+          this.dropPending();
+          throw cause;
+        });
     return this.disposal;
   }
 
@@ -324,12 +335,15 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
   private abandonActiveDelivery(): void {
     if (this.activeDelivery === undefined || this.activeDelivery.abandoned) return;
     this.activeDelivery.abandoned = true;
-    const requeued = [...this.activeDelivery.events, ...this.events];
-    this.events = requeued.slice(0, this.options.maxQueueSize);
-    this.droppedEvents += Math.max(0, requeued.length - this.options.maxQueueSize);
+    this.events = [...this.activeDelivery.events, ...this.events];
     this.activeDelivery = undefined;
     this.activeControllers.clear();
     this.activeFlush = undefined;
+  }
+
+  private dropPending(): void {
+    this.droppedEvents += this.events.length;
+    this.events.length = 0;
   }
 
   private flushQueued(allowDisposed = false): Promise<void> {
@@ -357,9 +371,13 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
           if (delivery.abandoned) return;
         } catch (cause) {
           if (delivery.abandoned) return;
-          const requeued = [...batchEvents, ...this.events];
-          this.events = requeued.slice(0, this.options.maxQueueSize);
-          this.droppedEvents += Math.max(0, requeued.length - this.options.maxQueueSize);
+          if (cause instanceof BrowserTelemetryClientDeliveryError && !cause.retryable) {
+            this.droppedEvents += batchEvents.length;
+          } else {
+            const requeued = [...batchEvents, ...this.events];
+            this.events = requeued.slice(0, this.options.maxQueueSize);
+            this.droppedEvents += Math.max(0, requeued.length - this.options.maxQueueSize);
+          }
           throw cause;
         } finally {
           this.activeControllers.delete(controller);

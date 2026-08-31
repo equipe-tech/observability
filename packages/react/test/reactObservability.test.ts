@@ -335,6 +335,183 @@ describe("React browser observability", () => {
     );
   });
 
+  it("rejects malformed and non-HTTPS production DSNs before reserving the host", async () => {
+    const fixture = recordingHost();
+    for (const config of [
+      { service, policy, host: fixture.host, sentry: { dsn: "not-a-dsn" } },
+      {
+        service: { ...service, environment: "production" },
+        policy,
+        host: fixture.host,
+        sentry: { dsn: "http://public@telemetry.example.com/1" },
+      },
+    ]) {
+      assertConfigCode(() => createBrowserObservability(config), "OBS_REACT_CONFIG_INVALID");
+      assert.isTrue([...fixture.listeners.values()].every((registered) => registered.size === 0));
+      const recovery = createBrowserObservability({
+        service,
+        policy,
+        host: fixture.host,
+        sentry: { disabled: true },
+      });
+      await recovery.dispose();
+    }
+  });
+
+  it("rolls back every partial listener registration and permits immediate recovery", async () => {
+    const originalSetInterval = globalThis.setInterval;
+    const originalClearInterval = globalThis.clearInterval;
+    const activeTimers = new Set<ReturnType<typeof setInterval>>();
+    Object.defineProperty(globalThis, "setInterval", {
+      configurable: true,
+      value: (handler: Parameters<typeof setInterval>[0], timeout?: number) => {
+        const timer = originalSetInterval(handler, timeout);
+        activeTimers.add(timer);
+        return timer;
+      },
+    });
+    Object.defineProperty(globalThis, "clearInterval", {
+      configurable: true,
+      value: (timer: ReturnType<typeof setInterval>) => {
+        activeTimers.delete(timer);
+        originalClearInterval(timer);
+      },
+    });
+    try {
+      for (let failureIndex = 0; failureIndex < 3; failureIndex += 1) {
+        const listeners = new Map<string, Set<(event: Event) => void>>();
+        let registrationIndex = 0;
+        let failing = true;
+        const host: BrowserEventHost = {
+          addEventListener: (name, listener) => {
+            const current = listeners.get(name) ?? new Set();
+            current.add(listener);
+            listeners.set(name, current);
+            if (failing && registrationIndex === failureIndex) throw new Error("listener failed");
+            registrationIndex += 1;
+          },
+          removeEventListener: (name, listener) => {
+            listeners.get(name)?.delete(listener);
+          },
+        };
+        assertConfigCode(
+          () =>
+            createBrowserObservability({
+              service,
+              policy,
+              host,
+              sentry: { disabled: true },
+              events: { flushIntervalMs: 60_000 },
+            }),
+          "OBS_REACT_CONFIG_INVALID",
+        );
+        assert.strictEqual(activeTimers.size, 0);
+        assert.isTrue([...listeners.values()].every((registered) => registered.size === 0));
+        failing = false;
+        registrationIndex = 0;
+        const recovery = createBrowserObservability({
+          service,
+          policy,
+          host,
+          sentry: { disabled: true },
+        });
+        await recovery.dispose();
+        assert.strictEqual(activeTimers.size, 0);
+        assert.isTrue([...listeners.values()].every((registered) => registered.size === 0));
+      }
+    } finally {
+      Object.defineProperty(globalThis, "setInterval", {
+        configurable: true,
+        value: originalSetInterval,
+      });
+      Object.defineProperty(globalThis, "clearInterval", {
+        configurable: true,
+        value: originalClearInterval,
+      });
+    }
+  });
+
+  it("wraps hostile nested getters and client construction failures without leaking ownership", async () => {
+    const fixture = recordingHost();
+    for (const nested of ["events", "sentry"]) {
+      const events = { flushIntervalMs: 60_000 };
+      const sentry = { disabled: true };
+      Object.defineProperty(
+        nested === "events" ? events : sentry,
+        nested === "events" ? "transport" : "dsn",
+        {
+          get: () => {
+            throw new Error("hostile getter");
+          },
+        },
+      );
+      assertConfigCode(
+        () => createBrowserObservability({ service, policy, host: fixture.host, events, sentry }),
+        "OBS_REACT_CONFIG_INVALID",
+      );
+    }
+    const originalSetInterval = globalThis.setInterval;
+    Object.defineProperty(globalThis, "setInterval", {
+      configurable: true,
+      value: () => {
+        throw new Error("timer construction failed");
+      },
+    });
+    try {
+      assertConfigCode(
+        () =>
+          createBrowserObservability({
+            service,
+            policy,
+            host: fixture.host,
+            sentry: { disabled: true },
+          }),
+        "OBS_REACT_CONFIG_INVALID",
+      );
+    } finally {
+      Object.defineProperty(globalThis, "setInterval", {
+        configurable: true,
+        value: originalSetInterval,
+      });
+    }
+    const recovery = createBrowserObservability({
+      service,
+      policy,
+      host: fixture.host,
+      sentry: { disabled: true },
+    });
+    await recovery.dispose();
+    assert.isTrue([...fixture.listeners.values()].every((registered) => registered.size === 0));
+  });
+
+  it("reconciles recorded, pending, and dropped delivery counts under queue pressure", async () => {
+    const fixture = recordingHost();
+    const observability = createBrowserObservability({
+      service,
+      policy,
+      host: fixture.host,
+      sentry: { disabled: true },
+      events: {
+        maxQueueSize: 2,
+        flushIntervalMs: 60_000,
+        transport: async () => undefined,
+      },
+    });
+    for (let index = 0; index < 100; index += 1) {
+      observability.defects.report({ error: new Error(`failure-${index}`), origin: "manual" });
+    }
+    const queued = observability.reports();
+    assert.strictEqual(queued.recorded, 100);
+    assert.strictEqual(queued.pendingEvents, 2);
+    assert.strictEqual(queued.deliveryDropped, 98);
+    assert.strictEqual(queued.recorded, queued.pendingEvents + queued.deliveryDropped);
+    await observability.flush();
+    const delivered = observability.reports();
+    assert.strictEqual(delivered.pendingEvents, 0);
+    assert.strictEqual(delivered.deliveryDropped, 98);
+    await observability.dispose();
+  });
+
   it("requires a Sentry DSN in production even when Sentry is disabled", () => {
     const fixture = recordingHost();
     for (const sentry of [

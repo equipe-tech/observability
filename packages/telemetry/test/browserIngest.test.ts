@@ -1,8 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Exit, Option } from "effect";
+import { Effect, Exit, Layer, Option } from "effect";
 import { maxFieldValueLength } from "../src/BrowserEvents.ts";
 import { ingestBrowserEvents } from "../src/node/index.ts";
 import { layerWideEvent } from "../src/effect/index.ts";
+import { CurrentDataPolicy, definePolicy, parseDataPolicy } from "../src/policy/DataPolicy.ts";
+import { sensitiveFieldReplacement, sensitiveTextReplacement } from "../src/policy/index.ts";
 import * as Testing from "../src/testing/index.ts";
 
 const attributeOrUndefined = (
@@ -92,6 +94,47 @@ describe("ingestBrowserEvents", () => {
       assert.strictEqual(events[1]?.error?.type, "TypeError");
       assert.strictEqual(events[1]?.error?.message, "render failed");
       assert.isFalse(events[1]?.error?.retryable);
+    }),
+  );
+
+  it.effect("sanitizes typed error members before the public collecting sink", () =>
+    Effect.gen(function* () {
+      const secret = "secret-token";
+      const compiled = yield* parseDataPolicy(
+        definePolicy({
+          attributes: {
+            "error.type": { classification: "sensitive", required: false, metricLabel: false },
+            "error.message": { classification: "internal", required: false, metricLabel: false },
+          },
+          blockedKeys: [],
+          blockedValuePatterns: ["secret-[a-z]+"],
+        }),
+      );
+      const collector = yield* Testing.makeCollectingTelemetryEventSink();
+      const receipt = yield* ingestBrowserEvents({
+        version: 1,
+        events: [
+          {
+            id: "secret",
+            name: "browser.error",
+            occurredAt: 1,
+            fields: {},
+            error: {
+              type: secret,
+              message: `authorization: Bearer ${secret}`,
+              retryable: false,
+            },
+          },
+        ],
+      }).pipe(
+        Effect.provide(collector.layer),
+        Effect.provide(Layer.succeed(CurrentDataPolicy, compiled)),
+      );
+      const events = yield* collector.browserEvents;
+      assert.deepStrictEqual(receipt, { accepted: 1, redacted: 2, dropped: 0 });
+      assert.strictEqual(events[0]?.error?.type, sensitiveFieldReplacement);
+      assert.include(events[0]?.error?.message ?? "", sensitiveTextReplacement);
+      assert.notInclude(JSON.stringify(events), secret);
     }),
   );
 
