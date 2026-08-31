@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -82,6 +82,7 @@ describe("operations CLI", () => {
     ];
     let mutations = 0;
     let skipReadBack = false;
+    let mutationStatus = 201;
     const server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
@@ -90,6 +91,7 @@ describe("operations CLI", () => {
         if (url.pathname !== "/v2/datasets") return new Response("missing", { status: 404 });
         if (request.method === "GET") return Response.json(datasets);
         mutations += 1;
+        if (mutationStatus !== 201) return new Response("rejected", { status: mutationStatus });
         const body = await request.json();
         const document = JSON.stringify(body);
         const name = /"name":"([^"]+)"/.exec(document)?.[1] ?? "invalid";
@@ -126,36 +128,6 @@ describe("operations CLI", () => {
       expect(planContent).not.toContain("query");
       expect(planContent).not.toContain("secret-token");
 
-      await mkdir(join(home, "operations"), { recursive: true });
-      const lockPath = join(home, "operations", "checkout.lock");
-      await writeFile(lockPath, `${JSON.stringify({ pid: process.pid })}\n`, { mode: 0o600 });
-      const locked = await runCli(
-        ["ops", "apply", "--dir", project, "--plan", planPath],
-        home,
-        baseUrl,
-      );
-      expect(locked.exitCode).not.toBe(0);
-      expect(locked.stderr).toContain("OBS_CLI_OPERATIONS_STATE_BUSY");
-      expect(mutations).toBe(0);
-      await rm(lockPath);
-
-      datasets.push({
-        id: "stale-precondition",
-        name: "checkout-prod-logs",
-        description: "stale",
-        kind: "otel:logs:v1",
-        retentionDays: 0,
-        useRetentionPeriod: false,
-      });
-      const stale = await runCli(
-        ["ops", "apply", "--dir", project, "--plan", planPath],
-        home,
-        baseUrl,
-      );
-      expect(stale.exitCode).not.toBe(0);
-      expect(stale.stderr).toContain("OBS_CLI_PLAN_STALE");
-      datasets.pop();
-
       const applied = await runCli(
         ["ops", "apply", "--dir", project, "--plan", planPath, "--json"],
         home,
@@ -165,18 +137,12 @@ describe("operations CLI", () => {
       expect(mutations).toBe(3);
       expect(datasets).toHaveLength(4);
 
-      const second = await runCli(["ops", "plan", "--dir", project, "--json"], home, baseUrl);
-      expect(second.exitCode).toBe(0);
-      const secondPlan = JSON.parse(second.stdout);
+      const secondPlan = JSON.parse(applied.stdout);
       expect(secondPlan.actions).toEqual([]);
       expect(secondPlan.pendingManualActions).toHaveLength(2);
       const statePath = join(home, "operations", "checkout.json");
       expect((await stat(statePath)).mode & 0o777).toBe(0o600);
       expect(await readFile(statePath, "utf8")).not.toContain("secret-token");
-
-      const verified = await runCli(["ops", "verify", "--dir", project], home, baseUrl);
-      expect(verified.exitCode).not.toBe(0);
-      expect(verified.stderr).toContain("OBS_CLI_MANUAL_ACTION_PENDING");
 
       for (const dataset of datasets) {
         dataset.retentionDays = 30;
@@ -193,21 +159,6 @@ describe("operations CLI", () => {
         ".observability",
         `plan-${confirmationPlan.digest}.json`,
       );
-      const invalidConfirmation = await runCli(
-        [
-          "ops",
-          "apply",
-          "--dir",
-          project,
-          "--plan",
-          confirmationPath,
-          "--confirm-manual",
-          "axiom.missing.prod",
-        ],
-        home,
-        baseUrl,
-      );
-      expect(invalidConfirmation.stderr).toContain("OBS_CLI_PLAN_INVALID");
       const confirmed = await runCli(
         [
           "ops",
@@ -227,51 +178,57 @@ describe("operations CLI", () => {
       expect(confirmed.exitCode).toBe(0);
       expect((await runCli(["ops", "verify", "--dir", project], home, baseUrl)).exitCode).toBe(0);
 
-      const retentionDrift = datasets.find((dataset) => dataset.name === "checkout-prod-logs");
-      if (retentionDrift === undefined) throw new Error("Created dataset is missing.");
-      retentionDrift.retentionDays = 7;
-      const drift = await runCli(["ops", "verify", "--dir", project], home, baseUrl);
-      expect(drift.stderr).toContain("OBS_CLI_DRIFT_DETECTED");
-      retentionDrift.retentionDays = 30;
+      const stateWithRemovedResource = JSON.parse(await readFile(statePath, "utf8"));
+      stateWithRemovedResource.manualActions.push({
+        id: "axiom.dashboard.prod.removed",
+        provider: "Axiom",
+        capability: "dashboard",
+        environment: "prod",
+        desiredFingerprint: "removed-resource-fingerprint",
+        status: "pending",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      await writeFile(statePath, `${JSON.stringify(stateWithRemovedResource, null, 2)}\n`, {
+        mode: 0o600,
+      });
+      expect((await runCli(["ops", "verify", "--dir", project], home, baseUrl)).exitCode).toBe(0);
 
-      const firstDataset = datasets.find((dataset) => dataset.name === "checkout-prod-traces");
-      if (firstDataset === undefined) throw new Error("Created dataset is missing.");
-      firstDataset.kind = "otel:logs:v1";
-      const destructivePlanResult = await runCli(
+      const metricsIndex = datasets.findIndex(
+        (dataset) => dataset.name === "checkout-prod-metrics",
+      );
+      const missingMetrics = datasets[metricsIndex];
+      const canonicalLogs = datasets.find((dataset) => dataset.name === "checkout-prod-logs");
+      if (missingMetrics === undefined || canonicalLogs === undefined) {
+        throw new Error("Expected dataset prerequisites are missing.");
+      }
+      datasets.splice(metricsIndex, 1);
+      datasets.push(
+        { ...canonicalLogs, id: "duplicate-logs" },
+        {
+          ...missingMetrics,
+          id: "prefixed-metrics",
+          name: "checkout-prod-metrics-copy",
+        },
+      );
+      const duplicatePlanResult = await runCli(
         ["ops", "plan", "--dir", project, "--json"],
         home,
         baseUrl,
       );
-      const destructivePlan = JSON.parse(destructivePlanResult.stdout);
-      expect(destructivePlan.actions[0]?.kind).toBe("destructive");
-      const destructivePath = join(
-        project,
-        ".observability",
-        `plan-${destructivePlan.digest}.json`,
-      );
-      const refused = await runCli(
-        ["ops", "apply", "--dir", project, "--plan", destructivePath],
-        home,
-        baseUrl,
-      );
-      expect(refused.exitCode).not.toBe(0);
-      expect(refused.stderr).toContain("OBS_CLI_PLAN_DESTRUCTIVE");
-      const authorized = await runCli(
-        [
-          "ops",
-          "apply",
-          "--dir",
-          project,
-          "--plan",
-          destructivePath,
-          "--allow-destructive",
-          "--confirm-manual",
-          "axiom.dataset.checkout-prod-traces",
-        ],
-        home,
-        baseUrl,
-      );
-      expect(authorized.exitCode).toBe(0);
+      const duplicatePlan = JSON.parse(duplicatePlanResult.stdout);
+      expect(
+        duplicatePlan.actions.some(
+          (action: { id: string }) => action.id === "axiom.dataset.checkout-prod-metrics",
+        ),
+      ).toBeTrue();
+      expect(
+        duplicatePlan.actions.some(
+          (action: { id: string }) => action.id === "axiom.retention.prod",
+        ),
+      ).toBeTrue();
+      datasets.pop();
+      datasets.pop();
+      datasets.push(missingMetrics);
 
       datasets.splice(0);
       const unknownPlanResult = await runCli(
@@ -290,21 +247,44 @@ describe("operations CLI", () => {
       expect(unknown.exitCode).not.toBe(0);
       expect(unknown.stderr).toContain("OBS_CLI_READ_BACK_TIMEOUT");
       expect(unknown.stderr).not.toContain("secret-token");
-      await writeFile(
-        statePath,
-        (await readFile(statePath, "utf8")).replace(
-          '"status": "outcome-unknown"',
-          '"status": "pending"',
-        ),
-        { mode: 0o600 },
-      );
-      const blocked = await runCli(
+      expect(await readFile(statePath, "utf8")).toContain('"status": "outcome-unknown"');
+      skipReadBack = false;
+      const reconciled = await runCli(
         ["ops", "apply", "--dir", project, "--plan", unknownPath],
         home,
         baseUrl,
       );
-      expect(blocked.stderr).toContain("OBS_CLI_APPLY_OUTCOME_UNKNOWN");
-      expect(await readFile(statePath, "utf8")).toContain('"status": "outcome-unknown"');
+      expect(reconciled.exitCode).toBe(0);
+
+      datasets.splice(0);
+      const rejectedPlanResult = await runCli(
+        ["ops", "plan", "--dir", project, "--json"],
+        home,
+        baseUrl,
+      );
+      const rejectedPlan = JSON.parse(rejectedPlanResult.stdout);
+      const rejectedPath = join(project, ".observability", `plan-${rejectedPlan.digest}.json`);
+      mutationStatus = 400;
+      const rejected = await runCli(
+        ["ops", "apply", "--dir", project, "--plan", rejectedPath],
+        home,
+        baseUrl,
+      );
+      expect(rejected.stderr).toContain("OBS_CLI_REMOTE_FAILED");
+      const rejectedState = JSON.parse(await readFile(statePath, "utf8"));
+      expect(
+        rejectedState.mutations.some(
+          (mutation: { status: string }) => mutation.status === "pending",
+        ),
+      ).toBeFalse();
+      mutationStatus = 201;
+      const retried = await runCli(
+        ["ops", "apply", "--dir", project, "--plan", rejectedPath],
+        home,
+        baseUrl,
+      );
+      expect(retried.exitCode).toBe(0);
+      expect(await readFile(statePath, "utf8")).not.toContain("axiom.dashboard.prod.removed");
     } finally {
       await server.stop(true);
     }

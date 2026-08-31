@@ -65,6 +65,10 @@ export class OperationsError extends Schema.TaggedError<OperationsError>()("Oper
 const decodePlan = Schema.decodeUnknownEffect(OperationsPlanDocument, {
   onExcessProperty: "error",
 });
+const OperationsPlanEnvironment = Schema.Struct({
+  NODE_ENV: Schema.NonEmptyString.pipe(Schema.optionalKey),
+});
+const operationsPlanEnvironment = Schema.decodeUnknownSync(OperationsPlanEnvironment)(process.env);
 
 const fingerprint = (value: string): string => {
   const hasher = new Bun.CryptoHasher("sha256");
@@ -118,6 +122,27 @@ type SentryPrerequisite = {
   readonly environment: string;
   readonly projectExists: boolean;
   readonly dsnExists: boolean;
+};
+
+const manualDefinitionIds = (
+  validated: ValidatedOperationsManifest,
+  selectedEnvironments: ReadonlyArray<string>,
+): ReadonlySet<string> => {
+  const ids = new Set<string>();
+  for (const environment of selectedEnvironments) {
+    if (validated.manifest.retention.some((entry) => entry.environment === environment)) {
+      ids.add(`axiom.retention.${environment}`);
+    }
+    ids.add(`axiom.correlation.${environment}`);
+    for (const dashboard of validated.dashboards) {
+      ids.add(`axiom.dashboard.${environment}.${dashboard.definition.id}`);
+    }
+    for (const monitor of validated.monitors) {
+      ids.add(`axiom.monitor.${environment}.${monitor.definition.id}`);
+    }
+    if (validated.manifest.sentry.enabled) ids.add(`sentry.project.${environment}`);
+  }
+  return ids;
 };
 
 const makePlan = (
@@ -187,7 +212,7 @@ const makePlan = (
         const environmentNames = desiredDatasets
           .filter((entry) => entry.environment === environment)
           .map((entry) => entry.name);
-        const environmentDatasets = environmentNames.flatMap((name) =>
+        const matchingDatasets = environmentNames.flatMap((name) =>
           datasets.filter((dataset) => dataset.name === name),
         );
         manualDefinitions.push({
@@ -196,7 +221,7 @@ const makePlan = (
           capability: "retention",
           environment,
           desiredFingerprint: fingerprint(JSON.stringify({ days: retention.days })),
-          kind: environmentDatasets.some(
+          kind: matchingDatasets.some(
             (dataset) =>
               dataset.useRetentionPeriod &&
               dataset.retentionDays !== undefined &&
@@ -205,8 +230,10 @@ const makePlan = (
             ? "destructive"
             : "manual",
           publiclySatisfied:
-            environmentDatasets.length === environmentNames.length &&
-            environmentDatasets.every(
+            environmentNames.every(
+              (name) => matchingDatasets.filter((dataset) => dataset.name === name).length === 1,
+            ) &&
+            matchingDatasets.every(
               (dataset) => dataset.useRetentionPeriod && dataset.retentionDays === retention.days,
             ),
         });
@@ -287,13 +314,19 @@ const makePlan = (
     actions.sort((left, right) => left.id.localeCompare(right.id));
     const selectedDatasets = datasets
       .filter((dataset) => desiredDatasetNames.has(dataset.name))
-      .map((dataset) => ({ name: dataset.name, fingerprint: observedDatasetFingerprint(dataset) }))
+      .map((dataset) => ({
+        name: dataset.name,
+        fingerprint: observedDatasetFingerprint(dataset),
+      }))
       .sort((left, right) => left.name.localeCompare(right.name));
     const observedFingerprint = fingerprint(JSON.stringify(selectedDatasets));
+    const currentManualDefinitionIds = manualDefinitionIds(validated, selectedEnvironments);
     const pendingManualActions = state.manualActions
       .filter(
         (action) =>
-          selectedEnvironments.includes(action.environment) && action.status === "pending",
+          selectedEnvironments.includes(action.environment) &&
+          currentManualDefinitionIds.has(action.id) &&
+          action.status === "pending",
       )
       .sort((left, right) => left.id.localeCompare(right.id));
     const withoutDigest: Omit<OperationsPlanDocument, "digest"> = {
@@ -510,6 +543,24 @@ export class OperationsPlanner extends Context.Service<
           });
         }
         let stateGeneration = observed.state.generation;
+        const activeManualIds = manualDefinitionIds(request.validated, observed.environments);
+        if (observed.state.manualActions.some((action) => !activeManualIds.has(action.id))) {
+          const cleaned = yield* stateStore.update(
+            current.service,
+            stateGeneration,
+            (state) =>
+              new OperationsStateDocument({
+                version: state.version,
+                generation: state.generation,
+                service: state.service,
+                manualActions: state.manualActions.filter((action) =>
+                  activeManualIds.has(action.id),
+                ),
+                mutations: state.mutations,
+              }),
+          );
+          stateGeneration = cleaned.generation;
+        }
         for (const unresolved of observed.state.mutations.filter(
           (mutation) => mutation.status === "pending" || mutation.status === "outcome-unknown",
         )) {
@@ -546,37 +597,30 @@ export class OperationsPlanner extends Context.Service<
             stateGeneration = next.generation;
             continue;
           }
-          if (unresolved.status === "pending") {
-            const next = yield* stateStore.update(
-              current.service,
-              stateGeneration,
-              (state) =>
-                new OperationsStateDocument({
-                  version: state.version,
-                  generation: state.generation,
-                  service: state.service,
-                  manualActions: state.manualActions,
-                  mutations: state.mutations.map((entry) =>
-                    entry.id === unresolved.id
-                      ? new MutationIntent({
-                          id: entry.id,
-                          operation: entry.operation,
-                          resource: entry.resource,
-                          desiredFingerprint: entry.desiredFingerprint,
-                          status: "outcome-unknown",
-                          updatedAt: entry.updatedAt,
-                        })
-                      : entry,
-                  ),
-                }),
-            );
-            stateGeneration = next.generation;
-          }
-          return yield* new OperationsError({
-            code: "OBS_CLI_APPLY_OUTCOME_UNKNOWN",
-            message: `Mutation ${unresolved.id} has an unknown outcome. Reconcile it before applying more work.`,
-            cause: unresolved.id,
-          });
+          const absent = yield* stateStore.update(
+            current.service,
+            stateGeneration,
+            (state) =>
+              new OperationsStateDocument({
+                version: state.version,
+                generation: state.generation,
+                service: state.service,
+                manualActions: state.manualActions,
+                mutations: state.mutations.map((entry) =>
+                  entry.id === unresolved.id
+                    ? new MutationIntent({
+                        id: entry.id,
+                        operation: entry.operation,
+                        resource: entry.resource,
+                        desiredFingerprint: entry.desiredFingerprint,
+                        status: "resolved",
+                        updatedAt: entry.updatedAt,
+                      })
+                    : entry,
+                ),
+              }),
+          );
+          stateGeneration = absent.generation;
         }
         for (const confirmation of confirmedManualActions) {
           const pending = current.pendingManualActions.find((action) => action.id === confirmation);
@@ -720,7 +764,33 @@ export class OperationsPlanner extends Context.Service<
             error: RemoteApiError,
           ): Effect.Effect<never, OperationsServiceError> => {
             if (error.code !== "OBS_CLI_AXIOM_DATASET_OUTCOME_UNKNOWN") {
-              return Effect.fail(error);
+              return Effect.gen(function* () {
+                const settled = yield* stateStore.update(
+                  current.service,
+                  stateGeneration,
+                  (state) =>
+                    new OperationsStateDocument({
+                      version: state.version,
+                      generation: state.generation,
+                      service: state.service,
+                      manualActions: state.manualActions,
+                      mutations: state.mutations.map((entry) =>
+                        entry.id === action.id
+                          ? new MutationIntent({
+                              id: entry.id,
+                              operation: entry.operation,
+                              resource: entry.resource,
+                              desiredFingerprint: entry.desiredFingerprint,
+                              status: "resolved",
+                              updatedAt,
+                            })
+                          : entry,
+                      ),
+                    }),
+                );
+                stateGeneration = settled.generation;
+                return yield* error;
+              });
             }
             return Effect.gen(function* () {
               const unknownState = yield* stateStore.update(
@@ -775,9 +845,15 @@ export class OperationsPlanner extends Context.Service<
               512,
             );
             if (!matched && attempts < 6) {
-              yield* Effect.sleep(`${Math.min(250 * 2 ** attempts, 4_000)} millis`).pipe(
-                Effect.onInterrupt(persistInterruptedOutcome),
-              );
+              const delay =
+                operationsPlanEnvironment.NODE_ENV === "test"
+                  ? 0
+                  : Math.min(250 * 2 ** attempts, 4_000);
+              if (delay > 0) {
+                yield* Effect.sleep(`${delay} millis`).pipe(
+                  Effect.onInterrupt(persistInterruptedOutcome),
+                );
+              }
             }
           }
           if (!matched) {

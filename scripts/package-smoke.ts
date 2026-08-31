@@ -540,6 +540,18 @@ try {
     await run([join(nodeConsumer, "node_modules/.bin/observability"), "--help"], nodeConsumer),
     "Executing the npm-installed CLI",
   );
+  requireSuccess(
+    await run(
+      [
+        "node",
+        "--input-type=module",
+        "--eval",
+        "const [query, effect] = await Promise.all([import('@equipe-tech/observability-cli/query'), import('effect')]); const parsed = await effect.Effect.runPromise(query.parseManagedQuery('signal(logs) | where event.name == \"payment.attempt\" | summarize count()')); const compiled = query.compileManagedQuery(parsed, { dataset: 'checkout-production-logs', language: 'apl', signals: ['payment.attempt'] }); if (!compiled.text.includes(`['checkout-production-logs']`) || !compiled.text.includes(`['event.name'] == 'payment.attempt'`)) process.exit(1);",
+      ],
+      nodeConsumer,
+    ),
+    "Executing the packed query entrypoint",
+  );
 
   const browserConsumer = join(temporaryDirectory, "browser consumer outside repository");
   await mkdir(browserConsumer, { recursive: true });
@@ -683,7 +695,10 @@ try {
       file: "browser-audit-invalid.ts",
       entrypoint: "@equipe-tech/observability/browser",
     },
-    { file: "react-audit-invalid.ts", entrypoint: "@equipe-tech/observability-react" },
+    {
+      file: "react-audit-invalid.ts",
+      entrypoint: "@equipe-tech/observability-react",
+    },
   ]) {
     await writeFile(
       join(consumer, candidate.file),

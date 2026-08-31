@@ -5,6 +5,8 @@ import { join } from "node:path";
 
 const OperationsEnvironment = Schema.Struct({
   OBSERVABILITY_HOME: Schema.NonEmptyString.pipe(Schema.optionalKey),
+  NODE_ENV: Schema.NonEmptyString.pipe(Schema.optionalKey),
+  OBSERVABILITY_CLI_TEST_STATE_HOLD_MILLISECONDS: Schema.NumberFromString.pipe(Schema.optionalKey),
 });
 const decodeOperationsEnvironment = Schema.decodeUnknownEffect(OperationsEnvironment);
 
@@ -58,9 +60,14 @@ const decodeState = Schema.decodeUnknownEffect(OperationsStateDocument, {
   onExcessProperty: "error",
 });
 const LockFailure = Schema.Struct({ code: Schema.String });
-const LockOwner = Schema.Struct({ pid: Schema.Int });
+const LockOwner = Schema.Struct({
+  pid: Schema.Int,
+  token: Schema.NonEmptyString,
+  heartbeatAt: Schema.Number,
+});
 const decodeLockFailure = Schema.decodeUnknownOption(LockFailure);
 const decodeLockOwner = Schema.decodeUnknownOption(LockOwner);
+const decodeLockHeartbeat = Schema.decodeUnknownOption(Schema.NumberFromString);
 const stateFailure = (cause: unknown): OperationsStateError =>
   new OperationsStateError({
     code: "OBS_CLI_OPERATIONS_STATE_FAILED",
@@ -102,6 +109,8 @@ export class OperationsState extends Context.Service<OperationsState, Operations
       );
       const statePath = (service: string): string => join(root, `${service}.json`);
       const lockPath = (service: string): string => join(root, `${service}.lock`);
+      const heartbeatPath = (service: string, token: string): string =>
+        join(root, `${service}.heartbeat-${token}`);
 
       const load = Effect.fn("OperationsState.load")(function* (service: string) {
         const content = yield* Effect.tryPromise({
@@ -155,10 +164,18 @@ export class OperationsState extends Context.Service<OperationsState, Operations
           try: () => mkdir(root, { recursive: true }),
           catch: stateFailure,
         });
+        const leaseMilliseconds = 5_000;
+        const heartbeatMilliseconds = 1_000;
+        const token = crypto.randomUUID();
+        const lockDocument = () => ({
+          pid: process.pid,
+          token,
+          heartbeatAt: Date.now(),
+        });
         const acquireLock = async () => {
           try {
             const handle = await open(lockPath(service), "wx", 0o600);
-            await handle.writeFile(`${JSON.stringify({ pid: process.pid })}\n`);
+            await handle.writeFile(`${JSON.stringify(lockDocument())}\n`);
             return handle;
           } catch (cause) {
             const failure = decodeLockFailure(cause);
@@ -168,19 +185,26 @@ export class OperationsState extends Context.Service<OperationsState, Operations
               .then(() => JSON.parse(ownerContent))
               .catch(() => undefined);
             const owner = decodeLockOwner(ownerDocument);
-            let alive = false;
-            if (Option.isSome(owner)) {
-              try {
-                process.kill(owner.value.pid, 0);
-                alive = true;
-              } catch {
-                alive = false;
-              }
-            }
-            if (alive) throw cause;
+            const heartbeat = Option.isSome(owner)
+              ? decodeLockHeartbeat(
+                  await readFile(heartbeatPath(service, owner.value.token), "utf8").catch(
+                    () => "invalid",
+                  ),
+                )
+              : Option.none<number>();
+            const lastHeartbeat =
+              Option.isSome(heartbeat) && Number.isFinite(heartbeat.value)
+                ? heartbeat.value
+                : Option.isSome(owner)
+                  ? owner.value.heartbeatAt
+                  : 0;
+            if (Date.now() - lastHeartbeat <= leaseMilliseconds) throw cause;
             await rm(lockPath(service), { force: true });
+            if (Option.isSome(owner)) {
+              await rm(heartbeatPath(service, owner.value.token), { force: true });
+            }
             const handle = await open(lockPath(service), "wx", 0o600);
-            await handle.writeFile(`${JSON.stringify({ pid: process.pid })}\n`);
+            await handle.writeFile(`${JSON.stringify(lockDocument())}\n`);
             return handle;
           }
         };
@@ -193,7 +217,34 @@ export class OperationsState extends Context.Service<OperationsState, Operations
               cause,
             }),
         });
+        const renew = async (): Promise<void> => {
+          const target = heartbeatPath(service, token);
+          const temporary = `${target}.${crypto.randomUUID()}.tmp`;
+          try {
+            await writeFile(temporary, `${Date.now()}\n`, { mode: 0o600 });
+            await rename(temporary, target);
+          } finally {
+            await rm(temporary, { force: true });
+          }
+        };
+        yield* Effect.tryPromise({ try: renew, catch: stateFailure });
+        const renewHeartbeat = async (): Promise<void> => {
+          try {
+            await renew();
+          } catch {
+            return;
+          }
+        };
+        const heartbeat = setInterval(renewHeartbeat, heartbeatMilliseconds);
         return yield* Effect.gen(function* () {
+          if (
+            environment.NODE_ENV === "test" &&
+            environment.OBSERVABILITY_CLI_TEST_STATE_HOLD_MILLISECONDS !== undefined
+          ) {
+            yield* Effect.sleep(
+              `${environment.OBSERVABILITY_CLI_TEST_STATE_HOLD_MILLISECONDS} millis`,
+            );
+          }
           const current = yield* load(service);
           if (current.generation !== expectedGeneration) {
             return yield* new OperationsStateError({
@@ -213,7 +264,9 @@ export class OperationsState extends Context.Service<OperationsState, Operations
           const temporary = `${statePath(service)}.${crypto.randomUUID()}.tmp`;
           yield* Effect.tryPromise({
             try: async () => {
-              await writeFile(temporary, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+              await writeFile(temporary, `${JSON.stringify(next, null, 2)}\n`, {
+                mode: 0o600,
+              });
               await chmod(temporary, 0o600);
               await rename(temporary, statePath(service));
               await chmod(statePath(service), 0o600);
@@ -225,8 +278,17 @@ export class OperationsState extends Context.Service<OperationsState, Operations
           Effect.ensuring(
             Effect.tryPromise({
               try: async () => {
+                clearInterval(heartbeat);
                 await lock.close();
-                await rm(lockPath(service), { force: true });
+                const ownerContent = await readFile(lockPath(service), "utf8").catch(() => "");
+                const ownerDocument = await Promise.resolve()
+                  .then(() => JSON.parse(ownerContent))
+                  .catch(() => undefined);
+                const owner = decodeLockOwner(ownerDocument);
+                if (Option.isSome(owner) && owner.value.token === token) {
+                  await rm(lockPath(service), { force: true });
+                }
+                await rm(heartbeatPath(service, token), { force: true });
               },
               catch: stateFailure,
             }).pipe(Effect.ignore),

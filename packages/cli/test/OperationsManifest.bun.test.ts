@@ -10,12 +10,24 @@ const contract = JSON.stringify({
   index: 1,
   contractVersion: 1,
   service: "checkout",
-  events: [{ name: "payment.attempt", kind: "operation", attributes: ["payment.provider"] }],
+  events: [
+    {
+      name: "payment.attempt",
+      kind: "operation",
+      attributes: ["payment.provider"],
+    },
+  ],
   metrics: [
     {
       name: "payment.latency",
       kind: "histogram",
       unit: "ms",
+      attributes: ["payment.provider"],
+    },
+    {
+      name: "payment.count",
+      kind: "counter",
+      unit: "1",
       attributes: ["payment.provider"],
     },
   ],
@@ -153,7 +165,49 @@ describe("operations manifest", () => {
     ).toBe("OBS_CLI_QUERY_SIGNAL_MISMATCH");
   });
 
-  test("expands generated aliases and rejects alias cycles", async () => {
+  test("inherits aliased event fields and metric aggregation semantics", async () => {
+    const aliasedContract = contract.replace(
+      '"aliases":[]',
+      '"aliases":[{"kind":"event","from":"payment.charge","to":"payment.attempt"},{"kind":"metric","from":"payment.duration","to":"payment.latency"},{"kind":"metric","from":"payment.total","to":"payment.count"}]',
+    );
+    const manifest = await Effect.runPromise(
+      parseOperationsManifest(
+        validManifest
+          .replace("name: payment.attempt", "name: payment.charge")
+          .replace(
+            'event.name == "payment.attempt" | summarize count()',
+            'event.name in ("payment.attempt", "payment.charge") and payment.provider == "stripe" | summarize count() by payment.provider',
+          )
+          .replace("name: payment.latency", "name: payment.duration")
+          .replace(
+            'metric.name == "payment.latency"',
+            'metric.name in ("payment.duration", "payment.latency") and payment.provider == "stripe"',
+          ),
+      ),
+    );
+    const index = await Effect.runPromise(parseOperationsContractIndex(aliasedContract));
+    const validated = await Effect.runPromise(validateOperationsManifest(manifest, index));
+    expect(validated.dashboards[0]?.panels[0]?.query.binding.identifiers).toEqual([
+      "payment.attempt",
+      "payment.charge",
+    ]);
+    expect(validated.monitors[0]?.query.stages.at(-1)?.kind).toBe("summarize");
+
+    const counterManifest = await Effect.runPromise(
+      parseOperationsManifest(
+        validManifest
+          .replaceAll("payment.latency", "payment.total")
+          .replace("quantile(value, 0.95)", "sum(value)")
+          .replace(
+            'metric.name == "payment.total"',
+            'metric.name in ("payment.count", "payment.total")',
+          ),
+      ),
+    );
+    await Effect.runPromise(validateOperationsManifest(counterManifest, index));
+  });
+
+  test("rejects incompatible metric alias targets and alias cycles", async () => {
     const aliasedContract = contract.replace(
       '"aliases":[]',
       '"aliases":[{"kind":"event","from":"payment.charge","to":"payment.attempt"}]',
@@ -168,13 +222,6 @@ describe("operations manifest", () => {
           ),
       ),
     );
-    const index = await Effect.runPromise(parseOperationsContractIndex(aliasedContract));
-    const validated = await Effect.runPromise(validateOperationsManifest(manifest, index));
-    expect(validated.dashboards[0]?.panels[0]?.query.binding.identifiers).toEqual([
-      "payment.attempt",
-      "payment.charge",
-    ]);
-
     const cyclic = aliasedContract.replace(
       '"aliases":[{"kind":"event","from":"payment.charge","to":"payment.attempt"}]',
       '"aliases":[{"kind":"event","from":"payment.charge","to":"payment.attempt"},{"kind":"event","from":"payment.attempt","to":"payment.charge"}]',
@@ -184,5 +231,25 @@ describe("operations manifest", () => {
       Effect.flip(validateOperationsManifest(manifest, cyclicIndex)),
     );
     expect(error.code).toBe("OBS_CLI_MANIFEST_INVALID");
+
+    const incompatible = contract.replace(
+      '"aliases":[]',
+      '"aliases":[{"kind":"metric","from":"payment.old","to":"payment.latency"},{"kind":"metric","from":"payment.old","to":"payment.count"}]',
+    );
+    const incompatibleIndex = await Effect.runPromise(parseOperationsContractIndex(incompatible));
+    const incompatibleError = await Effect.runPromise(
+      Effect.flip(
+        validateOperationsManifest(
+          await Effect.runPromise(parseOperationsManifest(validManifest)),
+          incompatibleIndex,
+        ),
+      ),
+    );
+    if (incompatibleError._tag !== "OperationsManifestError") {
+      throw new Error("Expected incompatible alias error.");
+    }
+    expect(incompatibleError.issues).toContain(
+      "incompatible metric alias targets metric payment.old",
+    );
   });
 });

@@ -257,12 +257,17 @@ const validateQuery = Effect.fn("validateManagedSource")(function* (
       cause: actual.join(","),
     });
   }
+  const expandedSourceNames = sources.flatMap((source) => expandedSignals(contract, source));
   const declaredAttributes = new Set(
     sources.flatMap((source) => {
-      if (source.kind === "event") {
-        return contract.events.find((event) => event.name === source.name)?.attributes ?? [];
-      }
-      return contract.metrics.find((metric) => metric.name === source.name)?.attributes ?? [];
+      const names = new Set(expandedSignals(contract, source));
+      return source.kind === "event"
+        ? contract.events
+            .filter((event) => names.has(event.name))
+            .flatMap((event) => event.attributes)
+        : contract.metrics
+            .filter((metric) => names.has(metric.name))
+            .flatMap((metric) => metric.attributes);
     }),
   );
   for (const stage of query.stages) {
@@ -293,23 +298,29 @@ const validateQuery = Effect.fn("validateManagedSource")(function* (
       });
     }
     if (sources[0]?.kind === "metric" && stage.aggregation.kind !== "count") {
-      const metric = contract.metrics.find((entry) => entry.name === sources[0]?.name);
+      const metrics = contract.metrics.filter((entry) => expandedSourceNames.includes(entry.name));
+      const aggregatesValue =
+        (stage.aggregation.kind === "field" || stage.aggregation.kind === "quantile") &&
+        stage.aggregation.field === "value";
       const legal =
-        metric !== undefined &&
-        stage.aggregation.field === "value" &&
-        ((metric.kind === "counter" &&
-          stage.aggregation.kind === "field" &&
-          stage.aggregation.function === "sum") ||
-          (metric.kind === "histogram" &&
-            (stage.aggregation.kind === "quantile" ||
-              (stage.aggregation.kind === "field" && stage.aggregation.function === "avg"))) ||
-          (metric.kind === "observable_gauge" && stage.aggregation.kind === "field"));
+        metrics.length > 0 &&
+        metrics.every(
+          (metric) =>
+            aggregatesValue &&
+            ((metric.kind === "counter" &&
+              stage.aggregation.kind === "field" &&
+              stage.aggregation.function === "sum") ||
+              (metric.kind === "histogram" &&
+                (stage.aggregation.kind === "quantile" ||
+                  (stage.aggregation.kind === "field" && stage.aggregation.function === "avg"))) ||
+              (metric.kind === "observable_gauge" && stage.aggregation.kind === "field")),
+        );
       if (!legal) {
         return yield* new OperationsManifestError({
           code: "OBS_CLI_SOURCE_INVALID",
-          message: `Aggregation is not legal for metric ${sources[0]?.name ?? "unknown"}.`,
+          message: `Aggregation is not legal for every target of metric ${sources[0]?.name ?? "unknown"}.`,
           issues: ["illegal metric aggregation"],
-          cause: metric?.kind ?? "unknown",
+          cause: metrics.map((metric) => metric.kind).join(","),
         });
       }
     }
@@ -356,24 +367,44 @@ export const validateOperationsManifest = Effect.fn("validateOperationsManifest"
   }
   const eventNames = new Set(contract.events.map((event) => event.name));
   const metricNames = new Set(contract.metrics.map((metric) => metric.name));
-  const aliasKeys = contract.aliases.map((alias) => `${alias.kind}\u0000${alias.from}`);
-  for (const duplicate of duplicates(aliasKeys)) issues.push(`duplicate alias ${duplicate}`);
   for (const alias of contract.aliases) {
     const names = alias.kind === "event" ? eventNames : metricNames;
     if (!names.has(alias.to)) issues.push(`unknown alias target ${alias.kind} ${alias.to}`);
-    const visited = new Set([alias.from]);
-    let target = alias.to;
-    while (true) {
-      if (visited.has(target)) {
-        issues.push(`cyclic alias ${alias.kind} ${alias.from}`);
-        break;
-      }
-      visited.add(target);
-      const next = contract.aliases.find(
+    const paths: Array<ReadonlyArray<string>> = [[alias.from]];
+    for (let cursor = 0; cursor < paths.length; cursor += 1) {
+      const path = paths[cursor];
+      const target = path?.at(-1);
+      if (path === undefined || target === undefined) continue;
+      for (const next of contract.aliases.filter(
         (candidate) => candidate.kind === alias.kind && candidate.from === target,
-      );
-      if (next === undefined) break;
-      target = next.to;
+      )) {
+        if (path.includes(next.to)) {
+          issues.push(`cyclic alias ${alias.kind} ${alias.from}`);
+          paths.length = 0;
+          break;
+        }
+        paths.push([...path, next.to]);
+      }
+    }
+  }
+  const metricAliasSources = new Set(
+    contract.aliases.filter((alias) => alias.kind === "metric").map((alias) => alias.from),
+  );
+  for (const source of metricAliasSources) {
+    const names = new Set(expandedSignals(contract, { kind: "metric", name: source }));
+    const targets = contract.metrics.filter((metric) => names.has(metric.name));
+    const first = targets[0];
+    if (
+      first !== undefined &&
+      targets.some(
+        (target) =>
+          target.kind !== first.kind ||
+          target.unit !== first.unit ||
+          [...target.attributes].sort().join("\u0000") !==
+            [...first.attributes].sort().join("\u0000"),
+      )
+    ) {
+      issues.push(`incompatible metric alias targets metric ${source}`);
     }
   }
   const references = [

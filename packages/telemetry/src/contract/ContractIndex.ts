@@ -71,23 +71,50 @@ const validatedAliases = <Definition extends TelemetryContractInput>(
     if (alias.source.name === alias.target.name) {
       throw new TypeError("Contract alias source and target must differ.");
     }
-    return { kind: alias.source.kind, from: alias.source.name, to: alias.target.name };
+    return {
+      kind: alias.source.kind,
+      from: alias.source.name,
+      to: alias.target.name,
+    };
   });
-  const keys = aliases.map((alias) => `${alias.kind}\u0000${alias.from}`);
-  if (new Set(keys).size !== keys.length) {
-    throw new TypeError("Contract aliases contain a duplicate source.");
-  }
   for (const alias of aliases) {
-    const visited = new Set([alias.from]);
-    let target = alias.to;
-    while (true) {
-      if (visited.has(target)) throw new TypeError("Contract aliases contain a cycle.");
-      visited.add(target);
-      const next = aliases.find(
+    const paths: Array<ReadonlyArray<string>> = [[alias.from]];
+    for (let cursor = 0; cursor < paths.length; cursor += 1) {
+      const path = paths[cursor];
+      const target = path?.at(-1);
+      if (path === undefined || target === undefined) continue;
+      for (const next of aliases.filter(
         (candidate) => candidate.kind === alias.kind && candidate.from === target,
+      )) {
+        if (path.includes(next.to)) throw new TypeError("Contract aliases contain a cycle.");
+        paths.push([...path, next.to]);
+      }
+    }
+  }
+  const metricSources = new Set(
+    aliases.filter((alias) => alias.kind === "metric").map((alias) => alias.from),
+  );
+  for (const source of metricSources) {
+    const targets = aliases
+      .filter((alias) => alias.kind === "metric" && alias.from === source)
+      .map((alias) =>
+        [...contract.metricByName.values()].find((metric) => metric.name === alias.to),
+      )
+      .filter((metric) => metric !== undefined);
+    const first = targets[0];
+    if (
+      first !== undefined &&
+      targets.some(
+        (target) =>
+          target.kind !== first.kind ||
+          target.unit !== first.unit ||
+          [...target.attributes.keys()].sort().join("\u0000") !==
+            [...first.attributes.keys()].sort().join("\u0000"),
+      )
+    ) {
+      throw new TypeError(
+        `Contract metric alias source ${source} targets incompatible kind, unit, or attributes.`,
       );
-      if (next === undefined) break;
-      target = next.to;
     }
   }
   return aliases.sort((left, right) =>

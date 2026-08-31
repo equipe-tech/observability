@@ -46,10 +46,19 @@ describe("contract index", () => {
       ],
     });
     expect(index.events).toEqual([
-      { name: "payment.attempt", kind: "operation", attributes: ["payment.provider"] },
+      {
+        name: "payment.attempt",
+        kind: "operation",
+        attributes: ["payment.provider"],
+      },
     ]);
     expect(index.metrics).toEqual([
-      { name: "payment.latency", kind: "histogram", unit: "ms", attributes: [] },
+      {
+        name: "payment.latency",
+        kind: "histogram",
+        unit: "ms",
+        attributes: [],
+      },
     ]);
     expect(index.aliases).toEqual([
       { kind: "event", from: "payment.charge", to: "payment.attempt" },
@@ -57,7 +66,7 @@ describe("contract index", () => {
     expect(Contract.encodeContractIndex(index)).toBe(`${JSON.stringify(index, null, 2)}\n`);
   });
 
-  it("rejects invalid, duplicate and cyclic aliases", async () => {
+  it("expands compatible sources and rejects invalid, incompatible and cyclic aliases", async () => {
     const contract = await Effect.runPromise(
       defineTelemetryContract({
         version: 1,
@@ -79,7 +88,23 @@ describe("contract index", () => {
             attributes: {},
           },
         },
-        metrics: {},
+        metrics: {
+          Duration: {
+            name: "payment.duration",
+            description: "Payment duration",
+            unit: "ms",
+            kind: "histogram",
+            boundaries: [10, 100],
+            attributes: {},
+          },
+          Count: {
+            name: "payment.count_total",
+            description: "Payment count",
+            unit: "1",
+            kind: "counter",
+            attributes: {},
+          },
+        },
         auditActions: {},
       }),
     );
@@ -94,7 +119,7 @@ describe("contract index", () => {
         ],
       }),
     ).toThrow("kinds must match");
-    expect(() =>
+    expect(
       Contract.contractIndex(contract, "checkout", {
         version: 1,
         aliases: [
@@ -107,8 +132,23 @@ describe("contract index", () => {
             target: { kind: "event", name: "payment.second" },
           },
         ],
+      }).aliases,
+    ).toHaveLength(2);
+    expect(() =>
+      Contract.contractIndex(contract, "checkout", {
+        version: 1,
+        aliases: [
+          {
+            source: { kind: "metric", name: "payment.old" },
+            target: { kind: "metric", name: "payment.duration" },
+          },
+          {
+            source: { kind: "metric", name: "payment.old" },
+            target: { kind: "metric", name: "payment.count_total" },
+          },
+        ],
       }),
-    ).toThrow("duplicate source");
+    ).toThrow("incompatible kind, unit, or attributes");
     expect(() =>
       Contract.contractIndex(contract, "checkout", {
         version: 1,

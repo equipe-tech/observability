@@ -77,7 +77,7 @@ observability ops verify [--dir <path>] [--environment <name>]... [--json]
 
 `plan` decodifica `observability/operations.yaml`, `observability/contract.json` e todas as queries antes de carregar credenciais. Ele faz somente leituras remotas e grava `.observability/plan-<sha256>.json` com modo `0600`.
 
-`apply` exige esse arquivo exato. A CLI recalcula as precondições e rejeita manifesto, contrato ou provider alterado. `--allow-destructive` vale somente para o digest fornecido. `--confirm-manual` registra confirmação do operador somente para um ID contido no mesmo plano. Cada mutação grava intenção antes da chamada e executa read-back limitado.
+`apply` exige esse arquivo exato. A CLI recalcula as precondições e rejeita manifesto, contrato ou provider alterado. `--allow-destructive` vale somente para o digest fornecido. `--confirm-manual` registra confirmação do operador somente para um ID contido no mesmo plano. Cada mutação grava intenção antes da chamada e executa read-back limitado. Após uma interrupção ou resposta ambígua, a próxima execução lê o dataset. O estado desejado conclui a intenção e a ausência permite repetir a criação idempotente.
 
 `verify` faz somente leituras. Drift, mutação sem resultado conhecido e ação manual pendente causam falha. Consulte [Manifesto de operações](operations-manifest.md) para o schema, a gramática de queries e a tabela de capacidades.
 
@@ -182,7 +182,7 @@ O nome do token Axiom segue este formato:
 | `OBS_CLI_PLAN_DESTRUCTIVE`                     | O digest contém mudança destrutiva sem autorização exata.                   |
 | `OBS_CLI_READ_BACK_TIMEOUT`                    | A leitura limitada não convergiu para o estado desejado.                    |
 | `OBS_CLI_MANUAL_ACTION_PENDING`                | Uma ação manual ainda requer confirmação do operador.                       |
-| `OBS_CLI_APPLY_OUTCOME_UNKNOWN`                | Uma mutação pode ter ocorrido e bloqueia novo trabalho.                     |
+| `OBS_CLI_APPLY_OUTCOME_UNKNOWN`                | O resultado atual é ambíguo e será reconciliado na próxima execução.        |
 | `OBS_CLI_MANIFEST_NOT_FOUND`                   | O manifesto de operações não existe.                                        |
 | `OBS_CLI_MANIFEST_UNREADABLE`                  | O manifesto de operações não pode ser lido.                                 |
 | `OBS_CLI_MANIFEST_VERSION_UNSUPPORTED`         | A versão do manifesto não é suportada.                                      |

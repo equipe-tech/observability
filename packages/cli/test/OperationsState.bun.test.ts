@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { Effect, Exit } from "effect";
-import { mkdtemp, rm } from "node:fs/promises";
+import { Effect, Exit, Schema } from "effect";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OperationsState, OperationsStateDocument } from "../src/OperationsState.ts";
+
+const decodeLockFixture = Schema.decodeUnknownSync(
+  Schema.Struct({ token: Schema.NonEmptyString, heartbeatAt: Schema.Number }),
+);
+const decodeHeartbeat = Schema.decodeUnknownSync(Schema.NumberFromString);
 
 const increment = (state: OperationsStateDocument) =>
   new OperationsStateDocument({
@@ -15,6 +20,77 @@ const increment = (state: OperationsStateDocument) =>
   });
 
 describe("operations state", () => {
+  test.serial("keeps active leases, renews holders, and reclaims expired crashes", async () => {
+    const home = await mkdtemp(join(tmpdir(), "observability-state-lease-"));
+    const previousHome = process.env.OBSERVABILITY_HOME;
+    const previousNodeEnvironment = process.env.NODE_ENV;
+    const previousHold = process.env.OBSERVABILITY_CLI_TEST_STATE_HOLD_MILLISECONDS;
+    process.env.OBSERVABILITY_HOME = home;
+    process.env.NODE_ENV = "test";
+    process.env.OBSERVABILITY_CLI_TEST_STATE_HOLD_MILLISECONDS = "1800";
+    const operations = join(home, "operations");
+    const lockPath = join(operations, "checkout.lock");
+    await mkdir(operations, { recursive: true });
+    try {
+      await writeFile(
+        lockPath,
+        `${JSON.stringify({ pid: 1, token: crypto.randomUUID(), heartbeatAt: Date.now() })}\n`,
+      );
+      const permissionSeparatedOwner = await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* OperationsState;
+          return yield* Effect.exit(store.update("checkout", 0, increment));
+        }).pipe(Effect.provide(OperationsState.layer)),
+      );
+      expect(Exit.isFailure(permissionSeparatedOwner)).toBe(true);
+      await rm(lockPath);
+
+      const heldUpdate = Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* OperationsState;
+          return yield* store.update("checkout", 0, increment);
+        }).pipe(Effect.provide(OperationsState.layer)),
+      );
+      await Bun.sleep(150);
+      const owner = decodeLockFixture(JSON.parse(await readFile(lockPath, "utf8")));
+      const heartbeatPath = join(operations, `checkout.heartbeat-${owner.token}`);
+      const initialHeartbeat = decodeHeartbeat(await readFile(heartbeatPath, "utf8"));
+      const busy = await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* OperationsState;
+          return yield* Effect.exit(store.update("checkout", 0, increment));
+        }).pipe(Effect.provide(OperationsState.layer)),
+      );
+      expect(Exit.isFailure(busy)).toBe(true);
+      await Bun.sleep(1_050);
+      const renewedHeartbeat = decodeHeartbeat(await readFile(heartbeatPath, "utf8"));
+      expect(renewedHeartbeat).toBeGreaterThan(initialHeartbeat);
+      await heldUpdate;
+
+      process.env.OBSERVABILITY_CLI_TEST_STATE_HOLD_MILLISECONDS = "0";
+      await writeFile(
+        lockPath,
+        `${JSON.stringify({ pid: 1, token: crypto.randomUUID(), heartbeatAt: Date.now() - 10_000 })}\n`,
+      );
+      const reclaimed = await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* OperationsState;
+          return yield* store.update("checkout", 1, increment);
+        }).pipe(Effect.provide(OperationsState.layer)),
+      );
+      expect(reclaimed.generation).toBe(2);
+    } finally {
+      if (previousHome === undefined) delete process.env.OBSERVABILITY_HOME;
+      else process.env.OBSERVABILITY_HOME = previousHome;
+      if (previousNodeEnvironment === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnvironment;
+      if (previousHold === undefined)
+        delete process.env.OBSERVABILITY_CLI_TEST_STATE_HOLD_MILLISECONDS;
+      else process.env.OBSERVABILITY_CLI_TEST_STATE_HOLD_MILLISECONDS = previousHold;
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   test.serial("compares the expected generation under the process lock", async () => {
     const home = await mkdtemp(join(tmpdir(), "observability-state-cas-"));
     const previous = process.env.OBSERVABILITY_HOME;
