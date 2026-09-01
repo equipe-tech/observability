@@ -11,6 +11,7 @@
   "scripts": {
     "prepare": "vp config --no-agent",
     "check": "vp check",
+    "compat": "bun scripts/compatibility-gate.ts",
     "build": "bun scripts/build-packages.ts",
     "test": "vp test run && bun run test:bun",
     "test:bun": "bun test $(find packages tools -name '*.bun.test.ts' -print) --timeout 30000",

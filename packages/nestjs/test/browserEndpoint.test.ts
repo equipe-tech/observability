@@ -586,7 +586,7 @@ describe("browser events endpoint", () => {
 
   it("returns a fallback correlation id when the interceptor is not installed", async () => {
     const harness = await startApp(false);
-    const response = await postEvents(harness.baseUrl, JSON.stringify({ version: 2, events: [] }));
+    const response = await postEvents(harness.baseUrl, JSON.stringify({ version: 0, events: [] }));
     assert.strictEqual(response.status, 400);
     const rejection = await Effect.runPromise(decodeRejection(await response.json()));
     assert.isTrue(rejection.correlationId.length > 0);

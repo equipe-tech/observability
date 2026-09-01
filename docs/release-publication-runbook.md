@@ -15,6 +15,8 @@ Tags `v*` pertencem ao histórico da linha coordenada 0.2 e não acionam o workf
 
 Execute o workflow `Release Preflight` com o slug e a versão exata antes de criar o tag. O job valida o manifest, executa o dry run, compila o workspace, cria um archive específico do pacote em um diretório isolado, gera notas e checksum, verifica o checksum e executa o smoke de pacotes. A consulta ao npm aceita somente dois resultados: a versão já existe ou o registry respondeu `E404`. Falhas de rede e autenticação interrompem o preflight.
 
+O preflight executa `bun run compat --release <slug>@<versão>` depois do build. O comando usa o baseline exato de `v0.2.1`, valida a versão candidata, as quebras declaradas e o guia de migração antes de criar o archive. A publicação exige evidência de integridade do tarball npm anterior contra o checksum congelado do archive do tag.
+
 O preflight não depende de arquivos existentes em `docs/releases`. Para reproduzi-lo localmente:
 
 ```sh
@@ -22,6 +24,7 @@ bun scripts/release.ts 0.3.0 --package observability --dry-run
 bun check
 bun run test
 bun run build
+OBSERVABILITY_COMPATIBILITY_DATE="$(date -u +%F)" bun run compat --release observability@0.3.0
 output="$(mktemp -d)"
 bun scripts/release-candidate.ts --package observability --version 0.3.0 --output "$output"
 (cd "$output" && sha256sum --check observability@0.3.0.sha256)

@@ -1,0 +1,29 @@
+{
+  "surface": 1,
+  "service": "observability",
+  "contractVersion": 1,
+  "events": [
+    {
+      "name": "cli.operation",
+      "kind": "operation",
+      "outcomeMeaning": ["cancelled", "failure", "success"],
+      "attributes": []
+    }
+  ],
+  "metrics": [],
+  "auditActions": [],
+  "aliases": [
+    {
+      "kind": "event",
+      "from": "cli.command",
+      "to": "cli.operation",
+      "since": "2026-08-31"
+    }
+  ],
+  "browserEnvelope": {
+    "version": 2,
+    "batchFields": ["events", "version"],
+    "eventFields": ["error", "fields", "id", "name", "occurredAt"]
+  },
+  "retentionWindowDays": 30
+}

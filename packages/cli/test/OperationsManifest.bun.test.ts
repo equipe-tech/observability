@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
+import { compileManagedQuery } from "../src/ManagedQuery.ts";
 import {
   maximumContractAliasCount,
   maximumContractAliasTargets,
@@ -494,6 +495,27 @@ describe("operations manifest", () => {
       "payment.charge",
     ]);
     expect(validated.monitors[0]?.query.stages.at(-1)?.kind).toBe("summarize");
+    const dashboardQuery = validated.dashboards[0]?.panels[0]?.query;
+    const monitorQuery = validated.monitors[0]?.query;
+    if (dashboardQuery === undefined || monitorQuery === undefined) {
+      throw new Error("Expected validated aliased dashboard and monitor queries.");
+    }
+    const compiledDashboard = await Effect.runPromise(
+      compileManagedQuery(dashboardQuery, {
+        dataset: "checkout-logs",
+        language: "apl",
+        signals: ["payment.charge", "payment.attempt"],
+      }),
+    );
+    const compiledMonitor = await Effect.runPromise(
+      compileManagedQuery(monitorQuery, {
+        dataset: "checkout-metrics",
+        language: "mpl",
+        signals: ["payment.duration", "payment.latency"],
+      }),
+    );
+    expect(compiledDashboard.text).toContain("'payment.charge', 'payment.attempt'");
+    expect(compiledMonitor.text).toContain("'payment.duration', 'payment.latency'");
 
     const counterManifest = await Effect.runPromise(
       parseOperationsManifest(

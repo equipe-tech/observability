@@ -1,4 +1,5 @@
 import {
+  browserEnvelopeVersion,
   browserRequestByteBudget,
   maxEventIdLength,
   maxFieldValueLength,
@@ -31,7 +32,7 @@ export type BrowserTelemetryDefectInput = {
 };
 
 export type BrowserTelemetryClientBatch = {
-  readonly version: 1;
+  readonly version: number;
   readonly events: ReadonlyArray<BrowserTelemetryClientEvent>;
 };
 
@@ -144,7 +145,8 @@ const fitEventToRequestBudget = (
     ),
   };
   if (
-    browserBatchByteLength({ version: 1, events: [byteBoundedEvent] }) <= browserRequestByteBudget
+    browserBatchByteLength({ version: browserEnvelopeVersion, events: [byteBoundedEvent] }) <=
+    browserRequestByteBudget
   ) {
     return byteBoundedEvent;
   }
@@ -153,7 +155,7 @@ const fitEventToRequestBudget = (
     const candidate = { ...fields, [key]: value };
     if (
       browserBatchByteLength({
-        version: 1,
+        version: browserEnvelopeVersion,
         events: [{ ...byteBoundedEvent, fields: candidate }],
       }) <= browserRequestByteBudget
     ) {
@@ -269,7 +271,10 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
 
   private enqueue(event: BrowserTelemetryClientEvent): void {
     const fitted = fitEventToRequestBudget(event);
-    if (browserBatchByteLength({ version: 1, events: [fitted] }) > browserRequestByteBudget) {
+    if (
+      browserBatchByteLength({ version: browserEnvelopeVersion, events: [fitted] }) >
+      browserRequestByteBudget
+    ) {
       this.droppedEvents += 1;
       return;
     }
@@ -355,7 +360,8 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
           const candidate = [...batchEvents, event];
           if (
             batchEvents.length > 0 &&
-            browserBatchByteLength({ version: 1, events: candidate }) > browserRequestByteBudget
+            browserBatchByteLength({ version: browserEnvelopeVersion, events: candidate }) >
+              browserRequestByteBudget
           ) {
             break;
           }
@@ -367,7 +373,10 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
         this.activeDelivery = delivery;
         this.activeControllers.add(controller);
         try {
-          await this.options.transport({ version: 1, events: batchEvents }, controller.signal);
+          await this.options.transport(
+            { version: browserEnvelopeVersion, events: batchEvents },
+            controller.signal,
+          );
           if (delivery.abandoned) return;
         } catch (cause) {
           if (delivery.abandoned) return;

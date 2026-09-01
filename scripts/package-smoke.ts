@@ -695,6 +695,25 @@ try {
   if (oldNestResolution.exitCode === 0) {
     throw new Error("TypeScript resolved the removed core NestJS entrypoint.");
   }
+  const oldNestDiagnostic = `${oldNestResolution.stdout}${oldNestResolution.stderr}`;
+  if (
+    !oldNestDiagnostic.includes("TS2307") ||
+    !oldNestDiagnostic.includes("@equipe-tech/observability/nestjs")
+  ) {
+    throw new Error("The earlier consumer did not fail for the declared NestJS entrypoint break.");
+  }
+  requireSuccess(
+    await run(
+      [
+        "node",
+        "--input-type=module",
+        "--eval",
+        "let rejected = false; try { await import('@equipe-tech/observability/nestjs'); } catch (cause) { rejected = cause?.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED'; } if (!rejected) process.exit(1);",
+      ],
+      nodeConsumer,
+    ),
+    "Checking the declared NestJS entrypoint break with Node",
+  );
   for (const candidate of [
     {
       file: "browser-audit-invalid.ts",

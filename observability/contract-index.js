@@ -28,6 +28,7 @@ await Bun.write(
         {
           source: { kind: "event", name: "cli.command" },
           target: { kind: "event", name: "cli.operation" },
+          since: "2026-08-31",
         },
       ],
     }),

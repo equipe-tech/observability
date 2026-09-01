@@ -68,7 +68,7 @@ const ContractIndexEventAttribute = Schema.Struct({
 });
 const ContractIndexEvent = Schema.Struct({
   name: Schema.NonEmptyString,
-  kind: Schema.NonEmptyString,
+  kind: Schema.Literals(["request", "operation", "domain", "defect", "audit"]),
   attributes: Schema.Array(Schema.NonEmptyString),
   attributeClassifications: Schema.Array(ContractIndexEventAttribute),
 });
@@ -641,8 +641,10 @@ export const validateOperationsManifest = Effect.fn("validateOperationsManifest"
       first !== undefined &&
       targets.some(
         (target) =>
+          target.kind !== first.kind ||
           [...target.attributes].sort().join("\u0000") !==
-            [...first.attributes].sort().join("\u0000") || signature(target) !== signature(first),
+            [...first.attributes].sort().join("\u0000") ||
+          signature(target) !== signature(first),
       )
     ) {
       issues.push(`incompatible event alias targets event ${source}`);

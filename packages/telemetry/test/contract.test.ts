@@ -827,7 +827,7 @@ describe("defineTelemetryContract", () => {
     Effect.gen(function* () {
       const error = yield* defineTelemetryContract(
         JSON.parse(`{
-        "version": 2,
+        "version": 0,
         "events": {
           "Bad": {
             "name": "event.production",

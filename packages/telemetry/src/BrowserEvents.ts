@@ -10,6 +10,7 @@ import {
 } from "./browser/BrowserEventLimits.ts";
 
 export {
+  browserEnvelopeVersion,
   browserRequestByteBudget,
   maxEventIdLength,
   maxEventNameLength,
@@ -63,7 +64,10 @@ export class BrowserEvent extends Schema.Class<BrowserEvent>(
 export class BrowserEventBatch extends Schema.Class<BrowserEventBatch>(
   "@equipe-tech/observability/BrowserEventBatch",
 )({
-  version: Schema.Literal(1),
+  version: Schema.Int.check(
+    Schema.isGreaterThan(0),
+    Schema.makeFilter(Number.isSafeInteger, { expected: "a positive safe integer" }),
+  ),
   events: Schema.Array(BrowserEvent).check(
     Schema.makeFilter((events) => events.length <= maxEventsPerBatch, {
       expected: `at most ${maxEventsPerBatch} events per batch`,

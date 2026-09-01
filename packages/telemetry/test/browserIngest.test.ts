@@ -149,9 +149,9 @@ describe("ingestBrowserEvents", () => {
     }),
   );
 
-  it.effect("rejects an unsupported contract version", () =>
+  it.effect("rejects an invalid envelope version", () =>
     Effect.gen(function* () {
-      const failure = yield* ingestBrowserEvents({ version: 2, events: [] }).pipe(
+      const failure = yield* ingestBrowserEvents({ version: 0, events: [] }).pipe(
         Effect.provide(layerWideEvent),
         Effect.flip,
       );

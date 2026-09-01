@@ -1,0 +1,98 @@
+{
+  "baseline": 1,
+  "source": {
+    "tag": "v0.2.1",
+    "commit": "a5ab6997536f9d3af797429783f65c9e68a0dfa0"
+  },
+  "contract": {
+    "surface": 1,
+    "service": "observability",
+    "contractVersion": 1,
+    "events": [],
+    "metrics": [],
+    "auditActions": [],
+    "aliases": [],
+    "browserEnvelope": {
+      "version": 1,
+      "batchFields": ["events", "version"],
+      "eventFields": ["fields", "id", "name", "occurredAt"]
+    },
+    "retentionWindowDays": 30
+  },
+  "packages": [
+    {
+      "name": "@equipe-tech/observability",
+      "version": "0.2.1",
+      "integrity": "d68f5259fac829bad262537de567f547e7f12aab3a6a3f4bb2af81fd8bc41cf7",
+      "type": "module",
+      "exports": [
+        ".",
+        "./browser",
+        "./browser/client",
+        "./metrics",
+        "./nestjs",
+        "./node",
+        "./testing"
+      ],
+      "exportConditions": [
+        ".:import:./dist/index.js",
+        ".:types:./dist/index.d.ts",
+        "./browser:import:./dist/browser/index.js",
+        "./browser:types:./dist/browser/index.d.ts",
+        "./browser/client:import:./dist/browser/client.js",
+        "./browser/client:types:./dist/browser/client.d.ts",
+        "./metrics:import:./dist/Metrics.js",
+        "./metrics:types:./dist/Metrics.d.ts",
+        "./nestjs:import:./dist/nestjs/index.js",
+        "./nestjs:types:./dist/nestjs/index.d.ts",
+        "./node:import:./dist/node/index.js",
+        "./node:types:./dist/node/index.d.ts",
+        "./testing:import:./dist/testing/index.js",
+        "./testing:types:./dist/testing/index.d.ts"
+      ],
+      "runtimeEntrypoints": [
+        ".",
+        "./browser",
+        "./browser/client",
+        "./metrics",
+        "./nestjs",
+        "./node",
+        "./testing"
+      ],
+      "declarationSymbols": [
+        ".:BrowserEvents",
+        ".:InvalidTelemetryEnvironment",
+        ".:Telemetry",
+        ".:TelemetryConfig",
+        ".:WideEvent",
+        ".:telemetryConfigFromEnv"
+      ],
+      "dependencies": ["effect@4.0.0-rc.111"],
+      "peerDependencies": [
+        "@nestjs/common@^10.0.0 || ^11.0.0",
+        "@nestjs/core@^10.0.0 || ^11.0.0",
+        "rxjs@^7.2.0"
+      ],
+      "optionalPeers": ["@nestjs/common", "@nestjs/core", "rxjs"],
+      "publicErrorCodes": []
+    },
+    {
+      "name": "@equipe-tech/observability-cli",
+      "version": "0.2.1",
+      "integrity": "e0ad0382d0f165be6f09e75ea0055ecb7c0159ecba59c6959444677ec39946cf",
+      "type": "module",
+      "exports": [],
+      "exportConditions": [],
+      "runtimeEntrypoints": ["bin:observability"],
+      "declarationSymbols": [],
+      "dependencies": [
+        "@effect/platform-bun@4.0.0-rc.111",
+        "@effect/platform-node-shared@4.0.0-rc.111",
+        "effect@4.0.0-rc.111"
+      ],
+      "peerDependencies": [],
+      "optionalPeers": [],
+      "publicErrorCodes": []
+    }
+  ]
+}

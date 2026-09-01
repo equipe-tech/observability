@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "breaks": [
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_EXPORT_REMOVED",
+      "path": "exports/./nestjs",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_DEPENDENCY_CATEGORY_CHANGED",
+      "path": "dependencies/effect",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_DEPENDENCY_REMOVED",
+      "path": "dependencies/effect@4.0.0-rc.111",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_PEER_CHANGED",
+      "path": "peerDependencies",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_RUNTIME_ENTRYPOINT_MISSING",
+      "path": "runtime/./nestjs",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_EXPORT_CONDITION_REMOVED",
+      "path": "exportConditions/./nestjs",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_PEER_OPTIONALITY_CHANGED",
+      "path": "peerDependenciesMeta",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    }
+  ]
+}

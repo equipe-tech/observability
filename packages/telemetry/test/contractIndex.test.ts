@@ -42,6 +42,7 @@ describe("contract index", () => {
         {
           source: { kind: "event", name: "payment.charge" },
           target: { kind: "event", name: "payment.attempt" },
+          since: "2026-08-31",
         },
       ],
     });
@@ -88,6 +89,7 @@ describe("contract index", () => {
     const alias = (source: string, target: string): Contract.ContractSignalAliasDefinition => ({
       source: { kind: "event", name: source },
       target: { kind: "event", name: target },
+      since: "2026-08-31",
     });
     const cases: ReadonlyArray<
       readonly [ReadonlyArray<Contract.ContractSignalAliasDefinition>, string]
@@ -161,6 +163,20 @@ describe("contract index", () => {
               },
             },
           },
+          Domain: {
+            name: "payment.domain",
+            kind: "domain",
+            defaultSeverity: "info",
+            mandatory: true,
+            sampling: { kind: "always" },
+            attributes: {
+              "payment.provider": {
+                classification: "public",
+                required: true,
+                metricLabel: false,
+              },
+            },
+          },
         },
         metrics: {
           Duration: {
@@ -189,6 +205,7 @@ describe("contract index", () => {
           {
             source: { kind: "metric", name: "payment.old" },
             target: { kind: "event", name: "payment.first" },
+            since: "2026-08-31",
           },
         ],
       }),
@@ -199,21 +216,43 @@ describe("contract index", () => {
     ): Contract.ContractSignalAliasDefinition => ({
       source: { kind: "event", name: source },
       target: { kind: "event", name: target },
+      since: "2026-08-31",
     });
     for (const aliases of [
       [eventAlias("payment.old", "payment.first"), eventAlias("payment.old", "payment.second")],
       [eventAlias("payment.old", "payment.first"), eventAlias("payment.first", "payment.second")],
     ]) {
       expect(() => Contract.contractIndex(contract, "checkout", { version: 1, aliases })).toThrow(
-        "incompatible attributes or classifications",
+        "incompatible kind, attributes, or classifications",
       );
     }
+    expect(() =>
+      Contract.contractIndex(contract, "checkout", {
+        version: 1,
+        aliases: [
+          eventAlias("payment.old", "payment.first"),
+          eventAlias("payment.old", "payment.domain"),
+        ],
+      }),
+    ).toThrow("incompatible kind, attributes, or classifications");
+    expect(() =>
+      Contract.contractIndex(contract, "checkout", {
+        version: 1,
+        aliases: [
+          {
+            ...eventAlias("payment.old", "payment.first"),
+            since: "2026-02-30",
+          },
+        ],
+      }),
+    ).toThrow("ISO calendar date");
     const metricAlias = (
       source: string,
       target: string,
     ): Contract.ContractSignalAliasDefinition => ({
       source: { kind: "metric", name: source },
       target: { kind: "metric", name: target },
+      since: "2026-08-31",
     });
     for (const aliases of [
       [
@@ -236,10 +275,12 @@ describe("contract index", () => {
           {
             source: { kind: "event", name: "payment.first" },
             target: { kind: "event", name: "payment.second" },
+            since: "2026-08-31",
           },
           {
             source: { kind: "event", name: "payment.second" },
             target: { kind: "event", name: "payment.first" },
+            since: "2026-08-31",
           },
         ],
       }),
