@@ -42,6 +42,28 @@ const PackageSurfaceDocument = Schema.Struct({
   optionalPeers: Schema.Array(Schema.String),
   publicErrorCodes: Schema.Array(Schema.String),
 });
+export const PackageCompatibilityCode = Schema.Literals([
+  "OBS_PACKAGE_EXPORT_ADDED",
+  "OBS_PACKAGE_EXPORT_REMOVED",
+  "OBS_PACKAGE_SYMBOL_ADDED",
+  "OBS_PACKAGE_SYMBOL_REMOVED",
+  "OBS_PACKAGE_DEPENDENCY_ADDED",
+  "OBS_PACKAGE_DEPENDENCY_REMOVED",
+  "OBS_PACKAGE_DEPENDENCY_CATEGORY_CHANGED",
+  "OBS_PACKAGE_PEER_ADDED",
+  "OBS_PACKAGE_PEER_CHANGED",
+  "OBS_PACKAGE_RUNTIME_ENTRYPOINT_MISSING",
+  "OBS_PACKAGE_NAME_CHANGED",
+  "OBS_PACKAGE_TYPE_CHANGED",
+  "OBS_PACKAGE_EXPORT_CONDITION_ADDED",
+  "OBS_PACKAGE_EXPORT_CONDITION_REMOVED",
+  "OBS_PACKAGE_PEER_OPTIONALITY_CHANGED",
+  "OBS_PACKAGE_ERROR_CODE_ADDED",
+  "OBS_PACKAGE_ERROR_CODE_REMOVED",
+]);
+
+export type PackageCompatibilityCode = typeof PackageCompatibilityCode.Type;
+
 const BaselineDocument = Schema.Struct({
   baseline: Schema.Literal(1),
   source: Schema.Struct({ tag: Schema.String, commit: Schema.String }),
@@ -58,7 +80,7 @@ const DeclaredBreaksDocument = Schema.Struct({
     Schema.Struct({
       scope: Schema.Literal("package"),
       package: Schema.String,
-      code: Schema.String,
+      code: PackageCompatibilityCode,
       path: Schema.String,
       candidateVersion: Schema.String,
       migrationGuide: Schema.String,
@@ -73,25 +95,6 @@ const decodeVersions = Schema.decodeUnknownSync(CandidateVersionsDocument, {
 const decodeBreaks = Schema.decodeUnknownSync(DeclaredBreaksDocument, {
   onExcessProperty: "error",
 });
-
-export type PackageCompatibilityCode =
-  | "OBS_PACKAGE_EXPORT_ADDED"
-  | "OBS_PACKAGE_EXPORT_REMOVED"
-  | "OBS_PACKAGE_SYMBOL_ADDED"
-  | "OBS_PACKAGE_SYMBOL_REMOVED"
-  | "OBS_PACKAGE_DEPENDENCY_ADDED"
-  | "OBS_PACKAGE_DEPENDENCY_REMOVED"
-  | "OBS_PACKAGE_DEPENDENCY_CATEGORY_CHANGED"
-  | "OBS_PACKAGE_PEER_ADDED"
-  | "OBS_PACKAGE_PEER_CHANGED"
-  | "OBS_PACKAGE_RUNTIME_ENTRYPOINT_MISSING"
-  | "OBS_PACKAGE_NAME_CHANGED"
-  | "OBS_PACKAGE_TYPE_CHANGED"
-  | "OBS_PACKAGE_EXPORT_CONDITION_ADDED"
-  | "OBS_PACKAGE_EXPORT_CONDITION_REMOVED"
-  | "OBS_PACKAGE_PEER_OPTIONALITY_CHANGED"
-  | "OBS_PACKAGE_ERROR_CODE_ADDED"
-  | "OBS_PACKAGE_ERROR_CODE_REMOVED";
 
 export type DeclaredPackageBreak = (typeof DeclaredBreaksDocument.Type)["breaks"][number];
 

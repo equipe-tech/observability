@@ -6,12 +6,18 @@ import { Contract } from "../packages/telemetry/src/index.ts";
 import { parseOperationsManifest } from "../packages/cli/src/OperationsManifest.ts";
 import {
   classifyPackageChange,
+  PackageCompatibilityCode,
   releaseIntegrityIssue,
   versionSatisfiesBreakLane,
   type DeclaredPackageBreak,
+  type PackageFinding,
   type PackageSurface,
 } from "../scripts/compatibility-gate.ts";
 import { generateCompatibilityCandidate } from "../scripts/generate-compatibility-candidate.ts";
+import {
+  contractCompatibilityFixtures,
+  packageCompatibilityFixtures,
+} from "./compatibility-fixtures.ts";
 
 const packageSurface = (
   version: string,
@@ -33,7 +39,7 @@ const packageSurface = (
 });
 
 const declaredBreak = (
-  code: string,
+  code: PackageCompatibilityCode,
   candidateVersion: string,
   path: string,
 ): DeclaredPackageBreak => ({
@@ -46,43 +52,173 @@ const declaredBreak = (
 });
 
 describe("compatibility gate", () => {
-  test("keeps the compatibility code registry complete", () => {
-    const fixtures = JSON.parse(readFileSync("tools/compatibility/contract-fixtures.json", "utf8"));
-    expect(fixtures.map((fixture: { readonly code: string }) => fixture.code)).toEqual(
-      Contract.compatibilityCodes,
+  test("executes complete discriminating contract fixtures", () => {
+    const fixtureIds = contractCompatibilityFixtures.map((fixture) => fixture.id);
+    expect(new Set(fixtureIds).size).toBe(fixtureIds.length);
+    expect([...fixtureIds].sort()).toEqual([...Contract.CompatibilityCode.literals].sort());
+    for (const fixture of contractCompatibilityFixtures) {
+      const arranged = fixture.arrange();
+      const report = Contract.classifyContractChange(arranged);
+      const findings = report.findings.filter((finding) => finding.code === fixture.expected.code);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]).toMatchObject({
+        code: fixture.expected.code,
+        path: fixture.expected.path,
+        severity: fixture.expected.severity,
+        aliasStatus: fixture.expected.aliasStatus,
+      });
+      expect(report.accepted).toBe(fixture.expected.accepted);
+      const control = Contract.classifyContractChange({
+        baseline: arranged.baseline,
+        candidate: arranged.control,
+        now: arranged.now,
+      });
+      expect(control.findings.some((finding) => finding.code === fixture.expected.code)).toBe(
+        false,
+      );
+    }
+  });
+
+  test("executes complete discriminating package fixtures", () => {
+    const fixtureIds = packageCompatibilityFixtures.map((fixture) => fixture.id);
+    expect(new Set(fixtureIds).size).toBe(fixtureIds.length);
+    expect([...fixtureIds].sort()).toEqual([...PackageCompatibilityCode.literals].sort());
+    for (const fixture of packageCompatibilityFixtures) {
+      const findings = classifyPackageChange(
+        fixture.baseline,
+        fixture.candidate,
+        fixture.declaredVersion,
+        fixture.declaredBreaks,
+      );
+      const matches = findings.filter((finding) => finding.code === fixture.expected.code);
+      expect(matches).toHaveLength(1);
+      expect(matches[0]).toMatchObject({
+        code: fixture.expected.code,
+        path: fixture.expected.path,
+        severity: fixture.expected.severity,
+      });
+      expect(findings.every((finding) => finding.satisfied)).toBe(fixture.expected.accepted);
+      const control = classifyPackageChange(
+        fixture.baseline,
+        fixture.control,
+        fixture.declaredVersion,
+        fixture.declaredBreaks,
+      );
+      expect(control.some((finding) => finding.code === fixture.expected.code)).toBe(false);
+    }
+  });
+
+  test("rejects every mutated fixture expectation", () => {
+    for (const fixture of contractCompatibilityFixtures) {
+      const arranged = fixture.arrange();
+      const report = Contract.classifyContractChange(arranged);
+      const finding = report.findings.find((entry) => entry.code === fixture.expected.code);
+      expect(finding).toBeDefined();
+      const matches = (candidate: typeof fixture.expected): boolean =>
+        finding?.code === candidate.code &&
+        finding.path === candidate.path &&
+        finding.severity === candidate.severity &&
+        finding.aliasStatus === candidate.aliasStatus &&
+        report.accepted === candidate.accepted;
+      const alternateCode = Contract.CompatibilityCode.literals.find(
+        (code) => code !== fixture.expected.code,
+      );
+      expect(alternateCode).toBeDefined();
+      if (alternateCode !== undefined)
+        expect(matches({ ...fixture.expected, code: alternateCode })).toBe(false);
+      expect(matches({ ...fixture.expected, path: `${fixture.expected.path}/wrong` })).toBe(false);
+      expect(
+        matches({
+          ...fixture.expected,
+          severity: fixture.expected.severity === "breaking" ? "compatible" : "breaking",
+        }),
+      ).toBe(false);
+      expect(
+        matches({
+          ...fixture.expected,
+          aliasStatus: fixture.expected.aliasStatus === "active" ? "expired" : "active",
+        }),
+      ).toBe(false);
+      expect(matches({ ...fixture.expected, accepted: !fixture.expected.accepted })).toBe(false);
+    }
+    for (const fixture of packageCompatibilityFixtures) {
+      const findings = classifyPackageChange(
+        fixture.baseline,
+        fixture.candidate,
+        fixture.declaredVersion,
+        fixture.declaredBreaks,
+      );
+      const finding = findings.find((entry) => entry.code === fixture.expected.code);
+      expect(finding).toBeDefined();
+      const matches = (candidate: typeof fixture.expected): boolean =>
+        finding?.code === candidate.code &&
+        finding.path === candidate.path &&
+        finding.severity === candidate.severity &&
+        findings.every((entry) => entry.satisfied) === candidate.accepted;
+      const alternateCode = PackageCompatibilityCode.literals.find(
+        (code) => code !== fixture.expected.code,
+      );
+      expect(alternateCode).toBeDefined();
+      if (alternateCode !== undefined)
+        expect(matches({ ...fixture.expected, code: alternateCode })).toBe(false);
+      expect(matches({ ...fixture.expected, path: `${fixture.expected.path}/wrong` })).toBe(false);
+      expect(
+        matches({
+          ...fixture.expected,
+          severity: fixture.expected.severity === "breaking" ? "compatible" : "breaking",
+        }),
+      ).toBe(false);
+      expect(matches({ ...fixture.expected, accepted: !fixture.expected.accepted })).toBe(false);
+    }
+  });
+
+  test("discriminates alias status at exact retention boundaries", () => {
+    const fixture = contractCompatibilityFixtures.find(
+      (entry) => entry.id === "OBS_COMPAT_ALIAS_ADDED",
     );
-    expect(Contract.compatibilityCodes).toEqual([
-      "OBS_COMPAT_EVENT_ADDED",
-      "OBS_COMPAT_EVENT_REMOVED",
-      "OBS_COMPAT_EVENT_RENAMED",
-      "OBS_COMPAT_EVENT_KIND_CHANGED",
-      "OBS_COMPAT_OUTCOME_MEANING_CHANGED",
-      "OBS_COMPAT_ATTRIBUTE_ADDED",
-      "OBS_COMPAT_ATTRIBUTE_REMOVED",
-      "OBS_COMPAT_ATTRIBUTE_REQUIRED",
-      "OBS_COMPAT_ATTRIBUTE_CLASSIFICATION_CHANGED",
-      "OBS_COMPAT_ATTRIBUTE_METRIC_LABEL_CHANGED",
-      "OBS_COMPAT_METRIC_ADDED",
-      "OBS_COMPAT_METRIC_REMOVED",
-      "OBS_COMPAT_METRIC_RENAMED",
-      "OBS_COMPAT_METRIC_KIND_CHANGED",
-      "OBS_COMPAT_METRIC_UNIT_CHANGED",
-      "OBS_COMPAT_METRIC_BOUNDARIES_CHANGED",
-      "OBS_COMPAT_METRIC_ATTRIBUTE_ADDED",
-      "OBS_COMPAT_METRIC_ATTRIBUTE_REMOVED",
-      "OBS_COMPAT_METRIC_ATTRIBUTE_CLASSIFICATION_CHANGED",
-      "OBS_COMPAT_METRIC_CARDINALITY_LOWERED",
-      "OBS_COMPAT_METRIC_ALLOWED_VALUES_NARROWED",
-      "OBS_COMPAT_AUDIT_ACTION_ADDED",
-      "OBS_COMPAT_AUDIT_ACTION_REMOVED",
-      "OBS_COMPAT_AUDIT_ACTION_CHANGED",
-      "OBS_COMPAT_ALIAS_ADDED",
-      "OBS_COMPAT_ALIAS_REMOVED_EARLY",
-      "OBS_COMPAT_ALIAS_WINDOW_RESET",
-      "OBS_COMPAT_ALIAS_WINDOW_EXPIRED",
-      "OBS_COMPAT_BROWSER_ENVELOPE_CHANGED",
-      "OBS_COMPAT_RETENTION_WINDOW_RESET",
-    ]);
+    expect(fixture).toBeDefined();
+    if (fixture === undefined) return;
+    const arranged = fixture.arrange();
+    const statusAt = (now: string) =>
+      Contract.classifyContractChange({
+        baseline: arranged.baseline,
+        candidate: arranged.candidate,
+        now,
+      }).findings.find((finding) => finding.code === "OBS_COMPAT_ALIAS_ADDED")?.aliasStatus;
+    expect(statusAt("2026-09-22")).toBe("active");
+    expect(statusAt("2026-09-23")).toBe("expiring");
+    expect(statusAt("2026-09-29")).toBe("expiring");
+    expect(statusAt("2026-09-30")).toBe("expired");
+  });
+
+  test("requires exact migration declaration and break lane satisfaction", () => {
+    const fixture = packageCompatibilityFixtures.find(
+      (entry) => entry.id === "OBS_PACKAGE_EXPORT_REMOVED",
+    );
+    expect(fixture).toBeDefined();
+    if (fixture === undefined) return;
+    const declaration = declaredBreak(fixture.expected.code, "0.3.0", fixture.expected.path);
+    const classify = (
+      version: string,
+      breaks: ReadonlyArray<DeclaredPackageBreak>,
+    ): PackageFinding => {
+      const finding = classifyPackageChange(
+        fixture.baseline,
+        fixture.candidate,
+        version,
+        breaks,
+      ).find((entry) => entry.code === fixture.expected.code);
+      if (finding === undefined)
+        throw new Error("Package fixture did not produce its expected code.");
+      return finding;
+    };
+    expect(classify("0.2.2", [{ ...declaration, candidateVersion: "0.2.2" }]).satisfied).toBe(
+      false,
+    );
+    expect(
+      classify("0.3.0", [{ ...declaration, path: `${declaration.path}/wrong` }]).satisfied,
+    ).toBe(false);
+    expect(classify("0.3.0", [declaration]).satisfied).toBe(true);
   });
 
   test("regenerates the candidate from contract, operations and browser schema metadata", async () => {
@@ -204,15 +340,41 @@ describe("compatibility gate", () => {
     ).toBe(true);
   });
 
-  test("rejects peer narrowing and dependency category changes", () => {
-    const baseline = packageSurface("0.2.1", ["."], [], ["effect@^4.0.0"]);
-    const candidate = packageSurface("0.2.1", ["."], ["effect@4.0.0"], []);
+  test("rejects dependency range, peer range, category and metadata changes", () => {
+    const baseline = {
+      ...packageSurface("0.2.1", ["."], ["vite@^6.0.0"], ["effect@^4.0.0"]),
+      optionalPeers: ["vite"],
+    };
+    const candidate = {
+      ...packageSurface("0.2.1", ["."], ["vite@^7.0.0", "effect@4.0.0"], ["effect@4.0.0"]),
+      optionalPeers: [],
+    };
     const findings = classifyPackageChange(baseline, candidate, "0.2.2", []);
+    expect(findings).toContainEqual(
+      expect.objectContaining({
+        code: "OBS_PACKAGE_DEPENDENCY_REMOVED",
+        path: "dependencies/effect@^4.0.0",
+        satisfied: false,
+      }),
+    );
+    expect(findings).toContainEqual(
+      expect.objectContaining({
+        code: "OBS_PACKAGE_DEPENDENCY_ADDED",
+        path: "dependencies/effect@4.0.0",
+        satisfied: true,
+      }),
+    );
+    expect(findings).toContainEqual(
+      expect.objectContaining({ code: "OBS_PACKAGE_PEER_CHANGED", satisfied: false }),
+    );
     expect(findings).toContainEqual(
       expect.objectContaining({
         code: "OBS_PACKAGE_DEPENDENCY_CATEGORY_CHANGED",
         satisfied: false,
       }),
+    );
+    expect(findings).toContainEqual(
+      expect.objectContaining({ code: "OBS_PACKAGE_PEER_OPTIONALITY_CHANGED", satisfied: false }),
     );
   });
 

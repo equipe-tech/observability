@@ -4,6 +4,8 @@
 
 ## Contrato
 
+A suíte `tools/compatibility.bun.test.ts` executa uma fixture positiva e um controle próximo para cada literal de `Contract.CompatibilityCode`. As fixtures chamam `Contract.classifyContractChange` e validam código, caminho, severidade, status de alias e aceitação. A igualdade exata entre IDs únicos de fixture e os literais do schema impede códigos ausentes ou extras.
+
 `Contract.contractSurface` gera o artefato estrito na versão 1. Ele contém eventos, significado de resultados, atributos, métricas, ações de auditoria, aliases, envelope do browser e a maior retenção declarada pelo manifesto. `Contract.encodeContractSurface` e `Contract.decodeContractSurface` mantêm a representação determinística.
 
 Adições de eventos, atributos opcionais e métricas são compatíveis. Remoções, renomes, atributos obrigatórios novos, mudanças de classificação, tipo de evento, significado de resultado, unidade, tipo ou limites de métrica são quebras. Toda quebra exige `contractVersion` maior que o baseline.
@@ -17,6 +19,8 @@ Queries de dashboard e monitor que usam a origem antiga declaram o predicado com
 Mudanças nos campos do envelope do browser exigem uma versão de envelope maior. O decoder aceita qualquer versão inteira positiva segura. O cliente atual envia a versão 2; lotes da versão 1 continuam válidos.
 
 ## Pacotes
+
+A mesma suíte executa uma fixture positiva e um controle para cada literal de `PackageCompatibilityCode`. Ela usa `classifyPackageChange` e valida código, caminho, severidade e satisfação. Um sensor altera cada valor esperado em memória e prova que o matcher rejeita a expectativa incorreta.
 
 O gate fixa nome, tipo de módulo, exports, entrypoints em runtime, símbolos alcançáveis nas declarações, dependências, peers, peers opcionais e códigos públicos de erro. Export novo é compatível. Remoção de export ou símbolo, entrypoint ausente, peer alterado e mudança entre dependência direta e peer são quebras. Uma declaração de quebra vale para um único código e caminho exato.
 
