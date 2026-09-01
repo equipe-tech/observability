@@ -26,6 +26,8 @@ export {
   BrowserEvent,
   BrowserEventBatch,
   BrowserEventError,
+  browserEnvelopeMetadata,
+  browserEnvelopeVersion,
   browserRequestByteBudget,
   maxEventNameLength,
   maxEventsPerBatch,

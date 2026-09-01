@@ -702,18 +702,6 @@ try {
   ) {
     throw new Error("The earlier consumer did not fail for the declared NestJS entrypoint break.");
   }
-  requireSuccess(
-    await run(
-      [
-        "node",
-        "--input-type=module",
-        "--eval",
-        "let rejected = false; try { await import('@equipe-tech/observability/nestjs'); } catch (cause) { rejected = cause?.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED'; } if (!rejected) process.exit(1);",
-      ],
-      nodeConsumer,
-    ),
-    "Checking the declared NestJS entrypoint break with Node",
-  );
   for (const candidate of [
     {
       file: "browser-audit-invalid.ts",

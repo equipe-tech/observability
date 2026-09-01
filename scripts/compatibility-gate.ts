@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Effect, Schema } from "effect";
 import { Contract } from "../packages/telemetry/src/index.ts";
+import { generateCompatibilityCandidate } from "./generate-compatibility-candidate.ts";
 
 const ExportTarget = Schema.Union([
   Schema.String,
@@ -30,7 +31,7 @@ const PackageDocument = Schema.Struct({
 const PackageSurfaceDocument = Schema.Struct({
   name: Schema.String,
   version: Schema.String,
-  integrity: Schema.String.pipe(Schema.optionalKey),
+  surfaceDigest: Schema.String.pipe(Schema.optionalKey),
   type: Schema.String,
   exports: Schema.Array(Schema.String),
   exportConditions: Schema.Array(Schema.String),
@@ -155,6 +156,7 @@ const declarationSymbols = (
       for (const member of members.split(",")) {
         const name = member
           .trim()
+          .replace(/^type\s+/, "")
           .split(/\s+as\s+/)
           .at(-1)
           ?.trim();
@@ -162,11 +164,14 @@ const declarationSymbols = (
           symbols.add(`${exportName}:${name}`);
       }
     }
-    for (const match of content.matchAll(/export\s+\*\s+from\s+["']([^"']+)["']/g)) {
+    for (const match of content.matchAll(/export\s+(?:\*|\{[^}]+\})\s+from\s+["']([^"']+)["']/g)) {
       const reference = match[1];
       if (reference === undefined || !reference.startsWith(".")) continue;
       const resolved = join(dirname(path), reference.replace(/[.]js$/, ".d.ts"));
-      visit(resolved, exportName);
+      visit(
+        existsSync(resolved) ? resolved : join(resolved.replace(/[.]d[.]ts$/, ""), "index.d.ts"),
+        exportName,
+      );
     }
   };
   for (const [exportName, target] of exportEntries(document)) {
@@ -176,28 +181,53 @@ const declarationSymbols = (
   return [...symbols].sort();
 };
 
-const currentPackageSurface = (packageRoot: string): PackageSurface => {
+const exportedDeclarationText = (
+  packageRoot: string,
+  document: typeof PackageDocument.Type,
+): string => {
+  const visited = new Set<string>();
+  const contents: Array<string> = [];
+  const visit = (path: string): void => {
+    if (visited.has(path) || !existsSync(path)) return;
+    visited.add(path);
+    const content = readFileSync(path, "utf8");
+    contents.push(content);
+    for (const match of content.matchAll(/export\s+(?:\*|\{[^}]+\})\s+from\s+["']([^"']+)["']/g)) {
+      const reference = match[1];
+      if (reference === undefined || !reference.startsWith(".")) continue;
+      const resolved = join(dirname(path), reference.replace(/[.]js$/, ".d.ts"));
+      visit(
+        existsSync(resolved) ? resolved : join(resolved.replace(/[.]d[.]ts$/, ""), "index.d.ts"),
+      );
+    }
+  };
+  for (const [, target] of exportEntries(document)) {
+    const path = exportTypesPath(target);
+    if (path !== undefined) visit(join(packageRoot, path));
+  }
+  return contents.join("\n");
+};
+
+export const currentPackageSurface = (packageRoot: string): PackageSurface => {
   const document = decodePackage(parseJson(join(packageRoot, "package.json")));
   const exports = exportEntries(document).map((entry) => entry[0]);
-  const runtimeEntrypoints = exportEntries(document)
-    .filter((entry) => {
-      const path = exportRuntimePath(entry[1]);
-      return path !== undefined && existsSync(join(packageRoot, path));
-    })
-    .map((entry) => entry[0]);
+  const runtimeEntrypoints = [
+    ...exportEntries(document)
+      .filter((entry) => {
+        const path = exportRuntimePath(entry[1]);
+        return path !== undefined && existsSync(join(packageRoot, path));
+      })
+      .map((entry) => entry[0]),
+    ...Object.entries(document.bin ?? {})
+      .filter((entry) => existsSync(join(packageRoot, entry[1])))
+      .map((entry) => `bin:${entry[0]}`),
+  ].sort();
   const optionalPeers = Object.entries(document.peerDependenciesMeta ?? {})
     .filter((entry) => entry[1].optional === true)
     .map((entry) => entry[0])
     .sort();
   const symbols = declarationSymbols(packageRoot, document);
-  const declarationText = exportEntries(document)
-    .flatMap((entry) => {
-      const path = exportTypesPath(entry[1]);
-      return path !== undefined && existsSync(join(packageRoot, path))
-        ? [readFileSync(join(packageRoot, path), "utf8")]
-        : [];
-    })
-    .join("\n");
+  const declarationText = exportedDeclarationText(packageRoot, document);
   const publicErrorCodes = [...new Set(declarationText.match(/OBS_[A-Z0-9_]+/g) ?? [])].sort();
   return {
     name: document.name,
@@ -401,6 +431,7 @@ export const classifyPackageChange = (
       (item) =>
         item.package === candidate.name &&
         item.code === entry.code &&
+        item.path === entry.path &&
         item.candidateVersion === declaredVersion &&
         existsSync(item.migrationGuide),
     );
@@ -420,13 +451,16 @@ export const classifyPackageChange = (
   });
 };
 
-const releaseIntegrityIssue = (
+export const packageSurfaceDigest = (surface: PackageSurface): string =>
+  createHash("sha256").update(JSON.stringify(surface)).digest("hex");
+
+export const releaseIntegrityIssue = (
   baseline: typeof BaselineDocument.Type,
   versions: typeof CandidateVersionsDocument.Type,
+  currentPackages: ReadonlyArray<PackageSurface>,
+  release: string | undefined,
 ): string | undefined => {
-  const releaseIndex = process.argv.indexOf("--release");
-  if (releaseIndex < 0) return undefined;
-  const release = process.argv[releaseIndex + 1];
+  if (release === undefined) return undefined;
   const separator = release?.lastIndexOf("@") ?? -1;
   if (release === undefined || separator <= 0) return "release argument is malformed";
   const slug = release.slice(0, separator);
@@ -436,8 +470,12 @@ const releaseIntegrityIssue = (
   const previous = baseline.packages.find((entry) => entry.name === packageName);
   if (declaredVersion !== version)
     return "release version does not match the candidate declaration";
-  if (previous === undefined || previous.integrity === undefined)
-    return "release baseline has no package integrity evidence";
+  const current = currentPackages.find((entry) => entry.name === packageName);
+  if (current === undefined || current.version !== version)
+    return "release package does not match the exact initial candidate declaration";
+  if (previous === undefined) return undefined;
+  if (previous.surfaceDigest === undefined)
+    return "release baseline has no canonical package surface digest";
   const directory = mkdtempSync(join(tmpdir(), "observability-compatibility-"));
   try {
     const packed = Bun.spawnSync({
@@ -456,12 +494,17 @@ const releaseIntegrityIssue = (
     const filename = packed.stdout.toString().trim().split("\n").at(-1);
     if (filename === undefined || !existsSync(join(directory, filename)))
       return "prior npm tarball was not produced";
-    const checksum = createHash("sha256")
-      .update(readFileSync(join(directory, filename)))
-      .digest("hex");
-    return checksum === previous.integrity
+    const unpacked = Bun.spawnSync({
+      cmd: ["tar", "-xzf", join(directory, filename), "-C", directory],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (unpacked.exitCode !== 0 || !existsSync(join(directory, "package", "package.json")))
+      return "prior npm tarball could not be extracted";
+    const npmSurface = currentPackageSurface(join(directory, "package"));
+    return packageSurfaceDigest(npmSurface) === previous.surfaceDigest
       ? undefined
-      : "prior npm tarball checksum differs from the tagged archive";
+      : "prior npm package surface differs from the tagged baseline";
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -490,10 +533,14 @@ export const runCompatibilityGate = async (): Promise<boolean> => {
   const baselineContract = await Effect.runPromise(
     Contract.decodeContractSurface(`${JSON.stringify(baseline.contract)}\n`),
   );
+  const committedCandidate = readFileSync("observability/compatibility/candidate.json", "utf8");
+  const generatedCandidate = await generateCompatibilityCandidate();
+  const candidateDrift =
+    committedCandidate === generatedCandidate
+      ? undefined
+      : "candidate.json differs from the generated contract surface";
   const candidateContract = await Effect.runPromise(
-    Contract.decodeContractSurface(
-      readFileSync("observability/compatibility/candidate.json", "utf8"),
-    ),
+    Contract.decodeContractSurface(generatedCandidate),
   );
   const contractReport = Contract.classifyContractChange({
     baseline: baselineContract,
@@ -537,18 +584,22 @@ export const runCompatibilityGate = async (): Promise<boolean> => {
       )
       .map((entry) => `${candidate.name}:${entry}`),
   );
-  const integrityIssue = releaseIntegrityIssue(baseline, versions);
+  const releaseIndex = process.argv.indexOf("--release");
+  const release = releaseIndex < 0 ? undefined : process.argv[releaseIndex + 1];
+  const integrityIssue = releaseIntegrityIssue(baseline, versions, currentPackages, release);
   const accepted =
     contractReport.accepted &&
     packageReports.every((entry) => entry.satisfied) &&
     missingRuntime.length === 0 &&
     missingCandidateVersions.length === 0 &&
-    integrityIssue === undefined;
+    integrityIssue === undefined &&
+    candidateDrift === undefined;
   const report = {
     report: 1,
     accepted,
     baseline: baseline.source,
-    contract: contractReport,
+    contract: JSON.parse(Contract.encodeCompatibilityReport(contractReport)),
+    candidateDrift: candidateDrift ?? "none",
     packages: packageReports.sort((left, right) =>
       `${left.package}\u0000${left.path}\u0000${left.code}`.localeCompare(
         `${right.package}\u0000${right.path}\u0000${right.code}`,

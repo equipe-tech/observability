@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { maxOtlpUnixTimestampMillis } from "./contract/TelemetryEvent.ts";
 import {
+  browserEnvelopeVersion,
   maxEventIdLength,
   maxEventNameLength,
   maxEventsPerBatch,
@@ -46,9 +47,7 @@ export class BrowserEventError extends Schema.Class<BrowserEventError>(
   retryable: Schema.Boolean,
 }) {}
 
-export class BrowserEvent extends Schema.Class<BrowserEvent>(
-  "@equipe-tech/observability/BrowserEvent",
-)({
+const BrowserEventDocument = {
   id: Schema.NonEmptyString.check(Schema.isMaxLength(maxEventIdLength)),
   name: Schema.NonEmptyString.check(Schema.isMaxLength(maxEventNameLength)),
   occurredAt: Schema.Number.check(
@@ -59,11 +58,13 @@ export class BrowserEvent extends Schema.Class<BrowserEvent>(
   ),
   fields: BrowserEventFields,
   error: Schema.optional(BrowserEventError),
-}) {}
+};
 
-export class BrowserEventBatch extends Schema.Class<BrowserEventBatch>(
-  "@equipe-tech/observability/BrowserEventBatch",
-)({
+export class BrowserEvent extends Schema.Class<BrowserEvent>(
+  "@equipe-tech/observability/BrowserEvent",
+)(BrowserEventDocument) {}
+
+const BrowserEventBatchDocument = {
   version: Schema.Int.check(
     Schema.isGreaterThan(0),
     Schema.makeFilter(Number.isSafeInteger, { expected: "a positive safe integer" }),
@@ -73,6 +74,16 @@ export class BrowserEventBatch extends Schema.Class<BrowserEventBatch>(
       expected: `at most ${maxEventsPerBatch} events per batch`,
     }),
   ),
-}) {}
+};
+
+export class BrowserEventBatch extends Schema.Class<BrowserEventBatch>(
+  "@equipe-tech/observability/BrowserEventBatch",
+)(BrowserEventBatchDocument) {}
+
+export const browserEnvelopeMetadata = {
+  version: browserEnvelopeVersion,
+  batchFields: Object.keys(BrowserEventBatchDocument).sort(),
+  eventFields: Object.keys(BrowserEventDocument).sort(),
+};
 
 export const encodeBrowserEventBatch = Schema.encodeEffect(BrowserEventBatch);

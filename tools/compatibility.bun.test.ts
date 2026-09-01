@@ -1,14 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { Effect } from "effect";
+import { browserEnvelopeMetadata } from "../packages/telemetry/src/BrowserEvents.ts";
 import { Contract } from "../packages/telemetry/src/index.ts";
 import { parseOperationsManifest } from "../packages/cli/src/OperationsManifest.ts";
 import {
   classifyPackageChange,
+  releaseIntegrityIssue,
   versionSatisfiesBreakLane,
   type DeclaredPackageBreak,
   type PackageSurface,
 } from "../scripts/compatibility-gate.ts";
+import { generateCompatibilityCandidate } from "../scripts/generate-compatibility-candidate.ts";
 
 const packageSurface = (
   version: string,
@@ -29,11 +32,15 @@ const packageSurface = (
   publicErrorCodes: ["OBS_EXAMPLE_FAILED"],
 });
 
-const declaredBreak = (code: string, candidateVersion: string): DeclaredPackageBreak => ({
+const declaredBreak = (
+  code: string,
+  candidateVersion: string,
+  path: string,
+): DeclaredPackageBreak => ({
   scope: "package",
   package: "@equipe-tech/example",
   code,
-  path: "fixture",
+  path,
   candidateVersion,
   migrationGuide: "docs/migration-0.3.md",
 });
@@ -78,6 +85,18 @@ describe("compatibility gate", () => {
     ]);
   });
 
+  test("regenerates the candidate from contract, operations and browser schema metadata", async () => {
+    const generated = await generateCompatibilityCandidate();
+    const committed = readFileSync("observability/compatibility/candidate.json", "utf8");
+    expect(generated).toBe(committed);
+    const candidate = JSON.parse(committed);
+    expect(candidate.browserEnvelope).toEqual(browserEnvelopeMetadata);
+    expect({
+      ...browserEnvelopeMetadata,
+      eventFields: [...browserEnvelopeMetadata.eventFields, "drift"],
+    }).not.toEqual(candidate.browserEnvelope);
+  });
+
   test("freezes the maximum manifest retention in both contract artifacts", async () => {
     const manifest = await Effect.runPromise(
       parseOperationsManifest(readFileSync("observability/operations.yaml", "utf8")),
@@ -89,6 +108,42 @@ describe("compatibility gate", () => {
     );
     expect(baseline.contract.retentionWindowDays).toBe(maximumRetention);
     expect(candidate.retentionWindowDays).toBe(maximumRetention);
+  });
+
+  test("detects every historical symbol and public error code removal", () => {
+    const baseline = JSON.parse(readFileSync("observability/compatibility/baseline.json", "utf8"));
+    for (const historical of baseline.packages) {
+      for (const symbol of historical.declarationSymbols) {
+        const candidate = {
+          ...historical,
+          declarationSymbols: historical.declarationSymbols.filter(
+            (entry: string) => entry !== symbol,
+          ),
+        };
+        expect(classifyPackageChange(historical, candidate, "0.3.0", [])).toContainEqual(
+          expect.objectContaining({
+            code: "OBS_PACKAGE_SYMBOL_REMOVED",
+            path: `symbols/${symbol}`,
+            severity: "breaking",
+            satisfied: false,
+          }),
+        );
+      }
+      for (const code of historical.publicErrorCodes) {
+        const candidate = {
+          ...historical,
+          publicErrorCodes: historical.publicErrorCodes.filter((entry: string) => entry !== code),
+        };
+        expect(classifyPackageChange(historical, candidate, "0.3.0", [])).toContainEqual(
+          expect.objectContaining({
+            code: "OBS_PACKAGE_ERROR_CODE_REMOVED",
+            path: `publicErrorCodes/${code}`,
+            severity: "breaking",
+            satisfied: false,
+          }),
+        );
+      }
+    }
   });
 
   test("accepts additive exports and rejects undeclared removals", () => {
@@ -111,12 +166,42 @@ describe("compatibility gate", () => {
     const baseline = packageSurface("0.2.1", ["."]);
     const candidate = packageSurface("0.2.1", []);
     const findings = classifyPackageChange(baseline, candidate, "0.3.0", [
-      declaredBreak("OBS_PACKAGE_EXPORT_REMOVED", "0.3.0"),
-      declaredBreak("OBS_PACKAGE_EXPORT_CONDITION_REMOVED", "0.3.0"),
-      declaredBreak("OBS_PACKAGE_RUNTIME_ENTRYPOINT_MISSING", "0.3.0"),
-      declaredBreak("OBS_PACKAGE_SYMBOL_REMOVED", "0.3.0"),
+      declaredBreak("OBS_PACKAGE_EXPORT_REMOVED", "0.3.0", "exports/."),
+      declaredBreak(
+        "OBS_PACKAGE_EXPORT_CONDITION_REMOVED",
+        "0.3.0",
+        "exportConditions/.:import:./dist/index.js",
+      ),
+      declaredBreak("OBS_PACKAGE_RUNTIME_ENTRYPOINT_MISSING", "0.3.0", "runtime/."),
+      declaredBreak("OBS_PACKAGE_SYMBOL_REMOVED", "0.3.0", "symbols/.:Example"),
     ]);
     expect(findings.every((entry) => entry.satisfied)).toBe(true);
+  });
+
+  test("requires one exact declaration for each removed sibling path", () => {
+    const baseline = packageSurface("0.2.1", [".", "./testing"]);
+    const candidate = packageSurface("0.2.1", []);
+    const declarations = [
+      declaredBreak("OBS_PACKAGE_EXPORT_REMOVED", "0.3.0", "exports/."),
+      declaredBreak(
+        "OBS_PACKAGE_EXPORT_CONDITION_REMOVED",
+        "0.3.0",
+        "exportConditions/.:import:./dist/index.js",
+      ),
+      declaredBreak("OBS_PACKAGE_RUNTIME_ENTRYPOINT_MISSING", "0.3.0", "runtime/."),
+      declaredBreak("OBS_PACKAGE_SYMBOL_REMOVED", "0.3.0", "symbols/.:Example"),
+    ];
+    const findings = classifyPackageChange(baseline, candidate, "0.3.0", declarations);
+    expect(
+      findings
+        .filter((entry) => entry.path.includes("./testing"))
+        .every((entry) => entry.satisfied === false),
+    ).toBe(true);
+    expect(
+      findings
+        .filter((entry) => !entry.path.includes("./testing"))
+        .every((entry) => entry.satisfied),
+    ).toBe(true);
   });
 
   test("rejects peer narrowing and dependency category changes", () => {
@@ -131,13 +216,45 @@ describe("compatibility gate", () => {
     );
   });
 
+  test("accepts exact initial package releases without fetching a predecessor", () => {
+    const baseline = JSON.parse(readFileSync("observability/compatibility/baseline.json", "utf8"));
+    const versions = JSON.parse(
+      readFileSync("observability/compatibility/candidate-versions.json", "utf8"),
+    );
+    const initial = packageSurface("0.3.0", ["."]);
+    for (const slug of [
+      "observability-evlog",
+      "observability-nestjs",
+      "observability-react",
+      "observability-sentry",
+    ]) {
+      const namedInitial = { ...initial, name: `@equipe-tech/${slug}` };
+      expect(
+        releaseIntegrityIssue(baseline, versions, [namedInitial], `${slug}@0.3.0`),
+      ).toBeUndefined();
+      expect(
+        releaseIntegrityIssue(
+          baseline,
+          versions,
+          [{ ...namedInitial, version: "0.3.1" }],
+          `${slug}@0.3.0`,
+        ),
+      ).toBe("release package does not match the exact initial candidate declaration");
+    }
+  });
+
   test("pins v0.2.1 instead of current head and wires the exact CI command", () => {
     const baseline = JSON.parse(readFileSync("observability/compatibility/baseline.json", "utf8"));
     expect(baseline.source).toEqual({
       tag: "v0.2.1",
       commit: "a5ab6997536f9d3af797429783f65c9e68a0dfa0",
     });
-    expect(readFileSync(".github/workflows/ci.yml", "utf8")).toContain("- run: bun run compat");
+    const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+    expect(workflow).toContain("OBSERVABILITY_COMPATIBILITY_DATE=$(git show -s --format=%cs HEAD)");
+    expect(workflow).toContain("- run: bun run compat");
+    expect(workflow.replace("--format=%cs HEAD", "--format= HEAD")).not.toContain(
+      "OBSERVABILITY_COMPATIBILITY_DATE=$(git show -s --format=%cs HEAD)",
+    );
     expect(readFileSync("package.json", "utf8")).toContain(
       '"compat": "bun scripts/compatibility-gate.ts"',
     );

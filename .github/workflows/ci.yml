@@ -38,9 +38,8 @@ jobs:
       - run: bun check
       - run: bun run test
       - run: bun run build
+      - run: echo "OBSERVABILITY_COMPATIBILITY_DATE=$(git show -s --format=%cs HEAD)" >> "$GITHUB_ENV"
       - run: bun run compat
-        env:
-          OBSERVABILITY_COMPATIBILITY_DATE: "2026-09-01"
       - run: bunx playwright install --with-deps chromium
       - run: bun run test:browser
       - run: bun run test:package

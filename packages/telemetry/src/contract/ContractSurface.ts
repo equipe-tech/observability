@@ -1,4 +1,5 @@
 import { Effect, Schema } from "effect";
+import { browserEnvelopeMetadata } from "../BrowserEvents.ts";
 import type { AuditOutcome } from "../audit/AuditRecord.ts";
 import type {
   AttributeClassification,
@@ -72,7 +73,6 @@ export type ContractSurfaceInput<Definition extends TelemetryContractInput> = {
   readonly contract: TelemetryContract<Definition>;
   readonly service: string;
   readonly aliases?: ContractSignalAliasMetadata;
-  readonly browserEnvelopeVersion: number;
   readonly retentionWindowDays: number;
 };
 
@@ -143,11 +143,7 @@ export const contractSurface = <Definition extends TelemetryContractInput>(
         `${right.kind}\u0000${right.from}\u0000${right.to}`,
       ),
     ),
-  browserEnvelope: {
-    version: input.browserEnvelopeVersion,
-    batchFields: ["events", "version"],
-    eventFields: ["error", "fields", "id", "name", "occurredAt"],
-  },
+  browserEnvelope: browserEnvelopeMetadata,
   retentionWindowDays: input.retentionWindowDays,
 });
 

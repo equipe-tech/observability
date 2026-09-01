@@ -49,7 +49,6 @@ const surface = async (
     contract: await Effect.runPromise(compile(version)),
     service: "checkout",
     aliases,
-    browserEnvelopeVersion: 1,
     retentionWindowDays: 30,
   });
   return eventName === "payment.attempt"
@@ -183,6 +182,42 @@ describe("contract compatibility", () => {
     ).toBe(false);
   });
 
+  it("rejects removing every audit reason code while keeping empty metric values unrestricted", async () => {
+    const original = await surface(1);
+    const baseline: Contract.ContractSurface = {
+      ...original,
+      auditActions: [
+        {
+          action: "payment.refund",
+          resourceType: "payment",
+          allowedOutcomes: ["success", "failure"],
+          reasonCodes: ["duplicate", "fraud"],
+        },
+      ],
+    };
+    const candidate: Contract.ContractSurface = {
+      ...baseline,
+      contractVersion: 2,
+      auditActions: baseline.auditActions.map((action) => ({ ...action, reasonCodes: [] })),
+      metrics: baseline.metrics.map((metric) => ({
+        ...metric,
+        attributes: metric.attributes.map((attribute) => ({ ...attribute, allowedValues: [] })),
+      })),
+    };
+    const report = Contract.classifyContractChange({ baseline, candidate, now: "2026-09-01" });
+    expect(report.findings).toContainEqual(
+      expect.objectContaining({
+        code: "OBS_COMPAT_AUDIT_ACTION_CHANGED",
+        path: "auditActions/payment.refund",
+        severity: "breaking",
+        satisfied: true,
+      }),
+    );
+    expect(
+      report.findings.some((entry) => entry.code === "OBS_COMPAT_METRIC_ALLOWED_VALUES_NARROWED"),
+    ).toBe(false);
+  });
+
   it("requires an envelope version bump for field changes", async () => {
     const baseline = await surface(1);
     const candidate = {
@@ -197,7 +232,13 @@ describe("contract compatibility", () => {
     expect(rejected.accepted).toBe(false);
     const accepted = Contract.classifyContractChange({
       baseline,
-      candidate: { ...candidate, browserEnvelope: { ...candidate.browserEnvelope, version: 2 } },
+      candidate: {
+        ...candidate,
+        browserEnvelope: {
+          ...candidate.browserEnvelope,
+          version: baseline.browserEnvelope.version + 1,
+        },
+      },
       now: "2026-09-01",
     });
     expect(

@@ -118,16 +118,22 @@ const same = (
   left: ReadonlyArray<string | number | boolean>,
   right: ReadonlyArray<string | number | boolean>,
 ): boolean => left.length === right.length && left.every((value, index) => value === right[index]);
-const containsScalars = (
+const scalarKey = (value: string | number | boolean): string => JSON.stringify(value);
+const containsAllowedScalars = (
   candidate: ReadonlyArray<string | number | boolean>,
   baseline: ReadonlyArray<string | number | boolean>,
 ): boolean => {
   if (candidate.length === 0) return true;
   if (baseline.length === 0) return false;
-  const candidateKeys = new Set(
-    candidate.map((value) => `${value.constructor.name}\u0000${value}`),
-  );
-  return baseline.every((value) => candidateKeys.has(`${value.constructor.name}\u0000${value}`));
+  const candidateKeys = new Set(candidate.map(scalarKey));
+  return baseline.every((value) => candidateKeys.has(scalarKey(value)));
+};
+const containsStrings = (
+  candidate: ReadonlyArray<string>,
+  baseline: ReadonlyArray<string>,
+): boolean => {
+  const candidates = new Set(candidate);
+  return baseline.every((value) => candidates.has(value));
 };
 const classificationRank = (
   classification: ContractSurfaceEvent["attributes"][number]["classification"],
@@ -358,7 +364,7 @@ const compareMetricAttributes = (
         ),
       );
     }
-    if (!containsScalars(next.allowedValues, attribute.allowedValues)) {
+    if (!containsAllowedScalars(next.allowedValues, attribute.allowedValues)) {
       findings.push(
         finding(
           "OBS_COMPAT_METRIC_ALLOWED_VALUES_NARROWED",
@@ -379,7 +385,7 @@ const auditChanged = (
 ): boolean =>
   baseline.resourceType !== candidate.resourceType ||
   !same([...baseline.allowedOutcomes].sort(), [...candidate.allowedOutcomes].sort()) ||
-  !containsScalars(candidate.reasonCodes, baseline.reasonCodes);
+  !containsStrings(candidate.reasonCodes, baseline.reasonCodes);
 
 export const classifyContractChange = (input: ContractCompatibilityInput): CompatibilityReport => {
   const baselineVersion = input.baseline.contractVersion;

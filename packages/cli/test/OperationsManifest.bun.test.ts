@@ -500,22 +500,31 @@ describe("operations manifest", () => {
     if (dashboardQuery === undefined || monitorQuery === undefined) {
       throw new Error("Expected validated aliased dashboard and monitor queries.");
     }
+    const dashboardSignal = dashboardQuery.binding.identifiers[0];
+    const monitorSignal = monitorQuery.binding.identifiers[0];
+    if (dashboardSignal === undefined || monitorSignal === undefined) {
+      throw new Error("Expected validated alias queries to bind at least one signal.");
+    }
     const compiledDashboard = await Effect.runPromise(
       compileManagedQuery(dashboardQuery, {
         dataset: "checkout-logs",
         language: "apl",
-        signals: ["payment.charge", "payment.attempt"],
+        signals: [dashboardSignal, ...dashboardQuery.binding.identifiers.slice(1)],
       }),
     );
     const compiledMonitor = await Effect.runPromise(
       compileManagedQuery(monitorQuery, {
         dataset: "checkout-metrics",
         language: "mpl",
-        signals: ["payment.duration", "payment.latency"],
+        signals: [monitorSignal, ...monitorQuery.binding.identifiers.slice(1)],
       }),
     );
-    expect(compiledDashboard.text).toContain("'payment.charge', 'payment.attempt'");
-    expect(compiledMonitor.text).toContain("'payment.duration', 'payment.latency'");
+    expect(compiledDashboard.text).toContain(
+      dashboardQuery.binding.identifiers.map((identifier) => `'${identifier}'`).join(", "),
+    );
+    expect(compiledMonitor.text).toContain(
+      monitorQuery.binding.identifiers.map((identifier) => `'${identifier}'`).join(", "),
+    );
 
     const counterManifest = await Effect.runPromise(
       parseOperationsManifest(

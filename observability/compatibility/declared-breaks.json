@@ -4,8 +4,8 @@
     {
       "scope": "package",
       "package": "@equipe-tech/observability",
-      "code": "OBS_PACKAGE_EXPORT_REMOVED",
-      "path": "exports/./nestjs",
+      "code": "OBS_PACKAGE_DEPENDENCY_REMOVED",
+      "path": "dependencies/effect@4.0.0-rc.111",
       "candidateVersion": "0.3.0",
       "migrationGuide": "docs/migration-0.3.md"
     },
@@ -20,8 +20,24 @@
     {
       "scope": "package",
       "package": "@equipe-tech/observability",
-      "code": "OBS_PACKAGE_DEPENDENCY_REMOVED",
-      "path": "dependencies/effect@4.0.0-rc.111",
+      "code": "OBS_PACKAGE_EXPORT_CONDITION_REMOVED",
+      "path": "exportConditions/./nestjs:import:./dist/nestjs/index.js",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_EXPORT_CONDITION_REMOVED",
+      "path": "exportConditions/./nestjs:types:./dist/nestjs/index.d.ts",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_EXPORT_REMOVED",
+      "path": "exports/./nestjs",
       "candidateVersion": "0.3.0",
       "migrationGuide": "docs/migration-0.3.md"
     },
@@ -29,15 +45,31 @@
       "scope": "package",
       "package": "@equipe-tech/observability",
       "code": "OBS_PACKAGE_PEER_CHANGED",
-      "path": "peerDependencies",
+      "path": "peerDependencies/@nestjs/common@^10.0.0 || ^11.0.0",
       "candidateVersion": "0.3.0",
       "migrationGuide": "docs/migration-0.3.md"
     },
     {
       "scope": "package",
       "package": "@equipe-tech/observability",
-      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
-      "path": "symbols",
+      "code": "OBS_PACKAGE_PEER_CHANGED",
+      "path": "peerDependencies/@nestjs/core@^10.0.0 || ^11.0.0",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_PEER_CHANGED",
+      "path": "peerDependencies/rxjs@^7.2.0",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_PEER_OPTIONALITY_CHANGED",
+      "path": "peerDependenciesMeta",
       "candidateVersion": "0.3.0",
       "migrationGuide": "docs/migration-0.3.md"
     },
@@ -52,16 +84,176 @@
     {
       "scope": "package",
       "package": "@equipe-tech/observability",
-      "code": "OBS_PACKAGE_EXPORT_CONDITION_REMOVED",
-      "path": "exportConditions/./nestjs",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/.:WideEvent",
       "candidateVersion": "0.3.0",
       "migrationGuide": "docs/migration-0.3.md"
     },
     {
       "scope": "package",
       "package": "@equipe-tech/observability",
-      "code": "OBS_PACKAGE_PEER_OPTIONALITY_CHANGED",
-      "path": "peerDependenciesMeta",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:BrowserEventsControllerOptions",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:BrowserEventsRejection",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:createBrowserEventsController",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:createRequestWideEventTraceCorrelation",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:defaultBrowserEventsPath",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:InvalidTelemetryModuleOptions",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:RequestReference",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:requestSpan",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:RequestWideEventLogger",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:RequestWideEventLoggerResolver",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:RequestWideEventTraceCorrelation",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:ServerSpanCorrelation",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:TelemetryInterceptor",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:TelemetryInterceptorOptions",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:TelemetryModuleAsyncOptions",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:TelemetryModule",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:TelemetryModuleOptions",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:TelemetryRequestTracker",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:TelemetryShutdownError",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:TelemetryStartupError",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:withRequestSpan",
       "candidateVersion": "0.3.0",
       "migrationGuide": "docs/migration-0.3.md"
     }
