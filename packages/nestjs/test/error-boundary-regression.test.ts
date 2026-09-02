@@ -14,10 +14,12 @@ import {
 } from "@nestjs/common";
 import type { CanActivate } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
+import { IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Effect, Schema } from "effect";
 import { type DefectEnvelope } from "@equipe-tech/observability";
-import { defineErrorCatalog } from "evlog";
+import { defineErrorCatalog, type DrainContext } from "evlog";
+import { EvlogModule } from "evlog/nestjs";
 import { assert, describe, it } from "vite-plus/test";
 import {
   createRequestWideEventTraceCorrelation,
@@ -505,6 +507,10 @@ describe("Nest error boundary regressions", () => {
   it("probe P preserves guard and pipe HTTP outcomes", async () => {
     const defects: Array<DefectEventInput> = [];
     const captures: Array<DefectEnvelope> = [];
+    const wideEvents: Array<DrainContext> = [];
+    const correlation = createRequestWideEventTraceCorrelation((request) =>
+      request instanceof IncomingMessage ? request.log : undefined,
+    );
 
     class DenyGuard implements CanActivate {
       canActivate(): boolean {
@@ -543,6 +549,11 @@ describe("Nest error boundary regressions", () => {
     class AppModule {}
     Module({
       imports: [
+        EvlogModule.forRoot({
+          drain: (event) => {
+            wideEvents.push(event);
+          },
+        }),
         NestErrorBoundaryModule.forRoot({
           catalog: defineErrorCatalog("framework_outcomes", {
             FAILURE: { status: 500, message: "Failure." },
@@ -557,6 +568,7 @@ describe("Nest error boundary regressions", () => {
                 return { kind: "queued" };
               }),
           },
+          requestWideEventTraceCorrelation: correlation,
         }),
       ],
       controllers: [ProbeController],
@@ -572,6 +584,18 @@ describe("Nest error boundary regressions", () => {
       assert.strictEqual(parsed.status, 400);
       assert.lengthOf(defects, 0);
       assert.lengthOf(captures, 0);
+      assert.lengthOf(
+        wideEvents.filter((event) => event.event.path === "/framework-outcomes/guarded"),
+        1,
+      );
+      assert.lengthOf(
+        wideEvents.filter(
+          (event) => event.event.path === "/framework-outcomes/parsed/not-a-number",
+        ),
+        1,
+      );
+      assert.include(JSON.stringify(wideEvents), "token scope missing");
+      assert.include(JSON.stringify(wideEvents), "Validation failed");
     } finally {
       await app.close().catch(() => undefined);
     }

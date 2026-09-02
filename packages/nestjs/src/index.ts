@@ -10,6 +10,7 @@ export {
   NestErrorFilter,
   type ClassifiedError,
   type DefectEventInput,
+  type ErrorCatalogDeclaration,
   type ErrorCatalogReference,
   type ExpectedError,
   type HttpOutcome,

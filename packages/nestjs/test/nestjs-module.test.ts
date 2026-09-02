@@ -221,6 +221,8 @@ describe("TelemetryModule", () => {
         error: "Not Found",
         statusCode: 404,
       });
+      const unmatched = await fetch(`${baseUrl}/boundary/unmatched`);
+      assert.strictEqual(unmatched.status, 404);
       assert.lengthOf(capturedEnvelopes, 0);
       assert.lengthOf(defectEvents, 0);
 
@@ -246,6 +248,10 @@ describe("TelemetryModule", () => {
       );
       assert.lengthOf(
         wideEvents.filter((context) => context.event.path === "/boundary/httpOutcome"),
+        1,
+      );
+      assert.lengthOf(
+        wideEvents.filter((context) => context.event.path === "/boundary/unmatched"),
         1,
       );
       assert.include(JSON.stringify(wideEvents), "catalog_test.ITEM_MISSING");

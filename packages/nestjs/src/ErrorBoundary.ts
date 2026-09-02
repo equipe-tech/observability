@@ -54,9 +54,16 @@ export type DefectEventInput = {
   readonly correlation: CorrelationContext;
 };
 
+export type ErrorCatalogDeclaration = {
+  readonly code: string;
+  readonly message: string;
+  readonly status: number;
+};
+
 export type ErrorCatalogReference = {
   readonly _prefix: string;
   readonly _codes: ReadonlyArray<string>;
+  readonly [entryName: string]: ErrorCatalogDeclaration | string | ReadonlyArray<string>;
 };
 
 export type SentryDefectsService = {
