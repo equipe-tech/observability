@@ -20,8 +20,17 @@ const WorkflowStep = Schema.Struct({
   name: Schema.optionalKey(Schema.String),
   if: Schema.optionalKey(Schema.String),
   run: Schema.optionalKey(Schema.String),
+  uses: Schema.optionalKey(Schema.String),
+  with: Schema.optionalKey(Schema.Struct({ "bun-version": Schema.optionalKey(Schema.String) })),
   env: Schema.optionalKey(
     Schema.Struct({ OBSERVABILITY_E2E_DEPLOYED: Schema.optionalKey(Schema.String) }),
+  ),
+});
+
+const WorkflowDocument = Schema.Struct({
+  jobs: Schema.Record(
+    Schema.String,
+    Schema.Struct({ steps: Schema.optionalKey(Schema.Array(WorkflowStep)) }),
   ),
 });
 
@@ -70,6 +79,10 @@ const ReleaseWorkflow = Schema.Struct({
 
 const parsedCiWorkflow = Schema.decodeUnknownSync(CiWorkflow)(Bun.YAML.parse(ciWorkflow));
 const parsedReleaseWorkflow = Schema.decodeUnknownSync(ReleaseWorkflow)(Bun.YAML.parse(workflow));
+const workflowDocuments = [
+  Schema.decodeUnknownSync(WorkflowDocument)(Bun.YAML.parse(ciWorkflow)),
+  Schema.decodeUnknownSync(WorkflowDocument)(Bun.YAML.parse(workflow)),
+];
 
 type WorkflowContext = {
   readonly eventName: "push" | "pull_request" | "workflow_call";
@@ -131,6 +144,28 @@ const evaluateCiGraph = (context: WorkflowContext): Map<string, JobResult> => {
 };
 
 describe("release workflow publication gate", () => {
+  test("sets up Bun and installs dependencies before every Bun command", () => {
+    for (const document of workflowDocuments) {
+      for (const job of Object.values(document.jobs)) {
+        const steps = job.steps ?? [];
+        for (const [stepIndex, step] of steps.entries()) {
+          if (!step.run?.match(/(^|\s)bun(?:x)?(?:\s|$)/m)) continue;
+          const precedingSteps = steps.slice(0, stepIndex);
+          expect(
+            precedingSteps.some(
+              (candidate) =>
+                candidate.uses === "oven-sh/setup-bun@v2" &&
+                candidate.with?.["bun-version"] === "1.4.0",
+            ),
+          ).toBe(true);
+          expect(
+            precedingSteps.some((candidate) => candidate.run === "bun install --frozen-lockfile"),
+          ).toBe(true);
+        }
+      }
+    }
+  });
+
   test("scoped tag pushes verify but cannot publish", () => {
     expect(workflow).toContain('tags:\n      - "*@*.*.*"');
     expect(workflow).not.toContain('tags:\n      - "v*.*.*"');
