@@ -47,4 +47,7 @@ const baseline: CompatibilityBaselineArtifact = {
     surfaceDigest: packageSurfaceDigest(entry.surface),
   })),
 };
-writeFileSync("observability/compatibility/baseline.json", await encodeCompatibilityJson(baseline));
+writeFileSync(
+  "observability/compatibility/baseline.json",
+  await encodeCompatibilityJson(baseline, "observability/compatibility/baseline.json"),
+);

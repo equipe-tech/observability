@@ -3,8 +3,10 @@ import { defineConfig } from "vite-plus";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 
+export const repositoryFormatOptions = {};
+
 export default defineConfig({
-  fmt: {},
+  fmt: repositoryFormatOptions,
   resolve: {
     alias: [
       {

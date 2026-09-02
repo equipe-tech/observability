@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect";
 import { format } from "oxfmt";
 import { Contract } from "../packages/telemetry/src/index.ts";
+import { repositoryFormatOptions } from "../vite.config.ts";
 
 const decodeDocument = Schema.decodeUnknownEffect(Contract.ContractSurfaceSchema, {
   onExcessProperty: "error",
@@ -33,8 +34,11 @@ export const decodeCompatibilityJson = Effect.fn("decodeCompatibilityJson")(func
   );
 });
 
-export const encodeCompatibilityJson = async <Value>(value: Value): Promise<string> => {
-  const result = await format("compatibility.json", JSON.stringify(value));
+export const encodeCompatibilityJson = async <Value>(
+  value: Value,
+  fileName = "observability/compatibility/candidate.json",
+): Promise<string> => {
+  const result = await format(fileName, JSON.stringify(value), repositoryFormatOptions);
   if (result.errors.length > 0)
     throw new Error(`Compatibility artifact formatting failed: ${result.errors[0]?.message}`);
   return result.code;
