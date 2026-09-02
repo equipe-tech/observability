@@ -5,7 +5,15 @@ const workflowPath = fileURLToPath(
   new URL("../../../.github/workflows/release.yml", import.meta.url),
 );
 
+const ciWorkflowPath = fileURLToPath(new URL("../../../.github/workflows/ci.yml", import.meta.url));
+
+const releaseCanaryScriptPath = fileURLToPath(
+  new URL("../../../scripts/release-canary.ts", import.meta.url),
+);
+
 const workflow = await Bun.file(workflowPath).text();
+const ciWorkflow = await Bun.file(ciWorkflowPath).text();
+const releaseCanaryScript = await Bun.file(releaseCanaryScriptPath).text();
 
 describe("release workflow publication gate", () => {
   test("scoped tag pushes verify but cannot publish", () => {
@@ -44,6 +52,32 @@ describe("release workflow publication gate", () => {
     expect(workflow).toContain('tag_commit="$(git rev-list -n 1 "$tag")"');
     expect(workflow).toContain('head_commit="$(git rev-parse HEAD)"');
     expect(workflow).toContain('[[ "$head_commit" == "$tag_commit" ]]');
+  });
+
+  test("blocks release verification on the scoped deployed canary", () => {
+    expect(workflow).toContain("run_deployed_canary: true");
+    expect(workflow).toContain("AXIOM_INGEST_TOKEN: ${{ secrets.AXIOM_INGEST_TOKEN }}");
+    expect(workflow).toContain("AXIOM_READ_TOKEN: ${{ secrets.AXIOM_READ_TOKEN }}");
+    expect(ciWorkflow).toContain("AXIOM_INGEST_TOKEN:");
+    expect(ciWorkflow).toContain("AXIOM_READ_TOKEN:");
+    expect(ciWorkflow).toContain("environment: publication");
+    expect(ciWorkflow).toContain("scripts/release-canary.ts");
+    expect(ciWorkflow).not.toContain("Deployed canary skipped");
+  });
+
+  test("derives the deployed canary service version from the release tag", () => {
+    expect(ciWorkflow).toContain(
+      'bun scripts/release-canary.ts --tag "$RELEASE_TAG" --github-env "$GITHUB_ENV"',
+    );
+    expect(releaseCanaryScript).toContain("OTEL_SERVICE_VERSION");
+    expect(ciWorkflow).not.toMatch(/serviceVersion: ["']\d+\.\d+\.\d+/);
+  });
+
+  test("keeps ordinary CI credential-free and reports the omitted protected gate", () => {
+    expect(ciWorkflow).toContain("default: false");
+    expect(ciWorkflow).toContain(
+      "Deployed canary did not run because this CI invocation did not request the protected release gate.",
+    );
   });
 
   test("rebuilds and verifies the archive before publication", () => {

@@ -14,10 +14,22 @@ import {
   type AxiomRedactionAttributes,
   type AxiomSpan,
 } from "./support/axiom.ts";
-import { canaryRunId, canarySensitiveValues, emitCanary } from "./support/canary.ts";
+import {
+  canaryRunId,
+  canarySensitiveValues,
+  canaryServiceVersion,
+  emitCanary,
+} from "./support/canary.ts";
 
 const deployedEnabled = process.env["OBSERVABILITY_E2E_DEPLOYED"] === "1";
 const canaryEnvironment = "e2e";
+
+type DeployedCanaryResponses = {
+  root: string;
+  child: string;
+  logs: string;
+  metric: string;
+};
 
 type DeployedRun = {
   readonly root: AxiomSpan;
@@ -32,17 +44,32 @@ const findDeployedRun = Effect.fn("findDeployedRun")(function* (
   env: AxiomEnvironment,
   runId: string,
 ): Effect.fn.Return<DeployedRun, never> {
+  const responses: DeployedCanaryResponses = {
+    root: "not queried",
+    child: "not queried",
+    logs: "not queried",
+    metric: "not queried",
+  };
   for (let attempt = 0; attempt < 60; attempt++) {
-    const root = yield* findRootSpan(env, runId);
+    const root = yield* findRootSpan(env, runId, canaryServiceVersion, (response) => {
+      responses.root = response;
+    });
     if (Option.isSome(root)) {
-      const child = yield* findChildSpan(env, root.value.traceId);
-      const logs = yield* findLogs(env, runId);
+      const child = yield* findChildSpan(env, root.value.traceId, (response) => {
+        responses.child = response;
+      });
+      const logs = yield* findLogs(env, runId, canaryServiceVersion, (response) => {
+        responses.logs = response;
+      });
       const metric = yield* findMetric(
         env,
         runId,
         canaryEnvironment,
         "observability-canary",
-        "0.1.0",
+        canaryServiceVersion,
+        (response) => {
+          responses.metric = response;
+        },
       );
       const completed = logs.find((log) => log.eventName === "canary.completed");
       const browser = logs.find((log) => log.eventName === "canary.browser");
@@ -54,6 +81,15 @@ const findDeployedRun = Effect.fn("findDeployedRun")(function* (
         redaction !== undefined &&
         Option.isSome(metric)
       ) {
+        yield* Effect.logInfo(
+          `Axiom trace query matched run_id=${runId} trace_id=${root.value.traceId} span_id=${root.value.spanId} service_version=${canaryServiceVersion}`,
+        );
+        yield* Effect.logInfo(
+          `Axiom log query matched run_id=${runId} trace_id=${Option.getOrElse(completed.traceId, () => "none")} service_version=${canaryServiceVersion}`,
+        );
+        yield* Effect.logInfo(
+          `Axiom metric query matched run_id=${runId} service_version=${canaryServiceVersion}`,
+        );
         return {
           root: root.value,
           child: child.value,
@@ -66,7 +102,9 @@ const findDeployedRun = Effect.fn("findDeployedRun")(function* (
     }
     yield* Effect.sleep("3 seconds");
   }
-  return yield* Effect.die(`The deployed canary run ${runId} was not found in Axiom.`);
+  return yield* Effect.die(
+    `The deployed canary run ${runId} for service version ${canaryServiceVersion} was not found in Axiom after 60 attempts. Last provider responses: ${JSON.stringify(responses)}.`,
+  );
 });
 
 const redactionAttributeValues = (attributes: AxiomRedactionAttributes): ReadonlyArray<string> => [
@@ -115,7 +153,7 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
         const runId = yield* canaryRunId();
         const identity = yield* parseResourceIdentity({
           serviceName: "observability-canary",
-          serviceVersion: "0.1.0",
+          serviceVersion: canaryServiceVersion,
           environment: canaryEnvironment,
         });
         const config = new TelemetryConfig({
@@ -134,7 +172,7 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
 
         assert.deepStrictEqual(run.root.serviceNamespace, Option.some("equipe-tech"));
         assert.deepStrictEqual(run.root.serviceName, Option.some("observability-canary"));
-        assert.deepStrictEqual(run.root.serviceVersion, Option.some("0.1.0"));
+        assert.deepStrictEqual(run.root.serviceVersion, Option.some(canaryServiceVersion));
         assert.isTrue(Option.isNone(run.root.serviceInstanceId));
         assertEnvironmentAliases(
           run.root.environmentName,

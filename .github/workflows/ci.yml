@@ -11,11 +11,13 @@ on:
         required: false
         type: string
       run_deployed_canary:
-        default: true
+        default: false
         required: false
         type: boolean
     secrets:
-      AXIOM_TOKEN:
+      AXIOM_INGEST_TOKEN:
+        required: false
+      AXIOM_READ_TOKEN:
         required: false
 
 permissions:
@@ -56,18 +58,44 @@ jobs:
       - run: OBSERVABILITY_E2E=1 bun test:canary
       - if: always()
         run: bun packages/cli/src/main.ts dev down
-      - name: deployed canary
-        if: ${{ github.event_name != 'workflow_call' || inputs.run_deployed_canary }}
+      - name: Report deployed canary status
+        if: ${{ github.event_name != 'workflow_call' || !inputs.run_deployed_canary }}
+        run: echo "Deployed canary did not run because this CI invocation did not request the protected release gate."
+      - name: Clean runner observability state
+        if: always()
+        run: rm -rf "$OBSERVABILITY_HOME" "${RUNNER_TEMP}/collector-recovery"
+
+  deployed-canary:
+    if: ${{ github.event_name == 'workflow_call' && inputs.run_deployed_canary }}
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: publication
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - name: Resolve release canary identity and credentials
         env:
-          AXIOM_TOKEN: ${{ secrets.AXIOM_TOKEN }}
+          RELEASE_TAG: ${{ inputs.ref }}
+          AXIOM_INGEST_TOKEN: ${{ secrets.AXIOM_INGEST_TOKEN }}
+          AXIOM_READ_TOKEN: ${{ secrets.AXIOM_READ_TOKEN }}
+        run: bun scripts/release-canary.ts --tag "$RELEASE_TAG" --github-env "$GITHUB_ENV"
+      - name: Run the deployed release canary
+        env:
+          AXIOM_TOKEN: ${{ secrets.AXIOM_INGEST_TOKEN }}
+          AXIOM_READ_TOKEN: ${{ secrets.AXIOM_READ_TOKEN }}
+          AXIOM_ORGANIZATION_ID: ${{ vars.AXIOM_ORGANIZATION_ID }}
+          AXIOM_URL: ${{ vars.AXIOM_URL }}
           AXIOM_DATASET_TRACES: ${{ vars.AXIOM_DATASET_TRACES }}
           AXIOM_DATASET_LOGS: ${{ vars.AXIOM_DATASET_LOGS }}
           AXIOM_DATASET_METRICS: ${{ vars.AXIOM_DATASET_METRICS }}
         run: |
-          if [ -z "$AXIOM_TOKEN" ]; then
-            echo "Deployed canary skipped: the AXIOM_TOKEN secret is not configured."
-            exit 0
-          fi
+          set -euo pipefail
           docker run -d --name otel-production \
             -p 127.0.0.1:24318:4318 \
             -e AXIOM_TOKEN -e AXIOM_DATASET_TRACES -e AXIOM_DATASET_LOGS -e AXIOM_DATASET_METRICS \
@@ -77,9 +105,6 @@ jobs:
             if curl -s -o /dev/null http://127.0.0.1:24318; then break; fi
             sleep 1
           done
-          OBSERVABILITY_E2E_DEPLOYED=1 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:24318 bun test:canary:deployed
+          OBSERVABILITY_E2E_DEPLOYED=1 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:24318 bun run test:canary:deployed
       - if: always()
         run: docker rm -f otel-production 2>/dev/null || true
-      - name: Clean runner observability state
-        if: always()
-        run: rm -rf "$OBSERVABILITY_HOME" "${RUNNER_TEMP}/collector-recovery"

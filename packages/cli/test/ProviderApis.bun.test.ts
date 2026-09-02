@@ -234,14 +234,22 @@ describe("provider HTTP boundary", () => {
   });
 
   test.serial("creates signal datasets with exact kinds and optional configuration", async () => {
-    const requests: Array<{ readonly path: string; readonly body: string }> = [];
+    const requests: Array<{
+      readonly path: string;
+      readonly body: string;
+      readonly organizationId: string;
+    }> = [];
     const server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       fetch: async (request) => {
         const url = new URL(request.url);
         const body = await request.text();
-        requests.push({ path: url.pathname, body });
+        requests.push({
+          path: url.pathname,
+          body,
+          organizationId: request.headers.get("x-axiom-org-id") ?? "",
+        });
         const value = JSON.parse(body);
         return Response.json(
           {
@@ -274,6 +282,11 @@ describe("provider HTTP boundary", () => {
           }).pipe(Effect.provide(AxiomApi.layer)),
         ),
       );
+      expect(requests.map((request) => request.organizationId)).toEqual([
+        "test-org",
+        "test-org",
+        "test-org",
+      ]);
       expect(requests.map((request) => JSON.parse(request.body))).toEqual([
         {
           name: "project-traces",

@@ -81,7 +81,10 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       ref: ${{ needs.tag-check.outputs.tag }}
-      run_deployed_canary: false
+      run_deployed_canary: true
+    secrets:
+      AXIOM_INGEST_TOKEN: ${{ secrets.AXIOM_INGEST_TOKEN }}
+      AXIOM_READ_TOKEN: ${{ secrets.AXIOM_READ_TOKEN }}
 
   release:
     if: github.event_name == 'workflow_dispatch'

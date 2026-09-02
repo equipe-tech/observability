@@ -16,6 +16,7 @@ const decodeAddressInfo = Schema.decodeUnknownOption(AddressInfo);
 type RecordedQuery = {
   readonly path: string;
   readonly authorization: string;
+  readonly organizationId: string;
   readonly query: string;
 };
 
@@ -60,6 +61,7 @@ const startStubAxiom = (
         queries.push({
           path: request.url ?? "",
           authorization: request.headers.authorization ?? "",
+          organizationId: request.headers["x-axiom-org-id"]?.toString() ?? "",
           query: Option.getOrElse(apl, () => Option.getOrElse(mpl, () => "")),
         });
         response.writeHead(200, { "content-type": "application/json" });
@@ -77,7 +79,8 @@ const startStubAxiom = (
       const env = Effect.runSync(
         decodeAxiomEnvironment({
           AXIOM_URL: `http://127.0.0.1:${address.value.port}`,
-          AXIOM_TOKEN: "stub-token",
+          AXIOM_READ_TOKEN: "stub-read-token",
+          AXIOM_ORGANIZATION_ID: "stub-organization",
           AXIOM_DATASET_TRACES: "e2e-traces",
           AXIOM_DATASET_LOGS: "e2e-logs",
           AXIOM_DATASET_METRICS: "e2e-metrics",
@@ -106,7 +109,7 @@ describe("axiom query support", () => {
           },
         ]),
       );
-      const root = yield* findRootSpan(stub.env, "test-run-1").pipe(
+      const root = yield* findRootSpan(stub.env, "test-run-1", "0.1.0").pipe(
         Effect.ensuring(Effect.sync(() => stub.server.close())),
       );
 
@@ -122,9 +125,11 @@ describe("axiom query support", () => {
       const query = stub.queries[0];
       assert.isDefined(query);
       assert.strictEqual(query.path, "/v1/datasets/_apl?format=legacy");
-      assert.strictEqual(query.authorization, "Bearer stub-token");
+      assert.strictEqual(query.authorization, "Bearer stub-read-token");
+      assert.strictEqual(query.organizationId, "stub-organization");
       assert.include(query.query, "['e2e-traces']");
       assert.include(query.query, "['attributes.custom']['canary.run_id'] == 'test-run-1'");
+      assert.include(query.query, "['service.version'] == '0.1.0'");
       assert.include(query.query, "name == 'canary.operation'");
       assert.include(
         query.query,
@@ -182,7 +187,7 @@ describe("axiom query support", () => {
           { data: { unrelated: true } },
         ]),
       );
-      const logs = yield* findLogs(stub.env, "test-run-1").pipe(
+      const logs = yield* findLogs(stub.env, "test-run-1", "0.1.0").pipe(
         Effect.ensuring(Effect.sync(() => stub.server.close())),
       );
 
@@ -198,6 +203,7 @@ describe("axiom query support", () => {
       const query = stub.queries[0];
       assert.isDefined(query);
       assert.include(query.query, "['e2e-logs']");
+      assert.include(query.query, "['service.version'] == '0.1.0'");
       assert.include(
         query.query,
         "environment_name = tostring(['resource.custom']['deployment.environment.name'])",
@@ -236,6 +242,8 @@ describe("axiom query support", () => {
       const query = stub.queries[0];
       assert.isDefined(query);
       assert.strictEqual(query.path, "/v1/query/_mpl?format=metrics-v2");
+      assert.strictEqual(query.authorization, "Bearer stub-read-token");
+      assert.strictEqual(query.organizationId, "stub-organization");
       assert.include(query.query, "`e2e-metrics`:`canary.operations`");
       assert.include(query.query, '`canary.run_id` == "test-run-1"');
       assert.include(query.query, '`service.namespace` == "equipe-tech"');

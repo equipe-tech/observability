@@ -39,6 +39,19 @@ O dry run não altera manifest, lockfile, commit ou tag. Uma release real altera
 
 `release-candidate.ts` empacota a candidata duas vezes e exige bytes idênticos. O job de publicação reconstrói a candidata a partir do checkout do tag, verifica o checksum gerado e compara os bytes reconstruídos com o asset baixado do GitHub antes de publicar no npm.
 
+## Gate do canário no provedor
+
+A verificação de release executa o canário implantado antes de criar a GitHub Release. O job usa o environment protegido `publication` e exige dois secrets independentes:
+
+- `AXIOM_INGEST_TOKEN` aceita somente ingestão nos datasets E2E de traces, logs e métricas.
+- `AXIOM_READ_TOKEN` aceita somente consultas nos mesmos datasets E2E.
+
+`AXIOM_ORGANIZATION_ID`, `AXIOM_URL`, `AXIOM_DATASET_TRACES`, `AXIOM_DATASET_LOGS` e `AXIOM_DATASET_METRICS` são variables do environment. `AXIOM_URL` aponta para a API regional da organização. Nenhum token administrativo entra no job.
+
+O script `scripts/release-canary.ts` resolve o tag para o manifest correspondente e define `OTEL_SERVICE_VERSION` com a versão desse manifest. O canário consulta traces, logs e métricas usando a versão e os valores de correlação da execução. A ausência de qualquer secret encerra o gate com `OBS_RELEASE_CANARY_CREDENTIALS_MISSING`. CI comum permanece sem credenciais e informa que o gate protegido não foi solicitado.
+
+Se o gate falhar, preserve o tag e os resultados da execução. Corrija a credencial, a variable regional, o dataset ou a entrega de telemetria indicada pelo último resultado de consulta. Execute novamente o mesmo workflow no mesmo tag. Não mova o tag, não use credencial administrativa e não publique manualmente para contornar o gate.
+
 ## Gate humano
 
 O push de um tag apenas executa verificação. A publicação exige `workflow_dispatch` no ref exato do tag, `tag` e `confirm_tag` idênticos e aprovação do environment `publication`.
