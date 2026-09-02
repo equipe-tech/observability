@@ -30,7 +30,12 @@ import { Effect, Option, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vite-plus/test";
 import { makeEvlogAdapter } from "../src/EvlogAdapter.ts";
-import { compileManagedQuery, parseManagedQuery } from "@equipe-tech/observability-cli/query";
+import {
+  compileManagedQuery,
+  parseOperationsContractIndex,
+  parseOperationsManifest,
+  validateOperationsManifest,
+} from "@equipe-tech/observability-cli/query";
 import { evlogAdapter } from "../src/index.ts";
 
 const contractDefinition = Contract.telemetryContractDefinition({
@@ -232,16 +237,55 @@ describe("evlogAdapter", () => {
         );
       });
     expect(capturedNames).toEqual(expect.arrayContaining(["job.completed", "job.finished"]));
-    const query = await Effect.runPromise(
-      parseManagedQuery(
-        'signal(logs) | where event.name in ("job.completed", "job.finished") | summarize count()',
+    const aliasMetadata: Contract.ContractSignalAliasMetadata = {
+      version: 1,
+      aliases: [
+        {
+          source: { kind: "event", name: "job.completed" },
+          target: { kind: "event", name: "job.finished" },
+          since: "2026-08-31",
+        },
+      ],
+    };
+    const contractIndex = await Effect.runPromise(
+      parseOperationsContractIndex(
+        JSON.stringify(Contract.contractIndex(migratedContract, "alias-test", aliasMetadata)),
       ),
     );
+    const manifest = await Effect.runPromise(
+      parseOperationsManifest(`
+version: 1
+contractVersion: 2
+service: alias-test
+environments: [test]
+retention:
+  - environment: test
+    days: 30
+sentry:
+  enabled: false
+dashboards:
+  - id: aliases
+    title: Alias migration
+    panels:
+      - id: events
+        title: Migrated events
+        sources:
+          - kind: event
+            name: job.completed
+        query: signal(logs) | where event.name in ("job.completed", "job.finished") | summarize count()
+monitors: []
+`),
+    );
+    const validated = await Effect.runPromise(validateOperationsManifest(manifest, contractIndex));
+    const query = validated.dashboards[0]?.panels[0]?.query;
+    if (query === undefined) throw new Error("Expected a validated alias query.");
+    const signal = query.binding.identifiers[0];
+    if (signal === undefined) throw new Error("Expected a validated alias signal.");
     const compiled = await Effect.runPromise(
       compileManagedQuery(query, {
         dataset: "alias-test-logs",
         language: "apl",
-        signals: ["job.completed", "job.finished"],
+        signals: [signal, ...query.binding.identifiers.slice(1)],
       }),
     );
     expect(compiled.text).toContain("'job.completed'");
