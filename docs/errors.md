@@ -33,6 +33,11 @@ Não sugira repetir quando a operação pode ter completado parcialmente, ou qua
 - Preserve a causa original em um campo `cause`. O campo `cause` é a única exceção permitida para `unknown`.
 - Todo erro público inclui o identificador de correlação (`trace_id` ou id da requisição) para permitir a busca nos traces.
 
+## Códigos do limite NestJS
+
+- `OBS_NESTJS_ERROR_CATALOG_PREFIX_INVALID` indica que o catálogo da aplicação não declarou um prefixo estável ou tentou usar o namespace reservado `OBS_`. Defina um prefixo de aplicação não vazio em `defineErrorCatalog` e reinicie o serviço.
+- `OBS_NESTJS_UNEXPECTED_DEFECT` é a projeção pública de um defeito sem código estável. A resposta não expõe o diagnóstico interno e inclui `request_id` e `trace_id` quando disponíveis. Use esses identificadores para localizar o evento de defeito e a captura Sentry.
+
 ## Contratos públicos
 
 - Cada código de erro alcançável pelo chamador é parte do contrato e tem cobertura de teste.

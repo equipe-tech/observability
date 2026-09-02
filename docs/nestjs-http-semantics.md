@@ -32,6 +32,18 @@ Guards do Nest executam antes dos interceptors. Uma rejeição de guard não cri
 
 O drain OTLP do logger deve mapear os campos superiores `traceId` e `spanId` para os campos nativos do LogRecord. Copiar esses valores apenas para atributos arbitrários não atende ao contrato de correlação.
 
+## Limite de erros
+
+Use `NestErrorBoundaryModule.forRoot` junto de `TelemetryModule`. O módulo registra um filtro global, não um interceptor. `TelemetryInterceptor` continua sendo o único dono do span HTTP.
+
+A configuração recebe um catálogo criado por `defineErrorCatalog`. O prefixo `_prefix` deve ser estável, não vazio e reservado à aplicação. Prefixos que começam com `OBS_` são reservados aos pacotes da plataforma. Uma configuração inválida falha imediatamente com `InvalidNestErrorCatalog` e código `OBS_NESTJS_ERROR_CATALOG_PREFIX_INVALID`.
+
+Um erro cujo código começa com `<prefix>.` é esperado. A resposta pública contém o status e a mensagem declarados no catálogo, o código estável, `request_id` e `trace_id` quando disponíveis. O erro também é anexado ao único evento amplo da requisição e não é enviado ao Sentry.
+
+Qualquer outro `Error` é um defeito inesperado. O limite chama `recordDefect` com um evento de tipo `defect`. Quando a aplicação fornece `sentryDefects`, o limite chama o serviço `SentryDefects` para preservar a sanitização, a deduplicação, a identidade e a política de transporte do adapter. O envelope usa a correlação criada pelo interceptor. A mesma instância de erro é marcada em um `WeakSet` compartilhado antes das operações assíncronas. Registros duplicados do filtro e relançamentos não repetem o evento nem a tentativa de captura.
+
+Quando o perfil desabilita Sentry, omita `sentryDefects`. O evento de defeito continua obrigatório.
+
 ## Nomes e rotas
 
 O nome usa o método normalizado e o template completo da rota.
