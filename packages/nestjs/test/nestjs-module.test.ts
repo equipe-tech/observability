@@ -227,6 +227,7 @@ describe("TelemetryModule", () => {
       assert.strictEqual(envelope.fingerprint[0], "DATABASE_FAILURE");
       assert.isTrue(Option.isSome(envelope.correlation.requestId));
       assert.isTrue(Option.isSome(envelope.correlation.traceId));
+      assert.isTrue(Option.isSome(envelope.correlation.spanId));
       assert.lengthOf(
         wideEvents.filter((context) => context.event.path === "/boundary/expected"),
         1,
