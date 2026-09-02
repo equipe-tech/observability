@@ -36,11 +36,23 @@ O drain OTLP do logger deve mapear os campos superiores `traceId` e `spanId` par
 
 Use `NestErrorBoundaryModule.forRoot` junto de `TelemetryModule`. O módulo registra um filtro global, não um interceptor. `TelemetryInterceptor` continua sendo o único dono do span HTTP.
 
-A configuração recebe um catálogo criado por `defineErrorCatalog`. O prefixo `_prefix` deve ser estável, não vazio e reservado à aplicação. Prefixos que começam com `OBS_` são reservados aos pacotes da plataforma. Uma configuração inválida falha imediatamente com `InvalidNestErrorCatalog` e código `OBS_NESTJS_ERROR_CATALOG_PREFIX_INVALID`.
+A configuração recebe um catálogo criado por `defineErrorCatalog`. O prefixo `_prefix` segue a gramática aceita por essa factory e deve ser não vazio. Prefixos que começam com `OBS_`, sem distinção entre maiúsculas e minúsculas, são reservados aos pacotes da plataforma. Uma configuração inválida falha imediatamente com `InvalidNestErrorCatalog` e código `OBS_NESTJS_ERROR_CATALOG_PREFIX_INVALID`.
 
-Um erro cujo código começa com `<prefix>.` é esperado. A resposta pública contém o status e a mensagem declarados no catálogo, o código estável, `request_id` e `trace_id` quando disponíveis. O erro também é anexado ao único evento amplo da requisição e não é enviado ao Sentry.
+O limite usa uma classificação fechada com três resultados.
 
-Qualquer outro `Error` é um defeito inesperado. O limite chama `recordDefect` com um evento de tipo `defect`. Quando a aplicação fornece `sentryDefects`, o limite chama o serviço `SentryDefects` para preservar a sanitização, a deduplicação, a identidade e a política de transporte do adapter. O envelope usa a correlação criada pelo interceptor. A mesma instância de erro é marcada em um `WeakSet` compartilhado antes das operações assíncronas. Registros duplicados do filtro e relançamentos não repetem o evento nem a tentativa de captura.
+| Resultado          | Origem                                                | Resposta                                                                                               | Evento e captura                                                                        |
+| ------------------ | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| `ExpectedError`    | Código e declaração presentes no catálogo configurado | Status e mensagem declarados no catálogo, código estável, `request_id` e `trace_id` quando disponíveis | Anexa o erro ao evento amplo e nunca captura no Sentry                                  |
+| `HttpOutcome`      | `HttpException` do Nest sem causa não HTTP            | Preserva `getStatus()` e `getResponse()`                                                               | Anexa o resultado ao evento amplo e nunca emite evento de defeito nem captura no Sentry |
+| `UnexpectedDefect` | Demais erros e valores lançados                       | Resposta 500 segura com correlação                                                                     | Emite um evento `defect` e tenta uma captura no Sentry quando configurado               |
+
+A mensagem pública de `ExpectedError` sempre vem da declaração do catálogo. Uma substituição de `message` ou `status` na instância lançada continua disponível para diagnóstico, mas não altera a resposta pública.
+
+`NotFoundException`, `ForbiddenException`, `BadRequestException` de pipes e as demais subclasses de `HttpException` são resultados HTTP esperados. Isso inclui o 404 criado pelo Nest para uma rota inexistente. Uma `HttpException` 5xx lançada deliberadamente pela aplicação também é um resultado HTTP esperado. Ela só é classificada como defeito quando carrega uma `cause` que não é uma `HttpException`.
+
+O limite responde antes de aguardar `recordDefect` e `SentryDefects`. Falhas síncronas e assíncronas desses destinos são isoladas e assentadas sem alterar a resposta. Quando os headers já foram enviados, o adapter HTTP encerra a resposta como `BaseExceptionFilter`.
+
+A marca de captura pertence à requisição. Dois filtros que tratam a mesma instância na mesma requisição produzem um evento e uma tentativa de captura. Requisições diferentes que recebem a mesma instância produzem seus próprios eventos e tentativas. A decisão de deduplicação ocorre antes de anexar o erro ao evento amplo.
 
 Quando o perfil desabilita Sentry, omita `sentryDefects`. O evento de defeito continua obrigatório.
 
