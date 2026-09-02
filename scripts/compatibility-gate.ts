@@ -796,9 +796,7 @@ export const runCompatibilityGate = async (): Promise<boolean> => {
   const declaredBreaks = decodeBreaks(
     parseJson("observability/compatibility/declared-breaks.json"),
   );
-  const baselineContract = await Effect.runPromise(
-    decodeCompatibilityJson(`${JSON.stringify(baseline.contract)}\n`),
-  );
+  const baselineContract = baseline.contract;
   const committedCandidate = readFileSync("observability/compatibility/candidate.json", "utf8");
   const generatedCandidate = await generateCompatibilityCandidate();
   const candidateDrift =
