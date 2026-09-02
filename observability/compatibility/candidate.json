@@ -13,12 +13,7 @@
   "metrics": [],
   "auditActions": [],
   "aliases": [
-    {
-      "kind": "event",
-      "from": "cli.command",
-      "to": "cli.operation",
-      "since": "2026-08-31"
-    }
+    { "kind": "event", "from": "cli.command", "to": "cli.operation", "since": "2026-08-31" }
   ],
   "browserEnvelope": {
     "version": 2,

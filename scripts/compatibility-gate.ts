@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Effect, Schema } from "effect";
 import { Contract } from "../packages/telemetry/src/index.ts";
+import { decodeCompatibilityJson } from "./compatibility-json.ts";
 import { generateCompatibilityCandidate } from "./generate-compatibility-candidate.ts";
 import { fetchRegistryPackage } from "./registry-package.ts";
 
@@ -52,6 +53,7 @@ export const PackageCompatibilityCode = Schema.Literals([
   "OBS_PACKAGE_DEPENDENCY_REMOVED",
   "OBS_PACKAGE_DEPENDENCY_CATEGORY_CHANGED",
   "OBS_PACKAGE_PEER_ADDED",
+  "OBS_PACKAGE_PEER_WIDENED",
   "OBS_PACKAGE_PEER_CHANGED",
   "OBS_PACKAGE_RUNTIME_ENTRYPOINT_MISSING",
   "OBS_PACKAGE_NAME_CHANGED",
@@ -574,14 +576,22 @@ const comparePeers = (
       );
     } else if (oldRange !== range) {
       const comparison = comparePeerRanges(oldRange, range);
-      const compatible = comparison.classification !== "narrowed";
-      changes.push(
-        setChange(
-          compatible ? "OBS_PACKAGE_PEER_ADDED" : "OBS_PACKAGE_PEER_CHANGED",
-          `peerDependencies/${name}@${oldRange}->${range}`,
-          compatible ? "compatible" : "breaking",
-        ),
-      );
+      if (comparison.classification === "widened")
+        changes.push(
+          setChange(
+            "OBS_PACKAGE_PEER_WIDENED",
+            `peerDependencies/${name}@${oldRange}->${range}`,
+            "compatible",
+          ),
+        );
+      if (comparison.classification === "narrowed")
+        changes.push(
+          setChange(
+            "OBS_PACKAGE_PEER_CHANGED",
+            `peerDependencies/${name}@${oldRange}->${range}`,
+            "breaking",
+          ),
+        );
     }
   }
   for (const [name, range] of previous) {
@@ -787,7 +797,7 @@ export const runCompatibilityGate = async (): Promise<boolean> => {
     parseJson("observability/compatibility/declared-breaks.json"),
   );
   const baselineContract = await Effect.runPromise(
-    Contract.decodeContractSurface(`${JSON.stringify(baseline.contract)}\n`),
+    decodeCompatibilityJson(`${JSON.stringify(baseline.contract)}\n`),
   );
   const committedCandidate = readFileSync("observability/compatibility/candidate.json", "utf8");
   const generatedCandidate = await generateCompatibilityCandidate();
@@ -795,9 +805,7 @@ export const runCompatibilityGate = async (): Promise<boolean> => {
     committedCandidate === generatedCandidate
       ? undefined
       : "candidate.json differs from the generated contract surface";
-  const candidateContract = await Effect.runPromise(
-    Contract.decodeContractSurface(generatedCandidate),
-  );
+  const candidateContract = await Effect.runPromise(decodeCompatibilityJson(generatedCandidate));
   const contractReport = evaluateContractGate({
     baseline: baselineContract,
     candidate: candidateContract,

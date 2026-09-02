@@ -4,9 +4,9 @@
 
 ## Contrato
 
-A suíte `tools/compatibility.bun.test.ts` executa uma fixture positiva e um controle próximo para cada literal de `Contract.CompatibilityCode`. As fixtures chamam `Contract.classifyContractChange` e validam código, caminho, severidade, status de alias e aceitação. A igualdade exata entre IDs únicos de fixture e os literais do schema impede códigos ausentes ou extras.
+A suíte `tools/compatibility.bun.test.ts` executa uma fixture positiva e um controle discriminante para cada literal de `Contract.CompatibilityCode`. Cada controle produz um literal vizinho diferente do alvo. As fixtures chamam `Contract.classifyContractChange` e validam código, caminho, severidade, status de alias e aceitação. A igualdade exata entre IDs únicos de fixture e os literais do schema impede códigos ausentes ou extras.
 
-`Contract.contractSurface` gera o artefato estrito na versão 1. Ele contém eventos, significado de resultados, atributos, métricas, ações de auditoria, aliases, envelope do browser e a maior retenção declarada pelo manifesto. `Contract.encodeContractSurface` e `Contract.decodeContractSurface` mantêm a representação determinística.
+`Contract.contractSurface` gera o artefato estrito na versão 1. Ele contém eventos, significado de resultados, atributos, métricas, ações de auditoria, aliases, envelope do browser e a maior retenção declarada pelo manifesto. `scripts/compatibility-json.ts` decodifica esse schema e usa o formatter do repositório para manter uma única representação canônica.
 
 Adições de eventos, atributos opcionais e métricas são compatíveis. Remoções, renomes, atributos obrigatórios novos, mudanças de classificação, tipo de evento, significado de resultado, unidade, tipo ou limites de métrica são quebras. Toda quebra exige `contractVersion` maior que o baseline.
 
@@ -20,9 +20,9 @@ Mudanças nos campos do envelope do browser exigem uma versão de envelope maior
 
 ## Pacotes
 
-A mesma suíte executa uma fixture positiva e um controle vizinho para cada literal de `PackageCompatibilityCode`. Cada controle difere do baseline sem produzir o literal observado. O sensor altera o baseline entregue ao classificador e exige que o finding resultante também mude.
+A mesma suíte executa uma fixture positiva e um controle discriminante para cada literal de `PackageCompatibilityCode`. Cada controle produz um literal vizinho diferente do alvo. O runner exige pelo menos um finding no controle. O sensor altera o baseline entregue ao classificador e exige que o finding resultante também mude.
 
-O gate fixa nome, tipo de módulo, exports, entrypoints em runtime, símbolos alcançáveis nas declarações, dependências, peers, peers opcionais e códigos públicos de erro. Export novo é compatível. Remoção de export ou símbolo, entrypoint ausente, peer alterado e mudança entre dependência direta e peer são quebras. Uma declaração de quebra vale para um único código e caminho exato.
+O gate fixa nome, tipo de módulo, exports, entrypoints em runtime, símbolos alcançáveis nas declarações, dependências, peers, peers opcionais e códigos públicos de erro. Export novo e ampliação de peer são compatíveis. A ampliação usa `OBS_PACKAGE_PEER_WIDENED`. Remoção de export ou símbolo, entrypoint ausente, restrição de peer e mudança entre dependência direta e peer são quebras. Uma declaração de quebra vale para um único código e caminho exato.
 
 Na linha `0.x`, uma quebra exige minor maior. A partir de `1.0.0`, exige major maior. A quebra `0.2.1` para `0.3.0` está declarada em `declared-breaks.json` e documentada em `migration-0.3.md`. O feature não altera versões nos manifests. A release aplica `candidate-versions.json`.
 

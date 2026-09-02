@@ -61,7 +61,7 @@ const declaredBreak = (
 });
 
 describe("compatibility gate", () => {
-  test("emits formatter-stable compatibility artifacts across scalar array widths", () => {
+  test("emits formatter-stable compatibility artifacts across scalar array widths", async () => {
     const directory = mkdtempSync(join(tmpdir(), "observability-compatibility-format-"));
     try {
       for (let elementLength = 1; elementLength <= 40; elementLength += 1) {
@@ -72,7 +72,7 @@ describe("compatibility gate", () => {
           );
           writeFileSync(
             join(directory, `${elementLength}-${elementCount}.json`),
-            encodeCompatibilityJson({ auditActions: [{ reasonCodes }] }),
+            await encodeCompatibilityJson({ auditActions: [{ reasonCodes }] }),
           );
         }
       }
@@ -109,6 +109,10 @@ describe("compatibility gate", () => {
         candidate: arranged.control,
         now: arranged.now,
       });
+      expect(control.findings).not.toHaveLength(0);
+      expect(control.findings.some((finding) => finding.code === fixture.controlExpectedCode)).toBe(
+        true,
+      );
       expect(control.findings.some((finding) => finding.code === fixture.expected.code)).toBe(
         false,
       );
@@ -141,6 +145,8 @@ describe("compatibility gate", () => {
         fixture.declaredVersion,
         fixture.declaredBreaks,
       );
+      expect(control).not.toHaveLength(0);
+      expect(control.some((finding) => finding.code === fixture.controlExpectedCode)).toBe(true);
       expect(control.some((finding) => finding.code === fixture.expected.code)).toBe(false);
     }
   });

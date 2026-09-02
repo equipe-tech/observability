@@ -60,14 +60,6 @@ const surface = async (
 };
 
 describe("contract compatibility", () => {
-  it("encodes and decodes a deterministic strict surface", async () => {
-    const candidate = await surface(2);
-    const encoded = Contract.encodeContractSurface(candidate);
-    const decoded = await Effect.runPromise(Contract.decodeContractSurface(encoded));
-    expect(decoded).toEqual(candidate);
-    expect(Contract.encodeContractSurface(decoded)).toBe(encoded);
-  });
-
   it("accepts additions without a contract version bump", async () => {
     const baseline = await surface(1);
     const optionalAttribute: Contract.ContractSurfaceEventAttribute = {

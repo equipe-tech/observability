@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Schema } from "effect";
 import { browserEnvelopeMetadata } from "../BrowserEvents.ts";
 import type { AuditOutcome } from "../audit/AuditRecord.ts";
 import type {
@@ -204,33 +204,3 @@ export const ContractSurfaceSchema = Schema.Struct({
   }),
   retentionWindowDays: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(3_650)),
 });
-const decodeDocument = Schema.decodeUnknownEffect(ContractSurfaceSchema, {
-  onExcessProperty: "error",
-});
-
-export class ContractSurfaceDecodeError extends Schema.TaggedError<ContractSurfaceDecodeError>()(
-  "ContractSurfaceDecodeError",
-  { message: Schema.String, cause: Schema.Defect() },
-) {}
-
-export const decodeContractSurface = Effect.fn("decodeContractSurface")(function* (
-  content: string,
-) {
-  const document = yield* Effect.try({
-    try: () => JSON.parse(content),
-    catch: (cause) =>
-      new ContractSurfaceDecodeError({ message: "Contract surface is not valid JSON.", cause }),
-  });
-  return yield* decodeDocument(document).pipe(
-    Effect.mapError(
-      (cause) =>
-        new ContractSurfaceDecodeError({
-          message: "Contract surface does not match version 1.",
-          cause,
-        }),
-    ),
-  );
-});
-
-export const encodeContractSurface = (surface: ContractSurface): string =>
-  `${JSON.stringify(surface, null, 2)}\n`;

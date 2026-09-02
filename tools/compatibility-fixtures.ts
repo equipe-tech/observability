@@ -23,6 +23,7 @@ type ContractCase = {
 export type ContractCompatibilityFixture = {
   readonly id: Contract.CompatibilityCode;
   readonly expected: ContractExpected;
+  readonly controlExpectedCode: Contract.CompatibilityCode;
   readonly arrange: () => ContractCase;
 };
 
@@ -78,23 +79,71 @@ const contractSurface = (): Contract.ContractSurface => ({
   retentionWindowDays: 30,
 });
 
+const eventAddition = (baseline: Contract.ContractSurface): Contract.ContractSurface => ({
+  ...baseline,
+  events: [...baseline.events, { ...event, name: "payment.control" }],
+});
+
+const eventRemoval = (baseline: Contract.ContractSurface): Contract.ContractSurface => ({
+  ...baseline,
+  contractVersion: baseline.contractVersion + 1,
+  events: [],
+});
+
+const controlForContract = (
+  code: Contract.CompatibilityCode,
+  baseline: Contract.ContractSurface,
+): readonly [Contract.ContractSurface, Contract.CompatibilityCode] => {
+  if (code === "OBS_COMPAT_EVENT_ADDED")
+    return [eventRemoval(baseline), "OBS_COMPAT_EVENT_REMOVED"];
+  if (code === "OBS_COMPAT_ATTRIBUTE_ADDED")
+    return [
+      replaceEvent({ ...baseline, contractVersion: 2 }, (value) => ({
+        ...value,
+        attributes: [],
+      })),
+      "OBS_COMPAT_ATTRIBUTE_REMOVED",
+    ];
+  if (code === "OBS_COMPAT_METRIC_ADDED")
+    return [{ ...baseline, contractVersion: 2, metrics: [] }, "OBS_COMPAT_METRIC_REMOVED"];
+  if (code === "OBS_COMPAT_METRIC_ATTRIBUTE_ADDED")
+    return [
+      replaceMetric({ ...baseline, contractVersion: 2 }, (value) => ({
+        ...value,
+        attributes: [],
+      })),
+      "OBS_COMPAT_METRIC_ATTRIBUTE_REMOVED",
+    ];
+  if (code === "OBS_COMPAT_AUDIT_ACTION_ADDED")
+    return [
+      { ...baseline, contractVersion: 2, auditActions: [] },
+      "OBS_COMPAT_AUDIT_ACTION_REMOVED",
+    ];
+  return [eventAddition(baseline), "OBS_COMPAT_EVENT_ADDED"];
+};
+
 const contractFixture = (
   expected: ContractExpected,
   mutate: (baseline: Contract.ContractSurface) => Contract.ContractSurface,
   baselineFactory: () => Contract.ContractSurface = contractSurface,
   now = "2026-09-01",
-  control: (baseline: Contract.ContractSurface) => Contract.ContractSurface = (baseline) => ({
-    ...baseline,
-    contractVersion: baseline.contractVersion + 1,
-  }),
-): ContractCompatibilityFixture => ({
-  id: expected.code,
-  expected,
-  arrange: () => {
-    const baseline = baselineFactory();
-    return { baseline, candidate: mutate(baseline), control: control(baseline), now };
-  },
-});
+  control?: (baseline: Contract.ContractSurface) => Contract.ContractSurface,
+  controlExpectedCode?: Contract.CompatibilityCode,
+): ContractCompatibilityFixture => {
+  const baseline = baselineFactory();
+  const defaultControl = controlForContract(expected.code, baseline);
+  return {
+    id: expected.code,
+    expected,
+    controlExpectedCode: controlExpectedCode ?? defaultControl[1],
+    arrange: () => ({
+      baseline,
+      candidate: mutate(baseline),
+      control: control?.(baseline) ?? defaultControl[0],
+      now,
+    }),
+  };
+};
 
 const expected = (
   code: Contract.CompatibilityCode,
@@ -428,6 +477,7 @@ export const contractCompatibilityFixtures: ReadonlyArray<ContractCompatibilityF
       ...baseline,
       aliases: baseline.aliases.map((value) => ({ ...value, since: "2026-08-16" })),
     }),
+    "OBS_COMPAT_ALIAS_WINDOW_RESET",
   ),
   contractFixture(
     expected("OBS_COMPAT_BROWSER_ENVELOPE_CHANGED", "browserEnvelope", "breaking", false),
@@ -458,6 +508,7 @@ export type PackageCompatibilityFixture = {
   readonly baseline: PackageSurface;
   readonly candidate: PackageSurface;
   readonly control: PackageSurface;
+  readonly controlExpectedCode: PackageCompatibilityCode;
   readonly declaredVersion: string;
   readonly declaredBreaks: ReadonlyArray<DeclaredPackageBreak>;
   readonly expected: PackageExpected;
@@ -477,6 +528,27 @@ const packageSurface = (): PackageSurface => ({
   publicErrorCodes: ["OBS_EXAMPLE_FAILED"],
 });
 
+const packageAddition = (baseline: PackageSurface): PackageSurface => ({
+  ...baseline,
+  declarationSymbols: [...baseline.declarationSymbols, ".:Control"],
+});
+
+const controlForPackage = (
+  code: PackageCompatibilityCode,
+  baseline: PackageSurface,
+): readonly [PackageSurface, PackageCompatibilityCode] => {
+  if (code === "OBS_PACKAGE_SYMBOL_ADDED")
+    return [{ ...baseline, declarationSymbols: [] }, "OBS_PACKAGE_SYMBOL_REMOVED"];
+  if (code === "OBS_PACKAGE_PEER_ADDED")
+    return [{ ...baseline, peerDependencies: ["vite@^7.0.0"] }, "OBS_PACKAGE_PEER_CHANGED"];
+  if (code === "OBS_PACKAGE_PEER_CHANGED" || code === "OBS_PACKAGE_PEER_WIDENED")
+    return [
+      { ...baseline, peerDependencies: [...baseline.peerDependencies, "react@^19.0.0"] },
+      "OBS_PACKAGE_PEER_ADDED",
+    ];
+  return [packageAddition(baseline), "OBS_PACKAGE_SYMBOL_ADDED"];
+};
+
 const packageFixture = (
   expectedValue: PackageExpected,
   mutate: (baseline: PackageSurface) => PackageSurface,
@@ -484,11 +556,13 @@ const packageFixture = (
   declaredBreaks: ReadonlyArray<DeclaredPackageBreak> = [],
 ): PackageCompatibilityFixture => {
   const baseline = packageSurface();
+  const control = controlForPackage(expectedValue.code, baseline);
   return {
     id: expectedValue.code,
     baseline,
     candidate: mutate(baseline),
-    control: { ...baseline, version: "0.2.2" },
+    control: control[0],
+    controlExpectedCode: control[1],
     declaredVersion,
     declaredBreaks,
     expected: expectedValue,
@@ -548,6 +622,14 @@ export const packageCompatibilityFixtures: ReadonlyArray<PackageCompatibilityFix
       ...baseline,
       peerDependencies: [...baseline.peerDependencies, "react@^19.0.0"],
     }),
+  ),
+  packageFixture(
+    packageExpected(
+      "OBS_PACKAGE_PEER_WIDENED",
+      "peerDependencies/vite@^6.0.0->>=6 <8",
+      "compatible",
+    ),
+    (baseline) => ({ ...baseline, peerDependencies: ["vite@>=6 <8"] }),
   ),
   packageFixture(
     packageExpected("OBS_PACKAGE_PEER_CHANGED", "peerDependencies/vite@^6.0.0->^7.0.0", "breaking"),

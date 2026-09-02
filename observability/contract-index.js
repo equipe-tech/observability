@@ -43,13 +43,13 @@ if (import.meta.main) {
   if (process.argv[2] === "--surface") {
     const retentionWindowDays = Number(process.argv[3]);
     process.stdout.write(
-      encodeCompatibilityJson(observabilityContractSurface(retentionWindowDays)),
+      await encodeCompatibilityJson(observabilityContractSurface(retentionWindowDays)),
     );
   } else {
     const output = process.argv[2] ?? new URL("contract.json", import.meta.url);
     await Bun.write(
       output,
-      encodeCompatibilityJson(
+      await encodeCompatibilityJson(
         Contract.contractIndex(observabilityContract, "observability", aliases),
       ),
     );
