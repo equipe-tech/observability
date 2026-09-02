@@ -17,7 +17,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
-import { canaryRunId, canarySensitiveValues, emitCanary } from "./support/canary.ts";
+import {
+  canaryRunId,
+  canarySensitiveValues,
+  canaryServiceVersion,
+  emitCanary,
+} from "./support/canary.ts";
 
 const cliManifest: unknown = JSON.parse(
   await readFile(new URL("../../cli/package.json", import.meta.url).pathname, "utf8"),
@@ -320,7 +325,7 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
         const runId = yield* canaryRunId();
         const identity = yield* parseResourceIdentity({
           serviceName: "observability-canary",
-          serviceVersion: "0.1.0",
+          serviceVersion: canaryServiceVersion,
           environment: "test",
         });
         const config = new TelemetryConfig({
@@ -345,7 +350,11 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
         const auditConfig = yield* parseNodeObservabilityConfig({
           enabled: true,
           profile: "worker",
-          service: { name: "observability-canary", version: "0.1.0", environment: "test" },
+          service: {
+            name: "observability-canary",
+            version: canaryServiceVersion,
+            environment: "test",
+          },
           telemetry: { endpoint: new URL("http://localhost:4318") },
           evlog: {
             contract: auditContract,
@@ -400,7 +409,7 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
         );
         assert.strictEqual(
           Option.getOrUndefined(attributeValue(resource, "service.version")),
-          "0.1.0",
+          canaryServiceVersion,
         );
         assertEnvironmentAliases(run.root.resource, "test");
 
@@ -512,7 +521,7 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
           );
           assert.strictEqual(
             Option.getOrUndefined(attributeValue(signalResource.attributes, "service.version")),
-            "0.1.0",
+            canaryServiceVersion,
           );
           assertEnvironmentAliases(signalResource, "test");
         }

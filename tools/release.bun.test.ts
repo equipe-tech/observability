@@ -1,7 +1,15 @@
 import { expect, test } from "bun:test";
+import { Effect } from "effect";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  ReleaseCanaryConfigurationError,
+  ReleaseCanaryCredentials,
+  ReleaseCanaryIdentity,
+  resolveReleaseCanaryCredentials,
+  resolveReleaseCanaryIdentity,
+} from "../scripts/release-canary.ts";
 
 interface CommandRequest {
   readonly command: ReadonlyArray<string>;
@@ -90,6 +98,45 @@ const withReleaseRepository = async (
     await rm(root, { recursive: true, force: true });
   }
 };
+
+test("derives one release canary identity from the matching package manifest", async () => {
+  await withReleaseRepository(async ({ root }) => {
+    const identity = await Effect.runPromise(resolveReleaseCanaryIdentity(root, "alpha@1.2.3"));
+    expect(identity).toEqual(
+      new ReleaseCanaryIdentity({
+        releaseTag: "alpha@1.2.3",
+        packageName: "@equipe-tech/alpha",
+        packageVersion: "1.2.3",
+        otelServiceVersion: "1.2.3",
+      }),
+    );
+  });
+});
+
+test("models scoped release canary credentials as one typed set", async () => {
+  const credentials = await Effect.runPromise(
+    resolveReleaseCanaryCredentials({
+      AXIOM_INGEST_TOKEN: "ingest-secret",
+      AXIOM_READ_TOKEN: "read-secret",
+    }),
+  );
+  expect(credentials).toEqual(
+    new ReleaseCanaryCredentials({
+      axiomIngestSecret: "ingest-secret",
+      axiomReadSecret: "read-secret",
+    }),
+  );
+});
+
+test("rejects every missing release canary credential with a specific error", async () => {
+  const error = await Effect.runPromise(
+    Effect.flip(resolveReleaseCanaryCredentials({ AXIOM_INGEST_TOKEN: "ingest-secret" })),
+  );
+  expect(error).toBeInstanceOf(ReleaseCanaryConfigurationError);
+  expect(error.code).toBe("OBS_RELEASE_CANARY_CREDENTIALS_MISSING");
+  expect(error.missingCredentials).toEqual(["AXIOM_READ_TOKEN"]);
+  expect(error.message).toContain("publication environment");
+});
 
 test("selects a package by slug", async () => {
   await withReleaseRepository(async ({ runRelease }) => {
