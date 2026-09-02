@@ -41,20 +41,20 @@ O dry run não altera manifest, lockfile, commit ou tag. Uma release real altera
 
 ## Gate do canário no provedor
 
-A verificação de release executa o canário implantado antes de criar a GitHub Release. O job usa o environment protegido `publication` e exige dois secrets independentes:
+A verificação de release executa o canário implantado antes de criar a GitHub Release. O job reutilizável usa o environment protegido `publication` como a única origem dos secrets. O workflow chamador não repassa secrets. O job exige dois secrets independentes:
 
 - `AXIOM_INGEST_TOKEN` aceita somente ingestão nos datasets E2E de traces, logs e métricas.
 - `AXIOM_READ_TOKEN` aceita somente consultas nos mesmos datasets E2E.
 
 `AXIOM_ORGANIZATION_ID`, `AXIOM_URL`, `AXIOM_DATASET_TRACES`, `AXIOM_DATASET_LOGS` e `AXIOM_DATASET_METRICS` são variables do environment. `AXIOM_URL` aponta para a API regional da organização. Nenhum token administrativo entra no job.
 
-O script `scripts/release-canary.ts` resolve o tag para o manifest correspondente e define `OTEL_SERVICE_VERSION` com a versão desse manifest. O canário consulta traces, logs e métricas usando a versão e os valores de correlação da execução. A ausência de qualquer secret encerra o gate com `OBS_RELEASE_CANARY_CREDENTIALS_MISSING`. CI comum permanece sem credenciais e informa que o gate protegido não foi solicitado.
+O script `scripts/release-canary.ts` resolve o tag para o manifest correspondente e define `OTEL_SERVICE_VERSION` com a versão desse manifest. O step do Collector recebe somente `AXIOM_INGEST_TOKEN`. O step de consulta recebe somente `AXIOM_READ_TOKEN`. O canário consulta traces, logs e métricas usando a versão e os valores de correlação da execução. A ausência de qualquer secret encerra o gate com `OBS_RELEASE_CANARY_CREDENTIALS_MISSING`. CI comum permanece sem credenciais e informa que o gate protegido não foi solicitado.
 
 Se o gate falhar, preserve o tag e os resultados da execução. Corrija a credencial, a variable regional, o dataset ou a entrega de telemetria indicada pelo último resultado de consulta. Execute novamente o mesmo workflow no mesmo tag. Não mova o tag, não use credencial administrativa e não publique manualmente para contornar o gate.
 
 ## Gate humano
 
-O push de um tag apenas executa verificação. A publicação exige `workflow_dispatch` no ref exato do tag, `tag` e `confirm_tag` idênticos e aprovação do environment `publication`.
+O push de um tag solicita aprovação do environment `publication` e executa somente a verificação protegida depois da aprovação. A publicação exige outro `workflow_dispatch` no ref exato do tag, `tag` e `confirm_tag` idênticos e uma nova aprovação do environment `publication`.
 
 O workflow resolve o slug para um único manifest. Ele empacota, cria release e publica somente esse pacote. O job de npm exige `NPM_TOKEN`, identidade OIDC e `npm publish --provenance`.
 

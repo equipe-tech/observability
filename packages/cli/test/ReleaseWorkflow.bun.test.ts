@@ -19,10 +19,15 @@ const releaseCanaryScript = await Bun.file(releaseCanaryScriptPath).text();
 const WorkflowStep = Schema.Struct({
   name: Schema.optionalKey(Schema.String),
   if: Schema.optionalKey(Schema.String),
+  run: Schema.optionalKey(Schema.String),
+  env: Schema.optionalKey(
+    Schema.Struct({ OBSERVABILITY_E2E_DEPLOYED: Schema.optionalKey(Schema.String) }),
+  ),
 });
 
 const ConditionalJob = Schema.Struct({
   if: Schema.optionalKey(Schema.String),
+  environment: Schema.optionalKey(Schema.String),
   steps: Schema.optionalKey(Schema.Array(WorkflowStep)),
 });
 
@@ -31,14 +36,23 @@ const GateJob = Schema.Struct({
   needs: Schema.Array(Schema.String),
 });
 
+const WorkflowSecrets = Schema.Struct({
+  AXIOM_INGEST_TOKEN: Schema.optionalKey(Schema.String),
+  AXIOM_READ_TOKEN: Schema.optionalKey(Schema.String),
+});
+
 const ReusableWorkflowJob = Schema.Struct({
   uses: Schema.String,
   with: Schema.Struct({ run_deployed_canary: Schema.Boolean }),
+  secrets: Schema.optionalKey(WorkflowSecrets),
 });
 
 const DependentJob = Schema.Struct({ needs: Schema.Array(Schema.String) });
 
 const CiWorkflow = Schema.Struct({
+  on: Schema.Struct({
+    workflow_call: Schema.Struct({ secrets: Schema.optionalKey(WorkflowSecrets) }),
+  }),
   jobs: Schema.Struct({
     verify: ConditionalJob,
     "deployed-canary": ConditionalJob,
@@ -170,8 +184,23 @@ describe("release workflow publication gate", () => {
   test("builds a release graph that cannot bypass the canary gate", () => {
     expect(parsedReleaseWorkflow.jobs.verify.uses).toBe("./.github/workflows/ci.yml");
     expect(parsedReleaseWorkflow.jobs.verify.with.run_deployed_canary).toBe(true);
+    expect(parsedCiWorkflow.jobs["canary-gate"].needs).toEqual(["verify", "deployed-canary"]);
     expect(parsedReleaseWorkflow.jobs.release.needs).toContain("canary-gate");
     expect(parsedReleaseWorkflow.jobs["publish-npm"].needs).toContain("release");
+  });
+
+  test("uses publication environment secrets without inert caller plumbing", () => {
+    expect(parsedCiWorkflow.on.workflow_call.secrets).toBeUndefined();
+    expect(parsedCiWorkflow.jobs["deployed-canary"].environment).toBe("publication");
+    expect(parsedReleaseWorkflow.jobs.verify.secrets).toBeUndefined();
+  });
+
+  test("requires and counts an explicitly requested deployed canary test", () => {
+    const canaryStep = parsedCiWorkflow.jobs["deployed-canary"].steps?.find(
+      (step) => step.name === "Run the deployed release canary",
+    );
+    expect(canaryStep?.env?.OBSERVABILITY_E2E_DEPLOYED).toBe("1");
+    expect(canaryStep?.run).toContain("bun run test:canary:deployed");
   });
 
   test("derives the deployed canary service version from the release tag", () => {
