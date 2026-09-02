@@ -18,12 +18,14 @@ import { NestFactory } from "@nestjs/core";
 import { IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Effect, Schema } from "effect";
-import { type DefectEnvelope } from "@equipe-tech/observability";
+import { CorrelationContext, type DefectEnvelope } from "@equipe-tech/observability";
 import { defineErrorCatalog, type DrainContext } from "evlog";
 import { EvlogModule } from "evlog/nestjs";
 import { assert, describe, it } from "vite-plus/test";
 import {
   createRequestWideEventTraceCorrelation,
+  InvalidNestErrorCatalogDeclaration,
+  NestErrorBoundary,
   NestErrorBoundaryModule,
   type DefectEventInput,
 } from "../src/index.ts";
@@ -625,6 +627,68 @@ describe("Nest error boundary regressions", () => {
       await app.close().catch(() => undefined);
     }
   }, 30_000);
+
+  it("rejects catalog code mismatches during construction", () => {
+    const errors = defineErrorCatalog("invalid_catalog", {
+      MISSING: { status: 404, message: "Missing." },
+    });
+    Reflect.deleteProperty(errors, "MISSING");
+
+    try {
+      NestErrorBoundaryModule.forRoot({
+        catalog: errors,
+        recordDefect: () => undefined,
+      });
+      assert.fail("Expected catalog construction to fail.");
+    } catch (cause) {
+      assert.instanceOf(cause, InvalidNestErrorCatalogDeclaration);
+      assert.strictEqual(cause.code, "OBS_NESTJS_ERROR_CATALOG_INVALID");
+      assert.include(cause.message, "invalid_catalog.MISSING");
+    }
+  });
+
+  it("recognizes structurally compatible HttpExceptions", () => {
+    class ForeignHttpException extends Error {
+      readonly status = 409;
+
+      getStatus(): number {
+        return this.status;
+      }
+
+      getResponse(): string {
+        return this.message;
+      }
+    }
+
+    const boundary = new NestErrorBoundary({
+      catalog: defineErrorCatalog("structural_http", {}),
+      recordDefect: () => undefined,
+    });
+    const classified = boundary.classify(
+      new ForeignHttpException("foreign conflict"),
+      new CorrelationContext({}),
+    );
+    assert.strictEqual(classified.kind, "http-outcome");
+  });
+
+  it("preserves declared retryability and omits an unknown value", async () => {
+    const events: Array<DefectEventInput> = [];
+    const boundary = new NestErrorBoundary({
+      catalog: defineErrorCatalog("retryability", {}),
+      recordDefect: (event) => {
+        events.push(event);
+      },
+    });
+    const correlation = new CorrelationContext({});
+    const retryable = new Error("transient dependency failure");
+    Object.defineProperty(retryable, "retryable", { value: true, enumerable: true });
+
+    await boundary.handle(boundary.classify(retryable, correlation), {});
+    await boundary.handle(boundary.classify(new Error("unknown retryability"), correlation), {});
+
+    assert.strictEqual(events[0]?.error.retryable, true);
+    assert.notProperty(events[1]?.error, "retryable");
+  });
 
   it("probe P preserves guard and pipe HTTP outcomes", async () => {
     const defects: Array<DefectEventInput> = [];

@@ -5,6 +5,7 @@ export {
 } from "@equipe-tech/observability";
 export {
   InvalidNestErrorCatalog,
+  InvalidNestErrorCatalogDeclaration,
   NestErrorBoundary,
   NestErrorBoundaryModule,
   NestErrorFilter,

@@ -1,7 +1,14 @@
-import type { ArgumentsHost, DynamicModule, ExceptionFilter, Provider } from "@nestjs/common";
-import { HttpException, Module } from "@nestjs/common";
+import type {
+  ArgumentsHost,
+  DynamicModule,
+  ExceptionFilter,
+  HttpException,
+  Provider,
+} from "@nestjs/common";
+import { Module } from "@nestjs/common";
 import { APP_FILTER, HttpAdapterHost } from "@nestjs/core";
 import { Effect, Option, Predicate, Schema } from "effect";
+import type { DefinedError, ErrorCatalog, ErrorCatalogEntry, ErrorCatalogMap } from "evlog";
 import {
   CorrelationContext,
   unexpectedDefect,
@@ -20,6 +27,9 @@ export type PublicErrorResponse = {
   readonly trace_id?: string | undefined;
 };
 
+type HttpExceptionReference = Error &
+  Pick<HttpException, "getResponse" | "getStatus"> & { readonly status: number };
+
 export type ExpectedError = {
   readonly kind: "expected";
   readonly source: { readonly kind: "evlog-catalog"; readonly prefix: string };
@@ -30,7 +40,7 @@ export type ExpectedError = {
 export type HttpOutcome = {
   readonly kind: "http-outcome";
   readonly source: { readonly kind: "nestjs-http-exception" };
-  readonly error: HttpException;
+  readonly error: HttpExceptionReference;
   readonly response: { readonly statusCode: number };
 };
 
@@ -49,22 +59,20 @@ export type DefectEventInput = {
   readonly error: {
     readonly type: string;
     readonly message: string;
-    readonly retryable: false;
+    readonly retryable?: boolean | undefined;
   };
   readonly correlation: CorrelationContext;
 };
 
-export type ErrorCatalogDeclaration = {
-  readonly code: string;
-  readonly message: string;
-  readonly status: number;
-};
+export type ErrorCatalogDeclaration = Pick<
+  DefinedError<string, ErrorCatalogEntry>,
+  "code" | "internal" | "link" | "message" | "status" | "tags" | "why" | "fix"
+>;
 
-export type ErrorCatalogReference = {
-  readonly _prefix: string;
-  readonly _codes: ReadonlyArray<string>;
-  readonly [entryName: string]: ErrorCatalogDeclaration | string | ReadonlyArray<string>;
-};
+export type ErrorCatalogReference = Pick<
+  ErrorCatalog<string, ErrorCatalogMap>,
+  "_codes" | "_prefix"
+>;
 
 export type SentryDefectsService = {
   readonly capture: (input: {
@@ -72,8 +80,10 @@ export type SentryDefectsService = {
   }) => Effect.Effect<{ readonly kind: string }>;
 };
 
-export type NestErrorBoundaryOptions = {
-  readonly catalog: ErrorCatalogReference;
+export type NestErrorBoundaryOptions<
+  Catalog extends ErrorCatalogReference = ErrorCatalogReference,
+> = {
+  readonly catalog: Catalog;
   readonly recordDefect: (input: DefectEventInput) => void | Promise<void>;
   readonly sentryDefects?: SentryDefectsService | undefined;
   readonly requestWideEventTraceCorrelation?: RequestWideEventTraceCorrelation | undefined;
@@ -94,42 +104,98 @@ export class InvalidNestErrorCatalog extends Error {
   }
 }
 
+export class InvalidNestErrorCatalogDeclaration extends Error {
+  readonly _tag = "InvalidNestErrorCatalogDeclaration";
+  readonly code = "OBS_NESTJS_ERROR_CATALOG_INVALID";
+  readonly catalogCode: string;
+  override readonly cause: unknown;
+
+  constructor(catalogCode: string, cause: unknown) {
+    super(
+      `The NestJS error catalog declaration "${catalogCode}" is invalid. Rebuild the catalog with defineErrorCatalog and restart the service.`,
+      { cause },
+    );
+    this.name = "InvalidNestErrorCatalogDeclaration";
+    this.catalogCode = catalogCode;
+    this.cause = cause;
+  }
+}
+
 const CatalogPrefix = Schema.NonEmptyString.check(
   Schema.makeFilter((prefix) => !/^OBS_/i.test(prefix)),
 );
 const decodeCatalogPrefix = Schema.decodeUnknownSync(CatalogPrefix);
-const CatalogEntry = Schema.Struct({
+const CatalogEntryIdentity = Schema.Struct({
   code: Schema.NonEmptyString,
-  message: Schema.String,
-  status: Schema.Int.check(Schema.isBetween({ minimum: 400, maximum: 599 })),
+  status: Schema.Number,
 });
-const decodeCatalogEntry = Schema.decodeUnknownOption(CatalogEntry);
-const ExpectedErrorDetails = Schema.Struct({
-  code: Schema.NonEmptyString,
-  status: Schema.Int.check(Schema.isBetween({ minimum: 400, maximum: 599 })),
-});
+const decodeCatalogEntryIdentity = Schema.decodeUnknownOption(CatalogEntryIdentity);
+const CatalogCodes = Schema.Array(Schema.NonEmptyString);
+const decodeCatalogCodes = Schema.decodeUnknownOption(CatalogCodes);
+const ExpectedErrorDetails = Schema.Struct({ code: Schema.NonEmptyString });
 const decodeExpectedErrorDetails = Schema.decodeUnknownOption(ExpectedErrorDetails);
 const ErrorCode = Schema.Struct({ code: Schema.NonEmptyString });
 const decodeErrorCode = Schema.decodeUnknownOption(ErrorCode);
+const RetryableError = Schema.Struct({ retryable: Schema.Boolean });
+const decodeRetryableError = Schema.decodeUnknownOption(RetryableError);
 const capturedErrorsByRequest = new WeakMap<RequestReference, WeakSet<Error>>();
 
-type CatalogEntry = typeof CatalogEntry.Type;
+type CatalogEntry = {
+  readonly code: string;
+  readonly message: ErrorCatalogEntry["message"];
+  readonly status: number;
+};
 type ClassificationRule = (
   error: Error,
   correlation: CorrelationContext,
 ) => Option.Option<ClassifiedError>;
 
-const catalogEntries = (catalog: ErrorCatalogReference): ReadonlyArray<CatalogEntry> =>
-  Object.values(catalog).flatMap((factory) => {
-    if (!Predicate.isFunction(factory)) return [];
-    return Option.toArray(
-      decodeCatalogEntry({
-        code: Object.getOwnPropertyDescriptor(factory, "code")?.value,
-        message: Object.getOwnPropertyDescriptor(factory, "message")?.value,
-        status: Object.getOwnPropertyDescriptor(factory, "status")?.value,
-      }),
-    );
-  });
+const catalogEntries = (catalog: ErrorCatalogReference): ReadonlyArray<CatalogEntry> => {
+  const decodedCodes = decodeCatalogCodes(catalog._codes);
+  if (Option.isNone(decodedCodes)) {
+    throw new InvalidNestErrorCatalogDeclaration(`${catalog._prefix}.*`, catalog._codes);
+  }
+  const declarations: Array<CatalogEntry> = [];
+  for (const [entryName, factory] of Object.entries(catalog)) {
+    const expectedCode = `${catalog._prefix}.${entryName}`;
+    if (!Predicate.isFunction(factory)) {
+      throw new InvalidNestErrorCatalogDeclaration(expectedCode, factory);
+    }
+    const identity = decodeCatalogEntryIdentity({
+      code: Object.getOwnPropertyDescriptor(factory, "code")?.value,
+      status: Object.getOwnPropertyDescriptor(factory, "status")?.value,
+    });
+    const message = Object.getOwnPropertyDescriptor(factory, "message")?.value;
+    if (
+      Option.isNone(identity) ||
+      (!Predicate.isString(message) && !Predicate.isFunction(message))
+    ) {
+      throw new InvalidNestErrorCatalogDeclaration(expectedCode, factory);
+    }
+    declarations.push({ ...identity.value, message });
+  }
+  const declaredCodes = new Set(declarations.map((entry) => entry.code));
+  const catalogCodes = new Set(decodedCodes.value);
+  for (const code of catalogCodes) {
+    if (!declaredCodes.has(code)) {
+      throw new InvalidNestErrorCatalogDeclaration(code, catalog);
+    }
+  }
+  for (const code of declaredCodes) {
+    if (!catalogCodes.has(code)) {
+      throw new InvalidNestErrorCatalogDeclaration(code, catalog);
+    }
+  }
+  return declarations;
+};
+
+const isHttpException = (error: Error): error is HttpExceptionReference =>
+  Predicate.hasProperty(error, "getStatus") &&
+  Predicate.isFunction(error.getStatus) &&
+  Predicate.hasProperty(error, "getResponse") &&
+  Predicate.isFunction(error.getResponse) &&
+  Predicate.hasProperty(error, "status") &&
+  Predicate.isNumber(error.status);
 
 const publicResponse = (
   details: { readonly code: string; readonly message: string },
@@ -176,8 +242,8 @@ export class NestErrorBoundary {
     this.#requestWideEventTraceCorrelation = options.requestWideEventTraceCorrelation;
     this.#classificationTable = [
       (error, correlation) => this.#classifyExpected(error, correlation),
+      (error, correlation) => this.#classifyCausedServerDefect(error, correlation),
       (error) => this.#classifyHttpOutcome(error),
-      (error, correlation) => Option.some(this.#classifyUnexpected(error, correlation)),
     ];
   }
 
@@ -188,20 +254,32 @@ export class NestErrorBoundary {
     }
     const declaration = this.#catalogEntries.get(details.value.code);
     if (declaration === undefined) return Option.none();
+    const message = Predicate.isString(declaration.message) ? declaration.message : error.message;
     return Option.some({
       kind: "expected",
       source: { kind: "evlog-catalog", prefix: this.#prefix },
       error,
       response: {
         statusCode: declaration.status,
-        body: publicResponse(declaration, correlation),
+        body: publicResponse({ code: declaration.code, message }, correlation),
       },
     });
   }
 
+  #classifyCausedServerDefect(
+    error: Error,
+    correlation: CorrelationContext,
+  ): Option.Option<UnexpectedDefect> {
+    if (!isHttpException(error)) return Option.none();
+    const status = error.getStatus();
+    const isServerError = status >= 500 && status <= 599;
+    const causeIsHttpException = error.cause instanceof Error && isHttpException(error.cause);
+    if (!isServerError || error.cause === undefined || causeIsHttpException) return Option.none();
+    return Option.some(this.#classifyUnexpected(error, correlation));
+  }
+
   #classifyHttpOutcome(error: Error): Option.Option<HttpOutcome> {
-    if (!(error instanceof HttpException)) return Option.none();
-    if (error.cause !== undefined && !(error.cause instanceof HttpException)) return Option.none();
+    if (!isHttpException(error)) return Option.none();
     return Option.some({
       kind: "http-outcome",
       source: { kind: "nestjs-http-exception" },
@@ -247,24 +325,29 @@ export class NestErrorBoundary {
       code: classified.code,
       correlation: classified.correlation,
     });
+    const eventError: {
+      type: string;
+      message: string;
+      retryable?: boolean;
+    } = {
+      type: classified.code,
+      message: classified.error.message,
+    };
+    const retryable = decodeRetryableError(classified.error);
+    if (Option.isSome(retryable)) eventError.retryable = retryable.value.retryable;
     const settlements: Array<Promise<void | { readonly kind: string }>> = [
       Promise.resolve().then(() =>
         this.#recordDefect({
           kind: "defect",
-          error: {
-            type: classified.code,
-            message: classified.error.message,
-            retryable: false,
-          },
+          error: eventError,
           correlation: classified.correlation,
         }),
       ),
     ];
-    if (this.#sentryDefects !== undefined) {
+    const sentryDefects = this.#sentryDefects;
+    if (sentryDefects !== undefined) {
       settlements.push(
-        Promise.resolve().then(() =>
-          Effect.runPromise(this.#sentryDefects?.capture({ envelope }) ?? Effect.void),
-        ),
+        Promise.resolve().then(() => Effect.runPromise(sentryDefects.capture({ envelope }))),
       );
     }
     return Promise.allSettled(settlements).then(() => undefined);
@@ -331,7 +414,9 @@ export class NestErrorFilter implements ExceptionFilter {
 const NEST_ERROR_BOUNDARY = Symbol("NestErrorBoundary");
 
 export class NestErrorBoundaryModule {
-  static forRoot(options: NestErrorBoundaryOptions): DynamicModule {
+  static forRoot<Catalog extends ErrorCatalogReference>(
+    options: NestErrorBoundaryOptions<Catalog>,
+  ): DynamicModule {
     const boundary = new NestErrorBoundary(options);
     const providers: Array<Provider> = [
       { provide: NEST_ERROR_BOUNDARY, useValue: boundary },
