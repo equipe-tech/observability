@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { Effect, Schema } from "effect";
 import { Contract } from "../packages/telemetry/src/index.ts";
 import { generateCompatibilityCandidate } from "./generate-compatibility-candidate.ts";
+import { fetchRegistryPackage } from "./registry-package.ts";
 
 const ExportTarget = Schema.Union([
   Schema.String,
@@ -66,7 +67,18 @@ export type PackageCompatibilityCode = typeof PackageCompatibilityCode.Type;
 
 const BaselineDocument = Schema.Struct({
   baseline: Schema.Literal(1),
-  source: Schema.Struct({ tag: Schema.String, commit: Schema.String }),
+  source: Schema.Struct({
+    tag: Schema.String,
+    commit: Schema.String,
+    registryPackages: Schema.Array(
+      Schema.Struct({
+        name: Schema.String,
+        version: Schema.String,
+        tarball: Schema.String,
+        integrity: Schema.String,
+      }),
+    ),
+  }),
   contract: Contract.ContractSurfaceSchema,
   packages: Schema.Array(PackageSurfaceDocument),
 });
@@ -96,6 +108,7 @@ const decodeBreaks = Schema.decodeUnknownSync(DeclaredBreaksDocument, {
   onExcessProperty: "error",
 });
 
+export type CompatibilityBaselineArtifact = typeof BaselineDocument.Type;
 export type DeclaredPackageBreak = (typeof DeclaredBreaksDocument.Type)["breaks"][number];
 
 export type PackageFinding = {
@@ -110,6 +123,7 @@ export type PackageFinding = {
 };
 
 export type PackageSurface = typeof PackageSurfaceDocument.Type;
+export type ContractGateResult = Contract.CompatibilityReport;
 type ExportEntry = readonly [string, typeof ExportTarget.Type];
 
 const parseJson = (path: string) => JSON.parse(readFileSync(path, "utf8"));
@@ -211,6 +225,15 @@ const exportedDeclarationText = (
   return contents.join("\n");
 };
 
+export const declarationErrorCodes = (declarationText: string): ReadonlyArray<string> =>
+  [
+    ...new Set(
+      [...declarationText.matchAll(/["'](OBS_[A-Z0-9_]+)["']/g)].flatMap((match) =>
+        match[1] === undefined ? [] : [match[1]],
+      ),
+    ),
+  ].sort();
+
 export const currentPackageSurface = (packageRoot: string): PackageSurface => {
   const document = decodePackage(parseJson(join(packageRoot, "package.json")));
   const exports = exportEntries(document).map((entry) => entry[0]);
@@ -231,7 +254,7 @@ export const currentPackageSurface = (packageRoot: string): PackageSurface => {
     .sort();
   const symbols = declarationSymbols(packageRoot, document);
   const declarationText = exportedDeclarationText(packageRoot, document);
-  const publicErrorCodes = [...new Set(declarationText.match(/OBS_[A-Z0-9_]+/g) ?? [])].sort();
+  const publicErrorCodes = declarationErrorCodes(declarationText);
   return {
     name: document.name,
     version: document.version,
@@ -286,10 +309,246 @@ const setChange = (
   path: string,
   severity: SetChange["severity"],
 ): SetChange => ({ code, path, severity });
+type SemanticVersion = {
+  readonly major: number;
+  readonly minor: number;
+  readonly patch: number;
+  readonly prerelease: ReadonlyArray<string>;
+};
+
+type SemanticRangeBoundary = {
+  readonly version: SemanticVersion;
+  readonly inclusive: boolean;
+};
+
+type SemanticRangeInterval = {
+  readonly lower?: SemanticRangeBoundary;
+  readonly upper?: SemanticRangeBoundary;
+};
+
+export type PeerRangeComparison = {
+  readonly baseline: string;
+  readonly candidate: string;
+  readonly classification: "equivalent" | "widened" | "narrowed";
+};
+
 const dependencyEntry = (entry: string): { readonly name: string; readonly range: string } => {
   const separator = entry.lastIndexOf("@");
   return { name: entry.slice(0, separator), range: entry.slice(separator + 1) };
 };
+
+const parseSemanticVersion = (value: string): SemanticVersion | undefined => {
+  const match =
+    /^(0|[1-9]\d*)(?:[.](0|[1-9]\d*|x|X|[*]))?(?:[.](0|[1-9]\d*|x|X|[*]))?(?:-([0-9A-Za-z.-]+))?$/.exec(
+      value,
+    );
+  if (match === null) return undefined;
+  const minor = match[2] === undefined || /^[xX*]$/.test(match[2]) ? 0 : Number(match[2]);
+  const patch = match[3] === undefined || /^[xX*]$/.test(match[3]) ? 0 : Number(match[3]);
+  return {
+    major: Number(match[1]),
+    minor,
+    patch,
+    prerelease: match[4]?.split(".") ?? [],
+  };
+};
+
+const compareSemanticVersions = (left: SemanticVersion, right: SemanticVersion): number => {
+  if (left.major !== right.major) return left.major < right.major ? -1 : 1;
+  if (left.minor !== right.minor) return left.minor < right.minor ? -1 : 1;
+  if (left.patch !== right.patch) return left.patch < right.patch ? -1 : 1;
+  if (left.prerelease.length === 0 || right.prerelease.length === 0)
+    return left.prerelease.length === right.prerelease.length
+      ? 0
+      : left.prerelease.length === 0
+        ? 1
+        : -1;
+  const length = Math.max(left.prerelease.length, right.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = left.prerelease[index];
+    const rightPart = right.prerelease[index];
+    if (leftPart === undefined || rightPart === undefined)
+      return leftPart === rightPart ? 0 : leftPart === undefined ? -1 : 1;
+    if (leftPart === rightPart) continue;
+    const leftNumeric = /^\d+$/.test(leftPart);
+    const rightNumeric = /^\d+$/.test(rightPart);
+    if (leftNumeric && rightNumeric) return Number(leftPart) < Number(rightPart) ? -1 : 1;
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+    return leftPart < rightPart ? -1 : 1;
+  }
+  return 0;
+};
+
+const incrementVersion = (
+  version: SemanticVersion,
+  component: "major" | "minor" | "patch",
+): SemanticVersion =>
+  component === "major"
+    ? { major: version.major + 1, minor: 0, patch: 0, prerelease: [] }
+    : component === "minor"
+      ? { major: version.major, minor: version.minor + 1, patch: 0, prerelease: [] }
+      : { major: version.major, minor: version.minor, patch: version.patch + 1, prerelease: [] };
+
+const intersectIntervals = (
+  left: SemanticRangeInterval,
+  right: SemanticRangeInterval,
+): SemanticRangeInterval | undefined => {
+  const lower =
+    left.lower === undefined
+      ? right.lower
+      : right.lower === undefined
+        ? left.lower
+        : compareSemanticVersions(left.lower.version, right.lower.version) > 0
+          ? left.lower
+          : compareSemanticVersions(left.lower.version, right.lower.version) < 0
+            ? right.lower
+            : {
+                version: left.lower.version,
+                inclusive: left.lower.inclusive && right.lower.inclusive,
+              };
+  const upper =
+    left.upper === undefined
+      ? right.upper
+      : right.upper === undefined
+        ? left.upper
+        : compareSemanticVersions(left.upper.version, right.upper.version) < 0
+          ? left.upper
+          : compareSemanticVersions(left.upper.version, right.upper.version) > 0
+            ? right.upper
+            : {
+                version: left.upper.version,
+                inclusive: left.upper.inclusive && right.upper.inclusive,
+              };
+  if (lower !== undefined && upper !== undefined) {
+    const order = compareSemanticVersions(lower.version, upper.version);
+    if (order > 0 || (order === 0 && (!lower.inclusive || !upper.inclusive))) return undefined;
+  }
+  if (lower === undefined) return upper === undefined ? {} : { upper };
+  return upper === undefined ? { lower } : { lower, upper };
+};
+
+const tokenInterval = (token: string): SemanticRangeInterval | undefined => {
+  if (token === "" || token === "*" || /^[xX]$/.test(token)) return {};
+  const match = /^(\^|~|>=|<=|>|<|=)?(.+)$/.exec(token);
+  if (match === null || match[2] === undefined) return undefined;
+  const operator = match[1] ?? "";
+  const value = match[2];
+  const version = parseSemanticVersion(value);
+  if (version === undefined) return undefined;
+  const parts = value.replace(/-.+$/, "").split(".");
+  const wildcardMinor = parts[1] === undefined || /^[xX*]$/.test(parts[1]);
+  const wildcardPatch = parts[2] === undefined || /^[xX*]$/.test(parts[2]);
+  if (operator === "^") {
+    const component = version.major > 0 ? "major" : version.minor > 0 ? "minor" : "patch";
+    return {
+      lower: { version, inclusive: true },
+      upper: { version: incrementVersion(version, component), inclusive: false },
+    };
+  }
+  if (operator === "~")
+    return {
+      lower: { version, inclusive: true },
+      upper: {
+        version: incrementVersion(version, wildcardMinor ? "major" : "minor"),
+        inclusive: false,
+      },
+    };
+  if (operator === ">=" || operator === ">")
+    return { lower: { version, inclusive: operator === ">=" } };
+  if (operator === "<=" || operator === "<")
+    return { upper: { version, inclusive: operator === "<=" } };
+  if (wildcardMinor)
+    return {
+      lower: { version, inclusive: true },
+      upper: { version: incrementVersion(version, "major"), inclusive: false },
+    };
+  if (wildcardPatch)
+    return {
+      lower: { version, inclusive: true },
+      upper: { version: incrementVersion(version, "minor"), inclusive: false },
+    };
+  return {
+    lower: { version, inclusive: true },
+    upper: { version, inclusive: true },
+  };
+};
+
+const parseSemanticRange = (range: string): ReadonlyArray<SemanticRangeInterval> | undefined => {
+  const intervals: Array<SemanticRangeInterval> = [];
+  for (const alternative of range.split("||")) {
+    const trimmed = alternative.trim();
+    const hyphen = /^([^\s]+)\s+-\s+([^\s]+)$/.exec(trimmed);
+    const tokens =
+      hyphen === null ? trimmed.split(/\s+/) : [`>=${hyphen[1] ?? ""}`, `<=${hyphen[2] ?? ""}`];
+    let interval: SemanticRangeInterval = {};
+    for (const token of tokens) {
+      const parsed = tokenInterval(token);
+      if (parsed === undefined) return undefined;
+      const intersection = intersectIntervals(interval, parsed);
+      if (intersection === undefined) return undefined;
+      interval = intersection;
+    }
+    intervals.push(interval);
+  }
+  return intervals;
+};
+
+const lowerContains = (
+  container: SemanticRangeBoundary | undefined,
+  contained: SemanticRangeBoundary | undefined,
+): boolean => {
+  if (container === undefined) return true;
+  if (contained === undefined) return false;
+  const order = compareSemanticVersions(container.version, contained.version);
+  return order < 0 || (order === 0 && (container.inclusive || !contained.inclusive));
+};
+
+const upperContains = (
+  container: SemanticRangeBoundary | undefined,
+  contained: SemanticRangeBoundary | undefined,
+): boolean => {
+  if (container === undefined) return true;
+  if (contained === undefined) return false;
+  const order = compareSemanticVersions(container.version, contained.version);
+  return order > 0 || (order === 0 && (container.inclusive || !contained.inclusive));
+};
+
+const rangeContains = (
+  container: ReadonlyArray<SemanticRangeInterval>,
+  contained: ReadonlyArray<SemanticRangeInterval>,
+): boolean =>
+  contained.every((interval) =>
+    container.some(
+      (candidate) =>
+        lowerContains(candidate.lower, interval.lower) &&
+        upperContains(candidate.upper, interval.upper),
+    ),
+  );
+
+export const comparePeerRanges = (baseline: string, candidate: string): PeerRangeComparison => {
+  if (baseline === candidate) return { baseline, candidate, classification: "equivalent" };
+  const previous = parseSemanticRange(baseline);
+  const next = parseSemanticRange(candidate);
+  if (
+    previous === undefined ||
+    next === undefined ||
+    (!baseline.includes("-") && candidate.includes("-"))
+  )
+    return { baseline, candidate, classification: "narrowed" };
+  const baselineInCandidate = rangeContains(next, previous);
+  const candidateInBaseline = rangeContains(previous, next);
+  return {
+    baseline,
+    candidate,
+    classification:
+      baselineInCandidate && candidateInBaseline
+        ? "equivalent"
+        : baselineInCandidate
+          ? "widened"
+          : "narrowed",
+  };
+};
+
 const comparePeers = (
   baseline: ReadonlyArray<string>,
   candidate: ReadonlyArray<string>,
@@ -314,15 +573,13 @@ const comparePeers = (
         setChange("OBS_PACKAGE_PEER_ADDED", `peerDependencies/${name}@${range}`, "compatible"),
       );
     } else if (oldRange !== range) {
+      const comparison = comparePeerRanges(oldRange, range);
+      const compatible = comparison.classification !== "narrowed";
       changes.push(
         setChange(
-          oldRange.split("||").every((part) => range.includes(part.trim()))
-            ? "OBS_PACKAGE_PEER_ADDED"
-            : "OBS_PACKAGE_PEER_CHANGED",
+          compatible ? "OBS_PACKAGE_PEER_ADDED" : "OBS_PACKAGE_PEER_CHANGED",
           `peerDependencies/${name}@${oldRange}->${range}`,
-          oldRange.split("||").every((part) => range.includes(part.trim()))
-            ? "compatible"
-            : "breaking",
+          compatible ? "compatible" : "breaking",
         ),
       );
     }
@@ -457,12 +714,28 @@ export const classifyPackageChange = (
 export const packageSurfaceDigest = (surface: PackageSurface): string =>
   createHash("sha256").update(JSON.stringify(surface)).digest("hex");
 
-export const releaseIntegrityIssue = (
-  baseline: typeof BaselineDocument.Type,
+export const publishedPackageSurface = async (
+  name: string,
+  version: string,
+): Promise<{
+  readonly artifact: CompatibilityBaselineArtifact["source"]["registryPackages"][number];
+  readonly surface: PackageSurface;
+}> => {
+  const directory = mkdtempSync(join(tmpdir(), "observability-registry-package-"));
+  try {
+    const artifact = await fetchRegistryPackage({ name, version }, directory);
+    return { artifact, surface: currentPackageSurface(directory) };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+};
+
+export const releaseIntegrityIssue = async (
+  baseline: CompatibilityBaselineArtifact,
   versions: typeof CandidateVersionsDocument.Type,
   currentPackages: ReadonlyArray<PackageSurface>,
   release: string | undefined,
-): string | undefined => {
+): Promise<string | undefined> => {
   if (release === undefined) return undefined;
   const separator = release?.lastIndexOf("@") ?? -1;
   if (release === undefined || separator <= 0) return "release argument is malformed";
@@ -479,39 +752,19 @@ export const releaseIntegrityIssue = (
   if (previous === undefined) return undefined;
   if (previous.surfaceDigest === undefined)
     return "release baseline has no canonical package surface digest";
-  const directory = mkdtempSync(join(tmpdir(), "observability-compatibility-"));
   try {
-    const packed = Bun.spawnSync({
-      cmd: [
-        "bunx",
-        "npm",
-        "pack",
-        `${packageName}@${previous.version}`,
-        "--pack-destination",
-        directory,
-      ],
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    if (packed.exitCode !== 0) return "prior npm tarball could not be fetched";
-    const filename = packed.stdout.toString().trim().split("\n").at(-1);
-    if (filename === undefined || !existsSync(join(directory, filename)))
-      return "prior npm tarball was not produced";
-    const unpacked = Bun.spawnSync({
-      cmd: ["tar", "-xzf", join(directory, filename), "-C", directory],
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    if (unpacked.exitCode !== 0 || !existsSync(join(directory, "package", "package.json")))
-      return "prior npm tarball could not be extracted";
-    const npmSurface = currentPackageSurface(join(directory, "package"));
-    return packageSurfaceDigest(npmSurface) === previous.surfaceDigest
+    const published = await publishedPackageSurface(packageName, previous.version);
+    return packageSurfaceDigest(published.surface) === previous.surfaceDigest
       ? undefined
       : "prior npm package surface differs from the tagged baseline";
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
+  } catch {
+    return "prior npm tarball could not be fetched or safely extracted";
   }
 };
+
+export const evaluateContractGate = (
+  input: Contract.ContractCompatibilityInput,
+): ContractGateResult => Contract.classifyContractChange(input);
 
 const missingPackageFinding = (
   previous: PackageSurface,
@@ -545,7 +798,7 @@ export const runCompatibilityGate = async (): Promise<boolean> => {
   const candidateContract = await Effect.runPromise(
     Contract.decodeContractSurface(generatedCandidate),
   );
-  const contractReport = Contract.classifyContractChange({
+  const contractReport = evaluateContractGate({
     baseline: baselineContract,
     candidate: candidateContract,
     now: process.env.OBSERVABILITY_COMPATIBILITY_DATE ?? new Date().toISOString().slice(0, 10),
@@ -589,7 +842,7 @@ export const runCompatibilityGate = async (): Promise<boolean> => {
   );
   const releaseIndex = process.argv.indexOf("--release");
   const release = releaseIndex < 0 ? undefined : process.argv[releaseIndex + 1];
-  const integrityIssue = releaseIntegrityIssue(baseline, versions, currentPackages, release);
+  const integrityIssue = await releaseIntegrityIssue(baseline, versions, currentPackages, release);
   const accepted =
     contractReport.accepted &&
     packageReports.every((entry) => entry.satisfied) &&

@@ -84,6 +84,30 @@
     {
       "scope": "package",
       "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_ERROR_CODE_REMOVED",
+      "path": "publicErrorCodes/OBS_TELEMETRY_INVALID_MODULE_OPTIONS",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_ERROR_CODE_REMOVED",
+      "path": "publicErrorCodes/OBS_TELEMETRY_SHUTDOWN_FAILED",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_ERROR_CODE_REMOVED",
+      "path": "publicErrorCodes/OBS_TELEMETRY_STARTUP_FAILED",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
       "code": "OBS_PACKAGE_SYMBOL_REMOVED",
       "path": "symbols/.:WideEvent",
       "candidateVersion": "0.3.0",
@@ -222,6 +246,22 @@
       "package": "@equipe-tech/observability",
       "code": "OBS_PACKAGE_SYMBOL_REMOVED",
       "path": "symbols/./nestjs:TelemetryModuleOptions",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:telemetryModuleForTesting",
+      "candidateVersion": "0.3.0",
+      "migrationGuide": "docs/migration-0.3.md"
+    },
+    {
+      "scope": "package",
+      "package": "@equipe-tech/observability",
+      "code": "OBS_PACKAGE_SYMBOL_REMOVED",
+      "path": "symbols/./nestjs:TelemetryModuleTestingOverrides",
       "candidateVersion": "0.3.0",
       "migrationGuide": "docs/migration-0.3.md"
     },

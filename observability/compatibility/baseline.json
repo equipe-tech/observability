@@ -2,7 +2,21 @@
   "baseline": 1,
   "source": {
     "tag": "v0.2.1",
-    "commit": "a5ab6997536f9d3af797429783f65c9e68a0dfa0"
+    "commit": "a5ab6997536f9d3af797429783f65c9e68a0dfa0",
+    "registryPackages": [
+      {
+        "name": "@equipe-tech/observability",
+        "version": "0.2.1",
+        "tarball": "https://registry.npmjs.org/@equipe-tech/observability/-/observability-0.2.1.tgz",
+        "integrity": "sha512-T5T8KZGt6qhtrHr2fwYolDeZTLVNI7EAmh98Rz2aOjcKzRussTaAFDLpn6M5B9bYCwzDGvdIkDeKclcI8Kk5tA=="
+      },
+      {
+        "name": "@equipe-tech/observability-cli",
+        "version": "0.2.1",
+        "tarball": "https://registry.npmjs.org/@equipe-tech/observability-cli/-/observability-cli-0.2.1.tgz",
+        "integrity": "sha512-n3veQfsTsdEDrOyVmsgoRIhp3Onan2lwGLdu/fRQd8wjiWUHaZ7ZkIU37KeMsIEID4CLDV0ZdkrWk6cDPZcxNQ=="
+      }
+    ]
   },
   "contract": {
     "surface": 1,
@@ -59,24 +73,43 @@
         "./testing"
       ],
       "declarationSymbols": [
+        "./browser/client:BrowserClientEngine",
+        "./browser/client:BrowserTelemetryClient",
+        "./browser/client:BrowserTelemetryClientBatch",
+        "./browser/client:BrowserTelemetryClientConfig",
         "./browser/client:BrowserTelemetryClientDeliveryError",
+        "./browser/client:BrowserTelemetryClientEvent",
+        "./browser/client:BrowserTelemetryClientFields",
         "./browser/client:BrowserTelemetryClientShutdownError",
+        "./browser/client:BrowserTelemetryClientTransport",
         "./browser/client:createBrowserTelemetryClient",
+        "./browser/client:normalizePositiveInteger",
+        "./browser:BrowserClientEngine",
         "./browser:BrowserEvent",
         "./browser:BrowserEventBatch",
         "./browser:BrowserEventDeliveryError",
+        "./browser:BrowserEventFields",
         "./browser:BrowserEventTransport",
         "./browser:BrowserTelemetry",
+        "./browser:BrowserTelemetryClient",
+        "./browser:BrowserTelemetryClientBatch",
+        "./browser:BrowserTelemetryClientConfig",
         "./browser:BrowserTelemetryClientDeliveryError",
+        "./browser:BrowserTelemetryClientEvent",
+        "./browser:BrowserTelemetryClientFields",
         "./browser:BrowserTelemetryClientShutdownError",
+        "./browser:BrowserTelemetryClientTransport",
         "./browser:BrowserTelemetryOptions",
         "./browser:createBrowserTelemetryClient",
         "./browser:defaultEventsEndpoint",
+        "./browser:encodeBrowserEventBatch",
+        "./browser:maxEventIdLength",
         "./browser:maxEventNameLength",
         "./browser:maxEventsPerBatch",
         "./browser:maxFieldKeyLength",
         "./browser:maxFieldValueLength",
         "./browser:maxFieldsPerEvent",
+        "./browser:normalizePositiveInteger",
         "./metrics:Counter",
         "./metrics:CounterDefinition",
         "./metrics:FlushResult",
@@ -108,6 +141,7 @@
         "./nestjs:TelemetryModule",
         "./nestjs:TelemetryModuleAsyncOptions",
         "./nestjs:TelemetryModuleOptions",
+        "./nestjs:TelemetryModuleTestingOverrides",
         "./nestjs:TelemetryRequestTracker",
         "./nestjs:TelemetryShutdownError",
         "./nestjs:TelemetryStartupError",
@@ -115,6 +149,7 @@
         "./nestjs:createRequestWideEventTraceCorrelation",
         "./nestjs:defaultBrowserEventsPath",
         "./nestjs:requestSpan",
+        "./nestjs:telemetryModuleForTesting",
         "./nestjs:withRequestSpan",
         "./node:BrowserEventIngestReceipt",
         "./node:InvalidBrowserEventBatch",
@@ -140,7 +175,9 @@
         "./testing:makeCapture",
         "./testing:run",
         ".:BrowserEvents",
+        ".:EnvironmentVariables",
         ".:InvalidTelemetryEnvironment",
+        ".:OtlpEndpoint",
         ".:Telemetry",
         ".:TelemetryConfig",
         ".:WideEvent",
@@ -153,8 +190,16 @@
         "rxjs@^7.2.0"
       ],
       "optionalPeers": ["@nestjs/common", "@nestjs/core", "rxjs"],
-      "publicErrorCodes": ["OBS_BROWSER_EVENTS_DELIVERY_FAILED"],
-      "surfaceDigest": "61f461e7a7a500f258c8a8499588caf25b410a3feaf28d80153dc56e8622bea7"
+      "publicErrorCodes": [
+        "OBS_BROWSER_EVENTS_DELIVERY_FAILED",
+        "OBS_BROWSER_EVENTS_INVALID_BATCH",
+        "OBS_BROWSER_EVENTS_SHUTDOWN_TIMEOUT",
+        "OBS_TELEMETRY_INVALID_ENVIRONMENT",
+        "OBS_TELEMETRY_INVALID_MODULE_OPTIONS",
+        "OBS_TELEMETRY_SHUTDOWN_FAILED",
+        "OBS_TELEMETRY_STARTUP_FAILED"
+      ],
+      "surfaceDigest": "3606cfc4e8b53f97c66cffeb57bc334833716aae4acab182400c90b08ba86fdf"
     },
     {
       "name": "@equipe-tech/observability-cli",

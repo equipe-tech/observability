@@ -8,6 +8,7 @@ import type {
 } from "./ContractSurface.ts";
 
 export const CompatibilityCode = Schema.Literals([
+  "OBS_COMPAT_SERVICE_CHANGED",
   "OBS_COMPAT_EVENT_ADDED",
   "OBS_COMPAT_EVENT_REMOVED",
   "OBS_COMPAT_EVENT_RENAMED",
@@ -362,6 +363,18 @@ export const classifyContractChange = (input: ContractCompatibilityInput): Compa
   const baselineVersion = input.baseline.contractVersion;
   const candidateVersion = input.candidate.contractVersion;
   const findings: Array<CompatibilityFinding> = [];
+  if (input.baseline.service !== input.candidate.service)
+    findings.push(
+      finding(
+        "OBS_COMPAT_SERVICE_CHANGED",
+        "service",
+        "breaking",
+        baselineVersion,
+        candidateVersion,
+        "not-required",
+        false,
+      ),
+    );
   const baselineEvents = mapByName(input.baseline.events);
   const candidateEvents = mapByName(input.candidate.events);
   for (const event of input.candidate.events) {
@@ -633,9 +646,7 @@ export const classifyContractChange = (input: ContractCompatibilityInput): Compa
     baselineContractVersion: baselineVersion,
     candidateContractVersion: candidateVersion,
     requiredContractVersion,
-    accepted:
-      input.baseline.service === input.candidate.service &&
-      findings.every((entry) => entry.satisfied),
+    accepted: findings.every((entry) => entry.satisfied),
     findings,
   };
 };
