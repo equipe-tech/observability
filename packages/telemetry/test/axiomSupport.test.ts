@@ -1,8 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Option, Schema } from "effect";
+import { readFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import {
   decodeAxiomEnvironment,
+  deployedCanaryPollingBudget,
   findChildSpan,
   findLogs,
   findMetric,
@@ -28,6 +30,10 @@ const MplQueryBody = Schema.Struct({
 });
 const decodeAplQueryBody = Schema.decodeUnknownOption(AplQueryBody);
 const decodeMplQueryBody = Schema.decodeUnknownOption(MplQueryBody);
+const productionCollectorConfig = await readFile(
+  new URL("../../cli/src/assets/production.yaml", import.meta.url),
+  "utf8",
+);
 
 type StubAxiom = {
   readonly env: AxiomEnvironment;
@@ -35,9 +41,15 @@ type StubAxiom = {
   readonly server: Server;
 };
 
+type StubAxiomResponse = {
+  readonly aplBody?: string;
+  readonly aplStatus?: number;
+};
+
 const startStubAxiom = (
   matches: ReadonlyArray<{ readonly data: unknown }>,
   metricsResponse = "{}",
+  responseOptions: StubAxiomResponse = {},
 ): Promise<StubAxiom> =>
   new Promise((resolve, reject) => {
     const queries: Array<RecordedQuery> = [];
@@ -64,9 +76,14 @@ const startStubAxiom = (
           organizationId: request.headers["x-axiom-org-id"]?.toString() ?? "",
           query: Option.getOrElse(apl, () => Option.getOrElse(mpl, () => "")),
         });
-        response.writeHead(200, { "content-type": "application/json" });
+        const metricsRequest = request.url?.startsWith("/v1/query/_mpl") ?? false;
+        response.writeHead(metricsRequest ? 200 : (responseOptions.aplStatus ?? 200), {
+          "content-type": "application/json",
+        });
         response.end(
-          request.url?.startsWith("/v1/query/_mpl") ? metricsResponse : JSON.stringify({ matches }),
+          metricsRequest
+            ? metricsResponse
+            : (responseOptions.aplBody ?? JSON.stringify({ matches })),
         );
       });
     });
@@ -129,8 +146,13 @@ describe("axiom query support", () => {
       assert.strictEqual(query.organizationId, "stub-organization");
       assert.include(query.query, "['e2e-traces']");
       assert.include(query.query, "['attributes.custom']['canary.run_id'] == 'test-run-1'");
-      assert.include(query.query, "['service.version'] == '0.1.0'");
+      assert.include(query.query, "['resource.custom']['service.version'] == '0.1.0'");
       assert.include(query.query, "name == 'canary.operation'");
+      assert.include(query.query, "service_name = tostring(['resource.custom']['service.name'])");
+      assert.include(
+        query.query,
+        "service_version = tostring(['resource.custom']['service.version'])",
+      );
       assert.include(
         query.query,
         "environment_name = tostring(['resource.custom']['deployment.environment.name'])",
@@ -180,6 +202,7 @@ describe("axiom query support", () => {
               event_kind: "wide",
               event_source: null,
               service_name: "observability-canary",
+              service_version: "0.1.0",
               environment_name: "e2e",
               environment_alias: "e2e",
             },
@@ -198,12 +221,20 @@ describe("axiom query support", () => {
       assert.deepStrictEqual(log.traceId, Option.some("trace-1"));
       assert.deepStrictEqual(log.eventKind, Option.some("wide"));
       assert.deepStrictEqual(log.eventSource, Option.none());
+      assert.deepStrictEqual(log.serviceVersion, Option.some("0.1.0"));
       assert.deepStrictEqual(log.environmentName, Option.some("e2e"));
       assert.deepStrictEqual(log.environmentAlias, log.environmentName);
       const query = stub.queries[0];
       assert.isDefined(query);
       assert.include(query.query, "['e2e-logs']");
-      assert.include(query.query, "['service.version'] == '0.1.0'");
+      const serviceResourceFields = ["service.namespace", "service.name", "service.version"];
+      for (const field of serviceResourceFields) {
+        assert.include(query.query, `['resource.custom']['${field}']`);
+      }
+      assert.notInclude(query.query, "service_name = ['service.name']");
+      assert.notInclude(query.query, "and ['service.version'] ==");
+      assert.include(productionCollectorConfig, "otlphttp/logs:");
+      assert.include(productionCollectorConfig, "X-Axiom-Dataset: ${env:AXIOM_DATASET_LOGS}");
       assert.include(
         query.query,
         "environment_name = tostring(['resource.custom']['deployment.environment.name'])",
@@ -214,6 +245,29 @@ describe("axiom query support", () => {
       );
     }),
   );
+
+  it.live("observes a non-JSON provider response before decoding", () =>
+    Effect.gen(function* () {
+      const observed: Array<string> = [];
+      const stub = yield* Effect.promise(() =>
+        startStubAxiom([], "{}", { aplBody: "gateway unavailable", aplStatus: 502 }),
+      );
+      yield* findRootSpan(stub.env, "test-run-1", "0.1.0", {
+        observe: (response) => Effect.sync(() => observed.push(response)),
+      }).pipe(Effect.exit, Effect.ensuring(Effect.sync(() => stub.server.close())));
+      assert.deepStrictEqual(observed, ["status=502 body=gateway unavailable"]);
+    }),
+  );
+
+  it("keeps the polling worst case below the suite timeout", () => {
+    const queryBudget =
+      deployedCanaryPollingBudget.attempts *
+      deployedCanaryPollingBudget.queriesPerAttempt *
+      deployedCanaryPollingBudget.queryTimeoutMilliseconds;
+    const sleepBudget =
+      (deployedCanaryPollingBudget.attempts - 1) * deployedCanaryPollingBudget.sleepMilliseconds;
+    assert.isBelow(queryBudget + sleepBudget, deployedCanaryPollingBudget.suiteTimeoutMilliseconds);
+  });
 
   it.live("queries the metrics dataset with MPL and returns the complete response", () =>
     Effect.gen(function* () {

@@ -1,9 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Option } from "effect";
+import { Effect, Option, Ref } from "effect";
 import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 import {
   decodeAxiomEnvironment,
+  deployedCanaryPollingBudget,
   findChildSpan,
   findLogs,
   findMetric,
@@ -25,10 +26,10 @@ const deployedEnabled = process.env["OBSERVABILITY_E2E_DEPLOYED"] === "1";
 const canaryEnvironment = "e2e";
 
 type DeployedCanaryResponses = {
-  root: string;
-  child: string;
-  logs: string;
-  metric: string;
+  readonly root: string;
+  readonly child: string;
+  readonly logs: string;
+  readonly metric: string;
 };
 
 type DeployedRun = {
@@ -44,22 +45,27 @@ const findDeployedRun = Effect.fn("findDeployedRun")(function* (
   env: AxiomEnvironment,
   runId: string,
 ): Effect.fn.Return<DeployedRun, never> {
-  const responses: DeployedCanaryResponses = {
+  const responses = yield* Ref.make<DeployedCanaryResponses>({
     root: "not queried",
     child: "not queried",
     logs: "not queried",
     metric: "not queried",
-  };
-  for (let attempt = 0; attempt < 60; attempt++) {
-    const root = yield* findRootSpan(env, runId, canaryServiceVersion, (response) => {
-      responses.root = response;
+  });
+  const queryTimeoutMilliseconds = deployedCanaryPollingBudget.queryTimeoutMilliseconds;
+  for (let attempt = 0; attempt < deployedCanaryPollingBudget.attempts; attempt++) {
+    const root = yield* findRootSpan(env, runId, canaryServiceVersion, {
+      observe: (response) => Ref.update(responses, (current) => ({ ...current, root: response })),
+      timeoutMilliseconds: queryTimeoutMilliseconds,
     });
     if (Option.isSome(root)) {
-      const child = yield* findChildSpan(env, root.value.traceId, (response) => {
-        responses.child = response;
+      const child = yield* findChildSpan(env, root.value.traceId, {
+        observe: (response) =>
+          Ref.update(responses, (current) => ({ ...current, child: response })),
+        timeoutMilliseconds: queryTimeoutMilliseconds,
       });
-      const logs = yield* findLogs(env, runId, canaryServiceVersion, (response) => {
-        responses.logs = response;
+      const logs = yield* findLogs(env, runId, canaryServiceVersion, {
+        observe: (response) => Ref.update(responses, (current) => ({ ...current, logs: response })),
+        timeoutMilliseconds: queryTimeoutMilliseconds,
       });
       const metric = yield* findMetric(
         env,
@@ -67,8 +73,10 @@ const findDeployedRun = Effect.fn("findDeployedRun")(function* (
         canaryEnvironment,
         "observability-canary",
         canaryServiceVersion,
-        (response) => {
-          responses.metric = response;
+        {
+          observe: (response) =>
+            Ref.update(responses, (current) => ({ ...current, metric: response })),
+          timeoutMilliseconds: queryTimeoutMilliseconds,
         },
       );
       const completed = logs.find((log) => log.eventName === "canary.completed");
@@ -100,10 +108,13 @@ const findDeployedRun = Effect.fn("findDeployedRun")(function* (
         };
       }
     }
-    yield* Effect.sleep("3 seconds");
+    if (attempt + 1 < deployedCanaryPollingBudget.attempts) {
+      yield* Effect.sleep(deployedCanaryPollingBudget.sleepMilliseconds);
+    }
   }
+  const lastResponses = yield* Ref.get(responses);
   return yield* Effect.die(
-    `The deployed canary run ${runId} for service version ${canaryServiceVersion} was not found in Axiom after 60 attempts. Last provider responses: ${JSON.stringify(responses)}.`,
+    `The deployed canary run ${runId} for service version ${canaryServiceVersion} was not found in Axiom after ${deployedCanaryPollingBudget.attempts} attempts. Last provider responses: ${JSON.stringify(lastResponses)}.`,
   );
 });
 
@@ -184,6 +195,7 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
         assert.deepStrictEqual(run.completed.eventKind, Option.some("wide"));
         assert.deepStrictEqual(run.completed.serviceNamespace, Option.some("equipe-tech"));
         assert.deepStrictEqual(run.completed.serviceName, Option.some("observability-canary"));
+        assert.deepStrictEqual(run.completed.serviceVersion, Option.some(canaryServiceVersion));
         assert.isTrue(Option.isNone(run.completed.serviceInstanceId));
         assertEnvironmentAliases(
           run.completed.environmentName,
@@ -222,6 +234,6 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
         assert.include(rootEvents, "[REDACTED]");
         assert.include(redactedBody, "[REDACTED]");
       }),
-    240_000,
+    deployedCanaryPollingBudget.suiteTimeoutMilliseconds,
   );
 });
