@@ -10,6 +10,9 @@ on:
       ref:
         required: false
         type: string
+      release_tag:
+        required: false
+        type: string
       run_deployed_canary:
         default: false
         required: false
@@ -80,7 +83,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Resolve release canary identity
         env:
-          RELEASE_TAG: ${{ inputs.ref }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: bun scripts/release-canary.ts --tag "$RELEASE_TAG" --github-env "$GITHUB_ENV"
       - name: Start the production collector
         env:
@@ -90,9 +93,10 @@ jobs:
           AXIOM_DATASET_METRICS: ${{ vars.AXIOM_DATASET_METRICS }}
         run: |
           bun scripts/release-canary.ts --require-credential AXIOM_INGEST_TOKEN
+          export AXIOM_TOKEN="$AXIOM_INGEST_TOKEN"
           docker run -d --name otel-production \
             -p 127.0.0.1:24318:4318 \
-            -e AXIOM_TOKEN="$AXIOM_INGEST_TOKEN" \
+            -e AXIOM_TOKEN \
             -e AXIOM_DATASET_TRACES -e AXIOM_DATASET_LOGS -e AXIOM_DATASET_METRICS \
             -v "$PWD/packages/cli/src/assets/production.yaml:/etc/otelcol/config.yaml:ro" \
             otel/opentelemetry-collector-contrib:0.159.0 --config=/etc/otelcol/config.yaml
@@ -117,7 +121,7 @@ jobs:
         run: docker rm -f otel-production 2>/dev/null || true
 
   canary-gate:
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     needs: [verify, deployed-canary]
     runs-on: ubuntu-latest
     outputs:

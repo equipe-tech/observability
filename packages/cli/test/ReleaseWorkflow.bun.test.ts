@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const workflowPath = fileURLToPath(
@@ -8,23 +11,34 @@ const workflowPath = fileURLToPath(
 
 const ciWorkflowPath = fileURLToPath(new URL("../../../.github/workflows/ci.yml", import.meta.url));
 
+const releasePreflightWorkflowPath = fileURLToPath(
+  new URL("../../../.github/workflows/release-preflight.yml", import.meta.url),
+);
+
 const releaseCanaryScriptPath = fileURLToPath(
   new URL("../../../scripts/release-canary.ts", import.meta.url),
 );
 
 const workflow = await Bun.file(workflowPath).text();
 const ciWorkflow = await Bun.file(ciWorkflowPath).text();
+const releasePreflightWorkflow = await Bun.file(releasePreflightWorkflowPath).text();
 const releaseCanaryScript = await Bun.file(releaseCanaryScriptPath).text();
 
+const WorkflowEnvironment = Schema.Struct({
+  OBSERVABILITY_E2E_DEPLOYED: Schema.optionalKey(Schema.String),
+  CANARY_REQUESTED: Schema.optionalKey(Schema.String),
+  CANARY_RESULT: Schema.optionalKey(Schema.String),
+  DEPLOYED_CANARY_RESULT: Schema.optionalKey(Schema.String),
+});
+
 const WorkflowStep = Schema.Struct({
+  id: Schema.optionalKey(Schema.String),
   name: Schema.optionalKey(Schema.String),
   if: Schema.optionalKey(Schema.String),
   run: Schema.optionalKey(Schema.String),
   uses: Schema.optionalKey(Schema.String),
   with: Schema.optionalKey(Schema.Struct({ "bun-version": Schema.optionalKey(Schema.String) })),
-  env: Schema.optionalKey(
-    Schema.Struct({ OBSERVABILITY_E2E_DEPLOYED: Schema.optionalKey(Schema.String) }),
-  ),
+  env: Schema.optionalKey(WorkflowEnvironment),
 });
 
 const WorkflowDocument = Schema.Struct({
@@ -43,6 +57,8 @@ const ConditionalJob = Schema.Struct({
 const GateJob = Schema.Struct({
   if: Schema.String,
   needs: Schema.Array(Schema.String),
+  outputs: Schema.Struct({ result: Schema.String }),
+  steps: Schema.Array(WorkflowStep),
 });
 
 const WorkflowSecrets = Schema.Struct({
@@ -52,15 +68,32 @@ const WorkflowSecrets = Schema.Struct({
 
 const ReusableWorkflowJob = Schema.Struct({
   uses: Schema.String,
-  with: Schema.Struct({ run_deployed_canary: Schema.Boolean }),
+  with: Schema.Struct({
+    ref: Schema.String,
+    release_tag: Schema.String,
+    run_deployed_canary: Schema.Boolean,
+  }),
   secrets: Schema.optionalKey(WorkflowSecrets),
 });
 
 const DependentJob = Schema.Struct({ needs: Schema.Array(Schema.String) });
 
+const ReleaseGateJob = Schema.Struct({
+  needs: Schema.String,
+  steps: Schema.Array(WorkflowStep),
+});
+
 const CiWorkflow = Schema.Struct({
   on: Schema.Struct({
-    workflow_call: Schema.Struct({ secrets: Schema.optionalKey(WorkflowSecrets) }),
+    workflow_call: Schema.Struct({
+      inputs: Schema.Struct({
+        release_tag: Schema.Struct({ required: Schema.Boolean, type: Schema.String }),
+      }),
+      outputs: Schema.Struct({
+        deployed_canary_result: Schema.Struct({ value: Schema.String }),
+      }),
+      secrets: Schema.optionalKey(WorkflowSecrets),
+    }),
   }),
   jobs: Schema.Struct({
     verify: ConditionalJob,
@@ -72,6 +105,7 @@ const CiWorkflow = Schema.Struct({
 const ReleaseWorkflow = Schema.Struct({
   jobs: Schema.Struct({
     verify: ReusableWorkflowJob,
+    "canary-gate": ReleaseGateJob,
     release: DependentJob,
     "publish-npm": DependentJob,
   }),
@@ -84,63 +118,51 @@ const workflowDocuments = [
   Schema.decodeUnknownSync(WorkflowDocument)(Bun.YAML.parse(workflow)),
 ];
 
-type WorkflowContext = {
-  readonly eventName: "push" | "pull_request" | "workflow_call";
-  readonly runDeployedCanary: boolean;
+type GateCase = {
+  readonly requested: "true" | "false";
+  readonly result: "success" | "failure" | "skipped" | "cancelled";
+  readonly exitCode: number;
+  readonly output: string;
 };
 
-type JobResult = "success" | "skipped" | "failure";
-
-const ordinaryEvents: ReadonlyArray<WorkflowContext["eventName"]> = ["push", "pull_request"];
-
-const evaluateWorkflowCondition = (
-  expression: string | undefined,
-  context: WorkflowContext,
-): boolean => {
-  if (expression === undefined) return true;
-  const condition = expression
-    .replace(/^\$\{\{\s*/, "")
-    .replace(/\s*}}$/, "")
-    .trim();
-  const disjunction = condition.split("||");
-  if (disjunction.length > 1) {
-    return disjunction.some((part) => evaluateWorkflowCondition(part.trim(), context));
-  }
-  const conjunction = condition.split("&&");
-  if (conjunction.length > 1) {
-    return conjunction.every((part) => evaluateWorkflowCondition(part.trim(), context));
-  }
-  if (condition.startsWith("!")) {
-    return !evaluateWorkflowCondition(condition.slice(1).trim(), context);
-  }
-  if (condition === "inputs.run_deployed_canary") return context.runDeployedCanary;
-  if (condition === "always()") return true;
-  const eventComparison = /^github\.event_name\s*(==|!=)\s*'([^']+)'$/.exec(condition);
-  if (eventComparison !== null) {
-    const [, operator, eventName] = eventComparison;
-    return operator === "==" ? context.eventName === eventName : context.eventName !== eventName;
-  }
-  throw new Error(`Unsupported workflow condition: ${condition}`);
+type ShellResult = {
+  readonly exitCode: number;
+  readonly output: string;
+  readonly stderr: string;
+  readonly stdout: string;
 };
 
-const evaluateCiGraph = (context: WorkflowContext): Map<string, JobResult> => {
-  const results = new Map<string, JobResult>();
-  results.set("verify", "success");
-  const deployedCanaryResult = evaluateWorkflowCondition(
-    parsedCiWorkflow.jobs["deployed-canary"].if,
-    context,
-  )
-    ? "success"
-    : "skipped";
-  results.set("deployed-canary", deployedCanaryResult);
-  const gateRuns = evaluateWorkflowCondition(parsedCiWorkflow.jobs["canary-gate"].if, context);
-  const gateResult = gateRuns
-    ? context.runDeployedCanary && deployedCanaryResult !== "success"
-      ? "failure"
-      : "success"
-    : "skipped";
-  results.set("canary-gate", gateResult);
-  return results;
+const gateCases: ReadonlyArray<GateCase> = [
+  { requested: "false", result: "skipped", exitCode: 0, output: "result=not-requested\n" },
+  { requested: "false", result: "failure", exitCode: 0, output: "result=not-requested\n" },
+  { requested: "true", result: "success", exitCode: 0, output: "result=success\n" },
+  { requested: "true", result: "failure", exitCode: 1, output: "" },
+  { requested: "true", result: "skipped", exitCode: 1, output: "" },
+  { requested: "true", result: "cancelled", exitCode: 1, output: "" },
+];
+
+const executeShell = async (
+  script: string,
+  environment: NodeJS.ProcessEnv,
+): Promise<ShellResult> => {
+  const directory = await mkdtemp(join(tmpdir(), "release-workflow-gate-"));
+  const outputPath = join(directory, "github-output");
+  try {
+    const child = Bun.spawn(["bash", "-euo", "pipefail", "-c", script], {
+      env: { ...process.env, ...environment, GITHUB_OUTPUT: outputPath },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    const output = await readFile(outputPath, "utf8").catch(() => "");
+    return { exitCode, output, stderr, stdout };
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 };
 
 describe("release workflow publication gate", () => {
@@ -199,20 +221,55 @@ describe("release workflow publication gate", () => {
     expect(workflow).toContain('[[ "$head_commit" == "$tag_commit" ]]');
   });
 
-  test("evaluates the deployed canary gate for every caller event", () => {
-    const events: ReadonlyArray<WorkflowContext["eventName"]> = [
-      "push",
-      "pull_request",
-      "workflow_call",
-    ];
-    for (const eventName of events) {
-      const omitted = evaluateCiGraph({ eventName, runDeployedCanary: false });
-      expect(omitted.get("deployed-canary")).toBe("skipped");
-      expect(omitted.get("canary-gate")).toBe("success");
-      const requested = evaluateCiGraph({ eventName, runDeployedCanary: true });
-      expect(requested.get("deployed-canary")).toBe("success");
-      expect(requested.get("canary-gate")).toBe("success");
+  test("executes the reusable workflow canary gate script", async () => {
+    const gateStep = parsedCiWorkflow.jobs["canary-gate"].steps.find(
+      (step) => step.id === "result",
+    );
+    expect(gateStep?.run).toBeDefined();
+    if (gateStep?.run === undefined) throw new Error("The reusable canary gate script is missing.");
+    for (const gateCase of gateCases) {
+      const result = await executeShell(gateStep.run, {
+        CANARY_REQUESTED: gateCase.requested,
+        CANARY_RESULT: gateCase.result,
+      });
+      expect(result.exitCode).toBe(gateCase.exitCode);
+      expect(result.output).toBe(gateCase.output);
+      expect(result.stderr).toBe("");
+      if (gateCase.exitCode === 1) {
+        expect(result.stdout).toContain("The requested deployed canary did not succeed.");
+      } else {
+        expect(result.stdout).toBe("");
+      }
     }
+  });
+
+  test("executes the release workflow canary gate script", async () => {
+    const gateStep = parsedReleaseWorkflow.jobs["canary-gate"].steps?.[0];
+    expect(gateStep?.run).toBeDefined();
+    if (gateStep?.run === undefined) throw new Error("The release canary gate script is missing.");
+    for (const canaryResult of ["success", "failure", "skipped", "cancelled"]) {
+      const result = await executeShell(gateStep.run, {
+        CANARY_REQUESTED: "true",
+        CANARY_RESULT: canaryResult,
+        DEPLOYED_CANARY_RESULT: canaryResult,
+      });
+      expect(result.exitCode).toBe(canaryResult === "success" ? 0 : 1);
+      expect(result.output).toBe("");
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toBe("");
+    }
+  });
+
+  test("wires the reusable gate output into the release gate", () => {
+    expect(parsedCiWorkflow.on.workflow_call.outputs.deployed_canary_result.value).toBe(
+      "${{ jobs.canary-gate.outputs.result }}",
+    );
+    expect(parsedCiWorkflow.jobs["canary-gate"].outputs.result).toBe(
+      "${{ steps.result.outputs.result }}",
+    );
+    expect(parsedReleaseWorkflow.jobs["canary-gate"].steps?.[0]?.env?.DEPLOYED_CANARY_RESULT).toBe(
+      "${{ needs.verify.outputs.deployed_canary_result }}",
+    );
   });
 
   test("builds a release graph that cannot bypass the canary gate", () => {
@@ -237,7 +294,16 @@ describe("release workflow publication gate", () => {
     expect(canaryStep?.run).toContain("bun run test:canary:deployed");
   });
 
-  test("derives the deployed canary service version from the release tag", () => {
+  test("derives the deployed canary service version from its release tag input", () => {
+    expect(parsedCiWorkflow.on.workflow_call.inputs.release_tag).toEqual({
+      required: false,
+      type: "string",
+    });
+    expect(parsedReleaseWorkflow.jobs.verify.with.release_tag).toBe(
+      "${{ needs.tag-check.outputs.tag }}",
+    );
+    expect(parsedReleaseWorkflow.jobs.verify.with.ref).toBe("${{ needs.tag-check.outputs.tag }}");
+    expect(ciWorkflow).toContain("RELEASE_TAG: ${{ inputs.release_tag }}");
     expect(ciWorkflow).toContain(
       'bun scripts/release-canary.ts --tag "$RELEASE_TAG" --github-env "$GITHUB_ENV"',
     );
@@ -249,18 +315,23 @@ describe("release workflow publication gate", () => {
     const reportStep = parsedCiWorkflow.jobs.verify.steps?.find(
       (step) => step.name === "Report deployed canary status",
     );
-    expect(reportStep).toBeDefined();
-    for (const eventName of ordinaryEvents) {
-      expect(evaluateCiGraph({ eventName, runDeployedCanary: false }).get("deployed-canary")).toBe(
-        "skipped",
-      );
-      expect(
-        evaluateWorkflowCondition(reportStep?.if, { eventName, runDeployedCanary: false }),
-      ).toBe(true);
-      expect(
-        evaluateWorkflowCondition(reportStep?.if, { eventName, runDeployedCanary: true }),
-      ).toBe(false);
-    }
+    expect(parsedCiWorkflow.jobs["deployed-canary"].if).toBe("${{ inputs.run_deployed_canary }}");
+    expect(reportStep?.if).toBe("${{ !inputs.run_deployed_canary }}");
+    expect(parsedCiWorkflow.jobs["canary-gate"].if).toBe("${{ !cancelled() }}");
+  });
+
+  test("keeps the ingest token out of the docker command arguments", () => {
+    expect(ciWorkflow).toContain('export AXIOM_TOKEN="$AXIOM_INGEST_TOKEN"');
+    expect(ciWorkflow).toContain("-e AXIOM_TOKEN \\");
+    expect(ciWorkflow).not.toContain('-e AXIOM_TOKEN="$AXIOM_INGEST_TOKEN"');
+  });
+
+  test("uses release canary identity resolution in preflight", () => {
+    expect(releasePreflightWorkflow).toContain(
+      'bun scripts/release-canary.ts --tag "$SLUG@$VERSION" --github-env "$GITHUB_ENV"',
+    );
+    expect(releasePreflightWorkflow).not.toContain("for candidate in packages/*/package.json");
+    expect(releasePreflightWorkflow).not.toContain("jq -r .version");
   });
 
   test("rebuilds and verifies the archive before publication", () => {

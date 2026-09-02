@@ -64,6 +64,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       ref: ${{ needs.tag-check.outputs.tag }}
+      release_tag: ${{ needs.tag-check.outputs.tag }}
       run_deployed_canary: true
 
   canary-gate:
