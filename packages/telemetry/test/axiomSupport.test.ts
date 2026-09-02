@@ -3,6 +3,7 @@ import { Effect, Option, Schema } from "effect";
 import { readFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import {
+  axiomServiceResourceFields,
   decodeAxiomEnvironment,
   deployedCanaryPollingBudget,
   findChildSpan,
@@ -146,13 +147,10 @@ describe("axiom query support", () => {
       assert.strictEqual(query.organizationId, "stub-organization");
       assert.include(query.query, "['e2e-traces']");
       assert.include(query.query, "['attributes.custom']['canary.run_id'] == 'test-run-1'");
-      assert.include(query.query, "['resource.custom']['service.version'] == '0.1.0'");
+      assert.include(query.query, "['service.version'] == '0.1.0'");
       assert.include(query.query, "name == 'canary.operation'");
-      assert.include(query.query, "service_name = tostring(['resource.custom']['service.name'])");
-      assert.include(
-        query.query,
-        "service_version = tostring(['resource.custom']['service.version'])",
-      );
+      assert.include(query.query, "service_name = tostring(['service.name'])");
+      assert.include(query.query, "service_version = tostring(['service.version'])");
       assert.include(
         query.query,
         "environment_name = tostring(['resource.custom']['deployment.environment.name'])",
@@ -227,12 +225,17 @@ describe("axiom query support", () => {
       const query = stub.queries[0];
       assert.isDefined(query);
       assert.include(query.query, "['e2e-logs']");
-      const serviceResourceFields = ["service.namespace", "service.name", "service.version"];
-      for (const field of serviceResourceFields) {
-        assert.include(query.query, `['resource.custom']['${field}']`);
-      }
-      assert.notInclude(query.query, "service_name = ['service.name']");
-      assert.notInclude(query.query, "and ['service.version'] ==");
+      assert.deepStrictEqual(axiomServiceResourceFields, {
+        namespace: "['resource.custom']['service.namespace']",
+        name: "['service.name']",
+        version: "['service.version']",
+      });
+      assert.include(query.query, `service_name = tostring(${axiomServiceResourceFields.name})`);
+      assert.include(
+        query.query,
+        `service_version = tostring(${axiomServiceResourceFields.version})`,
+      );
+      assert.include(query.query, `${axiomServiceResourceFields.version} == '0.1.0'`);
       assert.include(productionCollectorConfig, "otlphttp/logs:");
       assert.include(productionCollectorConfig, "X-Axiom-Dataset: ${env:AXIOM_DATASET_LOGS}");
       assert.include(

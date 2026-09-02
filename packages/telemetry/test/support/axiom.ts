@@ -209,10 +209,15 @@ const toAxiomSpan = (row: typeof AxiomSpanRow.Type): AxiomSpan => ({
   redaction: toAxiomRedactionAttributes(row),
 });
 
-const serviceResourcePath = (name: string): string => `['resource.custom']['${name}']`;
-const serviceNamespacePath = serviceResourcePath("service.namespace");
-const serviceNamePath = serviceResourcePath("service.name");
-const serviceVersionPath = serviceResourcePath("service.version");
+export const axiomServiceResourceFields = {
+  namespace: "['resource.custom']['service.namespace']",
+  name: "['service.name']",
+  version: "['service.version']",
+};
+
+const serviceNamespacePath = axiomServiceResourceFields.namespace;
+const serviceNamePath = axiomServiceResourceFields.name;
+const serviceVersionPath = axiomServiceResourceFields.version;
 
 const spanProjection = `project trace_id, span_id, parent_span_id, name, service_namespace = tostring(${serviceNamespacePath}), service_name = tostring(${serviceNamePath}), service_version = tostring(${serviceVersionPath}), service_instance_id = tostring(['resource.custom']['service.instance.id']), environment_name = tostring(['resource.custom']['deployment.environment.name']), environment_alias = tostring(['resource.custom']['deployment.environment']), events = tostring(events), ${redactionProjection}`;
 
