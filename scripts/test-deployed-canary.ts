@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +7,7 @@ const VitestReport = Schema.Struct({
   numPassedTests: Schema.Number,
 });
 
-const decodeVitestReport = Schema.decodeUnknownSync(Schema.fromJsonString(VitestReport));
+const decodeVitestReport = Schema.decodeUnknownEffect(Schema.fromJsonString(VitestReport));
 
 const DeployedCanaryErrorCode = Schema.Literals([
   "OBS_DEPLOYED_CANARY_NOT_REQUESTED",
@@ -39,76 +39,103 @@ const deployedCanaryError = (
     cause,
   });
 
-export const deployedCanaryTestCount = (
+const unexpectedDeployedCanaryError = (
+  correlationId: string,
+  cause: unknown,
+): DeployedCanaryError =>
+  deployedCanaryError(
+    "OBS_DEPLOYED_CANARY_UNEXPECTED",
+    "The deployed canary command failed unexpectedly.",
+    correlationId,
+    cause,
+  );
+
+export const deployedCanaryTestCount = Effect.fn("deployedCanaryTestCount")(function* (
   report: string,
   correlationId: string = crypto.randomUUID(),
-): number => {
-  try {
-    return decodeVitestReport(report).numPassedTests;
-  } catch (cause) {
-    throw deployedCanaryError(
-      "OBS_DEPLOYED_CANARY_REPORT_INVALID",
-      "The deployed canary test report is malformed.",
-      correlationId,
-      cause,
-    );
-  }
-};
+) {
+  return yield* decodeVitestReport(report).pipe(
+    Effect.mapError((cause) =>
+      deployedCanaryError(
+        "OBS_DEPLOYED_CANARY_REPORT_INVALID",
+        "The deployed canary test report is malformed.",
+        correlationId,
+        cause,
+      ),
+    ),
+    Effect.map((decoded) => decoded.numPassedTests),
+  );
+});
 
-const run = async (): Promise<number> => {
+export const requireDeployedCanaryTests = Effect.fn("requireDeployedCanaryTests")(function* (
+  report: string,
+  correlationId: string = crypto.randomUUID(),
+) {
+  const count = yield* deployedCanaryTestCount(report, correlationId);
+  if (count > 0) return count;
+  return yield* deployedCanaryError(
+    "OBS_DEPLOYED_CANARY_NO_TESTS",
+    "The deployed canary gate did not execute any tests.",
+    correlationId,
+    report,
+  );
+});
+
+const run = Effect.fn("deployedCanary.run")(function* () {
   const correlationId = crypto.randomUUID();
   if (process.env.OBSERVABILITY_E2E_DEPLOYED !== "1") {
-    throw deployedCanaryError(
+    return yield* deployedCanaryError(
       "OBS_DEPLOYED_CANARY_NOT_REQUESTED",
       "OBSERVABILITY_E2E_DEPLOYED=1 is required for the deployed canary gate.",
       correlationId,
       process.env.OBSERVABILITY_E2E_DEPLOYED,
     );
   }
-  const outputDirectory = await mkdtemp(join(tmpdir(), "observability-deployed-canary-"));
+  const outputDirectory = yield* Effect.tryPromise({
+    try: () => mkdtemp(join(tmpdir(), "observability-deployed-canary-")),
+    catch: (cause) => unexpectedDeployedCanaryError(correlationId, cause),
+  });
   const reportPath = join(outputDirectory, "vitest-report.json");
-  try {
-    const child = Bun.spawn(
-      [
-        "vp",
-        "test",
-        "run",
-        "packages/telemetry/test/canary.deployed.test.ts",
-        "--reporter=default",
-        "--reporter=json",
-        `--outputFile.json=${reportPath}`,
-      ],
-      { cwd: process.cwd(), env: process.env, stdout: "inherit", stderr: "inherit" },
-    );
-    const exitCode = await child.exited;
+  return yield* Effect.gen(function* () {
+    const child = yield* Effect.try({
+      try: () =>
+        Bun.spawn(
+          [
+            "vp",
+            "test",
+            "run",
+            "packages/telemetry/test/canary.deployed.test.ts",
+            "--reporter=default",
+            "--reporter=json",
+            `--outputFile.json=${reportPath}`,
+          ],
+          { cwd: process.cwd(), env: process.env, stdout: "inherit", stderr: "inherit" },
+        ),
+      catch: (cause) => unexpectedDeployedCanaryError(correlationId, cause),
+    });
+    const exitCode = yield* Effect.tryPromise({
+      try: () => child.exited,
+      catch: (cause) => unexpectedDeployedCanaryError(correlationId, cause),
+    });
     if (exitCode !== 0) return exitCode;
-    const report = await readFile(reportPath, "utf8");
-    if (deployedCanaryTestCount(report, correlationId) > 0) return 0;
-    throw deployedCanaryError(
-      "OBS_DEPLOYED_CANARY_NO_TESTS",
-      "The deployed canary gate did not execute any tests.",
-      correlationId,
-      report,
-    );
-  } finally {
-    await rm(outputDirectory, { recursive: true, force: true });
-  }
-};
+    const report = yield* Effect.tryPromise({
+      try: () => readFile(reportPath, "utf8"),
+      catch: (cause) => unexpectedDeployedCanaryError(correlationId, cause),
+    });
+    yield* requireDeployedCanaryTests(report, correlationId);
+    return 0;
+  }).pipe(
+    Effect.ensuring(Effect.promise(() => rm(outputDirectory, { recursive: true, force: true }))),
+  );
+});
 
 if (import.meta.main) {
-  try {
-    process.exitCode = await run();
-  } catch (cause) {
+  Effect.runPromise(run()).catch((cause) => {
     const error =
       cause instanceof DeployedCanaryError
         ? cause
-        : deployedCanaryError(
-            "OBS_DEPLOYED_CANARY_UNEXPECTED",
-            "The deployed canary command failed unexpectedly.",
-            crypto.randomUUID(),
-            cause,
-          );
+        : unexpectedDeployedCanaryError(crypto.randomUUID(), cause);
     console.error(`${error.code}: ${error.message}`);
     process.exitCode = 1;
-  }
+  });
 }

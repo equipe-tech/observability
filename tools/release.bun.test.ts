@@ -3,7 +3,11 @@ import { Effect } from "effect";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deployedCanaryTestCount, DeployedCanaryError } from "../scripts/test-deployed-canary.ts";
+import {
+  deployedCanaryTestCount,
+  DeployedCanaryError,
+  requireDeployedCanaryTests,
+} from "../scripts/test-deployed-canary.ts";
 import {
   ReleaseCanaryError,
   ReleaseCanaryIdentity,
@@ -272,23 +276,50 @@ test("requires an explicit deployed canary request", async () => {
 });
 
 test("reads the executed test count from the deployed canary report", () => {
-  expect(deployedCanaryTestCount('{"numPassedTests":1}')).toBe(1);
-  expect(deployedCanaryTestCount('{"numPassedTests":0}')).toBe(0);
+  expect(Effect.runSync(deployedCanaryTestCount('{"numPassedTests":1}'))).toBe(1);
+  expect(Effect.runSync(deployedCanaryTestCount('{"numPassedTests":0}'))).toBe(0);
+});
+
+test("types and sanitizes a deployed canary report with no tests", () => {
+  const error = Effect.runSync(
+    requireDeployedCanaryTests('{"numPassedTests":0}', "test-empty").pipe(Effect.flip),
+  );
+  expect(error).toBeInstanceOf(DeployedCanaryError);
+  expect(error.code).toBe("OBS_DEPLOYED_CANARY_NO_TESTS");
+  expect(error.correlationId).toBe("test-empty");
+  expect(error.message).toBe(
+    "The deployed canary gate did not execute any tests. Correlation ID: test-empty.",
+  );
 });
 
 test("types and sanitizes a malformed deployed canary report", () => {
-  try {
-    deployedCanaryTestCount("not json", "test-correlation");
-    throw new Error("Expected malformed report parsing to fail.");
-  } catch (cause) {
-    expect(cause).toBeInstanceOf(DeployedCanaryError);
-    if (!(cause instanceof DeployedCanaryError)) throw cause;
-    expect(cause.code).toBe("OBS_DEPLOYED_CANARY_REPORT_INVALID");
-    expect(cause.correlationId).toBe("test-correlation");
-    expect(cause.message).toBe(
-      "The deployed canary test report is malformed. Correlation ID: test-correlation.",
-    );
-  }
+  const error = Effect.runSync(
+    deployedCanaryTestCount("not json", "test-correlation").pipe(Effect.flip),
+  );
+  expect(error).toBeInstanceOf(DeployedCanaryError);
+  expect(error.code).toBe("OBS_DEPLOYED_CANARY_REPORT_INVALID");
+  expect(error.correlationId).toBe("test-correlation");
+  expect(error.message).toBe(
+    "The deployed canary test report is malformed. Correlation ID: test-correlation.",
+  );
+});
+
+test("types and sanitizes an unexpected deployed canary failure", async () => {
+  const missingTemporaryDirectory = join(tmpdir(), "missing-observability-deployed-canary");
+  const result = await execute({
+    command: [process.execPath, "run", "test:canary:deployed"],
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      OBSERVABILITY_E2E_DEPLOYED: "1",
+      TMPDIR: missingTemporaryDirectory,
+      TMP: missingTemporaryDirectory,
+      TEMP: missingTemporaryDirectory,
+    },
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("OBS_DEPLOYED_CANARY_UNEXPECTED:");
+  expect(result.stderr).not.toContain(missingTemporaryDirectory);
 });
 
 test("selects a package by slug", async () => {
