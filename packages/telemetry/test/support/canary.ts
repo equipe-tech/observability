@@ -16,7 +16,7 @@ const canaryManifestValue: unknown = JSON.parse(
 );
 const canaryManifest = decodeCanaryManifest(canaryManifestValue);
 
-export const canaryServiceVersion = process.env["OTEL_SERVICE_VERSION"] ?? canaryManifest.version;
+export const canaryServiceVersion = process.env["OTEL_SERVICE_VERSION"] || canaryManifest.version;
 
 export const canaryRunId = (): Effect.Effect<RunId> =>
   generateRunId("canary", process.env["USER"] ?? "ci");

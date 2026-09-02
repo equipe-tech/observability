@@ -40,14 +40,25 @@ export type DeployedCanaryPollingBudget = {
   readonly sleepMilliseconds: number;
   readonly queryTimeoutMilliseconds: number;
   readonly suiteTimeoutMilliseconds: number;
+  readonly collectorFlushTimeoutMilliseconds: number;
+  readonly providerIngestionToleranceMilliseconds: number;
 };
 
+export const deployedCanaryQueryNames: readonly ["root", "child", "logs", "metric"] = [
+  "root",
+  "child",
+  "logs",
+  "metric",
+];
+
 export const deployedCanaryPollingBudget: DeployedCanaryPollingBudget = {
-  attempts: 15,
-  queriesPerAttempt: 4,
-  sleepMilliseconds: 2_000,
+  attempts: 13,
+  queriesPerAttempt: deployedCanaryQueryNames.length,
+  sleepMilliseconds: 16_000,
   queryTimeoutMilliseconds: 5_000,
-  suiteTimeoutMilliseconds: 360_000,
+  suiteTimeoutMilliseconds: 480_000,
+  collectorFlushTimeoutMilliseconds: 200,
+  providerIngestionToleranceMilliseconds: 180_000,
 };
 
 const noopQueryObserver: AxiomQueryObserver = () => Effect.void;
@@ -209,11 +220,11 @@ const toAxiomSpan = (row: typeof AxiomSpanRow.Type): AxiomSpan => ({
   redaction: toAxiomRedactionAttributes(row),
 });
 
-export const axiomServiceResourceFields = {
+export const axiomServiceResourceFields = Object.freeze({
   namespace: "['resource.custom']['service.namespace']",
   name: "['service.name']",
   version: "['service.version']",
-};
+});
 
 const serviceNamespacePath = axiomServiceResourceFields.namespace;
 const serviceNamePath = axiomServiceResourceFields.name;

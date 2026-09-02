@@ -188,6 +188,22 @@ test("writes release metadata from the matching manifest", async () => {
   });
 });
 
+test("selects the rc npm tag from a prerelease package version", async () => {
+  await withReleaseCanaryRepository(manifest("@equipe-tech/alpha", "1.2.3-rc.4"), async (root) => {
+    const output = join(root, "github-output");
+    const result = await runReleaseCanary(root, [
+      "--tag",
+      "alpha@1.2.3-rc.4",
+      "--github-output",
+      output,
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(await readFile(output, "utf8")).toBe(
+      "tag=alpha@1.2.3-rc.4\narchive=equipe-tech-alpha-1.2.3-rc.4.tgz\nprerelease=true\nnpm_tag=rc\n",
+    );
+  });
+});
+
 test("sanitizes a release tag version mismatch", async () => {
   await withReleaseCanaryRepository(manifest("@equipe-tech/alpha", "1.2.3"), async (root) => {
     const result = await runReleaseCanary(root, [

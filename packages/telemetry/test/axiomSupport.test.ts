@@ -6,6 +6,7 @@ import {
   axiomServiceResourceFields,
   decodeAxiomEnvironment,
   deployedCanaryPollingBudget,
+  deployedCanaryQueryNames,
   findChildSpan,
   findLogs,
   findMetric,
@@ -230,6 +231,7 @@ describe("axiom query support", () => {
         name: "['service.name']",
         version: "['service.version']",
       });
+      assert.isTrue(Object.isFrozen(axiomServiceResourceFields));
       assert.include(query.query, `service_name = tostring(${axiomServiceResourceFields.name})`);
       assert.include(
         query.query,
@@ -262,13 +264,26 @@ describe("axiom query support", () => {
     }),
   );
 
-  it("keeps the polling worst case below the suite timeout", () => {
+  it("covers collector flush and provider ingestion within the suite timeout", () => {
     const queryBudget =
       deployedCanaryPollingBudget.attempts *
       deployedCanaryPollingBudget.queriesPerAttempt *
       deployedCanaryPollingBudget.queryTimeoutMilliseconds;
     const sleepBudget =
       (deployedCanaryPollingBudget.attempts - 1) * deployedCanaryPollingBudget.sleepMilliseconds;
+    assert.strictEqual(
+      deployedCanaryPollingBudget.queriesPerAttempt,
+      deployedCanaryQueryNames.length,
+    );
+    assert.include(
+      productionCollectorConfig,
+      `flush_timeout: ${deployedCanaryPollingBudget.collectorFlushTimeoutMilliseconds}ms`,
+    );
+    assert.isAtLeast(
+      sleepBudget,
+      deployedCanaryPollingBudget.collectorFlushTimeoutMilliseconds +
+        deployedCanaryPollingBudget.providerIngestionToleranceMilliseconds,
+    );
     assert.isBelow(queryBudget + sleepBudget, deployedCanaryPollingBudget.suiteTimeoutMilliseconds);
   });
 
