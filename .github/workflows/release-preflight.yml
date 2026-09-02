@@ -30,13 +30,17 @@ jobs:
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
+      - name: Resolve the selected release
+        env:
+          SLUG: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: bun scripts/release-canary.ts --tag "$SLUG@$VERSION" --github-env "$GITHUB_ENV"
       - name: Validate the selected release
         env:
           SLUG: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          bun scripts/release-canary.ts --tag "$SLUG@$VERSION" --github-env "$GITHUB_ENV"
           bun scripts/release.ts "$VERSION" --package "$SLUG" --dry-run
           bun run build
           OBSERVABILITY_COMPATIBILITY_DATE="$(date -u +%F)" bun run compat --release "$SLUG@$VERSION"
@@ -46,4 +50,4 @@ jobs:
           test -s "$output/$SLUG@$VERSION.sha256"
           (cd "$output" && sha256sum --check "$SLUG@$VERSION.sha256")
           bun run test:package
-          bun scripts/npm-publication-state.ts "@equipe-tech/$SLUG" "$VERSION"
+          bun scripts/npm-publication-state.ts "$RELEASE_PACKAGE_NAME" "$VERSION"

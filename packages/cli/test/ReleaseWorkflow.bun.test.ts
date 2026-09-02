@@ -364,6 +364,10 @@ describe("release workflow publication gate", () => {
     expect(releasePreflightWorkflow).toContain(
       'bun scripts/release-canary.ts --tag "$SLUG@$VERSION" --github-env "$GITHUB_ENV"',
     );
+    expect(releasePreflightWorkflow).toContain(
+      'bun scripts/npm-publication-state.ts "$RELEASE_PACKAGE_NAME" "$VERSION"',
+    );
+    expect(releasePreflightWorkflow).not.toContain('"@equipe-tech/$SLUG"');
     expect(releasePreflightWorkflow).not.toContain("for candidate in packages/*/package.json");
     expect(releasePreflightWorkflow).not.toContain("jq -r .version");
   });
