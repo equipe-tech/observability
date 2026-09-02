@@ -131,7 +131,11 @@ const run = Effect.fn("releaseCanary.run")(function* () {
 
 if (import.meta.main) {
   Effect.runPromise(run()).catch((error) => {
-    console.error(error);
+    if (error instanceof ReleaseCanaryConfigurationError) {
+      console.error(`${error.code}: ${error.message}`);
+    } else {
+      console.error(error);
+    }
     process.exitCode = 1;
   });
 }
