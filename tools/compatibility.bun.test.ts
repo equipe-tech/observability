@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Effect } from "effect";
 import { browserEnvelopeMetadata } from "../packages/telemetry/src/BrowserEvents.ts";
 import { Contract } from "../packages/telemetry/src/index.ts";
 import { parseOperationsManifest } from "../packages/cli/src/OperationsManifest.ts";
+import { encodeCompatibilityJson } from "../scripts/compatibility-json.ts";
 import {
   classifyPackageChange,
   comparePeerRanges,
@@ -58,6 +61,32 @@ const declaredBreak = (
 });
 
 describe("compatibility gate", () => {
+  test("emits formatter-stable compatibility artifacts across scalar array widths", () => {
+    const directory = mkdtempSync(join(tmpdir(), "observability-compatibility-format-"));
+    try {
+      for (let elementLength = 1; elementLength <= 40; elementLength += 1) {
+        for (let elementCount = 1; elementCount <= 20; elementCount += 1) {
+          const reasonCodes = Array.from(
+            { length: elementCount },
+            (_, index) => `${String(index).padStart(2, "0")}${"x".repeat(elementLength)}`,
+          );
+          writeFileSync(
+            join(directory, `${elementLength}-${elementCount}.json`),
+            encodeCompatibilityJson({ auditActions: [{ reasonCodes }] }),
+          );
+        }
+      }
+      const formatted = Bun.spawnSync({
+        cmd: ["vp", "fmt", "--check", directory],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(formatted.exitCode, formatted.stderr.toString()).toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("executes complete discriminating contract fixtures", () => {
     const fixtureIds = contractCompatibilityFixtures.map((fixture) => fixture.id);
     expect(new Set(fixtureIds).size).toBe(fixtureIds.length);
