@@ -65,7 +65,6 @@ describe("contract index", () => {
     expect(index.aliases).toEqual([
       { kind: "event", from: "payment.charge", to: "payment.attempt" },
     ]);
-    expect(Contract.encodeContractIndex(index)).toBe(`${JSON.stringify(index, null, 2)}\n`);
   });
 
   it("rejects over-limit alias counts, depths and target expansions quickly", async () => {

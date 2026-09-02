@@ -293,6 +293,3 @@ export const contractIndex = <Definition extends TelemetryContractInput>(
     .sort(byName),
   aliases: validatedAliases(contract, aliasMetadata),
 });
-
-export const encodeContractIndex = (index: ContractIndex): string =>
-  `${JSON.stringify(index, null, 2)}\n`;
