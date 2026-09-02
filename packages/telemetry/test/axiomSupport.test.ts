@@ -292,7 +292,7 @@ describe("axiom query support", () => {
       sleepBudget,
       ingestionBudget.collectorFlushMilliseconds +
         ingestionBudget.axiomQueryVisibilityMilliseconds +
-        ingestionBudget.safetyMarginMilliseconds,
+        ingestionBudget.safetyFactorMilliseconds,
     );
     assert.isBelow(queryBudget + sleepBudget, deployedCanaryPollingBudget.suiteTimeoutMilliseconds);
   });
