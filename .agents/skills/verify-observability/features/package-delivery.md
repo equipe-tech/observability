@@ -1,40 +1,43 @@
 # Package delivery
 
-The package smoke test verifies the published file set from a temporary external consumer project.
-
 ## Sub-features
 
-- `package-files` includes each required runtime file and excludes source and test files.
-- `package-imports` loads every public telemetry entrypoint outside the repository.
-- `package-types` checks generated declarations through the external TypeScript compiler.
-- `package-cli` executes help and status through the packed CLI binary.
+- `package-files` includes each required runtime file and excludes source and tests.
+- `package-imports` loads every public entry point outside the repository.
+- `package-types` checks generated declarations from an external project.
+- `package-runtimes` exercises supported Bun and Node consumers.
+- `package-cli` executes the packed CLI binary and query entry point.
 - `package-assets` verifies local and production files from the packed CLI.
 
 ## How to get to it (user POV)
 
+- Run `bun run build` from the repository root.
 - Run `bun run test:package` from the repository root.
 - Inspect the command result for the first failed package operation.
 
 ## Driving it with verify-observability
 
-Preconditions:
-
-- Bun dependencies are installed.
-- Docker is available because the packed CLI runs `dev status`.
-- `ARTIFACT_ROOT` exists.
-- No package publish command runs in this recipe.
-
-- **Run the package proof.** Run `bun run test:package`. The script builds both package distributions.
-- **Verify archives.** Require exit code `0`. The script checks required files and rejects `src` and `test` directories.
-- **Verify imports.** Require exit code `0`. The temporary consumer imports each public telemetry entrypoint.
-- **Verify declarations.** Require exit code `0`. The external TypeScript compiler checks the package declarations.
-- **Verify the CLI.** Require exit code `0`. The packed binary prints help and prepares local stack files.
-- **Verify production files.** Require exit code `0`. The packed binary writes Collector and Kamal files into disposable state.
-- **Capture proof.** Save the exact command, stdout, stderr, and exit code under `ARTIFACT_ROOT/package-delivery`.
+1. Require installed Bun dependencies.
+2. Require Docker for packed CLI status checks.
+3. Create `ARTIFACT_ROOT/package-delivery`.
+4. Run `bun run build` and save all output.
+5. Run `bun run test:package` and save all output.
+6. Require exit code `0` from both commands.
+7. Require the smoke script to reject source and test files in archives.
+8. Require external imports for every public package entry point.
+9. Require the external TypeScript compiler to accept declarations.
+10. Require supported Bun and Node consumers to run.
+11. Require the packed CLI to print version and help.
+12. Require the packed CLI to prepare versioned local stack files.
+13. Require provisioned Collector and Kamal assets in disposable state.
+14. Confirm that no publish, tag, release, or registry mutation occurred.
+15. Keep commands, outputs, exit codes, package lists, and the build revision.
 
 ## Gotchas
 
 - The smoke test removes its temporary consumer before exit.
-- The smoke test does not publish either package.
-- Docker must run even though the smoke test does not start the local stack.
-- A source import does not replace this package proof.
+- The smoke test does not publish packages.
+- Docker must run even when the smoke test does not start the stack.
+- A source import does not replace the packed-package proof.
+- A successful build does not prove package exports or runtime entry points.
+- Release publication requires a separate human gate.
