@@ -12,6 +12,7 @@ export {
   type DefectEventInput,
   type ErrorCatalogReference,
   type ExpectedError,
+  type HttpOutcome,
   type NestErrorBoundaryOptions,
   type PublicErrorResponse,
   type SentryDefectsService,

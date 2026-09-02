@@ -1,7 +1,7 @@
 import type { ArgumentsHost, DynamicModule, ExceptionFilter, Provider } from "@nestjs/common";
-import { Module } from "@nestjs/common";
-import { APP_FILTER } from "@nestjs/core";
-import { Effect, Option, Schema } from "effect";
+import { HttpException, Module } from "@nestjs/common";
+import { APP_FILTER, HttpAdapterHost } from "@nestjs/core";
+import { Effect, Option, Predicate, Schema } from "effect";
 import {
   CorrelationContext,
   unexpectedDefect,
@@ -27,15 +27,22 @@ export type ExpectedError = {
   readonly response: { readonly statusCode: number; readonly body: PublicErrorResponse };
 };
 
+export type HttpOutcome = {
+  readonly kind: "http-outcome";
+  readonly source: { readonly kind: "nestjs-http-exception" };
+  readonly error: HttpException;
+  readonly response: { readonly statusCode: number };
+};
+
 export type UnexpectedDefect = {
   readonly kind: "unexpected";
-  readonly source: { readonly kind: "evlog-catalog"; readonly prefix: string };
+  readonly source: { readonly kind: "unclassified-defect" };
   readonly error: Error;
   readonly code: string;
   readonly correlation: CorrelationContext;
 };
 
-export type ClassifiedError = ExpectedError | UnexpectedDefect;
+export type ClassifiedError = ExpectedError | HttpOutcome | UnexpectedDefect;
 
 export type DefectEventInput = {
   readonly kind: "defect";
@@ -49,6 +56,7 @@ export type DefectEventInput = {
 
 export type ErrorCatalogReference = {
   readonly _prefix: string;
+  readonly _codes: ReadonlyArray<string>;
 };
 
 export type SentryDefectsService = {
@@ -80,28 +88,44 @@ export class InvalidNestErrorCatalog extends Error {
 }
 
 const CatalogPrefix = Schema.NonEmptyString.check(
-  Schema.isPattern(/^[A-Za-z][A-Za-z0-9_-]*$/),
-  Schema.makeFilter((prefix) => !prefix.startsWith("OBS_")),
+  Schema.makeFilter((prefix) => !/^OBS_/i.test(prefix)),
 );
 const decodeCatalogPrefix = Schema.decodeUnknownSync(CatalogPrefix);
-const ExpectedErrorDetails = Schema.Struct({
+const CatalogEntry = Schema.Struct({
   code: Schema.NonEmptyString,
   message: Schema.String,
+  status: Schema.Int.check(Schema.isBetween({ minimum: 400, maximum: 599 })),
+});
+const decodeCatalogEntry = Schema.decodeUnknownOption(CatalogEntry);
+const ExpectedErrorDetails = Schema.Struct({
+  code: Schema.NonEmptyString,
   status: Schema.Int.check(Schema.isBetween({ minimum: 400, maximum: 599 })),
 });
 const decodeExpectedErrorDetails = Schema.decodeUnknownOption(ExpectedErrorDetails);
 const ErrorCode = Schema.Struct({ code: Schema.NonEmptyString });
 const decodeErrorCode = Schema.decodeUnknownOption(ErrorCode);
-const capturedErrors = new WeakSet<Error>();
+const capturedErrorsByRequest = new WeakMap<RequestReference, WeakSet<Error>>();
 
-interface HttpResponseReference {
-  readonly headersSent: boolean;
-  status(statusCode: number): HttpResponseReference;
-  json(body: PublicErrorResponse): void;
-}
+type CatalogEntry = typeof CatalogEntry.Type;
+type ClassificationRule = (
+  error: Error,
+  correlation: CorrelationContext,
+) => Option.Option<ClassifiedError>;
+
+const catalogEntries = (catalog: ErrorCatalogReference): ReadonlyArray<CatalogEntry> =>
+  Object.values(catalog).flatMap((factory) => {
+    if (!Predicate.isFunction(factory)) return [];
+    return Option.toArray(
+      decodeCatalogEntry({
+        code: Object.getOwnPropertyDescriptor(factory, "code")?.value,
+        message: Object.getOwnPropertyDescriptor(factory, "message")?.value,
+        status: Object.getOwnPropertyDescriptor(factory, "status")?.value,
+      }),
+    );
+  });
 
 const publicResponse = (
-  details: typeof ExpectedErrorDetails.Type,
+  details: { readonly code: string; readonly message: string },
   correlation: CorrelationContext,
 ): PublicErrorResponse => {
   const body: {
@@ -115,11 +139,21 @@ const publicResponse = (
   return body;
 };
 
+const requestCaptureMarker = (request: RequestReference): WeakSet<Error> => {
+  const existing = capturedErrorsByRequest.get(request);
+  if (existing !== undefined) return existing;
+  const marker = new WeakSet<Error>();
+  capturedErrorsByRequest.set(request, marker);
+  return marker;
+};
+
 export class NestErrorBoundary {
   readonly #prefix: string;
+  readonly #catalogEntries: ReadonlyMap<string, CatalogEntry>;
   readonly #recordDefect: NestErrorBoundaryOptions["recordDefect"];
   readonly #sentryDefects: NestErrorBoundaryOptions["sentryDefects"];
   readonly #requestWideEventTraceCorrelation: RequestWideEventTraceCorrelation | undefined;
+  readonly #classificationTable: ReadonlyArray<ClassificationRule>;
 
   constructor(options: NestErrorBoundaryOptions) {
     try {
@@ -127,28 +161,53 @@ export class NestErrorBoundary {
     } catch (cause) {
       throw new InvalidNestErrorCatalog(cause);
     }
+    this.#catalogEntries = new Map(
+      catalogEntries(options.catalog).map((entry) => [entry.code, entry]),
+    );
     this.#recordDefect = options.recordDefect;
     this.#sentryDefects = options.sentryDefects;
     this.#requestWideEventTraceCorrelation = options.requestWideEventTraceCorrelation;
+    this.#classificationTable = [
+      (error, correlation) => this.#classifyExpected(error, correlation),
+      (error) => this.#classifyHttpOutcome(error),
+      (error, correlation) => Option.some(this.#classifyUnexpected(error, correlation)),
+    ];
   }
 
-  classify(error: Error, correlation: CorrelationContext): ClassifiedError {
+  #classifyExpected(error: Error, correlation: CorrelationContext): Option.Option<ExpectedError> {
     const details = decodeExpectedErrorDetails(error);
-    if (Option.isSome(details) && details.value.code.startsWith(`${this.#prefix}.`)) {
-      return {
-        kind: "expected",
-        source: { kind: "evlog-catalog", prefix: this.#prefix },
-        error,
-        response: {
-          statusCode: details.value.status,
-          body: publicResponse(details.value, correlation),
-        },
-      };
+    if (Option.isNone(details) || !details.value.code.startsWith(`${this.#prefix}.`)) {
+      return Option.none();
     }
+    const declaration = this.#catalogEntries.get(details.value.code);
+    if (declaration === undefined) return Option.none();
+    return Option.some({
+      kind: "expected",
+      source: { kind: "evlog-catalog", prefix: this.#prefix },
+      error,
+      response: {
+        statusCode: declaration.status,
+        body: publicResponse(declaration, correlation),
+      },
+    });
+  }
+
+  #classifyHttpOutcome(error: Error): Option.Option<HttpOutcome> {
+    if (!(error instanceof HttpException)) return Option.none();
+    if (error.cause !== undefined && !(error.cause instanceof HttpException)) return Option.none();
+    return Option.some({
+      kind: "http-outcome",
+      source: { kind: "nestjs-http-exception" },
+      error,
+      response: { statusCode: error.getStatus() },
+    });
+  }
+
+  #classifyUnexpected(error: Error, correlation: CorrelationContext): UnexpectedDefect {
     const parsedCode = decodeErrorCode(error);
     return {
       kind: "unexpected",
-      source: { kind: "evlog-catalog", prefix: this.#prefix },
+      source: { kind: "unclassified-defect" },
       error,
       code: Option.match(parsedCode, {
         onNone: () => "OBS_NESTJS_UNEXPECTED_DEFECT",
@@ -158,75 +217,107 @@ export class NestErrorBoundary {
     };
   }
 
-  async handle(classified: ClassifiedError, request: RequestReference): Promise<void> {
-    this.#requestWideEventTraceCorrelation?.recordError(request, classified.error);
-    if (classified.kind === "expected" || capturedErrors.has(classified.error)) {
-      return;
+  classify(error: Error, correlation: CorrelationContext): ClassifiedError {
+    for (const classify of this.#classificationTable) {
+      const classified = classify(error, correlation);
+      if (Option.isSome(classified)) return classified.value;
     }
+    return this.#classifyUnexpected(error, correlation);
+  }
+
+  handle(classified: ClassifiedError, request: RequestReference): Promise<void> {
+    if (classified.kind !== "unexpected") {
+      this.#requestWideEventTraceCorrelation?.recordError(request, classified.error);
+      return Promise.resolve();
+    }
+    const capturedErrors = requestCaptureMarker(request);
+    if (capturedErrors.has(classified.error)) return Promise.resolve();
     capturedErrors.add(classified.error);
+    this.#requestWideEventTraceCorrelation?.recordError(request, classified.error);
+
     const envelope = unexpectedDefect({
       error: classified.error,
       code: classified.code,
       correlation: classified.correlation,
     });
-    const record = Promise.resolve(
-      this.#recordDefect({
-        kind: "defect",
-        error: {
-          type: classified.code,
-          message: classified.error.message,
-          retryable: false,
-        },
-        correlation: classified.correlation,
-      }),
-    );
-    if (this.#sentryDefects === undefined) {
-      await Promise.allSettled([record]);
-      return;
+    const settlements: Array<Promise<void | { readonly kind: string }>> = [
+      Promise.resolve().then(() =>
+        this.#recordDefect({
+          kind: "defect",
+          error: {
+            type: classified.code,
+            message: classified.error.message,
+            retryable: false,
+          },
+          correlation: classified.correlation,
+        }),
+      ),
+    ];
+    if (this.#sentryDefects !== undefined) {
+      settlements.push(
+        Promise.resolve().then(() =>
+          Effect.runPromise(this.#sentryDefects?.capture({ envelope }) ?? Effect.void),
+        ),
+      );
     }
-    await Promise.allSettled([
-      record,
-      Effect.runPromise(this.#sentryDefects.capture({ envelope })),
-    ]);
+    return Promise.allSettled(settlements).then(() => undefined);
   }
 }
 
 export class NestErrorFilter implements ExceptionFilter {
   readonly #boundary: NestErrorBoundary;
+  readonly #httpAdapterHost: HttpAdapterHost;
 
-  constructor(boundary: NestErrorBoundary) {
+  constructor(boundary: NestErrorBoundary, httpAdapterHost: HttpAdapterHost) {
     this.#boundary = boundary;
+    this.#httpAdapterHost = httpAdapterHost;
   }
 
-  async catch(cause: unknown, host: ArgumentsHost): Promise<void> {
+  catch(cause: unknown, host: ArgumentsHost): void {
     const http = host.switchToHttp();
     const request = http.getRequest<RequestReference>();
-    const response = http.getResponse<HttpResponseReference>();
+    const response = http.getResponse<RequestReference>();
     const error =
-      cause instanceof Error ? cause : new Error("An unexpected non-error defect occurred.");
+      cause instanceof Error
+        ? cause
+        : new Error("An unexpected non-error defect occurred.", { cause });
     const correlation = Option.getOrElse(
       requestCorrelation(request),
       () => new CorrelationContext({}),
     );
     const classified = this.#boundary.classify(error, correlation);
-    await this.#boundary.handle(classified, request);
-    if (response.headersSent) {
+    this.#boundary.handle(classified, request).catch(() => undefined);
+
+    const applicationRef = this.#httpAdapterHost.httpAdapter;
+    if (applicationRef.isHeadersSent(response)) {
+      applicationRef.end(response);
       return;
     }
-    if (classified.kind === "expected") {
-      response.status(classified.response.statusCode).json(classified.response.body);
-      return;
+    switch (classified.kind) {
+      case "expected":
+        applicationRef.reply(response, classified.response.body, classified.response.statusCode);
+        return;
+      case "http-outcome":
+        applicationRef.reply(
+          response,
+          classified.error.getResponse(),
+          classified.response.statusCode,
+        );
+        return;
+      case "unexpected":
+        applicationRef.reply(
+          response,
+          publicResponse(
+            {
+              code: "OBS_NESTJS_UNEXPECTED_DEFECT",
+              message:
+                "The request failed unexpectedly. Contact support with the correlation identifier.",
+            },
+            correlation,
+          ),
+          500,
+        );
     }
-    const body = publicResponse(
-      {
-        code: "OBS_NESTJS_UNEXPECTED_DEFECT",
-        message:
-          "The request failed unexpectedly. Contact support with the correlation identifier.",
-        status: 500,
-      },
-      correlation,
-    );
-    response.status(500).json(body);
   }
 }
 
@@ -239,8 +330,9 @@ export class NestErrorBoundaryModule {
       { provide: NEST_ERROR_BOUNDARY, useValue: boundary },
       {
         provide: APP_FILTER,
-        inject: [NEST_ERROR_BOUNDARY],
-        useFactory: (configured: NestErrorBoundary) => new NestErrorFilter(configured),
+        inject: [NEST_ERROR_BOUNDARY, HttpAdapterHost],
+        useFactory: (configured: NestErrorBoundary, httpAdapterHost: HttpAdapterHost) =>
+          new NestErrorFilter(configured, httpAdapterHost),
       },
     ];
     return { module: NestErrorBoundaryModule, providers };

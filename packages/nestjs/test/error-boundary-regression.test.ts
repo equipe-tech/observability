@@ -358,6 +358,57 @@ describe("Nest error boundary regressions", () => {
     }
   }, 30_000);
 
+  it("contains synchronously throwing and rejecting capture sinks", async () => {
+    class ProbeController {
+      throwing(): never {
+        throw new Error("throwing capture request");
+      }
+
+      rejecting(): never {
+        throw new Error("rejecting capture request");
+      }
+    }
+    Controller("broken-captures")(ProbeController);
+    for (const method of ["throwing", "rejecting"] as const) {
+      Get(method)(
+        ProbeController.prototype,
+        method,
+        methodDescriptor(ProbeController.prototype, method),
+      );
+    }
+
+    class AppModule {}
+    Module({
+      imports: [
+        NestErrorBoundaryModule.forRoot({
+          catalog: defineErrorCatalog("broken_captures", {
+            FAILURE: { status: 500, message: "Failure." },
+          }),
+          recordDefect: () => undefined,
+          sentryDefects: {
+            capture: ({ envelope }) => {
+              if (envelope.errorMessage === "throwing capture request") {
+                throw new Error("the capture sink threw");
+              }
+              return Effect.promise(() => Promise.reject(new Error("the capture sink rejected")));
+            },
+          },
+        }),
+      ],
+      controllers: [ProbeController],
+    })(AppModule);
+
+    const app = await NestFactory.create(AppModule, { logger: false });
+    await app.listen(0, "127.0.0.1");
+    const baseUrl = applicationBaseUrl(app.getHttpServer().address());
+    try {
+      assert.strictEqual((await fetch(`${baseUrl}/broken-captures/throwing`)).status, 500);
+      assert.strictEqual((await fetch(`${baseUrl}/broken-captures/rejecting`)).status, 500);
+    } finally {
+      await app.close().catch(() => undefined);
+    }
+  }, 30_000);
+
   it("probe M and N end a response after headers were sent", async () => {
     class ProbeController {
       stream(response: StreamingResponse): never {

@@ -1,5 +1,6 @@
 import "reflect-metadata";
-import { Controller, Get, Module } from "@nestjs/common";
+import { Catch, Controller, Get, Module, NotFoundException, UseFilters } from "@nestjs/common";
+import type { ArgumentsHost, ExceptionFilter } from "@nestjs/common";
 import { APP_FILTER, APP_INTERCEPTOR, NestFactory } from "@nestjs/core";
 import { createServer, IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -128,7 +129,7 @@ const enabledOptions = (endpoint: string): TelemetryModuleOptions => ({
 });
 
 describe("TelemetryModule", () => {
-  it("maps catalog errors and records each unexpected defect once across duplicate boundaries", async () => {
+  it("maps catalog errors and records a shared defect once per request", async () => {
     const capture = await makeOtlpCapture();
     const wideEvents: Array<DrainContext> = [];
     const defectEvents: Array<DefectEventInput> = [];
@@ -145,12 +146,16 @@ describe("TelemetryModule", () => {
         throw errors.ITEM_MISSING();
       }
 
+      httpOutcome(): never {
+        throw new NotFoundException("The Nest resource does not exist.");
+      }
+
       defect(): never {
         throw repeatedDefect;
       }
     }
     Controller("boundary")(BoundaryController);
-    for (const method of ["expected", "defect"] as const) {
+    for (const method of ["expected", "httpOutcome", "defect"] as const) {
       Get(method)(
         BoundaryController.prototype,
         method,
@@ -209,6 +214,13 @@ describe("TelemetryModule", () => {
         trace_id: Schema.String,
       });
       Schema.decodeUnknownSync(ExpectedResponse)(await expected.json());
+      const httpOutcome = await fetch(`${baseUrl}/boundary/httpOutcome`);
+      assert.strictEqual(httpOutcome.status, 404);
+      assert.deepStrictEqual(await httpOutcome.json(), {
+        message: "The Nest resource does not exist.",
+        error: "Not Found",
+        statusCode: 404,
+      });
       assert.lengthOf(capturedEnvelopes, 0);
       assert.lengthOf(defectEvents, 0);
 
@@ -216,8 +228,8 @@ describe("TelemetryModule", () => {
         const defect = await fetch(`${baseUrl}/boundary/defect`);
         assert.strictEqual(defect.status, 500);
       }
-      assert.lengthOf(defectEvents, 1);
-      assert.lengthOf(capturedEnvelopes, 1);
+      assert.lengthOf(defectEvents, 2);
+      assert.lengthOf(capturedEnvelopes, 2);
       const defectEvent = defectEvents[0];
       const envelope = capturedEnvelopes[0];
       assert.isDefined(defectEvent);
@@ -232,18 +244,23 @@ describe("TelemetryModule", () => {
         wideEvents.filter((context) => context.event.path === "/boundary/expected"),
         1,
       );
+      assert.lengthOf(
+        wideEvents.filter((context) => context.event.path === "/boundary/httpOutcome"),
+        1,
+      );
       assert.include(JSON.stringify(wideEvents), "catalog_test.ITEM_MISSING");
+      assert.include(JSON.stringify(wideEvents), "The Nest resource does not exist.");
     } finally {
       await app.close().catch(() => undefined);
       await capture.close();
     }
   }, 30_000);
 
-  it("deduplicates double filter handling and a downstream filter rethrow", async () => {
+  it("deduplicates a downstream rethrow handled by two filters in one Nest request", async () => {
     const events: Array<DefectEventInput> = [];
     const captures: Array<DefectEnvelope> = [];
     const options = {
-      catalog: { _prefix: "rethrow_test" },
+      catalog: defineErrorCatalog("rethrow_test", {}),
       recordDefect: (event: DefectEventInput) => {
         events.push(event);
       },
@@ -255,39 +272,142 @@ describe("TelemetryModule", () => {
           }),
       },
     };
-    const downstreamBoundary = new NestErrorBoundary(options);
-    const upstreamBoundary = new NestErrorBoundary(options);
-    const error = new Error("rethrow defect");
-    const correlation = new CorrelationContext({});
-    const downstreamFilter = async (): Promise<never> => {
-      await downstreamBoundary.handle(downstreamBoundary.classify(error, correlation), {});
-      throw error;
-    };
-    const rethrown = await downstreamFilter().catch((cause: Error) => cause);
-    await upstreamBoundary.handle(upstreamBoundary.classify(rethrown, correlation), {});
-    assert.lengthOf(events, 1);
-    assert.lengthOf(captures, 1);
+    const recordedErrors: Array<Error> = [];
+    const correlation = createRequestWideEventTraceCorrelation(() => ({
+      set: () => undefined,
+      error: (error) => {
+        recordedErrors.push(error);
+      },
+    }));
+    const downstreamBoundary = new NestErrorBoundary({
+      ...options,
+      requestWideEventTraceCorrelation: correlation,
+    });
+    const upstreamBoundary = new NestErrorBoundary({
+      ...options,
+      requestWideEventTraceCorrelation: correlation,
+    });
+
+    interface FilterResponse {
+      status(code: number): FilterResponse;
+      json(body: { readonly code: string }): void;
+    }
+
+    class UpstreamFilter implements ExceptionFilter {
+      async catch(cause: Error, host: ArgumentsHost): Promise<void> {
+        const request = host.switchToHttp().getRequest<WeakKey>();
+        await upstreamBoundary.handle(
+          upstreamBoundary.classify(cause, new CorrelationContext({})),
+          request,
+        );
+        host.switchToHttp().getResponse<FilterResponse>().status(500).json({ code: "handled" });
+      }
+    }
+
+    class DownstreamFilter implements ExceptionFilter {
+      readonly #upstream = new UpstreamFilter();
+
+      async catch(cause: Error, host: ArgumentsHost): Promise<void> {
+        const request = host.switchToHttp().getRequest<WeakKey>();
+        await downstreamBoundary.handle(
+          downstreamBoundary.classify(cause, new CorrelationContext({})),
+          request,
+        );
+        try {
+          throw cause;
+        } catch {
+          await this.#upstream.catch(cause, host);
+        }
+      }
+    }
+    Catch()(DownstreamFilter);
+
+    class RethrowController {
+      fail(): never {
+        throw new Error("rethrow defect");
+      }
+    }
+    Controller("rethrow")(RethrowController);
+    Get("fail")(
+      RethrowController.prototype,
+      "fail",
+      methodDescriptor(RethrowController.prototype, "fail"),
+    );
+    UseFilters(new DownstreamFilter())(RethrowController);
+
+    class AppModule {}
+    Module({ controllers: [RethrowController] })(AppModule);
+    const app = await NestFactory.create(AppModule, { logger: false });
+    await app.listen(0, "127.0.0.1");
+    try {
+      const response = await fetch(
+        `${applicationBaseUrl(app.getHttpServer().address())}/rethrow/fail`,
+      );
+      assert.strictEqual(response.status, 500);
+      assert.deepStrictEqual(await response.json(), { code: "handled" });
+      assert.lengthOf(events, 1);
+      assert.lengthOf(captures, 1);
+      assert.lengthOf(recordedErrors, 1);
+    } finally {
+      await app.close().catch(() => undefined);
+    }
   });
 
-  it("records defects without a capture attempt when Sentry is disabled", async () => {
+  it("records defects without using a registered Sentry double when disabled", async () => {
     const defects: Array<DefectEventInput> = [];
-    const boundary = new NestErrorBoundary({
-      catalog: { _prefix: "disabled_test" },
-      recordDefect: (event) => {
-        defects.push(event);
-      },
-    });
-    const error = new Error("disabled defect");
-    const classified = boundary.classify(error, new CorrelationContext({}));
-    await boundary.handle(classified, {});
-    await boundary.handle(classified, {});
-    assert.lengthOf(defects, 1);
+    let captureAttempts = 0;
+    const recordingSentry = {
+      capture: () =>
+        Effect.sync(() => {
+          captureAttempts++;
+          return { kind: "queued" };
+        }),
+    };
+    const SENTRY_DEFECTS = Symbol("SentryDefects");
+
+    class DisabledController {
+      fail(): never {
+        throw new Error("disabled defect");
+      }
+    }
+    Controller("disabled-sentry")(DisabledController);
+    Get("fail")(
+      DisabledController.prototype,
+      "fail",
+      methodDescriptor(DisabledController.prototype, "fail"),
+    );
+
+    class AppModule {}
+    Module({
+      imports: [
+        NestErrorBoundaryModule.forRoot({
+          catalog: defineErrorCatalog("disabled_test", {}),
+          recordDefect: (event) => {
+            defects.push(event);
+          },
+        }),
+      ],
+      providers: [{ provide: SENTRY_DEFECTS, useValue: recordingSentry }],
+      controllers: [DisabledController],
+    })(AppModule);
+    const app = await NestFactory.create(AppModule, { logger: false });
+    await app.listen(0, "127.0.0.1");
+    try {
+      const response = await fetch(
+        `${applicationBaseUrl(app.getHttpServer().address())}/disabled-sentry/fail`,
+      );
+      assert.strictEqual(response.status, 500);
+      assert.lengthOf(defects, 1);
+      assert.strictEqual(captureAttempts, 0);
+    } finally {
+      await app.close().catch(() => undefined);
+    }
   });
 
   it("registers one span interceptor and one independent exception filter", () => {
     const telemetry = TelemetryModule.forRootAsync({ useFactory: () => ({ enabled: false }) });
     const boundary = NestErrorBoundaryModule.forRoot({
-      catalog: { _prefix: "provider_test" },
+      catalog: defineErrorCatalog("provider_test", {}),
       recordDefect: () => undefined,
     });
     const providerTokens = [...(telemetry.providers ?? []), ...(boundary.providers ?? [])].flatMap(
@@ -303,23 +423,31 @@ describe("TelemetryModule", () => {
     );
   });
 
-  it("rejects an application catalog without a stable prefix", () => {
-    assert.throws(
-      () =>
-        NestErrorBoundaryModule.forRoot({
-          catalog: { _prefix: "" },
-          recordDefect: () => undefined,
-        }),
-      InvalidNestErrorCatalog,
+  it("accepts defineErrorCatalog prefixes and rejects the reserved namespace", () => {
+    assert.doesNotThrow(() =>
+      NestErrorBoundaryModule.forRoot({
+        catalog: defineErrorCatalog("application.errors/v1", {}),
+        recordDefect: () => undefined,
+      }),
     );
     assert.throws(
       () =>
         NestErrorBoundaryModule.forRoot({
-          catalog: { _prefix: "OBS_APPLICATION" },
+          catalog: defineErrorCatalog("", {}),
           recordDefect: () => undefined,
         }),
       InvalidNestErrorCatalog,
     );
+    for (const prefix of ["OBS_APPLICATION", "obs_application", "Obs_application"]) {
+      assert.throws(
+        () =>
+          NestErrorBoundaryModule.forRoot({
+            catalog: defineErrorCatalog(prefix, {}),
+            recordDefect: () => undefined,
+          }),
+        InvalidNestErrorCatalog,
+      );
+    }
   });
 
   it("uses async dependency injection, registers globally, excludes health traffic, and flushes on close", async () => {
