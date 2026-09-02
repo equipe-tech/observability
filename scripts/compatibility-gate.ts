@@ -864,7 +864,7 @@ export const runCompatibilityGate = async (): Promise<boolean> => {
     initialPackages,
     missingCandidateVersions,
     missingRuntime: missingRuntime.sort(),
-    releaseIntegrity: integrityIssue ?? "not-required-or-verified",
+    releaseIntegrity: integrityIssue ?? (release === undefined ? "not-required" : "verified"),
   };
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   return accepted;
