@@ -1,5 +1,6 @@
 import "reflect-metadata";
 import {
+  BadRequestException,
   Controller,
   ForbiddenException,
   Get,
@@ -461,6 +462,127 @@ describe("Nest error boundary regressions", () => {
     } finally {
       await baseline.close().catch(() => undefined);
       await boundary.close().catch(() => undefined);
+    }
+  }, 30_000);
+
+  it("accepts templated and metadata-rich catalog declarations", async () => {
+    const defects: Array<DefectEventInput> = [];
+    const errors = defineErrorCatalog("catalog_templates", {
+      INSUFFICIENT_FUNDS: {
+        status: 402,
+        message: ({ required }: { required: number }) =>
+          `Insufficient funds, need ${String(required)}.`,
+        why: "The available balance is too low.",
+        fix: "Add funds and retry.",
+        link: "https://example.test/funds",
+        tags: ["billing"],
+        internal: { owner: "payments" },
+      },
+      MOVED: { status: 302, message: "The resource moved." },
+    });
+
+    class ProbeController {
+      templated(): never {
+        throw errors.INSUFFICIENT_FUNDS({ required: 100 });
+      }
+
+      moved(): never {
+        throw errors.MOVED();
+      }
+    }
+    Controller("catalog-templates")(ProbeController);
+    for (const method of ["templated", "moved"] as const) {
+      Get(method)(
+        ProbeController.prototype,
+        method,
+        methodDescriptor(ProbeController.prototype, method),
+      );
+    }
+
+    class AppModule {}
+    Module({
+      imports: [
+        NestErrorBoundaryModule.forRoot({
+          catalog: errors,
+          recordDefect: (event) => {
+            defects.push(event);
+          },
+        }),
+      ],
+      controllers: [ProbeController],
+    })(AppModule);
+
+    const app = await NestFactory.create(AppModule, { logger: false });
+    await app.listen(0, "127.0.0.1");
+    const baseUrl = applicationBaseUrl(app.getHttpServer().address());
+    try {
+      const templated = await fetch(`${baseUrl}/catalog-templates/templated`);
+      assert.strictEqual(templated.status, 402);
+      assert.deepStrictEqual(await templated.json(), {
+        code: "catalog_templates.INSUFFICIENT_FUNDS",
+        message: "Insufficient funds, need 100.",
+      });
+
+      const moved = await fetch(`${baseUrl}/catalog-templates/moved`, { redirect: "manual" });
+      assert.strictEqual(moved.status, 302);
+      assert.lengthOf(defects, 0);
+    } finally {
+      await app.close().catch(() => undefined);
+    }
+  }, 30_000);
+
+  it("preserves 4xx HttpExceptions with non-HTTP causes", async () => {
+    const defects: Array<DefectEventInput> = [];
+    const captures: Array<DefectEnvelope> = [];
+
+    class ProbeController {
+      notFound(): never {
+        throw new NotFoundException("widget not found", { cause: new Error("database detail") });
+      }
+
+      badRequest(): never {
+        throw new BadRequestException("invalid payload", { cause: new TypeError("parse detail") });
+      }
+    }
+    Controller("caused-client-outcomes")(ProbeController);
+    for (const method of ["notFound", "badRequest"] as const) {
+      Get(method)(
+        ProbeController.prototype,
+        method,
+        methodDescriptor(ProbeController.prototype, method),
+      );
+    }
+
+    class AppModule {}
+    Module({
+      imports: [
+        NestErrorBoundaryModule.forRoot({
+          catalog: defineErrorCatalog("caused_client_outcomes", {}),
+          recordDefect: (event) => {
+            defects.push(event);
+          },
+          sentryDefects: {
+            capture: (input) =>
+              Effect.sync(() => {
+                captures.push(input.envelope);
+                return { kind: "queued" };
+              }),
+          },
+        }),
+      ],
+      controllers: [ProbeController],
+    })(AppModule);
+
+    const app = await NestFactory.create(AppModule, { logger: false });
+    await app.listen(0, "127.0.0.1");
+    const baseUrl = applicationBaseUrl(app.getHttpServer().address());
+    try {
+      assert.strictEqual((await fetch(`${baseUrl}/caused-client-outcomes/notFound`)).status, 404);
+      assert.strictEqual((await fetch(`${baseUrl}/caused-client-outcomes/badRequest`)).status, 400);
+      assert.lengthOf(defects, 0);
+      assert.lengthOf(captures, 0);
+    } finally {
+      await app.close().catch(() => undefined);
     }
   }, 30_000);
 
