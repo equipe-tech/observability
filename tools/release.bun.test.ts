@@ -3,11 +3,11 @@ import { Effect } from "effect";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deployedCanaryTestCount } from "../scripts/test-deployed-canary.ts";
 import {
-  ReleaseCanaryConfigurationError,
-  ReleaseCanaryCredentials,
+  ReleaseCanaryError,
   ReleaseCanaryIdentity,
-  resolveReleaseCanaryCredentials,
+  requireReleaseCanaryCredential,
   resolveReleaseCanaryIdentity,
 } from "../scripts/release-canary.ts";
 
@@ -30,6 +30,7 @@ interface ReleaseRepository {
 
 const projectRoot = join(import.meta.dirname, "..");
 const releaseScript = await Bun.file(join(projectRoot, "scripts/release.ts")).text();
+const releaseCanaryScript = await Bun.file(join(projectRoot, "scripts/release-canary.ts")).text();
 
 const execute = async (request: CommandRequest): Promise<CommandResult> => {
   const child = Bun.spawn([...request.command], {
@@ -99,6 +100,44 @@ const withReleaseRepository = async (
   }
 };
 
+const withReleaseCanaryRepository = async (
+  manifestContent: string | undefined,
+  use: (root: string) => Promise<void>,
+): Promise<void> => {
+  const root = await mkdtemp(join(tmpdir(), "release-canary-test-"));
+  try {
+    await mkdir(join(root, "scripts"), { recursive: true });
+    await symlink(join(projectRoot, "node_modules"), join(root, "node_modules"));
+    await writeFile(join(root, "scripts", "release-canary.ts"), releaseCanaryScript);
+    if (manifestContent !== undefined) {
+      await mkdir(join(root, "packages", "alpha"), { recursive: true });
+      await writeFile(join(root, "packages", "alpha", "package.json"), manifestContent);
+    }
+    await use(root);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+};
+
+const runReleaseCanary = (
+  root: string,
+  args: ReadonlyArray<string>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<CommandResult> =>
+  execute({ command: [process.execPath, "scripts/release-canary.ts", ...args], cwd: root, env });
+
+const expectSanitizedReleaseCanaryFailure = (
+  result: CommandResult,
+  root: string,
+  code: string,
+): void => {
+  expect(result.exitCode).toBe(1);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toStartWith(`${code}: `);
+  expect(result.stderr).not.toContain(root);
+  expect(result.stderr).not.toContain(" at ");
+};
+
 test("derives one release canary identity from the matching package manifest", async () => {
   await withReleaseRepository(async ({ root }) => {
     const identity = await Effect.runPromise(resolveReleaseCanaryIdentity(root, "alpha@1.2.3"));
@@ -106,6 +145,7 @@ test("derives one release canary identity from the matching package manifest", a
       new ReleaseCanaryIdentity({
         releaseTag: "alpha@1.2.3",
         packageName: "@equipe-tech/alpha",
+        packageSlug: "alpha",
         packageVersion: "1.2.3",
         otelServiceVersion: "1.2.3",
       }),
@@ -113,29 +153,111 @@ test("derives one release canary identity from the matching package manifest", a
   });
 });
 
-test("models scoped release canary credentials as one typed set", async () => {
-  const credentials = await Effect.runPromise(
-    resolveReleaseCanaryCredentials({
-      AXIOM_INGEST_TOKEN: "ingest-secret",
-      AXIOM_READ_TOKEN: "read-secret",
-    }),
+test("accepts each scoped release canary credential independently", async () => {
+  await Effect.runPromise(
+    requireReleaseCanaryCredential({ AXIOM_INGEST_TOKEN: "ingest-secret" }, "AXIOM_INGEST_TOKEN"),
   );
-  expect(credentials).toEqual(
-    new ReleaseCanaryCredentials({
-      axiomIngestSecret: "ingest-secret",
-      axiomReadSecret: "read-secret",
-    }),
+  await Effect.runPromise(
+    requireReleaseCanaryCredential({ AXIOM_READ_TOKEN: "read-secret" }, "AXIOM_READ_TOKEN"),
   );
 });
 
-test("rejects every missing release canary credential with a specific error", async () => {
+test("rejects a missing release canary credential with a correlated error", async () => {
   const error = await Effect.runPromise(
-    Effect.flip(resolveReleaseCanaryCredentials({ AXIOM_INGEST_TOKEN: "ingest-secret" })),
+    Effect.flip(requireReleaseCanaryCredential({}, "AXIOM_READ_TOKEN", "test-correlation")),
   );
-  expect(error).toBeInstanceOf(ReleaseCanaryConfigurationError);
+  expect(error).toBeInstanceOf(ReleaseCanaryError);
   expect(error.code).toBe("OBS_RELEASE_CANARY_CREDENTIALS_MISSING");
-  expect(error.missingCredentials).toEqual(["AXIOM_READ_TOKEN"]);
-  expect(error.message).toContain("publication environment");
+  expect(error.correlationId).toBe("test-correlation");
+  expect(error.message).toContain("Correlation ID: test-correlation.");
+});
+
+test("writes release metadata from the matching manifest", async () => {
+  await withReleaseCanaryRepository(manifest("@equipe-tech/alpha", "1.2.3"), async (root) => {
+    const output = join(root, "github-output");
+    const result = await runReleaseCanary(root, [
+      "--tag",
+      "alpha@1.2.3",
+      "--github-output",
+      output,
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(await readFile(output, "utf8")).toBe(
+      "tag=alpha@1.2.3\narchive=equipe-tech-alpha-1.2.3.tgz\nprerelease=false\nnpm_tag=latest\n",
+    );
+  });
+});
+
+test("sanitizes a release tag version mismatch", async () => {
+  await withReleaseCanaryRepository(manifest("@equipe-tech/alpha", "1.2.3"), async (root) => {
+    const result = await runReleaseCanary(root, [
+      "--tag",
+      "alpha@9.9.9",
+      "--github-output",
+      join(root, "output"),
+    ]);
+    expectSanitizedReleaseCanaryFailure(result, root, "OBS_RELEASE_CANARY_VERSION_MISMATCH");
+  });
+});
+
+test("sanitizes a missing package manifest", async () => {
+  await withReleaseCanaryRepository(undefined, async (root) => {
+    const result = await runReleaseCanary(root, [
+      "--tag",
+      "alpha@1.2.3",
+      "--github-output",
+      join(root, "output"),
+    ]);
+    expectSanitizedReleaseCanaryFailure(result, root, "OBS_RELEASE_CANARY_PACKAGE_UNKNOWN");
+  });
+});
+
+test("sanitizes a malformed release tag", async () => {
+  await withReleaseCanaryRepository(manifest("@equipe-tech/alpha", "1.2.3"), async (root) => {
+    const result = await runReleaseCanary(root, [
+      "--tag",
+      "not-a-tag",
+      "--github-output",
+      join(root, "output"),
+    ]);
+    expectSanitizedReleaseCanaryFailure(result, root, "OBS_RELEASE_CANARY_TAG_INVALID");
+  });
+});
+
+test("sanitizes a malformed package manifest", async () => {
+  await withReleaseCanaryRepository("{", async (root) => {
+    const result = await runReleaseCanary(root, [
+      "--tag",
+      "alpha@1.2.3",
+      "--github-output",
+      join(root, "output"),
+    ]);
+    expectSanitizedReleaseCanaryFailure(result, root, "OBS_RELEASE_CANARY_MANIFEST_INVALID");
+  });
+});
+
+test("sanitizes missing release canary arguments", async () => {
+  await withReleaseCanaryRepository(undefined, async (root) => {
+    const result = await runReleaseCanary(root, []);
+    expectSanitizedReleaseCanaryFailure(result, root, "OBS_RELEASE_CANARY_ARGUMENTS_INVALID");
+  });
+});
+
+test("requires an explicit deployed canary request", async () => {
+  const result = await execute({
+    command: [process.execPath, "run", "test:canary:deployed"],
+    cwd: projectRoot,
+    env: { ...process.env, OBSERVABILITY_E2E_DEPLOYED: "" },
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain(
+    "OBS_DEPLOYED_CANARY_NOT_REQUESTED: OBSERVABILITY_E2E_DEPLOYED=1 is required for the deployed canary gate.",
+  );
+});
+
+test("reads the executed test count from the deployed canary report", () => {
+  expect(deployedCanaryTestCount('{"numPassedTests":1}')).toBe(1);
+  expect(deployedCanaryTestCount('{"numPassedTests":0}')).toBe(0);
 });
 
 test("selects a package by slug", async () => {
