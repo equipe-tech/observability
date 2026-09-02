@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deployedCanaryTestCount } from "../scripts/test-deployed-canary.ts";
+import { deployedCanaryTestCount, DeployedCanaryError } from "../scripts/test-deployed-canary.ts";
 import {
   ReleaseCanaryError,
   ReleaseCanaryIdentity,
@@ -258,6 +258,21 @@ test("requires an explicit deployed canary request", async () => {
 test("reads the executed test count from the deployed canary report", () => {
   expect(deployedCanaryTestCount('{"numPassedTests":1}')).toBe(1);
   expect(deployedCanaryTestCount('{"numPassedTests":0}')).toBe(0);
+});
+
+test("types and sanitizes a malformed deployed canary report", () => {
+  try {
+    deployedCanaryTestCount("not json", "test-correlation");
+    throw new Error("Expected malformed report parsing to fail.");
+  } catch (cause) {
+    expect(cause).toBeInstanceOf(DeployedCanaryError);
+    if (!(cause instanceof DeployedCanaryError)) throw cause;
+    expect(cause.code).toBe("OBS_DEPLOYED_CANARY_REPORT_INVALID");
+    expect(cause.correlationId).toBe("test-correlation");
+    expect(cause.message).toBe(
+      "The deployed canary test report is malformed. Correlation ID: test-correlation.",
+    );
+  }
 });
 
 test("selects a package by slug", async () => {
