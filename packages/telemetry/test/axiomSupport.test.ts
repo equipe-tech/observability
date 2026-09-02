@@ -5,14 +5,17 @@ import { createServer, type Server } from "node:http";
 import {
   axiomServiceResourceFields,
   decodeAxiomEnvironment,
-  deployedCanaryPollingBudget,
-  deployedCanaryQueryNames,
   findChildSpan,
   findLogs,
   findMetric,
   findRootSpan,
   type AxiomEnvironment,
 } from "./support/axiom.ts";
+import {
+  deployedCanaryPollingBudget,
+  deployedCanaryPollingBudgetFor,
+  deployedCanaryQueries,
+} from "./support/deployedCanary.ts";
 
 const AddressInfo = Schema.Struct({ port: Schema.Number });
 const decodeAddressInfo = Schema.decodeUnknownOption(AddressInfo);
@@ -264,25 +267,32 @@ describe("axiom query support", () => {
     }),
   );
 
-  it("covers collector flush and provider ingestion within the suite timeout", () => {
+  it("derives the polling query budget from the executed query list", () => {
+    assert.strictEqual(deployedCanaryPollingBudget.queriesPerAttempt, deployedCanaryQueries.length);
+    const fifthQueryBudget = deployedCanaryPollingBudgetFor([...deployedCanaryQueries, "logs"]);
+    assert.strictEqual(
+      fifthQueryBudget.queriesPerAttempt,
+      deployedCanaryPollingBudget.queriesPerAttempt + 1,
+    );
+  });
+
+  it("covers collector flush and Axiom query visibility within the suite timeout", () => {
     const queryBudget =
       deployedCanaryPollingBudget.attempts *
       deployedCanaryPollingBudget.queriesPerAttempt *
       deployedCanaryPollingBudget.queryTimeoutMilliseconds;
     const sleepBudget =
       (deployedCanaryPollingBudget.attempts - 1) * deployedCanaryPollingBudget.sleepMilliseconds;
-    assert.strictEqual(
-      deployedCanaryPollingBudget.queriesPerAttempt,
-      deployedCanaryQueryNames.length,
-    );
+    const ingestionBudget = deployedCanaryPollingBudget.ingestion;
     assert.include(
       productionCollectorConfig,
-      `flush_timeout: ${deployedCanaryPollingBudget.collectorFlushTimeoutMilliseconds}ms`,
+      `flush_timeout: ${ingestionBudget.collectorFlushMilliseconds}ms`,
     );
-    assert.isAtLeast(
+    assert.strictEqual(
       sleepBudget,
-      deployedCanaryPollingBudget.collectorFlushTimeoutMilliseconds +
-        deployedCanaryPollingBudget.providerIngestionToleranceMilliseconds,
+      ingestionBudget.collectorFlushMilliseconds +
+        ingestionBudget.axiomQueryVisibilityMilliseconds +
+        ingestionBudget.safetyMarginMilliseconds,
     );
     assert.isBelow(queryBudget + sleepBudget, deployedCanaryPollingBudget.suiteTimeoutMilliseconds);
   });

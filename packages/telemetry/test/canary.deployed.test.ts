@@ -4,7 +4,6 @@ import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 import {
   decodeAxiomEnvironment,
-  deployedCanaryPollingBudget,
   findChildSpan,
   findLogs,
   findMetric,
@@ -15,6 +14,7 @@ import {
   type AxiomRedactionAttributes,
   type AxiomSpan,
 } from "./support/axiom.ts";
+import { deployedCanaryPollingBudget, deployedCanaryQueries } from "./support/deployedCanary.ts";
 import {
   canaryRunId,
   canarySensitiveValues,
@@ -53,60 +53,79 @@ const findDeployedRun = Effect.fn("findDeployedRun")(function* (
   });
   const queryTimeoutMilliseconds = deployedCanaryPollingBudget.queryTimeoutMilliseconds;
   for (let attempt = 0; attempt < deployedCanaryPollingBudget.attempts; attempt++) {
-    const root = yield* findRootSpan(env, runId, canaryServiceVersion, {
-      observe: (response) => Ref.update(responses, (current) => ({ ...current, root: response })),
-      timeoutMilliseconds: queryTimeoutMilliseconds,
-    });
-    if (Option.isSome(root)) {
-      const child = yield* findChildSpan(env, root.value.traceId, {
-        observe: (response) =>
-          Ref.update(responses, (current) => ({ ...current, child: response })),
-        timeoutMilliseconds: queryTimeoutMilliseconds,
-      });
-      const logs = yield* findLogs(env, runId, canaryServiceVersion, {
-        observe: (response) => Ref.update(responses, (current) => ({ ...current, logs: response })),
-        timeoutMilliseconds: queryTimeoutMilliseconds,
-      });
-      const metric = yield* findMetric(
-        env,
-        runId,
-        canaryEnvironment,
-        "observability-canary",
-        canaryServiceVersion,
-        {
-          observe: (response) =>
-            Ref.update(responses, (current) => ({ ...current, metric: response })),
-          timeoutMilliseconds: queryTimeoutMilliseconds,
-        },
-      );
-      const completed = logs.find((log) => log.eventName === "canary.completed");
-      const browser = logs.find((log) => log.eventName === "canary.browser");
-      const redaction = logs.find((log) => log.eventName === "canary.redaction");
-      if (
-        Option.isSome(child) &&
-        completed !== undefined &&
-        browser !== undefined &&
-        redaction !== undefined &&
-        Option.isSome(metric)
-      ) {
-        yield* Effect.logInfo(
-          `Axiom trace query matched run_id=${runId} trace_id=${root.value.traceId} span_id=${root.value.spanId} service_version=${canaryServiceVersion}`,
-        );
-        yield* Effect.logInfo(
-          `Axiom log query matched run_id=${runId} trace_id=${Option.getOrElse(completed.traceId, () => "none")} service_version=${canaryServiceVersion}`,
-        );
-        yield* Effect.logInfo(
-          `Axiom metric query matched run_id=${runId} service_version=${canaryServiceVersion}`,
-        );
-        return {
-          root: root.value,
-          child: child.value,
-          completed,
-          browser,
-          redaction,
-          metric: metric.value,
-        };
+    let root = Option.none<AxiomSpan>();
+    let child = Option.none<AxiomSpan>();
+    let logs: ReadonlyArray<AxiomLog> = [];
+    let metric = Option.none<AxiomMetric>();
+    for (const query of deployedCanaryQueries) {
+      switch (query) {
+        case "root":
+          root = yield* findRootSpan(env, runId, canaryServiceVersion, {
+            observe: (response) =>
+              Ref.update(responses, (current) => ({ ...current, root: response })),
+            timeoutMilliseconds: queryTimeoutMilliseconds,
+          });
+          break;
+        case "child":
+          if (Option.isSome(root)) {
+            child = yield* findChildSpan(env, root.value.traceId, {
+              observe: (response) =>
+                Ref.update(responses, (current) => ({ ...current, child: response })),
+              timeoutMilliseconds: queryTimeoutMilliseconds,
+            });
+          }
+          break;
+        case "logs":
+          logs = yield* findLogs(env, runId, canaryServiceVersion, {
+            observe: (response) =>
+              Ref.update(responses, (current) => ({ ...current, logs: response })),
+            timeoutMilliseconds: queryTimeoutMilliseconds,
+          });
+          break;
+        case "metric":
+          metric = yield* findMetric(
+            env,
+            runId,
+            canaryEnvironment,
+            "observability-canary",
+            canaryServiceVersion,
+            {
+              observe: (response) =>
+                Ref.update(responses, (current) => ({ ...current, metric: response })),
+              timeoutMilliseconds: queryTimeoutMilliseconds,
+            },
+          );
+          break;
       }
+    }
+    const completed = logs.find((log) => log.eventName === "canary.completed");
+    const browser = logs.find((log) => log.eventName === "canary.browser");
+    const redaction = logs.find((log) => log.eventName === "canary.redaction");
+    if (
+      Option.isSome(root) &&
+      Option.isSome(child) &&
+      completed !== undefined &&
+      browser !== undefined &&
+      redaction !== undefined &&
+      Option.isSome(metric)
+    ) {
+      yield* Effect.logInfo(
+        `Axiom trace query matched run_id=${runId} trace_id=${root.value.traceId} span_id=${root.value.spanId} service_version=${canaryServiceVersion}`,
+      );
+      yield* Effect.logInfo(
+        `Axiom log query matched run_id=${runId} trace_id=${Option.getOrElse(completed.traceId, () => "none")} service_version=${canaryServiceVersion}`,
+      );
+      yield* Effect.logInfo(
+        `Axiom metric query matched run_id=${runId} service_version=${canaryServiceVersion}`,
+      );
+      return {
+        root: root.value,
+        child: child.value,
+        completed,
+        browser,
+        redaction,
+        metric: metric.value,
+      };
     }
     if (attempt + 1 < deployedCanaryPollingBudget.attempts) {
       yield* Effect.sleep(deployedCanaryPollingBudget.sleepMilliseconds);

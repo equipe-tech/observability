@@ -34,33 +34,6 @@ export type AxiomQueryOptions = {
   readonly timeoutMilliseconds?: number;
 };
 
-export type DeployedCanaryPollingBudget = {
-  readonly attempts: number;
-  readonly queriesPerAttempt: number;
-  readonly sleepMilliseconds: number;
-  readonly queryTimeoutMilliseconds: number;
-  readonly suiteTimeoutMilliseconds: number;
-  readonly collectorFlushTimeoutMilliseconds: number;
-  readonly providerIngestionToleranceMilliseconds: number;
-};
-
-export const deployedCanaryQueryNames: readonly ["root", "child", "logs", "metric"] = [
-  "root",
-  "child",
-  "logs",
-  "metric",
-];
-
-export const deployedCanaryPollingBudget: DeployedCanaryPollingBudget = {
-  attempts: 13,
-  queriesPerAttempt: deployedCanaryQueryNames.length,
-  sleepMilliseconds: 16_000,
-  queryTimeoutMilliseconds: 5_000,
-  suiteTimeoutMilliseconds: 480_000,
-  collectorFlushTimeoutMilliseconds: 200,
-  providerIngestionToleranceMilliseconds: 180_000,
-};
-
 const noopQueryObserver: AxiomQueryObserver = () => Effect.void;
 const defaultQueryTimeoutMilliseconds = 10_000;
 const summarizeResponse = (payload: string): string => payload.slice(0, 500);
