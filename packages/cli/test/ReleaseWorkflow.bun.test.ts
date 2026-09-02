@@ -148,20 +148,19 @@ describe("release workflow publication gate", () => {
     for (const document of workflowDocuments) {
       for (const job of Object.values(document.jobs)) {
         const steps = job.steps ?? [];
-        for (const [stepIndex, step] of steps.entries()) {
-          if (!step.run?.match(/(^|\s)bun(?:x)?(?:\s|$)/m)) continue;
-          const precedingSteps = steps.slice(0, stepIndex);
-          expect(
-            precedingSteps.some(
-              (candidate) =>
-                candidate.uses === "oven-sh/setup-bun@v2" &&
-                candidate.with?.["bun-version"] === "1.4.0",
+        const firstBunStepIndex = steps.findIndex((step) =>
+          step.run?.match(/(^|\s)bun(?:x)?(?:\s|$)/m),
+        );
+        if (firstBunStepIndex < 0) continue;
+        expect(steps[firstBunStepIndex]?.run).toBe("bun install --frozen-lockfile");
+        expect(
+          steps
+            .slice(0, firstBunStepIndex)
+            .some(
+              (step) =>
+                step.uses === "oven-sh/setup-bun@v2" && step.with?.["bun-version"] === "1.4.0",
             ),
-          ).toBe(true);
-          expect(
-            precedingSteps.some((candidate) => candidate.run === "bun install --frozen-lockfile"),
-          ).toBe(true);
-        }
+        ).toBe(true);
       }
     }
   });
