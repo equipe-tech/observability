@@ -83,8 +83,10 @@ const contractFixture = (
   mutate: (baseline: Contract.ContractSurface) => Contract.ContractSurface,
   baselineFactory: () => Contract.ContractSurface = contractSurface,
   now = "2026-09-01",
-  control: (baseline: Contract.ContractSurface) => Contract.ContractSurface = (baseline) =>
-    baseline,
+  control: (baseline: Contract.ContractSurface) => Contract.ContractSurface = (baseline) => ({
+    ...baseline,
+    contractVersion: baseline.contractVersion + 1,
+  }),
 ): ContractCompatibilityFixture => ({
   id: expected.code,
   expected,
@@ -118,6 +120,10 @@ const aliasSurface = (): Contract.ContractSurface => ({
 });
 
 export const contractCompatibilityFixtures: ReadonlyArray<ContractCompatibilityFixture> = [
+  contractFixture(
+    expected("OBS_COMPAT_SERVICE_CHANGED", "service", "breaking", false),
+    (baseline) => ({ ...baseline, contractVersion: 2, service: "payments" }),
+  ),
   contractFixture(
     expected("OBS_COMPAT_EVENT_ADDED", "events/payment.refund", "compatible", true),
     (baseline) => ({
@@ -482,7 +488,7 @@ const packageFixture = (
     id: expectedValue.code,
     baseline,
     candidate: mutate(baseline),
-    control: baseline,
+    control: { ...baseline, version: "0.2.2" },
     declaredVersion,
     declaredBreaks,
     expected: expectedValue,

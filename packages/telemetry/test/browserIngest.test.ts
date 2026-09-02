@@ -146,6 +146,10 @@ describe("ingestBrowserEvents", () => {
       );
       assert.strictEqual(failure._tag, "InvalidBrowserEventBatch");
       assert.strictEqual(failure.code, "OBS_BROWSER_EVENTS_INVALID_BATCH");
+      assert.strictEqual(
+        failure.message,
+        "The browser event batch is invalid. Send a batch with a positive safe integer version, bounded events, and scalar fields.",
+      );
     }),
   );
 

@@ -6,7 +6,12 @@ import { Contract } from "../packages/telemetry/src/index.ts";
 import { parseOperationsManifest } from "../packages/cli/src/OperationsManifest.ts";
 import {
   classifyPackageChange,
+  comparePeerRanges,
+  declarationErrorCodes,
+  evaluateContractGate,
+  packageSurfaceDigest,
   PackageCompatibilityCode,
+  publishedPackageSurface,
   releaseIntegrityIssue,
   versionSatisfiesBreakLane,
   type DeclaredPackageBreak,
@@ -14,6 +19,7 @@ import {
   type PackageSurface,
 } from "../scripts/compatibility-gate.ts";
 import { generateCompatibilityCandidate } from "../scripts/generate-compatibility-candidate.ts";
+import { RegistryPackageFetchError } from "../scripts/registry-package.ts";
 import {
   contractCompatibilityFixtures,
   packageCompatibilityFixtures,
@@ -58,7 +64,7 @@ describe("compatibility gate", () => {
     expect([...fixtureIds].sort()).toEqual([...Contract.CompatibilityCode.literals].sort());
     for (const fixture of contractCompatibilityFixtures) {
       const arranged = fixture.arrange();
-      const report = Contract.classifyContractChange(arranged);
+      const report = evaluateContractGate(arranged);
       const findings = report.findings.filter((finding) => finding.code === fixture.expected.code);
       expect(findings).toHaveLength(1);
       expect(findings[0]).toMatchObject({
@@ -68,7 +74,8 @@ describe("compatibility gate", () => {
         aliasStatus: fixture.expected.aliasStatus,
       });
       expect(report.accepted).toBe(fixture.expected.accepted);
-      const control = Contract.classifyContractChange({
+      expect(arranged.control).not.toEqual(arranged.baseline);
+      const control = evaluateContractGate({
         baseline: arranged.baseline,
         candidate: arranged.control,
         now: arranged.now,
@@ -98,6 +105,7 @@ describe("compatibility gate", () => {
         severity: fixture.expected.severity,
       });
       expect(findings.every((finding) => finding.satisfied)).toBe(fixture.expected.accepted);
+      expect(fixture.control).not.toEqual(fixture.baseline);
       const control = classifyPackageChange(
         fixture.baseline,
         fixture.control,
@@ -108,67 +116,40 @@ describe("compatibility gate", () => {
     }
   });
 
-  test("rejects every mutated fixture expectation", () => {
+  test("changes classifier findings when baselines are mutated", () => {
     for (const fixture of contractCompatibilityFixtures) {
       const arranged = fixture.arrange();
-      const report = Contract.classifyContractChange(arranged);
-      const finding = report.findings.find((entry) => entry.code === fixture.expected.code);
-      expect(finding).toBeDefined();
-      const matches = (candidate: typeof fixture.expected): boolean =>
-        finding?.code === candidate.code &&
-        finding.path === candidate.path &&
-        finding.severity === candidate.severity &&
-        finding.aliasStatus === candidate.aliasStatus &&
-        report.accepted === candidate.accepted;
-      const alternateCode = Contract.CompatibilityCode.literals.find(
-        (code) => code !== fixture.expected.code,
+      const original = evaluateContractGate(arranged).findings.find(
+        (entry) => entry.code === fixture.expected.code,
       );
-      expect(alternateCode).toBeDefined();
-      if (alternateCode !== undefined)
-        expect(matches({ ...fixture.expected, code: alternateCode })).toBe(false);
-      expect(matches({ ...fixture.expected, path: `${fixture.expected.path}/wrong` })).toBe(false);
-      expect(
-        matches({
-          ...fixture.expected,
-          severity: fixture.expected.severity === "breaking" ? "compatible" : "breaking",
-        }),
-      ).toBe(false);
-      expect(
-        matches({
-          ...fixture.expected,
-          aliasStatus: fixture.expected.aliasStatus === "active" ? "expired" : "active",
-        }),
-      ).toBe(false);
-      expect(matches({ ...fixture.expected, accepted: !fixture.expected.accepted })).toBe(false);
+      const mutated = evaluateContractGate({
+        baseline: {
+          ...arranged.baseline,
+          contractVersion: arranged.baseline.contractVersion + 1,
+        },
+        candidate: arranged.candidate,
+        now: arranged.now,
+      }).findings.find((entry) => entry.code === fixture.expected.code);
+      expect(original).toBeDefined();
+      expect(mutated).toBeDefined();
+      expect(mutated).not.toEqual(original);
     }
     for (const fixture of packageCompatibilityFixtures) {
-      const findings = classifyPackageChange(
+      const original = classifyPackageChange(
         fixture.baseline,
         fixture.candidate,
         fixture.declaredVersion,
         fixture.declaredBreaks,
-      );
-      const finding = findings.find((entry) => entry.code === fixture.expected.code);
-      expect(finding).toBeDefined();
-      const matches = (candidate: typeof fixture.expected): boolean =>
-        finding?.code === candidate.code &&
-        finding.path === candidate.path &&
-        finding.severity === candidate.severity &&
-        findings.every((entry) => entry.satisfied) === candidate.accepted;
-      const alternateCode = PackageCompatibilityCode.literals.find(
-        (code) => code !== fixture.expected.code,
-      );
-      expect(alternateCode).toBeDefined();
-      if (alternateCode !== undefined)
-        expect(matches({ ...fixture.expected, code: alternateCode })).toBe(false);
-      expect(matches({ ...fixture.expected, path: `${fixture.expected.path}/wrong` })).toBe(false);
-      expect(
-        matches({
-          ...fixture.expected,
-          severity: fixture.expected.severity === "breaking" ? "compatible" : "breaking",
-        }),
-      ).toBe(false);
-      expect(matches({ ...fixture.expected, accepted: !fixture.expected.accepted })).toBe(false);
+      ).find((entry) => entry.code === fixture.expected.code);
+      const mutated = classifyPackageChange(
+        { ...fixture.baseline, version: "0.2.2" },
+        fixture.candidate,
+        fixture.declaredVersion,
+        fixture.declaredBreaks,
+      ).find((entry) => entry.code === fixture.expected.code);
+      expect(original).toBeDefined();
+      expect(mutated).toBeDefined();
+      expect(mutated).not.toEqual(original);
     }
   });
 
@@ -180,7 +161,7 @@ describe("compatibility gate", () => {
     if (fixture === undefined) return;
     const arranged = fixture.arrange();
     const statusAt = (now: string) =>
-      Contract.classifyContractChange({
+      evaluateContractGate({
         baseline: arranged.baseline,
         candidate: arranged.candidate,
         now,
@@ -227,10 +208,90 @@ describe("compatibility gate", () => {
     expect(generated).toBe(committed);
     const candidate = JSON.parse(committed);
     expect(candidate.browserEnvelope).toEqual(browserEnvelopeMetadata);
+    expect(candidate.aliases[0].since).toBe("2026-08-31");
     expect({
       ...browserEnvelopeMetadata,
       eventFields: [...browserEnvelopeMetadata.eventFields, "drift"],
     }).not.toEqual(candidate.browserEnvelope);
+  });
+
+  test("projects all candidate metadata from a compiled contract surface", async () => {
+    const contract = await Effect.runPromise(
+      Contract.defineTelemetryContract({
+        version: 2,
+        events: {
+          PaymentAttempt: {
+            name: "payment.attempt",
+            kind: "operation",
+            defaultSeverity: "info",
+            mandatory: true,
+            sampling: { kind: "always" },
+            attributes: {
+              "payment.provider": {
+                classification: "public",
+                required: true,
+                metricLabel: true,
+              },
+            },
+          },
+        },
+        metrics: {
+          PaymentLatency: {
+            name: "payment.latency",
+            description: "Payment latency",
+            unit: "ms",
+            kind: "histogram",
+            boundaries: [10, 100],
+            attributes: {
+              "payment.provider": {
+                classification: "public",
+                maximumCardinality: 2,
+                allowedValues: ["stripe", "adyen"],
+              },
+            },
+          },
+        },
+        auditActions: {
+          PaymentRefund: {
+            action: "payment.refund",
+            resourceType: "payment",
+            allowedOutcomes: ["failure", "success"],
+            reasonCodes: ["payment.duplicate"],
+          },
+        },
+      }),
+    );
+    const contractSurface = Contract.contractSurface({
+      contract,
+      service: "checkout",
+      retentionWindowDays: 30,
+    });
+    const candidate = JSON.parse(await generateCompatibilityCandidate({ contractSurface }));
+    expect(candidate.events[0].attributes[0]).toEqual({
+      name: "payment.provider",
+      required: true,
+      classification: "public",
+      metricLabel: true,
+    });
+    expect(candidate.metrics[0]).toEqual(
+      expect.objectContaining({
+        boundaries: [10, 100],
+        attributes: [
+          {
+            name: "payment.provider",
+            classification: "public",
+            maximumCardinality: 2,
+            allowedValues: ["stripe", "adyen"],
+          },
+        ],
+      }),
+    );
+    expect(candidate.auditActions[0]).toEqual({
+      action: "payment.refund",
+      resourceType: "payment",
+      allowedOutcomes: ["failure", "success"],
+      reasonCodes: ["payment.duplicate"],
+    });
   });
 
   test("freezes the maximum manifest retention in both contract artifacts", async () => {
@@ -244,6 +305,14 @@ describe("compatibility gate", () => {
     );
     expect(baseline.contract.retentionWindowDays).toBe(maximumRetention);
     expect(candidate.retentionWindowDays).toBe(maximumRetention);
+  });
+
+  test("extracts only complete public error code literals", () => {
+    expect(
+      declarationErrorCodes(
+        'export type PublicCode = "OBS_PUBLIC_FAILURE"; export type Prefix = `OBS_CONTRACT_${string}`;',
+      ),
+    ).toEqual(["OBS_PUBLIC_FAILURE"]);
   });
 
   test("detects every historical symbol and public error code removal", () => {
@@ -340,6 +409,31 @@ describe("compatibility gate", () => {
     ).toBe(true);
   });
 
+  test("classifies semantic peer range narrowing", () => {
+    const narrowingCases: ReadonlyArray<readonly [string, string]> = [
+      [">=1", ">=10"],
+      ["^1.0.0", "^1.0.0-beta"],
+      ["^18 || ^19", "^19"],
+    ];
+    for (const [baseline, candidate] of narrowingCases) {
+      expect(comparePeerRanges(baseline, candidate)).toEqual({
+        baseline,
+        candidate,
+        classification: "narrowed",
+      });
+      const previous = packageSurface("1.0.0", ["."], [`react@${baseline}`]);
+      const next = packageSurface("1.0.0", ["."], [`react@${candidate}`]);
+      expect(classifyPackageChange(previous, next, "2.0.0", [])).toContainEqual(
+        expect.objectContaining({
+          code: "OBS_PACKAGE_PEER_CHANGED",
+          severity: "breaking",
+          satisfied: false,
+        }),
+      );
+    }
+    expect(comparePeerRanges("^19", "^18 || ^19").classification).toBe("widened");
+  });
+
   test("rejects dependency range, peer range, category and metadata changes", () => {
     const baseline = {
       ...packageSurface("0.2.1", ["."], ["vite@^6.0.0"], ["effect@^4.0.0"]),
@@ -378,7 +472,25 @@ describe("compatibility gate", () => {
     );
   });
 
-  test("accepts exact initial package releases without fetching a predecessor", () => {
+  test("matches committed baseline digests to published declaration surfaces", async () => {
+    const baseline = JSON.parse(readFileSync("observability/compatibility/baseline.json", "utf8"));
+    try {
+      for (const historical of baseline.packages) {
+        const published = await publishedPackageSurface(historical.name, historical.version);
+        expect(packageSurfaceDigest(published.surface)).toBe(historical.surfaceDigest);
+      }
+    } catch (error) {
+      if (error instanceof RegistryPackageFetchError && error.kind === "network-unavailable") {
+        process.stderr.write(
+          "SKIP published baseline digest check because the npm registry network is unavailable.\n",
+        );
+        return;
+      }
+      throw error;
+    }
+  });
+
+  test("accepts exact initial package releases without fetching a predecessor", async () => {
     const baseline = JSON.parse(readFileSync("observability/compatibility/baseline.json", "utf8"));
     const versions = JSON.parse(
       readFileSync("observability/compatibility/candidate-versions.json", "utf8"),
@@ -392,10 +504,10 @@ describe("compatibility gate", () => {
     ]) {
       const namedInitial = { ...initial, name: `@equipe-tech/${slug}` };
       expect(
-        releaseIntegrityIssue(baseline, versions, [namedInitial], `${slug}@0.3.0`),
+        await releaseIntegrityIssue(baseline, versions, [namedInitial], `${slug}@0.3.0`),
       ).toBeUndefined();
       expect(
-        releaseIntegrityIssue(
+        await releaseIntegrityIssue(
           baseline,
           versions,
           [{ ...namedInitial, version: "0.3.1" }],
@@ -407,16 +519,15 @@ describe("compatibility gate", () => {
 
   test("pins v0.2.1 instead of current head and wires the exact CI command", () => {
     const baseline = JSON.parse(readFileSync("observability/compatibility/baseline.json", "utf8"));
-    expect(baseline.source).toEqual({
-      tag: "v0.2.1",
-      commit: "a5ab6997536f9d3af797429783f65c9e68a0dfa0",
-    });
+    expect(baseline.source.tag).toBe("v0.2.1");
+    expect(baseline.source.commit).toBe("a5ab6997536f9d3af797429783f65c9e68a0dfa0");
+    expect(
+      baseline.source.registryPackages.map((entry: { readonly name: string }) => entry.name),
+    ).toEqual(["@equipe-tech/observability", "@equipe-tech/observability-cli"]);
     const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
-    expect(workflow).toContain("OBSERVABILITY_COMPATIBILITY_DATE=$(git show -s --format=%cs HEAD)");
+    expect(workflow).toContain("OBSERVABILITY_COMPATIBILITY_DATE=$(date -u +%F)");
+    expect(workflow).not.toContain("git show");
     expect(workflow).toContain("- run: bun run compat");
-    expect(workflow.replace("--format=%cs HEAD", "--format= HEAD")).not.toContain(
-      "OBSERVABILITY_COMPATIBILITY_DATE=$(git show -s --format=%cs HEAD)",
-    );
     expect(readFileSync("package.json", "utf8")).toContain(
       '"compat": "bun scripts/compatibility-gate.ts"',
     );
