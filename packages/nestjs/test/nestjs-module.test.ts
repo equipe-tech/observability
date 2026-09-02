@@ -1,16 +1,23 @@
 import "reflect-metadata";
 import { Controller, Get, Module } from "@nestjs/common";
-import { NestFactory } from "@nestjs/core";
-import { createServer } from "node:http";
+import { APP_FILTER, APP_INTERCEPTOR, NestFactory } from "@nestjs/core";
+import { createServer, IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
-import { Schema } from "effect";
+import { Effect, Option, Predicate, Schema } from "effect";
+import { CorrelationContext, type DefectEnvelope } from "@equipe-tech/observability";
+import { defineErrorCatalog, type DrainContext } from "evlog";
+import { EvlogModule } from "evlog/nestjs";
 import { assert, describe, it } from "vite-plus/test";
 import {
   createRequestWideEventTraceCorrelation,
+  InvalidNestErrorCatalog,
   InvalidTelemetryModuleOptions,
+  NestErrorBoundary,
+  NestErrorBoundaryModule,
   TelemetryModule,
   TelemetryShutdownError,
   TelemetryStartupError,
+  type DefectEventInput,
   type TelemetryModuleOptions,
 } from "../src/index.ts";
 import { telemetryModuleForTesting } from "../src/TelemetryModule.ts";
@@ -121,6 +128,199 @@ const enabledOptions = (endpoint: string): TelemetryModuleOptions => ({
 });
 
 describe("TelemetryModule", () => {
+  it("maps catalog errors and records each unexpected defect once across duplicate boundaries", async () => {
+    const capture = await makeOtlpCapture();
+    const wideEvents: Array<DrainContext> = [];
+    const defectEvents: Array<DefectEventInput> = [];
+    const capturedEnvelopes: Array<DefectEnvelope> = [];
+    const errors = defineErrorCatalog("catalog_test", {
+      ITEM_MISSING: { status: 404, message: "The requested item does not exist." },
+    });
+    const repeatedDefect = Object.assign(new Error("private defect detail"), {
+      code: "DATABASE_FAILURE",
+    });
+
+    class BoundaryController {
+      expected(): never {
+        throw errors.ITEM_MISSING();
+      }
+
+      defect(): never {
+        throw repeatedDefect;
+      }
+    }
+    Controller("boundary")(BoundaryController);
+    for (const method of ["expected", "defect"] as const) {
+      Get(method)(
+        BoundaryController.prototype,
+        method,
+        methodDescriptor(BoundaryController.prototype, method),
+      );
+    }
+
+    const correlation = createRequestWideEventTraceCorrelation((request) =>
+      request instanceof IncomingMessage ? request.log : undefined,
+    );
+    const boundaryOptions = {
+      catalog: errors,
+      recordDefect: (event: DefectEventInput) => {
+        defectEvents.push(event);
+      },
+      sentryDefects: {
+        capture: (input: { readonly envelope: DefectEnvelope }) =>
+          Effect.sync(() => {
+            capturedEnvelopes.push(input.envelope);
+            return { kind: "queued" };
+          }),
+      },
+      requestWideEventTraceCorrelation: correlation,
+    };
+
+    class AppModule {}
+    Module({
+      imports: [
+        EvlogModule.forRoot({
+          drain: (event) => {
+            wideEvents.push(event);
+          },
+        }),
+        TelemetryModule.forRootAsync({
+          useFactory: () => ({
+            ...enabledOptions(capture.endpoint),
+            requestWideEventTraceCorrelation: correlation,
+          }),
+        }),
+        NestErrorBoundaryModule.forRoot(boundaryOptions),
+        NestErrorBoundaryModule.forRoot(boundaryOptions),
+      ],
+      controllers: [BoundaryController],
+    })(AppModule);
+
+    const app = await NestFactory.create(AppModule, { logger: false });
+    await app.listen(0, "127.0.0.1");
+    const baseUrl = applicationBaseUrl(app.getHttpServer().address());
+    try {
+      const expected = await fetch(`${baseUrl}/boundary/expected`);
+      assert.strictEqual(expected.status, 404);
+      const ExpectedResponse = Schema.Struct({
+        code: Schema.Literal("catalog_test.ITEM_MISSING"),
+        message: Schema.Literal("The requested item does not exist."),
+        request_id: Schema.String,
+        trace_id: Schema.String,
+      });
+      Schema.decodeUnknownSync(ExpectedResponse)(await expected.json());
+      assert.lengthOf(capturedEnvelopes, 0);
+      assert.lengthOf(defectEvents, 0);
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const defect = await fetch(`${baseUrl}/boundary/defect`);
+        assert.strictEqual(defect.status, 500);
+      }
+      assert.lengthOf(defectEvents, 1);
+      assert.lengthOf(capturedEnvelopes, 1);
+      const defectEvent = defectEvents[0];
+      const envelope = capturedEnvelopes[0];
+      assert.isDefined(defectEvent);
+      assert.isDefined(envelope);
+      assert.strictEqual(defectEvent.kind, "defect");
+      assert.strictEqual(defectEvent.error.type, "DATABASE_FAILURE");
+      assert.strictEqual(envelope.fingerprint[0], "DATABASE_FAILURE");
+      assert.isTrue(Option.isSome(envelope.correlation.requestId));
+      assert.isTrue(Option.isSome(envelope.correlation.traceId));
+      assert.lengthOf(
+        wideEvents.filter((context) => context.event.path === "/boundary/expected"),
+        1,
+      );
+      assert.include(JSON.stringify(wideEvents), "catalog_test.ITEM_MISSING");
+    } finally {
+      await app.close().catch(() => undefined);
+      await capture.close();
+    }
+  }, 30_000);
+
+  it("deduplicates double filter handling and a downstream filter rethrow", async () => {
+    const events: Array<DefectEventInput> = [];
+    const captures: Array<DefectEnvelope> = [];
+    const options = {
+      catalog: { _prefix: "rethrow_test" },
+      recordDefect: (event: DefectEventInput) => {
+        events.push(event);
+      },
+      sentryDefects: {
+        capture: (input: { readonly envelope: DefectEnvelope }) =>
+          Effect.sync(() => {
+            captures.push(input.envelope);
+            return { kind: "queued" };
+          }),
+      },
+    };
+    const downstreamBoundary = new NestErrorBoundary(options);
+    const upstreamBoundary = new NestErrorBoundary(options);
+    const error = new Error("rethrow defect");
+    const correlation = new CorrelationContext({});
+    const downstreamFilter = async (): Promise<never> => {
+      await downstreamBoundary.handle(downstreamBoundary.classify(error, correlation), {});
+      throw error;
+    };
+    const rethrown = await downstreamFilter().catch((cause: Error) => cause);
+    await upstreamBoundary.handle(upstreamBoundary.classify(rethrown, correlation), {});
+    assert.lengthOf(events, 1);
+    assert.lengthOf(captures, 1);
+  });
+
+  it("records defects without a capture attempt when Sentry is disabled", async () => {
+    const defects: Array<DefectEventInput> = [];
+    const boundary = new NestErrorBoundary({
+      catalog: { _prefix: "disabled_test" },
+      recordDefect: (event) => {
+        defects.push(event);
+      },
+    });
+    const error = new Error("disabled defect");
+    const classified = boundary.classify(error, new CorrelationContext({}));
+    await boundary.handle(classified, {});
+    await boundary.handle(classified, {});
+    assert.lengthOf(defects, 1);
+  });
+
+  it("registers one span interceptor and one independent exception filter", () => {
+    const telemetry = TelemetryModule.forRootAsync({ useFactory: () => ({ enabled: false }) });
+    const boundary = NestErrorBoundaryModule.forRoot({
+      catalog: { _prefix: "provider_test" },
+      recordDefect: () => undefined,
+    });
+    const providerTokens = [...(telemetry.providers ?? []), ...(boundary.providers ?? [])].flatMap(
+      (provider) => (Predicate.hasProperty(provider, "provide") ? [provider.provide] : []),
+    );
+    assert.lengthOf(
+      providerTokens.filter((token) => token === APP_INTERCEPTOR),
+      1,
+    );
+    assert.lengthOf(
+      providerTokens.filter((token) => token === APP_FILTER),
+      1,
+    );
+  });
+
+  it("rejects an application catalog without a stable prefix", () => {
+    assert.throws(
+      () =>
+        NestErrorBoundaryModule.forRoot({
+          catalog: { _prefix: "" },
+          recordDefect: () => undefined,
+        }),
+      InvalidNestErrorCatalog,
+    );
+    assert.throws(
+      () =>
+        NestErrorBoundaryModule.forRoot({
+          catalog: { _prefix: "OBS_APPLICATION" },
+          recordDefect: () => undefined,
+        }),
+      InvalidNestErrorCatalog,
+    );
+  });
+
   it("uses async dependency injection, registers globally, excludes health traffic, and flushes on close", async () => {
     const capture = await makeOtlpCapture();
     const CONFIG = Symbol("TelemetryConfig");
