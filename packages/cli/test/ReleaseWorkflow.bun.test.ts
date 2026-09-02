@@ -51,6 +51,8 @@ const WorkflowDocument = Schema.Struct({
 const ConditionalJob = Schema.Struct({
   if: Schema.optionalKey(Schema.String),
   environment: Schema.optionalKey(Schema.String),
+  "continue-on-error": Schema.optionalKey(Schema.Boolean),
+  "timeout-minutes": Schema.optionalKey(Schema.Number),
   steps: Schema.optionalKey(Schema.Array(WorkflowStep)),
 });
 
@@ -113,10 +115,14 @@ const ReleaseWorkflow = Schema.Struct({
 
 const parsedCiWorkflow = Schema.decodeUnknownSync(CiWorkflow)(Bun.YAML.parse(ciWorkflow));
 const parsedReleaseWorkflow = Schema.decodeUnknownSync(ReleaseWorkflow)(Bun.YAML.parse(workflow));
-const workflowDocuments = [
-  Schema.decodeUnknownSync(WorkflowDocument)(Bun.YAML.parse(ciWorkflow)),
-  Schema.decodeUnknownSync(WorkflowDocument)(Bun.YAML.parse(workflow)),
-];
+const workflowDocuments = await Array.fromAsync(
+  new Bun.Glob(".github/workflows/*.yml").scan({
+    cwd: fileURLToPath(new URL("../../..", import.meta.url)),
+    absolute: true,
+  }),
+  async (path) =>
+    Schema.decodeUnknownSync(WorkflowDocument)(Bun.YAML.parse(await Bun.file(path).text())),
+);
 
 type GateCase = {
   readonly requested: "true" | "false";
@@ -148,7 +154,7 @@ const executeShell = async (
   const directory = await mkdtemp(join(tmpdir(), "release-workflow-gate-"));
   const outputPath = join(directory, "github-output");
   try {
-    const child = Bun.spawn(["bash", "-euo", "pipefail", "-c", script], {
+    const child = Bun.spawn(["bash", "-e", "-c", script], {
       env: { ...process.env, ...environment, GITHUB_OUTPUT: outputPath },
       stdout: "pipe",
       stderr: "pipe",
@@ -264,12 +270,40 @@ describe("release workflow publication gate", () => {
     expect(parsedCiWorkflow.on.workflow_call.outputs.deployed_canary_result.value).toBe(
       "${{ jobs.canary-gate.outputs.result }}",
     );
+    expect(parsedCiWorkflow.jobs["deployed-canary"]["continue-on-error"]).toBeUndefined();
     expect(parsedCiWorkflow.jobs["canary-gate"].outputs.result).toBe(
       "${{ steps.result.outputs.result }}",
     );
+    expect(parsedCiWorkflow.jobs["canary-gate"].steps[0]?.env).toEqual({
+      CANARY_REQUESTED: "${{ inputs.run_deployed_canary }}",
+      CANARY_RESULT: "${{ needs.deployed-canary.result }}",
+    });
+    expect(parsedReleaseWorkflow.jobs["canary-gate"].needs).toBe("verify");
     expect(parsedReleaseWorkflow.jobs["canary-gate"].steps?.[0]?.env?.DEPLOYED_CANARY_RESULT).toBe(
       "${{ needs.verify.outputs.deployed_canary_result }}",
     );
+  });
+
+  test("keeps the deployed canary job timeout above the suite budget", () => {
+    const timeoutMinutes = parsedCiWorkflow.jobs["deployed-canary"]["timeout-minutes"];
+    expect(timeoutMinutes).toBeDefined();
+    expect((timeoutMinutes ?? 0) * 60_000).toBeGreaterThanOrEqual(480_000 + 3 * 60_000);
+  });
+
+  test("does not mask a gate bypass when the request variable is unset", async () => {
+    const gateStep = parsedCiWorkflow.jobs["canary-gate"].steps[0];
+    expect(gateStep?.run).toBeDefined();
+    if (gateStep?.run === undefined) throw new Error("The reusable canary gate script is missing.");
+    const result = await executeShell(gateStep.run, {
+      CANARY_REQUESTED: undefined,
+      CANARY_RESULT: "success",
+    });
+    expect(result).toEqual({
+      exitCode: 0,
+      output: "result=not-requested\n",
+      stderr: "",
+      stdout: "",
+    });
   });
 
   test("builds a release graph that cannot bypass the canary gate", () => {

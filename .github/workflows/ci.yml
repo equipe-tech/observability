@@ -71,7 +71,7 @@ jobs:
     if: ${{ inputs.run_deployed_canary }}
     needs: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     environment: publication
     steps:
       - uses: actions/checkout@v4
