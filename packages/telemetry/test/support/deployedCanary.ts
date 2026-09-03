@@ -16,7 +16,6 @@ export type DeployedCanaryPollingBudget = {
   readonly ingestion: {
     readonly collectorFlushMilliseconds: number;
     readonly axiomQueryVisibilityMilliseconds: number;
-    readonly safetyMarginMilliseconds: number;
   };
 };
 
@@ -31,7 +30,6 @@ export const deployedCanaryPollingBudgetFor = (
   ingestion: {
     collectorFlushMilliseconds: 200,
     axiomQueryVisibilityMilliseconds: 180_000,
-    safetyMarginMilliseconds: 11_800,
   },
 });
 
