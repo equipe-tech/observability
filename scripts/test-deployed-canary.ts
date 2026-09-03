@@ -13,6 +13,7 @@ const DeployedCanaryErrorCode = Schema.Literals([
   "OBS_DEPLOYED_CANARY_NOT_REQUESTED",
   "OBS_DEPLOYED_CANARY_NO_TESTS",
   "OBS_DEPLOYED_CANARY_REPORT_INVALID",
+  "OBS_DEPLOYED_CANARY_RUNNER_REQUIRED",
   "OBS_DEPLOYED_CANARY_UNEXPECTED",
 ]);
 
@@ -38,6 +39,18 @@ const deployedCanaryError = (
     correlationId,
     cause,
   });
+
+export class DeployedCanarySuiteFailedError extends Schema.TaggedError<DeployedCanarySuiteFailedError>()(
+  "DeployedCanarySuiteFailedError",
+  {
+    code: Schema.Literal("OBS_DEPLOYED_CANARY_SUITE_FAILED"),
+    message: Schema.String,
+    correlationId: Schema.NonEmptyString,
+    exitCode: Schema.Int,
+    reportPath: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
 
 const unexpectedDeployedCanaryError = (
   correlationId: string,
@@ -91,6 +104,18 @@ const run = Effect.fn("deployedCanary.run")(function* () {
       process.env.OBSERVABILITY_E2E_DEPLOYED,
     );
   }
+  const runner = process.env.OBSERVABILITY_DEPLOYED_CANARY_RUNNER;
+  if (
+    runner === undefined &&
+    (process.env.NODE_ENV === "test" || process.env.VITEST !== undefined)
+  ) {
+    return yield* deployedCanaryError(
+      "OBS_DEPLOYED_CANARY_RUNNER_REQUIRED",
+      "OBSERVABILITY_DEPLOYED_CANARY_RUNNER is required in a test context.",
+      correlationId,
+      runner,
+    );
+  }
   const outputDirectory = yield* Effect.tryPromise({
     try: () => mkdtemp(join(tmpdir(), "observability-deployed-canary-")),
     catch: (cause) => unexpectedDeployedCanaryError(correlationId, cause),
@@ -101,7 +126,7 @@ const run = Effect.fn("deployedCanary.run")(function* () {
       try: () =>
         Bun.spawn(
           [
-            "vp",
+            runner ?? "vp",
             "test",
             "run",
             "packages/telemetry/test/canary.deployed.test.ts",
@@ -117,7 +142,16 @@ const run = Effect.fn("deployedCanary.run")(function* () {
       try: () => child.exited,
       catch: (cause) => unexpectedDeployedCanaryError(correlationId, cause),
     });
-    if (exitCode !== 0) return exitCode;
+    if (exitCode !== 0) {
+      return yield* new DeployedCanarySuiteFailedError({
+        code: "OBS_DEPLOYED_CANARY_SUITE_FAILED",
+        message: `The deployed canary suite exited with exit code ${exitCode}. Report: ${reportPath}. Correlation ID: ${correlationId}.`,
+        correlationId,
+        exitCode,
+        reportPath,
+        cause: exitCode,
+      });
+    }
     const report = yield* Effect.tryPromise({
       try: () => readFile(reportPath, "utf8"),
       catch: (cause) => unexpectedDeployedCanaryError(correlationId, cause),
@@ -132,7 +166,7 @@ const run = Effect.fn("deployedCanary.run")(function* () {
 if (import.meta.main) {
   Effect.runPromise(run()).catch((cause) => {
     const error =
-      cause instanceof DeployedCanaryError
+      cause instanceof DeployedCanaryError || cause instanceof DeployedCanarySuiteFailedError
         ? cause
         : unexpectedDeployedCanaryError(crypto.randomUUID(), cause);
     console.error(`${error.code}: ${error.message}`);

@@ -277,10 +277,8 @@ test("requires an explicit deployed canary request", async () => {
 
 test("rejects a zero-test report through the deployed canary entrypoint", async () => {
   const root = await mkdtemp(join(tmpdir(), "deployed-canary-entrypoint-test-"));
-  const fakeBin = join(root, "bin");
-  const fakeVp = join(fakeBin, "vp");
+  const fakeVp = join(root, "deployed-canary-runner");
   try {
-    await mkdir(fakeBin);
     await writeFile(
       fakeVp,
       [
@@ -300,7 +298,7 @@ test("rejects a zero-test report through the deployed canary entrypoint", async 
       env: {
         ...process.env,
         OBSERVABILITY_E2E_DEPLOYED: "1",
-        PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+        OBSERVABILITY_DEPLOYED_CANARY_RUNNER: fakeVp,
       },
     });
     expect(result.exitCode).not.toBe(0);
@@ -340,6 +338,21 @@ test("fails when the deployed canary runner exits nonzero", async () => {
   }
 });
 
+test("refuses the real deployed canary runner in a test context", async () => {
+  const result = await execute({
+    command: [process.execPath, "scripts/test-deployed-canary.ts"],
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      NODE_ENV: "test",
+      OBSERVABILITY_E2E_DEPLOYED: "1",
+      OBSERVABILITY_DEPLOYED_CANARY_RUNNER: undefined,
+    },
+  });
+  expect(result.exitCode).not.toBe(0);
+  expect(result.stderr).toContain("OBS_DEPLOYED_CANARY_RUNNER_REQUIRED:");
+});
+
 test("reads the executed test count from the deployed canary report", () => {
   expect(Effect.runSync(deployedCanaryTestCount('{"numPassedTests":1}'))).toBe(1);
   expect(Effect.runSync(deployedCanaryTestCount('{"numPassedTests":0}'))).toBe(0);
@@ -377,6 +390,7 @@ test("types and sanitizes an unexpected deployed canary failure", async () => {
     env: {
       ...process.env,
       OBSERVABILITY_E2E_DEPLOYED: "1",
+      OBSERVABILITY_DEPLOYED_CANARY_RUNNER: join(tmpdir(), "unused-deployed-canary-runner"),
       TMPDIR: missingTemporaryDirectory,
       TMP: missingTemporaryDirectory,
       TEMP: missingTemporaryDirectory,
