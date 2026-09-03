@@ -1,6 +1,7 @@
 import { defineErrorCatalog } from "evlog";
 import { assert, describe, it } from "vite-plus/test";
 import {
+  NestErrorBoundary,
   NestErrorBoundaryModule,
   type ErrorCatalogReference,
   type NestErrorBoundaryOptions,
@@ -29,6 +30,9 @@ const templatedCatalog = defineErrorCatalog("templated_catalog", {
 type TemplatedCatalogOption = NestErrorBoundaryOptions<typeof templatedCatalog>["catalog"];
 type TemplatedMessageCompatibility = TemplatedCatalogOption["INSUFFICIENT_FUNDS"];
 type IsNever<Value> = [Value] extends [never] ? true : false;
+type CatalogConstrainedBoundaryConstructor = abstract new <Catalog extends ErrorCatalogReference>(
+  options: NestErrorBoundaryOptions<Catalog>,
+) => NestErrorBoundary;
 
 const catalogReference: ErrorCatalogReference = catalog;
 const options: NestErrorBoundaryOptions<typeof catalog> = {
@@ -42,5 +46,12 @@ describe("Nest error catalog type contract", () => {
     assert.isTrue(templatedMessagesAreRejected);
     assert.strictEqual(catalogReference._prefix, "typed_catalog");
     assert.isDefined(NestErrorBoundaryModule.forRoot(options));
+  });
+
+  it("applies the literal-message constraint to the exported constructor", () => {
+    const constructorConstrainsCatalog: typeof NestErrorBoundary extends CatalogConstrainedBoundaryConstructor
+      ? true
+      : false = true;
+    assert.isTrue(constructorConstrainsCatalog);
   });
 });

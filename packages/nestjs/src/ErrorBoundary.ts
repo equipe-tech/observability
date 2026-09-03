@@ -259,7 +259,7 @@ const requestCaptureMarker = (request: RequestReference): WeakSet<Error> => {
   return marker;
 };
 
-export class NestErrorBoundary {
+export class NestErrorBoundary<Catalog extends ErrorCatalogReference = ErrorCatalogReference> {
   readonly #prefix: string;
   readonly #catalogEntries: ReadonlyMap<string, CatalogEntry>;
   readonly #recordDefect: NestErrorBoundaryOptions["recordDefect"];
@@ -267,7 +267,7 @@ export class NestErrorBoundary {
   readonly #requestWideEventTraceCorrelation: RequestWideEventTraceCorrelation | undefined;
   readonly #classificationTable: ReadonlyArray<ClassificationRule>;
 
-  constructor(options: NestErrorBoundaryOptions) {
+  constructor(options: NestErrorBoundaryOptions<Catalog>) {
     try {
       this.#prefix = decodeCatalogPrefix(options.catalog._prefix);
     } catch (cause) {
