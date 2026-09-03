@@ -275,6 +275,41 @@ test("requires an explicit deployed canary request", async () => {
   );
 });
 
+test("rejects a zero-test report through the deployed canary entrypoint", async () => {
+  const root = await mkdtemp(join(tmpdir(), "deployed-canary-entrypoint-test-"));
+  const fakeBin = join(root, "bin");
+  const fakeVp = join(fakeBin, "vp");
+  try {
+    await mkdir(fakeBin);
+    await writeFile(
+      fakeVp,
+      [
+        "#!/bin/sh",
+        'for argument in "$@"; do',
+        '  case "$argument" in',
+        '    --outputFile.json=*) report="${argument#*=}" ;;',
+        "  esac",
+        "done",
+        `printf '{"numPassedTests":0}\\n' > "$report"`,
+      ].join("\n"),
+    );
+    await chmod(fakeVp, 0o755);
+    const result = await execute({
+      command: [process.execPath, "scripts/test-deployed-canary.ts"],
+      cwd: projectRoot,
+      env: {
+        ...process.env,
+        OBSERVABILITY_E2E_DEPLOYED: "1",
+        PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+      },
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("OBS_DEPLOYED_CANARY_NO_TESTS:");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("reads the executed test count from the deployed canary report", () => {
   expect(Effect.runSync(deployedCanaryTestCount('{"numPassedTests":1}'))).toBe(1);
   expect(Effect.runSync(deployedCanaryTestCount('{"numPassedTests":0}'))).toBe(0);
