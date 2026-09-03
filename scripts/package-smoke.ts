@@ -451,6 +451,24 @@ try {
     );
   }
 
+  const evlogBoundaryConsumer = join(temporaryDirectory, "nestjs evlog boundary consumer");
+  await mkdir(evlogBoundaryConsumer, { recursive: true });
+  await writeFile(
+    join(evlogBoundaryConsumer, "package.json"),
+    JSON.stringify({ private: true, type: "module" }),
+  );
+  requireSuccess(
+    await run(["npm", "install", "evlog@latest"], evlogBoundaryConsumer),
+    "Installing evlog with npm in the boundary consumer",
+  );
+  requireSuccess(
+    await run(
+      ["npm", "install", `file:${join(temporaryDirectory, "nestjs.tgz")}`],
+      evlogBoundaryConsumer,
+    ),
+    "Installing the packed NestJS package in the evlog boundary consumer",
+  );
+
   const consumer = join(temporaryDirectory, "consumer outside repository");
   await mkdir(consumer, { recursive: true });
   await writeFile(
