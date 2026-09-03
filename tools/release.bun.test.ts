@@ -310,6 +310,36 @@ test("rejects a zero-test report through the deployed canary entrypoint", async 
   }
 });
 
+test("fails when the deployed canary runner exits nonzero", async () => {
+  const root = await mkdtemp(join(tmpdir(), "deployed-canary-suite-failure-test-"));
+  const fallbackRunner = join(root, "vp");
+  try {
+    await writeFile(fallbackRunner, "#!/bin/sh\nexit 99\n");
+    await chmod(fallbackRunner, 0o755);
+    for (const childExitCode of [1, 42]) {
+      const runner = join(root, `runner-${childExitCode}`);
+      await writeFile(runner, `#!/bin/sh\nexit ${childExitCode}\n`);
+      await chmod(runner, 0o755);
+      const result = await execute({
+        command: [process.execPath, "scripts/test-deployed-canary.ts"],
+        cwd: projectRoot,
+        env: {
+          ...process.env,
+          OBSERVABILITY_E2E_DEPLOYED: "1",
+          OBSERVABILITY_DEPLOYED_CANARY_RUNNER: runner,
+          PATH: root,
+        },
+      });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("OBS_DEPLOYED_CANARY_SUITE_FAILED:");
+      expect(result.stderr).toContain(`exit code ${childExitCode}`);
+      expect(result.stderr).toContain("vitest-report.json");
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("reads the executed test count from the deployed canary report", () => {
   expect(Effect.runSync(deployedCanaryTestCount('{"numPassedTests":1}'))).toBe(1);
   expect(Effect.runSync(deployedCanaryTestCount('{"numPassedTests":0}'))).toBe(0);
