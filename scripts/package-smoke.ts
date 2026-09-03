@@ -455,7 +455,18 @@ try {
   await mkdir(evlogBoundaryConsumer, { recursive: true });
   await writeFile(
     join(evlogBoundaryConsumer, "package.json"),
-    JSON.stringify({ private: true, type: "module" }),
+    JSON.stringify({
+      private: true,
+      type: "module",
+      dependencies: {
+        "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
+        "@nestjs/common": "^11.0.0",
+        "@nestjs/core": "^11.0.0",
+        effect: "4.0.0-rc.111",
+        "reflect-metadata": "^0.2.2",
+        rxjs: "^7.2.0",
+      },
+    }),
   );
   requireSuccess(
     await run(["npm", "install", "evlog@latest"], evlogBoundaryConsumer),
