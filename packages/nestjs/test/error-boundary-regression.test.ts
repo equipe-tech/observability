@@ -613,6 +613,7 @@ describe("Nest error boundary regressions", () => {
       ["NAN", Number.NaN],
       ["ZERO", 0],
       ["SIX_HUNDRED", 600],
+      ["NINE_HUNDRED_NINETY_NINE", 999],
       ["FRACTION", 404.5],
       ["NINETY_NINE", 99],
       ["NEGATIVE", -1],
