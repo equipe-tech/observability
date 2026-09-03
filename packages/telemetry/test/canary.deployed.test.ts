@@ -96,6 +96,8 @@ const findDeployedRun = Effect.fn("findDeployedRun")(function* (
             },
           );
           break;
+        default:
+          query satisfies never;
       }
     }
     const completed = logs.find((log) => log.eventName === "canary.completed");
