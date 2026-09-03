@@ -609,7 +609,7 @@ describe("Nest error boundary regressions", () => {
   });
 
   it("rejects invalid catalog status declarations during construction", () => {
-    const statuses = [
+    const statuses: ReadonlyArray<readonly [string, number]> = [
       ["NAN", Number.NaN],
       ["ZERO", 0],
       ["SIX_HUNDRED", 600],
@@ -617,7 +617,7 @@ describe("Nest error boundary regressions", () => {
       ["NINETY_NINE", 99],
       ["NEGATIVE", -1],
       ["HUGE", 1_000_000_000],
-    ] as const;
+    ];
 
     for (const [name, status] of statuses) {
       const errors = defineErrorCatalog(`invalid_status_${name.toLowerCase()}`, {
