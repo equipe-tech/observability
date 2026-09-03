@@ -385,6 +385,9 @@ try {
       await run(["bun", "install"], nestConsumer),
       `Installing the Nest ${nestMajor} packed consumer`,
     );
+    if (await Bun.file(join(nestConsumer, "node_modules/evlog/package.json")).exists()) {
+      throw new Error(`The Nest ${nestMajor} packed consumer installed the optional evlog peer.`);
+    }
     for (const nestPackage of ["common", "core", "platform-express"]) {
       const manifest: unknown = JSON.parse(
         await readFile(

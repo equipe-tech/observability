@@ -7,10 +7,9 @@ import {
 } from "../src/index.ts";
 
 const catalog = defineErrorCatalog("typed_catalog", {
-  INSUFFICIENT_FUNDS: {
+  PAYMENT_REQUIRED: {
     status: 402,
-    message: ({ available, required }: { available: number; required: number }) =>
-      `Insufficient funds: ${String(available)}/${String(required)}`,
+    message: "Payment is required.",
     why: "The account balance is too low.",
     fix: "Add funds and retry.",
     link: "https://example.test/funds",
@@ -19,6 +18,18 @@ const catalog = defineErrorCatalog("typed_catalog", {
   },
 });
 
+const templatedCatalog = defineErrorCatalog("templated_catalog", {
+  INSUFFICIENT_FUNDS: {
+    status: 402,
+    message: ({ available, required }: { available: number; required: number }) =>
+      `Insufficient funds: ${String(available)}/${String(required)}`,
+  },
+});
+
+type TemplatedCatalogOption = NestErrorBoundaryOptions<typeof templatedCatalog>["catalog"];
+type TemplatedMessageCompatibility = TemplatedCatalogOption["INSUFFICIENT_FUNDS"];
+type IsNever<Value> = [Value] extends [never] ? true : false;
+
 const catalogReference: ErrorCatalogReference = catalog;
 const options: NestErrorBoundaryOptions<typeof catalog> = {
   catalog,
@@ -26,7 +37,9 @@ const options: NestErrorBoundaryOptions<typeof catalog> = {
 };
 
 describe("Nest error catalog type contract", () => {
-  it("accepts the catalog value returned by defineErrorCatalog", () => {
+  it("accepts literal-message catalogs and rejects templated catalogs", () => {
+    const templatedMessagesAreRejected: IsNever<TemplatedMessageCompatibility> = true;
+    assert.isTrue(templatedMessagesAreRejected);
     assert.strictEqual(catalogReference._prefix, "typed_catalog");
     assert.isDefined(NestErrorBoundaryModule.forRoot(options));
   });

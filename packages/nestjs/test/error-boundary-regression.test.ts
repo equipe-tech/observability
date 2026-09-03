@@ -18,7 +18,7 @@ import { NestFactory } from "@nestjs/core";
 import { IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Effect, Schema } from "effect";
-import { CorrelationContext, type DefectEnvelope } from "@equipe-tech/observability";
+import { Contract, CorrelationContext, type DefectEnvelope } from "@equipe-tech/observability";
 import { defineErrorCatalog, type DrainContext } from "evlog";
 import { EvlogModule } from "evlog/nestjs";
 import { assert, describe, it } from "vite-plus/test";
@@ -28,6 +28,7 @@ import {
   NestErrorBoundary,
   NestErrorBoundaryModule,
   type DefectEventInput,
+  type ErrorCatalogReference,
 } from "../src/index.ts";
 
 const AddressBoundary = Schema.Struct({ port: Schema.Number });
@@ -467,71 +468,31 @@ describe("Nest error boundary regressions", () => {
     }
   }, 30_000);
 
-  it("accepts templated and metadata-rich catalog declarations", async () => {
-    const defects: Array<DefectEventInput> = [];
+  it("rejects templated catalog messages during construction", () => {
     const errors = defineErrorCatalog("catalog_templates", {
       INSUFFICIENT_FUNDS: {
         status: 402,
         message: ({ required }: { required: number }) =>
           `Insufficient funds, need ${String(required)}.`,
-        why: "The available balance is too low.",
-        fix: "Add funds and retry.",
-        link: "https://example.test/funds",
-        tags: ["billing"],
-        internal: { owner: "payments" },
       },
-      MOVED: { status: 302, message: "The resource moved." },
     });
 
-    class ProbeController {
-      templated(): never {
-        throw errors.INSUFFICIENT_FUNDS({ required: 100 });
-      }
-
-      moved(): never {
-        throw errors.MOVED();
-      }
-    }
-    Controller("catalog-templates")(ProbeController);
-    for (const method of ["templated", "moved"] as const) {
-      Get(method)(
-        ProbeController.prototype,
-        method,
-        methodDescriptor(ProbeController.prototype, method),
+    try {
+      NestErrorBoundaryModule.forRoot<ErrorCatalogReference>({
+        catalog: errors,
+        recordDefect: () => undefined,
+      });
+      assert.fail("Expected catalog construction to fail.");
+    } catch (cause) {
+      assert.instanceOf(cause, InvalidNestErrorCatalogDeclaration);
+      assert.strictEqual(cause.code, "OBS_NESTJS_ERROR_CATALOG_INVALID");
+      assert.include(cause.message, "catalog_templates.INSUFFICIENT_FUNDS");
+      assert.include(
+        cause.message,
+        "Templated messages are unsupported because the public message must come from the declaration.",
       );
     }
-
-    class AppModule {}
-    Module({
-      imports: [
-        NestErrorBoundaryModule.forRoot({
-          catalog: errors,
-          recordDefect: (event) => {
-            defects.push(event);
-          },
-        }),
-      ],
-      controllers: [ProbeController],
-    })(AppModule);
-
-    const app = await NestFactory.create(AppModule, { logger: false });
-    await app.listen(0, "127.0.0.1");
-    const baseUrl = applicationBaseUrl(app.getHttpServer().address());
-    try {
-      const templated = await fetch(`${baseUrl}/catalog-templates/templated`);
-      assert.strictEqual(templated.status, 402);
-      assert.deepStrictEqual(await templated.json(), {
-        code: "catalog_templates.INSUFFICIENT_FUNDS",
-        message: "Insufficient funds, need 100.",
-      });
-
-      const moved = await fetch(`${baseUrl}/catalog-templates/moved`, { redirect: "manual" });
-      assert.strictEqual(moved.status, 302);
-      assert.lengthOf(defects, 0);
-    } finally {
-      await app.close().catch(() => undefined);
-    }
-  }, 30_000);
+  });
 
   it("preserves 4xx HttpExceptions with non-HTTP causes", async () => {
     const defects: Array<DefectEventInput> = [];
@@ -647,6 +608,65 @@ describe("Nest error boundary regressions", () => {
     }
   });
 
+  it("rejects invalid catalog status declarations during construction", () => {
+    const statuses = [
+      ["NAN", Number.NaN],
+      ["ZERO", 0],
+      ["SIX_HUNDRED", 600],
+      ["FRACTION", 404.5],
+      ["NINETY_NINE", 99],
+      ["NEGATIVE", -1],
+      ["HUGE", 1_000_000_000],
+    ] as const;
+
+    for (const [name, status] of statuses) {
+      const errors = defineErrorCatalog(`invalid_status_${name.toLowerCase()}`, {
+        INVALID: { status, message: "Invalid status." },
+      });
+      try {
+        NestErrorBoundaryModule.forRoot({ catalog: errors, recordDefect: () => undefined });
+        assert.fail(`Expected status ${String(status)} to fail construction.`);
+      } catch (cause) {
+        assert.instanceOf(cause, InvalidNestErrorCatalogDeclaration);
+        assert.strictEqual(cause.code, "OBS_NESTJS_ERROR_CATALOG_INVALID");
+        assert.include(cause.message, `${errors._prefix}.INVALID`);
+      }
+    }
+
+    for (const status of [400, 599]) {
+      const errors = defineErrorCatalog(`valid_status_${String(status)}`, {
+        VALID: { status, message: "Valid status." },
+      });
+      assert.isDefined(
+        NestErrorBoundaryModule.forRoot({ catalog: errors, recordDefect: () => undefined }),
+      );
+    }
+  });
+
+  it("identifies a non-catalog object without reporting _prefix as a declaration", () => {
+    const literalCatalog = {
+      _prefix: "literal_catalog",
+      _codes: ["literal_catalog.ITEM"],
+      ITEM: Object.assign(() => new Error("item"), {
+        code: "literal_catalog.ITEM",
+        status: 404,
+        message: "Item missing.",
+      }),
+    };
+
+    try {
+      NestErrorBoundaryModule.forRoot<ErrorCatalogReference>({
+        catalog: literalCatalog,
+        recordDefect: () => undefined,
+      });
+      assert.fail("Expected a non-catalog object to fail construction.");
+    } catch (cause) {
+      assert.instanceOf(cause, InvalidNestErrorCatalogDeclaration);
+      assert.include(cause.message, "not a catalog created by defineErrorCatalog");
+      assert.notInclude(cause.message, "literal_catalog._prefix");
+    }
+  });
+
   it("recognizes structurally compatible HttpExceptions", () => {
     class ForeignHttpException extends Error {
       readonly status = 409;
@@ -671,7 +691,41 @@ describe("Nest error boundary regressions", () => {
     assert.strictEqual(classified.kind, "http-outcome");
   });
 
-  it("preserves declared retryability and omits an unknown value", async () => {
+  it("classifies throwing structural HTTP accessors as unexpected defects", () => {
+    class ThrowingStatus extends Error {
+      readonly status = 500;
+
+      getStatus(): number {
+        throw new Error("status accessor failed");
+      }
+
+      getResponse(): string {
+        return this.message;
+      }
+    }
+
+    class ThrowingResponse extends Error {
+      readonly status = 500;
+
+      getStatus(): number {
+        return this.status;
+      }
+
+      getResponse(): string {
+        throw new Error("response accessor failed");
+      }
+    }
+
+    const boundary = new NestErrorBoundary({
+      catalog: defineErrorCatalog("throwing_http", {}),
+      recordDefect: () => undefined,
+    });
+    const correlation = new CorrelationContext({});
+    assert.strictEqual(boundary.classify(new ThrowingStatus(), correlation).kind, "unexpected");
+    assert.strictEqual(boundary.classify(new ThrowingResponse(), correlation).kind, "unexpected");
+  });
+
+  it("preserves own retryability and defaults all other defects to false", async () => {
     const events: Array<DefectEventInput> = [];
     const boundary = new NestErrorBoundary({
       catalog: defineErrorCatalog("retryability", {}),
@@ -682,12 +736,19 @@ describe("Nest error boundary regressions", () => {
     const correlation = new CorrelationContext({});
     const retryable = new Error("transient dependency failure");
     Object.defineProperty(retryable, "retryable", { value: true, enumerable: true });
+    const inheritedRetryable = new Error("inherited retryability");
+    Object.setPrototypeOf(inheritedRetryable, { retryable: true });
 
     await boundary.handle(boundary.classify(retryable, correlation), {});
     await boundary.handle(boundary.classify(new Error("unknown retryability"), correlation), {});
+    await boundary.handle(boundary.classify(inheritedRetryable, correlation), {});
 
     assert.strictEqual(events[0]?.error.retryable, true);
-    assert.notProperty(events[1]?.error, "retryable");
+    assert.strictEqual(events[1]?.error.retryable, false);
+    assert.strictEqual(events[2]?.error.retryable, false);
+    assert.isDefined(Schema.decodeUnknownSync(Contract.ErrorContext)(events[0]?.error));
+    assert.isDefined(Schema.decodeUnknownSync(Contract.ErrorContext)(events[1]?.error));
+    assert.isDefined(Schema.decodeUnknownSync(Contract.ErrorContext)(events[2]?.error));
   });
 
   it("probe P preserves guard and pipe HTTP outcomes", async () => {

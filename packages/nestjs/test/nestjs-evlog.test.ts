@@ -647,10 +647,7 @@ describe("NestJS evlog trace correlation", () => {
         .runPromise(
           producer
             .emit("BoundaryDefect", {
-              error: {
-                ...event.error,
-                retryable: event.error.retryable ?? false,
-              },
+              error: event.error,
               attributes: {},
               correlation: event.correlation,
             })
