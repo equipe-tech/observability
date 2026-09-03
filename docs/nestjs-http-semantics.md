@@ -14,6 +14,8 @@ No encerramento, o módulo fecha a admissão de spans, aguarda ou interrompe req
 
 O suporte usa NestJS com Express. O adapter não declara suporte ao Fastify.
 
+`evlog` é um peer opcional e usado somente nos tipos de catálogo aceitos pelo limite de erros. Consumidores que usam apenas a instrumentação HTTP não precisam instalar evlog.
+
 ## Adapter de correlação com eventos amplos
 
 `createRequestWideEventTraceCorrelation` adapta um logger de evento amplo que oferece `set`. Passe o resultado em `requestWideEventTraceCorrelation` nas opções habilitadas de `TelemetryModule` ou `TelemetryInterceptor`. Somente as declarações públicas desse contrato de correlação, incluindo a factory, a classe e seus tipos auxiliares, são livres de referências a Effect. Essa garantia não descreve todas as exportações do entrypoint NestJS. O pacote não depende de evlog em runtime.
@@ -36,9 +38,9 @@ O drain OTLP do logger deve mapear os campos superiores `traceId` e `spanId` par
 
 Use `NestErrorBoundaryModule.forRoot` junto de `TelemetryModule`. O módulo registra um filtro global, não um interceptor. `TelemetryInterceptor` continua sendo o único dono do span HTTP.
 
-A configuração recebe um catálogo criado por `defineErrorCatalog`. O prefixo `_prefix` segue a gramática aceita por essa factory e deve ser não vazio. Prefixos que começam com `OBS_`, sem distinção entre maiúsculas e minúsculas, são reservados aos pacotes da plataforma. Uma configuração inválida falha imediatamente com `InvalidNestErrorCatalog` e código `OBS_NESTJS_ERROR_CATALOG_PREFIX_INVALID`. Cada declaração deve corresponder à lista `_codes` do catálogo. Código, status ou mensagem ausentes, além de qualquer divergência nessa lista, falham a construção com `InvalidNestErrorCatalogDeclaration`, código `OBS_NESTJS_ERROR_CATALOG_INVALID` e o código de catálogo afetado.
+A configuração recebe um catálogo criado por `defineErrorCatalog`. O prefixo `_prefix` segue a gramática aceita por essa factory e deve ser não vazio. Prefixos que começam com `OBS_`, sem distinção entre maiúsculas e minúsculas, são reservados aos pacotes da plataforma. Uma configuração inválida falha imediatamente com `InvalidNestErrorCatalog` e código `OBS_NESTJS_ERROR_CATALOG_PREFIX_INVALID`. Cada declaração deve corresponder à lista `_codes` do catálogo. Código ou mensagem ausentes, status fora do intervalo inteiro de 400 a 599 e qualquer divergência nessa lista falham a construção com `InvalidNestErrorCatalogDeclaration`, código `OBS_NESTJS_ERROR_CATALOG_INVALID` e o código de catálogo afetado. Mensagens de catálogo devem ser strings literais. Declarações com mensagens templated falham a construção porque a mensagem pública deve vir da declaração.
 
-O limite usa uma classificação fechada com três resultados.
+O limite usa quatro regras de classificação fechadas.
 
 | Resultado          | Origem                                                                 | Resposta                                                                                               | Evento e captura                                                                        |
 | ------------------ | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
@@ -47,7 +49,7 @@ O limite usa uma classificação fechada com três resultados.
 | `HttpOutcome`      | Demais `HttpException`, identificadas pelo contrato estrutural público | Preserva `getStatus()` e `getResponse()`                                                               | Anexa o resultado ao evento amplo e nunca emite evento de defeito nem captura no Sentry |
 | `UnexpectedDefect` | Demais erros e valores lançados                                        | Resposta 500 segura com correlação                                                                     | Emite um evento `defect` e tenta uma captura no Sentry quando configurado               |
 
-A mensagem pública de `ExpectedError` sempre vem da declaração do catálogo. Mensagens constantes ignoram uma substituição na instância. Mensagens com template usam o texto que o `defineErrorCatalog` renderizou com os argumentos declarados. Uma substituição de `status` na instância lançada continua disponível para diagnóstico, mas não altera a resposta pública.
+A mensagem pública de `ExpectedError` sempre vem da declaração do catálogo. Mensagens constantes ignoram uma substituição na instância. Mensagens templated não são aceitas. Uma substituição de `status` na instância lançada continua disponível para diagnóstico, mas não altera a resposta pública.
 
 `NotFoundException`, `ForbiddenException`, `BadRequestException` de pipes e as demais subclasses de `HttpException` são resultados HTTP esperados. Isso inclui o 404 criado pelo Nest para uma rota inexistente. Uma `HttpException` 4xx continua sendo um resultado HTTP mesmo quando carrega uma causa não HTTP. Uma `HttpException` 5xx lançada deliberadamente pela aplicação também é um resultado HTTP esperado. Somente uma `HttpException` 5xx com uma `cause` que não é outra `HttpException` é classificada como defeito.
 
