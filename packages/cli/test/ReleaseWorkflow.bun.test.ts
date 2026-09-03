@@ -115,6 +115,9 @@ const ReleaseWorkflow = Schema.Struct({
 
 const parsedCiWorkflow = Schema.decodeUnknownSync(CiWorkflow)(Bun.YAML.parse(ciWorkflow));
 const parsedReleaseWorkflow = Schema.decodeUnknownSync(ReleaseWorkflow)(Bun.YAML.parse(workflow));
+const parsedReleasePreflightWorkflow = Schema.decodeUnknownSync(WorkflowDocument)(
+  Bun.YAML.parse(releasePreflightWorkflow),
+);
 const workflowDocuments = await Array.fromAsync(
   new Bun.Glob(".github/workflows/*.yml").scan({
     cwd: fileURLToPath(new URL("../../..", import.meta.url)),
@@ -361,6 +364,15 @@ describe("release workflow publication gate", () => {
   });
 
   test("uses release canary identity resolution in preflight", () => {
+    const steps = parsedReleasePreflightWorkflow.jobs.readiness?.steps ?? [];
+    const resolveStepIndex = steps.findIndex(
+      (step) => step.name === "Resolve the selected release",
+    );
+    const validateStepIndex = steps.findIndex(
+      (step) => step.name === "Validate the selected release",
+    );
+    expect(resolveStepIndex).toBeGreaterThanOrEqual(0);
+    expect(validateStepIndex).toBeGreaterThan(resolveStepIndex);
     expect(releasePreflightWorkflow).toContain(
       'bun scripts/release-canary.ts --tag "$SLUG@$VERSION" --github-env "$GITHUB_ENV"',
     );
