@@ -157,6 +157,7 @@ type CatalogEntry = {
 type ClassificationRule = (
   error: Error,
   correlation: CorrelationContext,
+  details: Option.Option<HttpExceptionDetails>,
 ) => Option.Option<ClassifiedError>;
 
 const catalogEntries = (catalog: ErrorCatalogReference): ReadonlyArray<CatalogEntry> => {
@@ -280,8 +281,9 @@ export class NestErrorBoundary {
     this.#requestWideEventTraceCorrelation = options.requestWideEventTraceCorrelation;
     this.#classificationTable = [
       (error, correlation) => this.#classifyExpected(error, correlation),
-      (error, correlation) => this.#classifyCausedServerDefect(error, correlation),
-      (error) => this.#classifyHttpOutcome(error),
+      (error, correlation, details) =>
+        this.#classifyCausedServerDefect(error, correlation, details),
+      (_error, _correlation, details) => this.#classifyHttpOutcome(details),
     ];
   }
 
@@ -306,8 +308,8 @@ export class NestErrorBoundary {
   #classifyCausedServerDefect(
     error: Error,
     correlation: CorrelationContext,
+    details: Option.Option<HttpExceptionDetails>,
   ): Option.Option<UnexpectedDefect> {
-    const details = httpExceptionDetails(error);
     if (Option.isNone(details)) return Option.none();
     const isServerError = details.value.statusCode >= 500;
     const causeIsHttpException =
@@ -316,8 +318,7 @@ export class NestErrorBoundary {
     return Option.some(this.#classifyUnexpected(error, correlation));
   }
 
-  #classifyHttpOutcome(error: Error): Option.Option<HttpOutcome> {
-    const details = httpExceptionDetails(error);
+  #classifyHttpOutcome(details: Option.Option<HttpExceptionDetails>): Option.Option<HttpOutcome> {
     if (Option.isNone(details)) return Option.none();
     return Option.some({
       kind: "http-outcome",
@@ -342,8 +343,9 @@ export class NestErrorBoundary {
   }
 
   classify(error: Error, correlation: CorrelationContext): ClassifiedError {
+    const details = httpExceptionDetails(error);
     for (const classify of this.#classificationTable) {
-      const classified = classify(error, correlation);
+      const classified = classify(error, correlation, details);
       if (Option.isSome(classified)) return classified.value;
     }
     return this.#classifyUnexpected(error, correlation);
