@@ -1,19 +1,17 @@
-import { Schema } from "effect";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parse, walk } from "yuku-parser";
+import {
+  classifyDependency,
+  decodePackageManifest,
+  packageNameForSpecifier,
+  scanImportSpecifiers,
+  type DependencyKind,
+} from "../packages/cli/src/SourceBoundary.ts";
+
+export { decodePackageManifest };
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const isString = Schema.is(Schema.String);
-
-const DependencyMap = Schema.Record(Schema.String, Schema.String);
-const PackageManifest = Schema.Struct({
-  name: Schema.NonEmptyString,
-  dependencies: Schema.optional(DependencyMap),
-  peerDependencies: Schema.optional(DependencyMap),
-});
-export const decodePackageManifest = Schema.decodeUnknownSync(PackageManifest);
 
 type BoundaryRole = "core" | "adapter" | "bootstrap" | "domain" | "react";
 type BoundaryViolation = {
@@ -27,14 +25,6 @@ type PathOwnership = {
   readonly path: string;
   readonly role: BoundaryRole;
 };
-
-type DependencyKind =
-  | "database"
-  | "framework"
-  | "metric-api"
-  | "otlp"
-  | "provider"
-  | "runtime-platform";
 
 export const defineOwnership = (
   entries: ReadonlyArray<PathOwnership>,
@@ -52,6 +42,7 @@ export const defineOwnership = (
 
 const ownership = defineOwnership([
   { kind: "exact", path: "packages/cli/src/CredentialsStore.ts", role: "adapter" },
+  { kind: "exact", path: "packages/cli/src/SourceBoundary.ts", role: "adapter" },
   { kind: "exact", path: "packages/cli/src/ManifestSource.ts", role: "adapter" },
   { kind: "exact", path: "packages/cli/src/OperationsState.ts", role: "adapter" },
   { kind: "exact", path: "packages/cli/src/PackageVersion.ts", role: "adapter" },
@@ -98,12 +89,6 @@ export const sourceRole = (file: string): BoundaryRole => {
   return "core";
 };
 
-const packageNameForSpecifier = (specifier: string): string => {
-  const parts = specifier.split("/");
-  if (specifier.startsWith("@")) return parts.slice(0, 2).join("/");
-  return parts[0] ?? specifier;
-};
-
 const frameworkPackages = new Set([
   "@nestjs/common",
   "@nestjs/core",
@@ -124,86 +109,21 @@ const forbiddenByRole = new Map<BoundaryRole, ReadonlySet<DependencyKind>>([
   ["react", new Set(["database", "framework", "otlp", "provider", "runtime-platform"])],
 ]);
 
-const dependencyKind = (specifier: string): DependencyKind | undefined => {
-  const dependency = packageNameForSpecifier(specifier);
-  if (
-    specifier === "bun:sqlite" ||
-    specifier === "node:sqlite" ||
-    dependency === "pg" ||
-    dependency === "postgres" ||
-    dependency === "drizzle-orm" ||
-    dependency === "@prisma/client" ||
-    dependency === "typeorm" ||
-    dependency === "sequelize"
-  ) {
-    return "database";
-  }
-  if (specifier.startsWith("node:")) return "runtime-platform";
-  if (dependency.startsWith("@effect/platform-")) return "runtime-platform";
-  if (
-    specifier === "effect/Metric" ||
-    specifier.startsWith("@equipe-tech/observability/metrics") ||
-    dependency === "@opentelemetry/api"
-  ) {
-    return "metric-api";
-  }
-  if (
-    specifier.startsWith("effect/unstable/observability") ||
-    specifier.startsWith("effect/unstable/http") ||
-    dependency.startsWith("@opentelemetry/")
-  ) {
-    return "otlp";
-  }
-  if (
-    dependency.startsWith("@sentry/") ||
-    dependency.startsWith("@axiomhq/") ||
-    dependency === "axiom"
-  ) {
-    return "provider";
-  }
-  if (frameworkPackages.has(dependency)) return "framework";
-  return undefined;
-};
+const classifyRoleDependency = (specifier: string): DependencyKind | undefined =>
+  classifyDependency(specifier) ??
+  (frameworkPackages.has(packageNameForSpecifier(specifier)) ? "framework" : undefined);
 
 const evaluateSpecifier = (
   role: BoundaryRole,
   file: string,
   specifier: string,
 ): ReadonlyArray<BoundaryViolation> => {
-  const kind = dependencyKind(specifier);
+  const kind = classifyRoleDependency(specifier);
   if (kind === undefined || !forbiddenByRole.get(role)?.has(kind)) return [];
   return [{ rule: `boundary/${role}-forbidden-${kind}`, file, specifier }];
 };
 
-const importSpecifiers = (source: string): ReadonlyArray<string> => {
-  const program = parse(source, { lang: "ts" }).program;
-  const specifiers: Array<string> = [];
-  for (const statement of program.body) {
-    if (statement.type === "ImportDeclaration") {
-      specifiers.push(statement.source.value);
-    }
-    if (statement.type === "ExportNamedDeclaration" && statement.source !== null) {
-      specifiers.push(statement.source.value);
-    }
-    if (statement.type === "ExportAllDeclaration") {
-      specifiers.push(statement.source.value);
-    }
-    if (
-      statement.type === "TSImportEqualsDeclaration" &&
-      statement.moduleReference.type === "TSExternalModuleReference"
-    ) {
-      specifiers.push(statement.moduleReference.expression.value);
-    }
-  }
-  walk(program, {
-    ImportExpression: (expression) => {
-      if (expression.source.type === "Literal" && isString(expression.source.value)) {
-        specifiers.push(expression.source.value);
-      }
-    },
-  });
-  return specifiers;
-};
+const importSpecifiers = (source: string): ReadonlyArray<string> => scanImportSpecifiers(source);
 
 const sourcePathViolation = (
   projectRoot: string,
@@ -234,7 +154,7 @@ const packageDirectories = async (projectRoot: string): Promise<ReadonlyArray<st
   return directories.toSorted();
 };
 
-const declaredDependencies = (manifest: typeof PackageManifest.Type): Set<string> =>
+const declaredDependencies = (manifest: ReturnType<typeof decodePackageManifest>): Set<string> =>
   new Set([
     ...Object.keys(manifest.dependencies ?? {}),
     ...Object.keys(manifest.peerDependencies ?? {}),

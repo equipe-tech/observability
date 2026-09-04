@@ -28,7 +28,11 @@
       "types": "./dist/query.d.ts",
       "import": "./dist/query.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    }
   },
   "scripts": {
     "build": "bun ../../scripts/build-packages.ts",
@@ -38,12 +42,21 @@
     "@effect/platform-bun": "4.0.0-rc.111",
     "@effect/platform-node-shared": "4.0.0-rc.111",
     "effect": "4.0.0-rc.111",
-    "yaml": "2.8.2"
+    "yaml": "2.8.2",
+    "yuku-parser": "0.5.48"
   },
   "devDependencies": {
     "@equipe-tech/observability": "workspace:*"
   },
   "engines": {
     "bun": ">=1.4.0"
+  },
+  "peerDependencies": {
+    "@equipe-tech/observability": "0.3.x"
+  },
+  "peerDependenciesMeta": {
+    "@equipe-tech/observability": {
+      "optional": true
+    }
   }
 }

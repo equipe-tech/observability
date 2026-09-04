@@ -40,7 +40,10 @@
     "vite": "npm:@voidzero-dev/vite-plus-core@0.3.0",
     "vite-plus": "0.3.0",
     "vitest": "4.1.11",
-    "yuku-parser": "0.5.48"
+    "yuku-parser": "0.5.48",
+    "evlog": "2.27.1",
+    "@nestjs/common": "^11.2.1",
+    "@nestjs/core": "^11.2.1"
   },
   "packageManager": "bun@1.4.0"
 }

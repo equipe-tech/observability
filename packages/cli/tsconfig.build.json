@@ -5,6 +5,7 @@
     "noEmit": false,
     "noEmitOnError": true,
     "outDir": "dist",
+    "paths": {},
     "rewriteRelativeImportExtensions": true,
     "rootDir": "src"
   },

@@ -10,12 +10,20 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: "@equipe-tech/observability-cli/testing",
+        replacement: `${root}packages/cli/src/testing/index.ts`,
+      },
+      {
         find: "@equipe-tech/observability-cli/query",
         replacement: `${root}packages/cli/src/query.ts`,
       },
       {
         find: "@equipe-tech/observability-cli",
         replacement: `${root}packages/cli/src/index.ts`,
+      },
+      {
+        find: "@equipe-tech/observability-react/testing",
+        replacement: `${root}packages/react/src/testing/index.ts`,
       },
       {
         find: "@equipe-tech/observability-react",
@@ -28,6 +36,10 @@ export default defineConfig({
       {
         find: "@equipe-tech/observability-sentry/node",
         replacement: `${root}packages/sentry/src/node/index.ts`,
+      },
+      {
+        find: "@equipe-tech/observability-sentry/testing",
+        replacement: `${root}packages/sentry/src/testing/index.ts`,
       },
       {
         find: "@equipe-tech/observability-sentry",
@@ -66,8 +78,16 @@ export default defineConfig({
         replacement: `${root}packages/telemetry/src/node/index.ts`,
       },
       {
+        find: "@equipe-tech/observability-nestjs/testing",
+        replacement: `${root}packages/nestjs/src/testing/index.ts`,
+      },
+      {
         find: "@equipe-tech/observability-nestjs",
         replacement: `${root}packages/nestjs/src/index.ts`,
+      },
+      {
+        find: "@equipe-tech/observability-evlog/testing",
+        replacement: `${root}packages/evlog/src/testing/index.ts`,
       },
       {
         find: "@equipe-tech/observability-evlog",

@@ -8,10 +8,13 @@
         "@commitlint/cli": "^21.2.2",
         "@commitlint/config-conventional": "^21.2.2",
         "@effect/vitest": "4.0.0-rc.111",
+        "@nestjs/common": "^11.2.1",
+        "@nestjs/core": "^11.2.1",
         "@oxlint/plugins": "1.79.0",
         "@types/bun": "1.4.0",
         "@vitest/browser-playwright": "4.1.11",
         "effect": "4.0.0-rc.111",
+        "evlog": "2.27.1",
         "oxfmt": "0.64.0",
         "oxlint": "1.79.0",
         "playwright": "^1.62.1",
@@ -33,10 +36,17 @@
         "@effect/platform-node-shared": "4.0.0-rc.111",
         "effect": "4.0.0-rc.111",
         "yaml": "2.8.2",
+        "yuku-parser": "0.5.48",
       },
       "devDependencies": {
         "@equipe-tech/observability": "workspace:*",
       },
+      "peerDependencies": {
+        "@equipe-tech/observability": "0.3.x",
+      },
+      "optionalPeers": [
+        "@equipe-tech/observability",
+      ],
     },
     "packages/evlog": {
       "name": "@equipe-tech/observability-evlog",

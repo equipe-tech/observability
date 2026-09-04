@@ -9,7 +9,7 @@ export {
   parseOperationsManifest,
   validateOperationsManifest,
 } from "./OperationsManifest.ts";
-export type { OperationsContractIndex, ValidatedOperationsManifest } from "./OperationsManifest.ts";
+export type { OperationsContractIndex, OperationsManifest, ValidatedOperationsManifest } from "./OperationsManifest.ts";
 export type {
   CompiledManagedQuery,
   ManagedQuery,

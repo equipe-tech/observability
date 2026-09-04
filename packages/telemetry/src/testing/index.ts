@@ -9,6 +9,7 @@ import type { InvalidDataPolicy } from "../policy/DataPolicyError.ts";
 import type { ResourceAttribute } from "../policy/ResourceAttributePolicy.ts";
 
 export * from "./contract.ts";
+export * from "./conformance/index.ts";
 export * from "./deployedCanary.ts";
 export {
   registerTestingAdapter,
