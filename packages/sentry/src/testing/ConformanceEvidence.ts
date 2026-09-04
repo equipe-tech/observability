@@ -2,8 +2,8 @@ import { Effect } from "effect";
 import {
   defineConformanceEvidenceProvider,
   type ConformanceCheckId,
+  ConformanceViolation,
   type ConformanceEvidenceProvider,
-  type ConformanceViolation,
 } from "@equipe-tech/observability/testing";
 import type {
   SentryCaptureOutcome,
@@ -12,11 +12,12 @@ import type {
 
 export type ConformanceProvider<Id extends ConformanceCheckId> = ConformanceEvidenceProvider<Id>;
 
-const violation = (message: string, offendingValue: string, cause?: unknown): ConformanceViolation => ({
-  message,
-  offendingValue,
-  cause: cause ?? offendingValue,
-});
+const violation = (
+  message: string,
+  offendingValue: string,
+  cause?: unknown,
+): ConformanceViolation =>
+  new ConformanceViolation({ message, offendingValue, cause: cause ?? offendingValue });
 
 export type SentryConformanceCapture = {
   readonly code: string | undefined;

@@ -1,11 +1,14 @@
 import { Effect, Schema } from "effect";
-import { observabilityProfiles, type ProfileName } from "../../profile/ObservabilityProfile.ts";
+import {
+  observabilityProfiles,
+  type CapabilityRequirement,
+  type ProfileName,
+} from "../../profile/ObservabilityProfile.ts";
 import { conformanceChecks } from "./ConformanceRegistry.ts";
 import type { ConformanceCheck } from "./ConformanceRegistry.ts";
 import { ConformanceFailure, InvalidConformanceSuite } from "./ConformanceFailure.ts";
 import type {
   ConformanceCheckId,
-  ConformanceEvidence,
   ConformanceEvidenceProvider,
   ConformanceProfileReport,
   ConformanceReport,
@@ -26,14 +29,30 @@ const ProfileNameSchema = Schema.Literals([
 const decodeProfileName = Schema.decodeUnknownSync(ProfileNameSchema);
 
 const invalidSuite = (
-  code: "OBS_CONFORMANCE_TARGET_INVALID" | "OBS_CONFORMANCE_PROVIDER_DUPLICATE" | "OBS_CONFORMANCE_PROVIDER_MISSING",
+  code:
+    | "OBS_CONFORMANCE_TARGET_INVALID"
+    | "OBS_CONFORMANCE_PROVIDER_DUPLICATE"
+    | "OBS_CONFORMANCE_PROVIDER_MISSING",
   message: string,
   offendingValue: string,
   cause?: unknown,
 ): InvalidConformanceSuite =>
   new InvalidConformanceSuite({ code, message, offendingValue, cause: cause ?? offendingValue });
 
-const validateTarget = (target: ConformanceTarget): Effect.Effect<ConformanceTargetContext, InvalidConformanceSuite> =>
+const capabilitySelectionIsValid = (
+  requirement: CapabilityRequirement,
+  selected: boolean,
+  environment: string,
+): boolean => {
+  if (requirement === "forbidden") return selected === false;
+  if (requirement === "required") return selected;
+  if (requirement === "required-in-production" && environment === "production") return selected;
+  return true;
+};
+
+const validateTarget = (
+  target: ConformanceTarget,
+): Effect.Effect<ConformanceTargetContext, InvalidConformanceSuite> =>
   Effect.gen(function* () {
     if (target.name.trim().length === 0) {
       return yield* invalidSuite(
@@ -55,6 +74,28 @@ const validateTarget = (target: ConformanceTarget): Effect.Effect<ConformanceTar
           cause,
         ),
     });
+    if (target.environment.trim().length === 0) {
+      return yield* invalidSuite(
+        "OBS_CONFORMANCE_TARGET_INVALID",
+        "The conformance target environment must not be empty. Name the deployment environment.",
+        target.name,
+      );
+    }
+    const capabilityRequirements = [
+      ["traces", profile.traces, target.capabilities.traces],
+      ["metrics", profile.metrics, target.capabilities.metrics],
+      ["defects", profile.defects, target.capabilities.defects],
+      ["browserIngest", profile.browserIngest, target.capabilities.browserIngest],
+    ] as const;
+    for (const [capability, requirement, selected] of capabilityRequirements) {
+      if (!capabilitySelectionIsValid(requirement, selected, target.environment)) {
+        return yield* invalidSuite(
+          "OBS_CONFORMANCE_TARGET_INVALID",
+          `The ${target.profile} profile declares ${capability} as ${requirement}, but the target selected ${selected}.`,
+          `${capability}=${selected}`,
+        );
+      }
+    }
     const providerIds = new Set<ConformanceCheckId>();
     for (const provider of target.providers) {
       if (providerIds.has(provider.id)) {
@@ -65,20 +106,6 @@ const validateTarget = (target: ConformanceTarget): Effect.Effect<ConformanceTar
         );
       }
       providerIds.add(provider.id);
-    }
-    if (target.profile === "react-web" && target.capabilities.browserIngest === false) {
-      return yield* invalidSuite(
-        "OBS_CONFORMANCE_TARGET_INVALID",
-        "The react-web profile requires browser ingest. Enable the browserIngest capability.",
-        target.name,
-      );
-    }
-    if (target.profile !== "react-web" && target.capabilities.browserIngest) {
-      return yield* invalidSuite(
-        "OBS_CONFORMANCE_TARGET_INVALID",
-        `The ${target.profile} profile forbids browser ingest. Disable the browserIngest capability.`,
-        target.name,
-      );
     }
     return {
       name: target.name,

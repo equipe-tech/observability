@@ -11,7 +11,6 @@ import {
   withBackgroundCorrelation,
   type DataPolicyInput,
   type EmitReceipt,
-  type TelemetryContractInput,
 } from "@equipe-tech/observability";
 import { createNodeObservabilityFromConfig } from "@equipe-tech/observability/node";
 import { evlogAdapter } from "@equipe-tech/observability-evlog";
@@ -32,6 +31,7 @@ import {
 import { fileURLToPath } from "node:url";
 import { startLocalCollector, type LocalCollector } from "../../../support/collector.ts";
 import { packageBoundaryConformance } from "@equipe-tech/observability-cli/testing";
+import { fixtureError } from "../../../support/FixtureError.ts";
 import { parseFixtureManifest } from "../../../support/manifest.ts";
 import { operationsManifestConformance } from "@equipe-tech/observability-cli/testing";
 
@@ -88,7 +88,7 @@ export const buildCliKit = async (collector: LocalCollector): Promise<CliKit> =>
   );
   const evlog = evlogAdapter({ installGlobalLogger: false });
   const handle = await createNodeObservabilityFromConfig(config, [evlog.registration]);
-  if (!handle.enabled) throw new Error("The cli fixture requires an enabled runtime.");
+  if (!handle.enabled) throw fixtureError("The cli fixture requires an enabled runtime.");
   const producer = makeEventProducer(contract);
   const emitReceipt = await handle.runtime.runPromise(
     producer
@@ -110,7 +110,13 @@ export const runCliFixture = async (): Promise<ConformanceProfileReport> => {
     profile: "cli",
     environment: "test",
     topology: "local",
-    capabilities: { traces: false, metrics: false, defects: false, browserIngest: false, audit: false },
+    capabilities: {
+      traces: false,
+      metrics: false,
+      defects: false,
+      browserIngest: false,
+      audit: false,
+    },
     providers: [
       profileConformance({
         profile: "cli",

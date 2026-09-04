@@ -2,21 +2,19 @@ import { Effect } from "effect";
 import {
   defineConformanceEvidenceProvider,
   type ConformanceCheckId,
+  ConformanceViolation,
   type ConformanceEvidenceProvider,
-  type ConformanceViolation,
 } from "@equipe-tech/observability/testing";
-import type {
-  BrowserDeliveryCanaryReceipt,
-  BrowserLifecycleReport,
-} from "../index.ts";
+import type { BrowserDeliveryCanaryReceipt, BrowserLifecycleReport } from "../index.ts";
 
 export type ConformanceProvider<Id extends ConformanceCheckId> = ConformanceEvidenceProvider<Id>;
 
-const violation = (message: string, offendingValue: string, cause?: unknown): ConformanceViolation => ({
-  message,
-  offendingValue,
-  cause: cause ?? offendingValue,
-});
+const violation = (
+  message: string,
+  offendingValue: string,
+  cause?: unknown,
+): ConformanceViolation =>
+  new ConformanceViolation({ message, offendingValue, cause: cause ?? offendingValue });
 
 export const browserLifecycleConformance = (input: {
   readonly report: BrowserLifecycleReport;

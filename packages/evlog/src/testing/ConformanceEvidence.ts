@@ -3,18 +3,19 @@ import type { AdapterRegistration } from "@equipe-tech/observability";
 import {
   defineConformanceEvidenceProvider,
   type ConformanceCheckId,
+  ConformanceViolation,
   type ConformanceEvidenceProvider,
-  type ConformanceViolation,
 } from "@equipe-tech/observability/testing";
 import type { EvlogDropReport } from "../EvlogAdapter.ts";
 
 export type ConformanceProvider<Id extends ConformanceCheckId> = ConformanceEvidenceProvider<Id>;
 
-const violation = (message: string, offendingValue: string, cause?: unknown): ConformanceViolation => ({
-  message,
-  offendingValue,
-  cause: cause ?? offendingValue,
-});
+const violation = (
+  message: string,
+  offendingValue: string,
+  cause?: unknown,
+): ConformanceViolation =>
+  new ConformanceViolation({ message, offendingValue, cause: cause ?? offendingValue });
 
 export const evlogConformance = (input: {
   readonly registration: AdapterRegistration;

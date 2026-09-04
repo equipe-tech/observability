@@ -7,12 +7,9 @@ export {
   conformanceFailureCodes,
 } from "./ConformanceFailure.ts";
 export type { ConformanceFailureCode } from "./ConformanceFailure.ts";
-export {
-  assertConformanceFailure,
-  assertConforms,
-} from "./ConformanceAssertions.ts";
+export { assertConformanceFailure, assertConforms } from "./ConformanceAssertions.ts";
 export { runConformance, runConformanceSuite } from "./ConformanceRunner.ts";
-export { defineConformanceEvidenceProvider } from "./ConformanceModel.ts";
+export { ConformanceViolation, defineConformanceEvidenceProvider } from "./ConformanceModel.ts";
 export type {
   ConformanceCapabilitySelection,
   ConformanceCheckId,
@@ -28,7 +25,6 @@ export type {
   ConformanceTarget,
   ConformanceTargetContext,
   ConformanceTopology,
-  ConformanceViolation,
   SourceRuleReference,
 } from "./ConformanceModel.ts";
 export {

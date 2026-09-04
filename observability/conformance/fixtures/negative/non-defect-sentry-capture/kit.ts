@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import {
   assertConformanceFailure,
   runConformance,
@@ -10,7 +10,8 @@ import { nestjsDefectBoundaryConformance } from "@equipe-tech/observability-nest
 import { buildNestjsConformance, nestjsCatalog } from "../../positive/nestjs-api/kit.ts";
 
 export const runNonDefectSentryCaptureFixture = async (): Promise<ConformanceProfileReport> => {
-  const built = await buildNestjsConformance();
+  const built = await buildNestjsConformance(true);
+  const expectedCapture = Option.getOrThrow(built.kit.expectedCaptureOutcome);
   const target: ConformanceTarget = {
     name: "negative-expected-sentry-capture",
     profile: "nestjs-api",
@@ -18,13 +19,13 @@ export const runNonDefectSentryCaptureFixture = async (): Promise<ConformancePro
     topology: "local",
     capabilities: { traces: true, metrics: true, defects: true, browserIngest: false, audit: true },
     providers: [
-      ...built.providers.filter(
-        (provider) => provider.id !== "sentry.unexpected-defects-only",
-      ),
+      ...built.providers.filter((provider) => provider.id !== "sentry.unexpected-defects-only"),
       nestjsDefectBoundaryConformance({
         boundary: built.kit.boundary,
         correlation: built.kit.correlation,
-        errors: [{ error: nestjsCatalog.APP_NOT_FOUND(), captured: true }],
+        errors: [
+          { error: nestjsCatalog.APP_NOT_FOUND(), captured: expectedCapture.kind === "queued" },
+        ],
       }),
     ],
   };
@@ -34,9 +35,6 @@ export const runNonDefectSentryCaptureFixture = async (): Promise<ConformancePro
 export const expectNonDefectSentryCaptureFailure = async (): Promise<void> => {
   const report = await runNonDefectSentryCaptureFixture();
   await Effect.runPromise(
-    assertConformanceFailure(
-      report,
-      "sentry.unexpected-defects-only" satisfies ConformanceCheckId,
-    ),
+    assertConformanceFailure(report, "sentry.unexpected-defects-only" satisfies ConformanceCheckId),
   );
 };

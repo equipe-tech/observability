@@ -19,7 +19,13 @@ export const runLocalOtlpNegativeFixture = async (): Promise<ConformanceProfileR
     profile: "worker",
     environment: "test",
     topology: "local",
-    capabilities: { traces: true, metrics: true, defects: false, browserIngest: false, audit: false },
+    capabilities: {
+      traces: true,
+      metrics: true,
+      defects: false,
+      browserIngest: false,
+      audit: false,
+    },
     providers: [
       ...(await workerProviders(kit, collector)).filter(
         (provider) => provider.id !== "pipeline.no-application-otlp",

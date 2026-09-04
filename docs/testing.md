@@ -6,6 +6,8 @@ Este projeto prefere testes de integração contra a superfície real a qualquer
 
 Uma feature não está completa somente porque um teste unitário ou um teste de integração local a cobre.
 
+Aplicações executam a [suíte reutilizável de conformidade](conformance.md) para agregar perfil, contrato, manifesto, adapters, política, auditoria, fronteiras de pacote e canários em um relatório estável.
+
 ## Cobertura exigida
 
 Cada feature pública e cada endpoint devem ter cobertura de ponta a ponta para:

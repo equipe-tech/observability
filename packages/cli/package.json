@@ -48,15 +48,10 @@
   "devDependencies": {
     "@equipe-tech/observability": "workspace:*"
   },
-  "engines": {
-    "bun": ">=1.4.0"
-  },
   "peerDependencies": {
     "@equipe-tech/observability": "0.3.x"
   },
-  "peerDependenciesMeta": {
-    "@equipe-tech/observability": {
-      "optional": true
-    }
+  "engines": {
+    "bun": ">=1.4.0"
   }
 }

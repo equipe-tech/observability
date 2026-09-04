@@ -3,7 +3,6 @@ import {
   Contract,
   defineTelemetryContract,
   type DataPolicyInput,
-  type TelemetryContractInput,
 } from "@equipe-tech/observability";
 import { packageBoundaryConformance } from "@equipe-tech/observability-cli/testing";
 import {
@@ -39,9 +38,7 @@ export const libraryPolicy: DataPolicyInput = {
   blockedValuePatterns: [],
 };
 
-const runtimeRegistrySymbols = [
-  "@equipe-tech/observability-react/active-hosts",
-] as const;
+const runtimeRegistrySymbols = ["@equipe-tech/observability-react/active-hosts"] as const;
 
 export const libraryRuntimeMarkerProbe = (): ReadonlyArray<string> => {
   const markers: Array<string> = [];
@@ -61,7 +58,13 @@ export const runLibraryFixture = async (): Promise<ConformanceProfileReport> => 
     profile: "library",
     environment: "test",
     topology: "local",
-    capabilities: { traces: false, metrics: false, defects: false, browserIngest: false, audit: false },
+    capabilities: {
+      traces: false,
+      metrics: false,
+      defects: false,
+      browserIngest: false,
+      audit: false,
+    },
     providers: [
       profileConformance({
         profile: "library",

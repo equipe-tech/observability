@@ -31,7 +31,6 @@ import { evlogConformance } from "@equipe-tech/observability-evlog/testing";
 import { sentryDefectAdapter } from "@equipe-tech/observability-sentry/node";
 import {
   sentryCanaryConformance,
-  sentryUnexpectedDefectsConformance,
   type SentryCaptureOutcome,
   type SentryVerificationReceipt,
 } from "@equipe-tech/observability-sentry/testing";
@@ -41,10 +40,7 @@ import {
   operationsManifestConformance,
   packageBoundaryConformance,
 } from "@equipe-tech/observability-cli/testing";
-import type {
-  ConformanceEvidenceProvider,
-  ConformanceCheckId,
-} from "@equipe-tech/observability/testing";
+import type { ConformanceEvidenceProvider } from "@equipe-tech/observability/testing";
 import type { OperationsManifest, OperationsContractIndex } from "@equipe-tech/observability-cli";
 import {
   auditCanaryConformance,
@@ -64,6 +60,7 @@ import {
 import { defineErrorCatalog } from "evlog";
 import { fileURLToPath } from "node:url";
 import { startLocalCollector, type LocalCollector } from "../../../support/collector.ts";
+import { fixtureError } from "../../../support/FixtureError.ts";
 import { parseFixtureManifest } from "../../../support/manifest.ts";
 
 export const nestjsContractInput = Contract.telemetryContractDefinition({
@@ -107,6 +104,7 @@ export type NestjsKit = {
   readonly verification: SentryVerificationReceipt | SentryCaptureOutcome;
   readonly captureOutcome: SentryCaptureOutcome;
   readonly captureCode: string;
+  readonly expectedCaptureOutcome: Option.Option<SentryCaptureOutcome>;
   readonly commit: RecordAuditResult<ReadonlyArray<AuditCommitDocument>>;
   readonly correlation: CorrelationContext;
   readonly runId: string;
@@ -137,7 +135,10 @@ const recordNestjsAudit = <Definition extends TelemetryContractInput>(
     ).pipe(Effect.provide(Layer.provideMerge(auditLayer, layerNodeAuditDigest)));
   });
 
-export const buildNestjsKit = async (collector: LocalCollector): Promise<NestjsKit> => {
+export const buildNestjsKit = async (
+  collector: LocalCollector,
+  captureExpectedError = false,
+): Promise<NestjsKit> => {
   const contract = await Effect.runPromise(defineTelemetryContract(nestjsContractInput));
   const runId = await Effect.runPromise(generateRunId("job", "fixture-api"));
   const correlation = new CorrelationContext({
@@ -164,7 +165,9 @@ export const buildNestjsKit = async (collector: LocalCollector): Promise<NestjsK
     evlog.registration,
     adapter.registration,
   ]);
-  if (!handle.enabled) throw new Error("The nestjs-api fixture requires an enabled runtime.");
+  if (!handle.enabled) {
+    throw fixtureError("The nestjs-api fixture requires an enabled runtime.");
+  }
   const boundary = new NestErrorBoundary({
     catalog: nestjsCatalog,
     recordDefect: () => undefined,
@@ -173,18 +176,28 @@ export const buildNestjsKit = async (collector: LocalCollector): Promise<NestjsK
   const expected = nestjsCatalog.APP_NOT_FOUND();
   const expectedClassification = boundary.classify(expected, correlation);
   if (expectedClassification.kind !== "expected") {
-    throw new Error("The fixture catalog error must classify as expected.");
+    throw fixtureError("The fixture catalog error must classify as expected.");
   }
+  const expectedCaptureOutcome = captureExpectedError
+    ? Option.some(
+        await adapter.captureAsync({
+          envelope: unexpectedDefect({
+            error: expected,
+            code: expectedClassification.response.body.code,
+          }),
+        }),
+      )
+    : Option.none<SentryCaptureOutcome>();
   const unexpected = new Error("fixture unexpected defect");
   const unexpectedClassification = boundary.classify(unexpected, correlation);
   if (unexpectedClassification.kind !== "unexpected") {
-    throw new Error("The fixture defect must classify as unexpected.");
+    throw fixtureError("The fixture defect must classify as unexpected.");
   }
   const outcome = await adapter.captureAsync({
     envelope: unexpectedDefect({ error: unexpected, code: unexpectedClassification.code }),
   });
   if (outcome.kind !== "queued") {
-    throw new Error(`The fixture Sentry capture was ${outcome.kind}.`);
+    throw fixtureError(`The fixture Sentry capture was ${outcome.kind}.`);
   }
   const verificationError = new Error("fixture verification defect");
   const verification = await adapter.sendVerificationDefect({
@@ -193,9 +206,7 @@ export const buildNestjsKit = async (collector: LocalCollector): Promise<NestjsK
   const commit = await Effect.runPromise(
     recordNestjsAudit(contract, handle.auditLayer, correlation),
   );
-  makeMetricProducer(contract, handle.metrics)
-    .counter("FixtureRequests")
-    .add(1, {});
+  makeMetricProducer(contract, handle.metrics).counter("FixtureRequests").add(1, {});
   const producer = makeEventProducer(contract);
   const emitReceipt = await handle.runtime.runPromise(
     producer
@@ -217,6 +228,7 @@ export const buildNestjsKit = async (collector: LocalCollector): Promise<NestjsK
     verification,
     captureOutcome: outcome,
     captureCode: unexpectedClassification.code,
+    expectedCaptureOutcome,
     commit,
     correlation,
     runId,
@@ -231,9 +243,11 @@ export type NestjsConformance = {
   readonly contractIndex: OperationsContractIndex;
 };
 
-export const buildNestjsConformance = async (): Promise<NestjsConformance> => {
+export const buildNestjsConformance = async (
+  captureExpectedError = false,
+): Promise<NestjsConformance> => {
   const collector = await startLocalCollector();
-  const kit = await buildNestjsKit(collector);
+  const kit = await buildNestjsKit(collector, captureExpectedError);
   const { manifest, contract: contractIndex } = await parseFixtureManifest();
   const providers = [
     profileConformance({

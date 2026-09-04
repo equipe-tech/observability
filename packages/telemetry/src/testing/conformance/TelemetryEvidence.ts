@@ -1,9 +1,6 @@
 import { Effect, Exit, Option, Schema } from "effect";
 import { parseResourceIdentity } from "../../ResourceIdentity.ts";
-import {
-  defineTelemetryContract,
-  type EmitReceipt,
-} from "../../contract/index.ts";
+import { defineTelemetryContract, type EmitReceipt } from "../../contract/index.ts";
 import type { TelemetryContractInput } from "../../contract/TelemetryContract.ts";
 
 type StaticEventNames<Definition extends TelemetryContractInput> = {
@@ -16,48 +13,55 @@ type StaticEventNames<Definition extends TelemetryContractInput> = {
 import { CorrelationContext } from "../../Correlation.ts";
 import { parseDataPolicy } from "../../policy/DataPolicy.ts";
 import type { DataPolicyInput } from "../../policy/DataPolicy.ts";
-import {
-  observabilityProfiles,
-  type ProfileName,
-} from "../../profile/ObservabilityProfile.ts";
+import { observabilityProfiles, type ProfileName } from "../../profile/ObservabilityProfile.ts";
 import type { LifecycleReport } from "../../profile/ObservabilityAdapter.ts";
-import type {
-  AuditPublishReceipt,
-  CommitAuditResult,
-} from "../../audit/AuditPublisher.ts";
+import type { AuditPublishReceipt, CommitAuditResult } from "../../audit/AuditPublisher.ts";
 import type { CapturedTelemetry } from "../index.ts";
-import { defineConformanceEvidenceProvider, type ConformanceEvidenceProvider } from "./ConformanceModel.ts";
-import type {
-  ConformanceCheckId,
+import {
   ConformanceViolation,
+  defineConformanceEvidenceProvider,
+  type ConformanceEvidenceProvider,
+  type ConformanceCheckId,
 } from "./ConformanceModel.ts";
 
-export type ConformanceProvider<Id extends ConformanceCheckId> =
-  ConformanceEvidenceProvider<Id>;
+export type ConformanceProvider<Id extends ConformanceCheckId> = ConformanceEvidenceProvider<Id>;
 
-const violation = (message: string, offendingValue: string, cause?: unknown): ConformanceViolation => ({
-  message,
-  offendingValue,
-  cause: cause ?? offendingValue,
-});
+const violation = (
+  message: string,
+  offendingValue: string,
+  cause?: unknown,
+): ConformanceViolation =>
+  new ConformanceViolation({ message, offendingValue, cause: cause ?? offendingValue });
 
 const officialProfile = (profile: ProfileName): boolean =>
   observabilityProfiles[profile] !== undefined;
 
 export const profileConformance = (input: {
   readonly profile: ProfileName;
-  readonly service: { readonly name: string; readonly version: string; readonly environment: string };
+  readonly service: {
+    readonly name: string;
+    readonly version: string;
+    readonly environment: string;
+  };
 }): ConformanceProvider<"profile.official"> =>
   defineConformanceEvidenceProvider({
     id: "profile.official",
     owner: "telemetry",
-    verify: () =>
+    verify: (target) =>
       Effect.gen(function* () {
         if (!officialProfile(input.profile)) {
           return yield* Effect.fail(
             violation(
               `Profile "${input.profile}" is not one of the five official profiles. Select nestjs-api, worker, react-web, cli, or library.`,
               input.profile,
+            ),
+          );
+        }
+        if (target.profile.name !== input.profile) {
+          return yield* Effect.fail(
+            violation(
+              `The evidence profile ${input.profile} differs from target profile ${target.profile.name}. Use one profile for the complete conformance target.`,
+              `${input.profile} != ${target.profile.name}`,
             ),
           );
         }
@@ -84,7 +88,8 @@ export const identityConformance = (input: {
     verify: () =>
       Effect.gen(function* () {
         const identity = yield* parseResourceIdentity(input.identity).pipe(
-          Effect.mapError((cause): ConformanceViolation => violation(
+          Effect.mapError((cause): ConformanceViolation =>
+            violation(
               `The canonical resource identity is invalid: ${cause.message}`,
               `${cause.field}=${cause.value}`,
               cause,
@@ -112,11 +117,13 @@ export const contractConformance = <
       Effect.gen(function* () {
         const compiled = yield* Effect.exit(defineTelemetryContract(input.contract));
         if (!Exit.isSuccess(compiled)) {
-          return yield* Effect.fail(violation(
-            "The telemetry contract does not compile. Fix every reported contract issue.",
-            "telemetry contract input",
-            compiled.cause,
-          ));
+          return yield* Effect.fail(
+            violation(
+              "The telemetry contract does not compile. Fix every reported contract issue.",
+              "telemetry contract input",
+              compiled.cause,
+            ),
+          );
         }
         const eventCount = Object.keys(input.contract.events).length;
         const metricCount = Object.keys(input.contract.metrics).length;
@@ -136,7 +143,7 @@ export const producersConformance = (input: {
     id: "producers.contract-derived",
     owner: "telemetry",
     verify: () =>
-      Effect.gen(function* () {
+      Effect.sync(() => {
         if (input.receipt.decision === "sampled_out") {
           return {
             owner: "telemetry",
@@ -175,9 +182,9 @@ export const correlationConformance = (input: {
         const correlationId =
           linkage._tag === "Traced"
             ? linkage.traceId
-            : Option.getOrUndefined(input.correlation.runId) ??
+            : (Option.getOrUndefined(input.correlation.runId) ??
               Option.getOrUndefined(input.correlation.requestId) ??
-              "untraced";
+              "untraced");
         return {
           owner: "telemetry",
           receiptType: "correlation-context",
@@ -196,7 +203,8 @@ export const policyConformance = (input: {
     verify: () =>
       Effect.gen(function* () {
         const policy = yield* parseDataPolicy(input.policy).pipe(
-          Effect.mapError((cause): ConformanceViolation => violation(
+          Effect.mapError((cause): ConformanceViolation =>
+            violation(
               "The data policy does not compile. Fix every reported policy issue.",
               "data policy input",
               cause,
@@ -215,14 +223,12 @@ export const policyConformance = (input: {
 const failedOutcomes = (report: LifecycleReport): ReadonlyArray<string> =>
   report.outcomes
     .filter(
-      (outcome) =>
-        outcome.result.kind === "failed" || outcome.result.kind === "deadline-exceeded",
+      (outcome) => outcome.result.kind === "failed" || outcome.result.kind === "deadline-exceeded",
     )
-    .map(
-      (outcome) =>
-        outcome.participant === "adapter"
-          ? `${outcome.adapter}:${outcome.result.kind}`
-          : `runtime-disposal:${outcome.result.kind}`,
+    .map((outcome) =>
+      outcome.participant === "adapter"
+        ? `${outcome.adapter}:${outcome.result.kind}`
+        : `runtime-disposal:${outcome.result.kind}`,
     );
 
 export const lifecycleConformance = (input: {
@@ -235,10 +241,12 @@ export const lifecycleConformance = (input: {
       Effect.gen(function* () {
         const failed = failedOutcomes(input.report);
         if (input.report.degraded || failed.length > 0) {
-          return yield* Effect.fail(violation(
-            `The lifecycle report is ${input.report.degraded ? "degraded" : "failed"} for outcomes ${failed.join(", ")}. Close the runtime within the profile deadline.`,
-            failed.join(",") || "degraded lifecycle report",
-          ));
+          return yield* Effect.fail(
+            violation(
+              `The lifecycle report is ${input.report.degraded ? "degraded" : "failed"} for outcomes ${failed.join(", ")}. Close the runtime within the profile deadline.`,
+              failed.join(",") || "degraded lifecycle report",
+            ),
+          );
         }
         return {
           owner: "telemetry",
@@ -258,16 +266,19 @@ export const libraryLifecycleConformance = (input: {
     verify: () =>
       Effect.gen(function* () {
         if (input.runtimeMarkers.length > 0) {
-          return yield* Effect.fail(violation(
-            `The library profile forbids a global runtime, adapters, exporters, Sentry clients, and browser ingest. Found ${input.runtimeMarkers.join(", ")}.`,
-            input.runtimeMarkers.join(","),
-          ));
+          return yield* Effect.fail(
+            violation(
+              `The library profile forbids a global runtime, adapters, exporters, Sentry clients, and browser ingest. Found ${input.runtimeMarkers.join(", ")}.`,
+              input.runtimeMarkers.join(","),
+            ),
+          );
         }
         return {
           owner: "telemetry",
           receiptType: "runtime-absence",
           receiptId: "library",
-          summary: "no global runtime, adapter, exporter, Sentry client, or browser ingest installed",
+          summary:
+            "no global runtime, adapter, exporter, Sentry client, or browser ingest installed",
         } as const;
       }),
   });
@@ -282,10 +293,12 @@ export const auditConformance = (input: {
     verify: () =>
       Effect.gen(function* () {
         if (input.commit === undefined) {
-          return yield* Effect.fail(violation(
-            `The audit action ${input.operationalAction ?? "unknown"} has no durable commit receipt. Call recordAudit with a durable ledger write before the operational copy.`,
-            `audit action ${input.operationalAction ?? "unknown"} has no durable commit receipt`,
-          ));
+          return yield* Effect.fail(
+            violation(
+              `The audit action ${input.operationalAction ?? "unknown"} has no durable commit receipt. Call recordAudit with a durable ledger write before the operational copy.`,
+              `audit action ${input.operationalAction ?? "unknown"} has no durable commit receipt`,
+            ),
+          );
         }
         return {
           owner: "telemetry",
@@ -341,10 +354,12 @@ export const auditCanaryConformance = (input: {
     verify: () =>
       Effect.gen(function* () {
         if (input.publish.kind === "dropped") {
-          return yield* Effect.fail(violation(
-            "The audit canary dropped the operational copy. Keep the durable ledger write before publication and retry the canary.",
-            `audit publish dropped: ${input.publish.reason}`,
-          ));
+          return yield* Effect.fail(
+            violation(
+              "The audit canary dropped the operational copy. Keep the durable ledger write before publication and retry the canary.",
+              `audit publish dropped: ${input.publish.reason}`,
+            ),
+          );
         }
         return {
           owner: "telemetry",

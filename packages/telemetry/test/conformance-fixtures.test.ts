@@ -11,7 +11,6 @@ import { runWorkerFixture } from "../../../observability/conformance/fixtures/po
 import {
   assertConformanceFailure,
   assertConforms,
-  runConformance,
   type ConformanceCheckId,
 } from "../src/testing/index.ts";
 
@@ -20,7 +19,10 @@ const assertPassing = async (
   run: () => Promise<Awaited<ReturnType<typeof runWorkerFixture>>>,
 ) => {
   const report = await run();
-  expect(report.conforms, `${label} failed: ${JSON.stringify(report.checks.filter((check) => check.status === "fail"))}`).toBe(true);
+  expect(
+    report.conforms,
+    `${label} failed: ${JSON.stringify(report.checks.filter((check) => check.status === "fail"))}`,
+  ).toBe(true);
   await Effect.runPromise(assertConforms(report));
   return report;
 };
@@ -51,6 +53,14 @@ describe("conformance profile fixtures", () => {
     expect(report.checks.find((check) => check.id === "lifecycle.profile-compliant")?.status).toBe(
       "pass",
     );
+  });
+
+  it("rejects a negative fixture whose expected check passes", async () => {
+    const report = await runWorkerFixture();
+    const failure = await Effect.runPromise(
+      Effect.flip(assertConformanceFailure(report, "pipeline.no-application-otlp")),
+    );
+    expect(failure.code).toBe("OBS_CONFORMANCE_NEGATIVE_FIXTURE_PASSED");
   });
 
   it("rejects an application-local OTLP pipeline", async () => {

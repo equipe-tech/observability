@@ -2,12 +2,10 @@ import { Effect } from "effect";
 import {
   defineConformanceEvidenceProvider,
   type ConformanceCheckId,
+  ConformanceViolation,
   type ConformanceEvidenceProvider,
-  type ConformanceViolation,
 } from "@equipe-tech/observability/testing";
-import type { ManagedQueryError } from "../ManagedQuery.ts";
 import {
-  OperationsManifestError,
   validateOperationsManifest,
   type OperationsContractIndex,
   type OperationsManifest,
@@ -19,11 +17,12 @@ import {
 
 export type ConformanceProvider<Id extends ConformanceCheckId> = ConformanceEvidenceProvider<Id>;
 
-const violation = (message: string, offendingValue: string, cause?: unknown): ConformanceViolation => ({
-  message,
-  offendingValue,
-  cause: cause ?? offendingValue,
-});
+const violation = (
+  message: string,
+  offendingValue: string,
+  cause?: unknown,
+): ConformanceViolation =>
+  new ConformanceViolation({ message, offendingValue, cause: cause ?? offendingValue });
 
 export const operationsManifestConformance = (input: {
   readonly manifest: OperationsManifest;
@@ -32,8 +31,8 @@ export const operationsManifestConformance = (input: {
   ConformanceProvider<"manifest.valid">,
   ConformanceProvider<"queries.contract-derived">,
 ] => {
-  const manifestProvider: ConformanceProvider<"manifest.valid"> =
-    defineConformanceEvidenceProvider({
+  const manifestProvider: ConformanceProvider<"manifest.valid"> = defineConformanceEvidenceProvider(
+    {
       id: "manifest.valid",
       owner: "cli",
       verify: (target) =>
@@ -60,7 +59,8 @@ export const operationsManifestConformance = (input: {
             summary: `manifest validated for environments ${validated.manifest.environments.join(", ")}`,
           } as const;
         }),
-    });
+    },
+  );
   const queriesProvider: ConformanceProvider<"queries.contract-derived"> =
     defineConformanceEvidenceProvider({
       id: "queries.contract-derived",

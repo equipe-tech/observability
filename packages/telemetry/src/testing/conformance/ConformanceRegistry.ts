@@ -77,8 +77,7 @@ export const conformanceChecks: ReadonlyArray<ConformanceCheck> = Object.freeze(
     code: "OBS_CONFORMANCE_IDENTITY_INVALID",
     rule: nodeConfigRule,
     applies: (target) => target.profile.name !== "library",
-    notApplicableReason: () =>
-      "the library profile owns no runtime resource identity",
+    notApplicableReason: () => "the library profile owns no runtime resource identity",
     run: (target, provider) => provider.verify(target),
   },
   {
@@ -124,8 +123,7 @@ export const conformanceChecks: ReadonlyArray<ConformanceCheck> = Object.freeze(
     rule: correlationRule,
     applies: (target) =>
       target.profile.events !== "forbidden" || target.profile.traces !== "forbidden",
-    notApplicableReason: () =>
-      "the library profile emits no events and no traces to correlate",
+    notApplicableReason: () => "the library profile emits no events and no traces to correlate",
     run: (target, provider) => provider.verify(target),
   },
   {
@@ -210,8 +208,7 @@ export const conformanceChecks: ReadonlyArray<ConformanceCheck> = Object.freeze(
     owner: "react",
     code: "OBS_CONFORMANCE_BROWSER_CANARY_FAILED",
     rule: browserRule,
-    applies: (target) =>
-      target.profile.name === "react-web" && target.capabilities.browserIngest,
+    applies: (target) => target.profile.name === "react-web" && target.capabilities.browserIngest,
     notApplicableReason: (target) =>
       target.profile.name === "react-web"
         ? notApplicableWithoutCapability("browser-ingest")(target)

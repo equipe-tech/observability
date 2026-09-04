@@ -7,11 +7,16 @@ import {
   parseRequestId,
   type DataPolicyInput,
   type EmitReceipt,
-  type TelemetryContractInput,
 } from "@equipe-tech/observability";
 import { makeCollectingTelemetryEventSink } from "@equipe-tech/observability/testing";
-import { createBrowserObservability, runBrowserDeliveryCanary } from "@equipe-tech/observability-react";
-import { browserLifecycleConformance, browserRouteCanaryConformance } from "@equipe-tech/observability-react/testing";
+import {
+  createBrowserObservability,
+  runBrowserDeliveryCanary,
+} from "@equipe-tech/observability-react";
+import {
+  browserLifecycleConformance,
+  browserRouteCanaryConformance,
+} from "@equipe-tech/observability-react/testing";
 import {
   operationsManifestConformance,
   packageBoundaryConformance,
@@ -28,6 +33,7 @@ import {
   type ConformanceTarget,
 } from "@equipe-tech/observability/testing";
 import { fileURLToPath } from "node:url";
+import { fixtureError } from "../../../support/FixtureError.ts";
 import { parseFixtureManifest } from "../../../support/manifest.ts";
 
 export const reactContractInput = Contract.telemetryContractDefinition({
@@ -49,16 +55,18 @@ export const reactPolicy: DataPolicyInput = {
 export type ReactKit = {
   readonly emitReceipt: EmitReceipt;
   readonly correlation: CorrelationContext;
-  readonly canaryReceipt: { readonly endpointOrigin: string; readonly status: 202; readonly durationMillis: number };
+  readonly canaryReceipt: {
+    readonly endpointOrigin: string;
+    readonly status: 202;
+    readonly durationMillis: number;
+  };
   readonly lifecycleReport: { readonly durationMillis: number; readonly degraded: boolean };
 };
 
 export const buildReactKit = async (): Promise<ReactKit> => {
   const contract = await Effect.runPromise(defineTelemetryContract(reactContractInput));
   const correlation = new CorrelationContext({
-    requestId: Option.some(
-      await Effect.runPromise(parseRequestId("fixture-request-1")),
-    ),
+    requestId: Option.some(await Effect.runPromise(parseRequestId("fixture-request-1"))),
   });
   const sink = await Effect.runPromise(makeCollectingTelemetryEventSink());
   const producer = makeEventProducer(contract);
@@ -86,11 +94,16 @@ export const buildReactKit = async (): Promise<ReactKit> => {
       removeEventListener: () => undefined,
     },
   });
-  if (!browser.installed) throw new Error("The react fixture requires an installed runtime.");
+  if (!browser.installed) {
+    throw fixtureError("The react fixture requires an installed runtime.");
+  }
   browser.events.emit("usage.recorded", { "usage.type": "fixture", "usage.unit": "run" });
-  const defect = browser.defects.report({ error: new Error("fixture browser defect"), origin: "manual" });
+  const defect = browser.defects.report({
+    error: new Error("fixture browser defect"),
+    origin: "manual",
+  });
   if (defect.kind !== "recorded") {
-    throw new Error(`The react fixture defect report was ${defect.kind}.`);
+    throw fixtureError(`The react fixture defect report was ${defect.kind}.`);
   }
   await browser.flush();
   const canaryReceipt = await runBrowserDeliveryCanary({
@@ -114,7 +127,13 @@ export const runReactFixture = async (): Promise<ConformanceProfileReport> => {
     profile: "react-web",
     environment: "test",
     topology: "local",
-    capabilities: { traces: false, metrics: false, defects: false, browserIngest: true, audit: false },
+    capabilities: {
+      traces: true,
+      metrics: false,
+      defects: false,
+      browserIngest: true,
+      audit: false,
+    },
     providers: [
       profileConformance({
         profile: "react-web",

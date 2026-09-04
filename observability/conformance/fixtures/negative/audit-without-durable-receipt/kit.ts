@@ -18,9 +18,7 @@ export const runAuditWithoutDurableReceiptFixture = async (): Promise<Conformanc
     topology: "local",
     capabilities: { traces: true, metrics: true, defects: true, browserIngest: false, audit: true },
     providers: [
-      ...built.providers.filter(
-        (provider) => provider.id !== "audit.durable-before-operational",
-      ),
+      ...built.providers.filter((provider) => provider.id !== "audit.durable-before-operational"),
       auditConformance({ commit: undefined, operationalAction: "fixture.updated" }),
     ],
   };

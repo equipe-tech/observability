@@ -1,4 +1,4 @@
-import type { Effect } from "effect";
+import { Schema, type Effect } from "effect";
 import type { ObservabilityProfile, ProfileName } from "../../profile/ObservabilityProfile.ts";
 import type { ConformanceFailure } from "./ConformanceFailure.ts";
 
@@ -60,11 +60,14 @@ export type ConformanceEvidence = {
   readonly summary: string;
 };
 
-export type ConformanceViolation = {
-  readonly message: string;
-  readonly offendingValue: string;
-  readonly cause?: unknown;
-};
+export class ConformanceViolation extends Schema.TaggedError<ConformanceViolation>()(
+  "ConformanceViolation",
+  {
+    message: Schema.String,
+    offendingValue: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
 
 export type ConformanceEvidenceProvider<Id extends ConformanceCheckId = ConformanceCheckId> = {
   readonly id: Id;

@@ -1,4 +1,7 @@
-export { sentryCanaryConformance, sentryUnexpectedDefectsConformance } from "./ConformanceEvidence.ts";
+export {
+  sentryCanaryConformance,
+  sentryUnexpectedDefectsConformance,
+} from "./ConformanceEvidence.ts";
 export type {
   SentryCaptureOutcome,
   SentryVerificationReceipt,

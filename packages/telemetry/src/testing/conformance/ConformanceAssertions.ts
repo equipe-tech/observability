@@ -7,7 +7,10 @@ import type {
 } from "./ConformanceModel.ts";
 
 const assertionError = (
-  code: "OBS_CONFORMANCE_NOT_CONFORMANT" | "OBS_CONFORMANCE_NEGATIVE_FIXTURE_PASSED" | "OBS_CONFORMANCE_EXPECTED_FAILURE_ABSENT",
+  code:
+    | "OBS_CONFORMANCE_NOT_CONFORMANT"
+    | "OBS_CONFORMANCE_NEGATIVE_FIXTURE_PASSED"
+    | "OBS_CONFORMANCE_EXPECTED_FAILURE_ABSENT",
   message: string,
   offendingValue: string,
 ): ConformanceAssertionError =>

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 import { observabilityProfiles } from "../src/profile/ObservabilityProfile.ts";
 import {
+  ConformanceViolation,
   assertConforms,
   conformanceChecks,
   conformanceFailureCodes,
@@ -46,9 +47,7 @@ const workerProviders = (): ReadonlyArray<ConformanceEvidenceProvider> =>
     .filter((check) => check.applies(workerContext))
     .map((check) => passingProvider(check.id));
 
-const targetWith = (
-  overrides: Partial<ConformanceTarget>,
-): ConformanceTarget => ({
+const targetWith = (overrides: Partial<ConformanceTarget>): ConformanceTarget => ({
   name: "unit-target",
   profile: "worker",
   environment: "test",
@@ -126,17 +125,67 @@ describe("conformance suite", () => {
     const browserFailure = await Effect.runPromiseExit(
       runConformance(
         targetWith({
-          capabilities: { traces: true, metrics: true, defects: false, browserIngest: true, audit: false },
+          capabilities: {
+            traces: true,
+            metrics: true,
+            defects: false,
+            browserIngest: true,
+            audit: false,
+          },
         }),
       ),
     );
     expect(suiteError(browserFailure)).toBe("OBS_CONFORMANCE_TARGET_INVALID");
 
+    const missingRequiredTrace = await Effect.runPromiseExit(
+      runConformance(
+        targetWith({
+          capabilities: {
+            traces: false,
+            metrics: true,
+            defects: false,
+            browserIngest: false,
+            audit: false,
+          },
+        }),
+      ),
+    );
+    expect(suiteError(missingRequiredTrace)).toBe("OBS_CONFORMANCE_TARGET_INVALID");
+
+    const optionalNestBrowser = await Effect.runPromise(
+      runConformance(
+        targetWith({
+          profile: "nestjs-api",
+          providers: [
+            profileConformance({
+              profile: "nestjs-api",
+              service: { name: "unit-target", version: "1.0.0", environment: "test" },
+            }),
+            ...workerProviders().slice(1),
+          ],
+          capabilities: {
+            traces: true,
+            metrics: true,
+            defects: false,
+            browserIngest: true,
+            audit: false,
+          },
+        }),
+      ),
+    );
+    expect(optionalNestBrowser.conforms).toBe(true);
+
     const reactMissingIngest = await Effect.runPromiseExit(
       runConformance(
         targetWith({
           profile: "react-web",
-          capabilities: { traces: false, metrics: false, defects: false, browserIngest: false, audit: false },
+          capabilities: {
+            traces: false,
+            metrics: false,
+            defects: false,
+            browserIngest: false,
+            audit: false,
+          },
           providers: [],
         }),
       ),
@@ -149,15 +198,16 @@ describe("conformance suite", () => {
       id: "profile.official",
       owner: "application",
       verify: () =>
-        Effect.fail({
-          message: "Profile sparkle is not official.",
-          offendingValue: "sparkle",
-        }),
+        Effect.fail(
+          new ConformanceViolation({
+            message: "Profile sparkle is not official.",
+            offendingValue: "sparkle",
+            cause: "sparkle",
+          }),
+        ),
     });
     const report = await Effect.runPromise(
-      runConformance(
-        targetWith({ providers: [failing, ...workerProviders().slice(1)] }),
-      ),
+      runConformance(targetWith({ providers: [failing, ...workerProviders().slice(1)] })),
     );
     expect(report.conforms).toBe(false);
     const failed = report.checks.find((check) => check.status === "fail");
@@ -180,7 +230,13 @@ describe("conformance suite", () => {
         targetWith({
           name: "two",
           profile: "library",
-          capabilities: { traces: false, metrics: false, defects: false, browserIngest: false, audit: false },
+          capabilities: {
+            traces: false,
+            metrics: false,
+            defects: false,
+            browserIngest: false,
+            audit: false,
+          },
           providers: [
             profileConformance({
               profile: "library",
@@ -207,10 +263,7 @@ describe("conformance suite", () => {
         operation: "close",
         outcomes: [
           {
-            participant: "adapter",
-            adapter: "evlog" as never,
-            capability: "events" as never,
-            stage: "server" as never,
+            participant: "runtime-disposal",
             result: { kind: "deadline-exceeded", budgetMillis: 500 },
           },
         ],
@@ -239,8 +292,8 @@ describe("conformance suite", () => {
         "@equipe-tech/observability-sentry",
         "@equipe-tech/observability-react",
         "yuku-parser",
-        "from \"yaml",
-        "from \"evlog",
+        'from "yaml',
+        'from "evlog',
         "@sentry/",
         "@nestjs/",
       ]) {

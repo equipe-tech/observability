@@ -1,6 +1,5 @@
-import { Effect, Layer, Option } from "effect";
+import { Effect, Option } from "effect";
 import {
-  commitAuditRecord,
   CorrelationContext,
   Contract,
   defineTelemetryContract,
@@ -8,23 +7,19 @@ import {
   parseResourceIdentity,
   makeEventProducer,
   makeMetricProducer,
-  parseAuditRecord,
   parseNodeObservabilityConfig,
   parseSpanId,
   parseTraceId,
   withBackgroundCorrelation,
-  type AuditCommitDocument,
   type DataPolicyInput,
   type ResourceIdentity,
   type EmitReceipt,
   type LifecycleReport,
-  type TelemetryContractInput,
 } from "@equipe-tech/observability";
 import { createNodeObservabilityFromConfig } from "@equipe-tech/observability/node";
 import { evlogAdapter } from "@equipe-tech/observability-evlog";
 import { evlogConformance } from "@equipe-tech/observability-evlog/testing";
 import {
-  auditCanaryConformance,
   contractConformance,
   correlationConformance,
   identityConformance,
@@ -44,6 +39,7 @@ import {
   packageBoundaryConformance,
 } from "@equipe-tech/observability-cli/testing";
 import { startLocalCollector, type LocalCollector } from "../../../support/collector.ts";
+import { fixtureError } from "../../../support/FixtureError.ts";
 import { parseFixtureManifest } from "../../../support/manifest.ts";
 
 export const workerContractInput = Contract.telemetryContractDefinition({
@@ -97,7 +93,7 @@ export const buildWorkerTarget = async (collector: LocalCollector) => {
   );
   const evlog = evlogAdapter({ installGlobalLogger: false });
   const handle = await createNodeObservabilityFromConfig(config, [evlog.registration]);
-  if (!handle.enabled) throw new Error("The worker fixture requires an enabled runtime.");
+  if (!handle.enabled) throw fixtureError("The worker fixture requires an enabled runtime.");
   const producer = makeEventProducer(contract);
   const runId = await Effect.runPromise(generateRunId("job", "fixture"));
   const correlation = new CorrelationContext({
@@ -114,9 +110,7 @@ export const buildWorkerTarget = async (collector: LocalCollector) => {
       .pipe(withBackgroundCorrelation(correlation, "fixture.job"))
       .pipe(Effect.provide(handle.eventLayer)),
   );
-  makeMetricProducer(contract, handle.metrics)
-    .counter("WorkerJobs")
-    .add(1, {});
+  makeMetricProducer(contract, handle.metrics).counter("WorkerJobs").add(1, {});
   const report = await handle.close();
   await collector.stop();
   return {
@@ -144,23 +138,23 @@ export const workerProviders = async (
 ): Promise<ReadonlyArray<ConformanceEvidenceProvider>> => {
   const { manifest, contract: contractIndex } = await parseFixtureManifest();
   return [
-  profileConformance({
-    profile: "worker",
-    service: { name: "fixture-worker", version: "1.4.0", environment: "test" },
-  }),
-  identityConformance({ identity: kit.identity }),
-  contractConformance({ contract: workerContractInput }),
-  producersConformance({ receipt: kit.emitReceipt }),
-  correlationConformance({ correlation: kit.correlation }),
-  policyConformance({ policy: workerPolicy }),
-  evlogConformance({ registration: kit.evlog.registration, drops: kit.evlog.drops() }),
-  ...operationsManifestConformance({ manifest, contract: contractIndex }),
-  packageBoundaryConformance({
-    projectRoot: fileURLToPath(new URL(".", import.meta.url)),
-    sourceRoots: ["."],
-  }),
-  lifecycleConformance({ report: kit.lifecycleReport }),
-  telemetryCanaryConformance({ runId: kit.runId, telemetry: collector.telemetry() }),
+    profileConformance({
+      profile: "worker",
+      service: { name: "fixture-worker", version: "1.4.0", environment: "test" },
+    }),
+    identityConformance({ identity: kit.identity }),
+    contractConformance({ contract: workerContractInput }),
+    producersConformance({ receipt: kit.emitReceipt }),
+    correlationConformance({ correlation: kit.correlation }),
+    policyConformance({ policy: workerPolicy }),
+    evlogConformance({ registration: kit.evlog.registration, drops: kit.evlog.drops() }),
+    ...operationsManifestConformance({ manifest, contract: contractIndex }),
+    packageBoundaryConformance({
+      projectRoot: fileURLToPath(new URL(".", import.meta.url)),
+      sourceRoots: ["."],
+    }),
+    lifecycleConformance({ report: kit.lifecycleReport }),
+    telemetryCanaryConformance({ runId: kit.runId, telemetry: collector.telemetry() }),
   ];
 };
 
@@ -172,7 +166,13 @@ export const runWorkerFixture = async (): Promise<ConformanceProfileReport> => {
     profile: "worker",
     environment: "test",
     topology: "local",
-    capabilities: { traces: true, metrics: true, defects: false, browserIngest: false, audit: false },
+    capabilities: {
+      traces: true,
+      metrics: true,
+      defects: false,
+      browserIngest: false,
+      audit: false,
+    },
     providers: await workerProviders(kit, collector),
   };
   return Effect.runPromise(runConformance(target));

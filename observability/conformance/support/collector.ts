@@ -1,6 +1,5 @@
 import { Effect, Option, Schema } from "effect";
 import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
 import type { CapturedTelemetry } from "@equipe-tech/observability/testing";
 
 const AttributeValue = Schema.Struct({
@@ -45,15 +44,14 @@ const LogExport = Schema.Struct({
   resourceLogs: Schema.Array(
     Schema.Struct({
       resource: Schema.Struct({ attributes: Attributes }),
-      scopeLogs: Schema.Array(
-        Schema.Struct({ logRecords: Schema.Array(ExportedLogRecord) }),
-      ),
+      scopeLogs: Schema.Array(Schema.Struct({ logRecords: Schema.Array(ExportedLogRecord) })),
     }),
   ),
 });
 
 const decodeSpanExport = Schema.decodeUnknownSync(SpanExport);
 const decodeLogExport = Schema.decodeUnknownSync(LogExport);
+const decodeServerAddress = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Number }));
 
 type SpanExportBatch = ReturnType<typeof decodeSpanExport>;
 type LogExportBatch = ReturnType<typeof decodeLogExport>;
@@ -94,7 +92,7 @@ export const startLocalCollector = async (): Promise<LocalCollector> => {
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address() as AddressInfo;
+  const address = decodeServerAddress(server.address());
   return {
     endpoint: new URL(`http://127.0.0.1:${address.port}`),
     telemetry: (): CapturedTelemetry => {

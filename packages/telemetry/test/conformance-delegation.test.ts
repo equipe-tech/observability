@@ -2,6 +2,7 @@ import { Effect, Ref } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 import { observabilityProfiles } from "../src/profile/ObservabilityProfile.ts";
 import {
+  ConformanceViolation,
   conformanceChecks,
   defineConformanceEvidenceProvider,
   runConformance,
@@ -9,7 +10,6 @@ import {
   type ConformanceEvidenceProvider,
   type ConformanceTarget,
   type ConformanceTargetContext,
-  type ConformanceViolation,
 } from "../src/testing/index.ts";
 
 const workerContext: ConformanceTargetContext = {
@@ -24,7 +24,9 @@ const applicableIds = conformanceChecks
   .filter((check) => check.applies(workerContext))
   .map((check) => check.id);
 
-const delegationTarget = (providers: ReadonlyArray<ConformanceEvidenceProvider>): ConformanceTarget => ({
+const delegationTarget = (
+  providers: ReadonlyArray<ConformanceEvidenceProvider>,
+): ConformanceTarget => ({
   name: "delegation-target",
   profile: "worker",
   environment: "staging",
@@ -35,7 +37,9 @@ const delegationTarget = (providers: ReadonlyArray<ConformanceEvidenceProvider>)
 
 const sentinelProvider = (
   id: ConformanceCheckId,
-  calls: Ref.Ref<ReadonlyArray<{ readonly id: ConformanceCheckId; readonly target: ConformanceTargetContext }>>,
+  calls: Ref.Ref<
+    ReadonlyArray<{ readonly id: ConformanceCheckId; readonly target: ConformanceTargetContext }>
+  >,
 ): ConformanceEvidenceProvider =>
   defineConformanceEvidenceProvider({
     id,
@@ -54,7 +58,14 @@ const sentinelProvider = (
 
 describe("conformance delegation", () => {
   it("runs every applicable provider exactly once with the exact target context", async () => {
-    const calls = await Effect.runPromise(Ref.make<ReadonlyArray<{ readonly id: ConformanceCheckId; readonly target: ConformanceTargetContext }>>([]));
+    const calls = await Effect.runPromise(
+      Ref.make<
+        ReadonlyArray<{
+          readonly id: ConformanceCheckId;
+          readonly target: ConformanceTargetContext;
+        }>
+      >([]),
+    );
     const providers = applicableIds.map((id) => sentinelProvider(id, calls));
     const report = await Effect.runPromise(runConformance(delegationTarget(providers)));
     expect(report.conforms).toBe(true);
@@ -74,10 +85,11 @@ describe("conformance delegation", () => {
   });
 
   it("maps sentinel provider violations onto the official code and rule without reinterpretation", async () => {
-    const violation: ConformanceViolation = {
+    const violation = new ConformanceViolation({
       message: "owner sentinel violation",
       offendingValue: "sentinel-offender",
-    };
+      cause: "sentinel-offender",
+    });
     const providers = applicableIds.map((id) =>
       defineConformanceEvidenceProvider({
         id,
@@ -103,7 +115,14 @@ describe("conformance delegation", () => {
       defineConformanceEvidenceProvider({
         id,
         owner: "application",
-        verify: () => Effect.fail({ message: "broken", offendingValue: "broken" }),
+        verify: () =>
+          Effect.fail(
+            new ConformanceViolation({
+              message: "broken",
+              offendingValue: "broken",
+              cause: "broken",
+            }),
+          ),
       }),
     );
     const exit = await Effect.runPromiseExit(runConformance(delegationTarget(providers)));
