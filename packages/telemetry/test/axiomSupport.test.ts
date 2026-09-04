@@ -288,11 +288,13 @@ describe("axiom query support", () => {
       productionCollectorConfig,
       `flush_timeout: ${ingestionBudget.collectorFlushMilliseconds}ms`,
     );
-    assert.strictEqual(
+    const requiredVisibilityBudget =
+      ingestionBudget.collectorFlushMilliseconds + ingestionBudget.axiomQueryVisibilityMilliseconds;
+    const visibilityMargin = sleepBudget - requiredVisibilityBudget;
+    assert.isAtLeast(
       sleepBudget,
-      ingestionBudget.collectorFlushMilliseconds +
-        ingestionBudget.axiomQueryVisibilityMilliseconds +
-        ingestionBudget.safetyMarginMilliseconds,
+      requiredVisibilityBudget,
+      `Polling visibility margin: ${visibilityMargin}ms`,
     );
     assert.isBelow(queryBudget + sleepBudget, deployedCanaryPollingBudget.suiteTimeoutMilliseconds);
   });

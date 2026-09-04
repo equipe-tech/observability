@@ -277,10 +277,8 @@ test("requires an explicit deployed canary request", async () => {
 
 test("rejects a zero-test report through the deployed canary entrypoint", async () => {
   const root = await mkdtemp(join(tmpdir(), "deployed-canary-entrypoint-test-"));
-  const fakeBin = join(root, "bin");
-  const fakeVp = join(fakeBin, "vp");
+  const fakeVp = join(root, "deployed-canary-runner");
   try {
-    await mkdir(fakeBin);
     await writeFile(
       fakeVp,
       [
@@ -300,7 +298,7 @@ test("rejects a zero-test report through the deployed canary entrypoint", async 
       env: {
         ...process.env,
         OBSERVABILITY_E2E_DEPLOYED: "1",
-        PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+        OBSERVABILITY_DEPLOYED_CANARY_RUNNER: fakeVp,
       },
     });
     expect(result.exitCode).not.toBe(0);
@@ -308,6 +306,51 @@ test("rejects a zero-test report through the deployed canary entrypoint", async 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("fails when the deployed canary runner exits nonzero", async () => {
+  const root = await mkdtemp(join(tmpdir(), "deployed-canary-suite-failure-test-"));
+  const fallbackRunner = join(root, "vp");
+  try {
+    await writeFile(fallbackRunner, "#!/bin/sh\nexit 99\n");
+    await chmod(fallbackRunner, 0o755);
+    for (const childExitCode of [1, 42]) {
+      const runner = join(root, `runner-${childExitCode}`);
+      await writeFile(runner, `#!/bin/sh\nexit ${childExitCode}\n`);
+      await chmod(runner, 0o755);
+      const result = await execute({
+        command: [process.execPath, "scripts/test-deployed-canary.ts"],
+        cwd: projectRoot,
+        env: {
+          ...process.env,
+          OBSERVABILITY_E2E_DEPLOYED: "1",
+          OBSERVABILITY_DEPLOYED_CANARY_RUNNER: runner,
+          PATH: root,
+        },
+      });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("OBS_DEPLOYED_CANARY_SUITE_FAILED:");
+      expect(result.stderr).toContain(`exit code ${childExitCode}`);
+      expect(result.stderr).toContain("vitest-report.json");
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses the real deployed canary runner in a test context", async () => {
+  const result = await execute({
+    command: [process.execPath, "scripts/test-deployed-canary.ts"],
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      NODE_ENV: "test",
+      OBSERVABILITY_E2E_DEPLOYED: "1",
+      OBSERVABILITY_DEPLOYED_CANARY_RUNNER: undefined,
+    },
+  });
+  expect(result.exitCode).not.toBe(0);
+  expect(result.stderr).toContain("OBS_DEPLOYED_CANARY_RUNNER_REQUIRED:");
 });
 
 test("reads the executed test count from the deployed canary report", () => {
@@ -347,6 +390,7 @@ test("types and sanitizes an unexpected deployed canary failure", async () => {
     env: {
       ...process.env,
       OBSERVABILITY_E2E_DEPLOYED: "1",
+      OBSERVABILITY_DEPLOYED_CANARY_RUNNER: join(tmpdir(), "unused-deployed-canary-runner"),
       TMPDIR: missingTemporaryDirectory,
       TMP: missingTemporaryDirectory,
       TEMP: missingTemporaryDirectory,

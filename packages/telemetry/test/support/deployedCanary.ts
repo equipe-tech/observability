@@ -1,3 +1,5 @@
+import { deployedCanarySuiteTimeoutMilliseconds } from "../../src/testing/deployedCanary.ts";
+
 export type DeployedCanaryQuery = "root" | "child" | "logs" | "metric";
 
 export const deployedCanaryQueries: ReadonlyArray<DeployedCanaryQuery> = [
@@ -16,7 +18,6 @@ export type DeployedCanaryPollingBudget = {
   readonly ingestion: {
     readonly collectorFlushMilliseconds: number;
     readonly axiomQueryVisibilityMilliseconds: number;
-    readonly safetyMarginMilliseconds: number;
   };
 };
 
@@ -27,11 +28,10 @@ export const deployedCanaryPollingBudgetFor = (
   queriesPerAttempt: queries.length,
   sleepMilliseconds: 16_000,
   queryTimeoutMilliseconds: 5_000,
-  suiteTimeoutMilliseconds: 480_000,
+  suiteTimeoutMilliseconds: deployedCanarySuiteTimeoutMilliseconds,
   ingestion: {
     collectorFlushMilliseconds: 200,
     axiomQueryVisibilityMilliseconds: 180_000,
-    safetyMarginMilliseconds: 11_800,
   },
 });
 

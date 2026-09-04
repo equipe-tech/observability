@@ -1,3 +1,4 @@
+import { deployedCanarySuiteTimeoutMilliseconds } from "@equipe-tech/observability/testing";
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -290,7 +291,9 @@ describe("release workflow publication gate", () => {
   test("keeps the deployed canary job timeout above the suite budget", () => {
     const timeoutMinutes = parsedCiWorkflow.jobs["deployed-canary"]["timeout-minutes"];
     expect(timeoutMinutes).toBeDefined();
-    expect((timeoutMinutes ?? 0) * 60_000).toBeGreaterThanOrEqual(480_000 + 3 * 60_000);
+    expect((timeoutMinutes ?? 0) * 60_000).toBeGreaterThanOrEqual(
+      deployedCanarySuiteTimeoutMilliseconds + 3 * 60_000,
+    );
   });
 
   test("does not mask a gate bypass when the request variable is unset", async () => {
