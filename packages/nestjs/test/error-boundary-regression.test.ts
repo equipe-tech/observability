@@ -726,6 +726,58 @@ describe("Nest error boundary regressions", () => {
     assert.strictEqual(boundary.classify(new ThrowingResponse(), correlation).kind, "unexpected");
   });
 
+  it("classifies a throwing cause accessor as an HTTP outcome without escaping", () => {
+    class ThrowingCause extends Error {
+      getStatus(): number {
+        return 503;
+      }
+
+      getResponse(): string {
+        return "degraded";
+      }
+
+      override get cause(): never {
+        throw new Error("cause accessor failed");
+      }
+    }
+
+    const boundary = new NestErrorBoundary({
+      catalog: defineErrorCatalog("throwing_cause", {}),
+      recordDefect: () => undefined,
+    });
+    const classified = boundary.classify(new ThrowingCause(), new CorrelationContext({}));
+    assert.strictEqual(classified.kind, "http-outcome");
+  });
+
+  it("inspects a self-caused HTTP exception once during classification", () => {
+    let statusCalls = 0;
+    let responseCalls = 0;
+
+    class SelfCaused extends Error {
+      getStatus(): number {
+        statusCalls += 1;
+        return 503;
+      }
+
+      getResponse(): string {
+        responseCalls += 1;
+        return "degraded";
+      }
+    }
+
+    const error = new SelfCaused("degraded");
+    Object.defineProperty(error, "cause", { value: error });
+
+    const boundary = new NestErrorBoundary({
+      catalog: defineErrorCatalog("self_cause", {}),
+      recordDefect: () => undefined,
+    });
+    const classified = boundary.classify(error, new CorrelationContext({}));
+    assert.strictEqual(classified.kind, "http-outcome");
+    assert.strictEqual(statusCalls, 1);
+    assert.strictEqual(responseCalls, 1);
+  });
+
   it("preserves own retryability and defaults all other defects to false", async () => {
     const events: Array<DefectEventInput> = [];
     const boundary = new NestErrorBoundary({

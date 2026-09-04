@@ -14,7 +14,7 @@ No encerramento, o módulo fecha a admissão de spans, aguarda ou interrompe req
 
 O suporte usa NestJS com Express. O adapter não declara suporte ao Fastify.
 
-`evlog` é um peer opcional e usado somente nos tipos de catálogo aceitos pelo limite de erros. Consumidores que usam apenas a instrumentação HTTP não precisam instalar evlog.
+O pacote não declara `evlog` como dependência ou peer. Consumidores que usam os tipos de catálogo aceitos pelo limite de erros instalam `evlog` como dependência direta própria. Consumidores que usam apenas a instrumentação HTTP não precisam instalar evlog.
 
 ## Adapter de correlação com eventos amplos
 

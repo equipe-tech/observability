@@ -154,10 +154,13 @@ type CatalogEntry = {
   readonly message: string;
   readonly status: number;
 };
+type HttpDetailsInspector = (error: Error) => Option.Option<HttpExceptionDetails>;
+
 type ClassificationRule = (
   error: Error,
   correlation: CorrelationContext,
   details: Option.Option<HttpExceptionDetails>,
+  inspect: HttpDetailsInspector,
 ) => Option.Option<ClassifiedError>;
 
 const catalogEntries = (catalog: ErrorCatalogReference): ReadonlyArray<CatalogEntry> => {
@@ -213,6 +216,14 @@ type HttpExceptionDetails = {
 
 const HttpStatus = Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 }));
 const decodeHttpStatus = Schema.decodeUnknownOption(HttpStatus);
+
+const causeOf = (error: Error): unknown => {
+  try {
+    return error.cause;
+  } catch {
+    return undefined;
+  }
+};
 
 const httpExceptionDetails = (error: Error): Option.Option<HttpExceptionDetails> => {
   try {
@@ -281,8 +292,8 @@ export class NestErrorBoundary<Catalog extends ErrorCatalogReference = ErrorCata
     this.#requestWideEventTraceCorrelation = options.requestWideEventTraceCorrelation;
     this.#classificationTable = [
       (error, correlation) => this.#classifyExpected(error, correlation),
-      (error, correlation, details) =>
-        this.#classifyCausedServerDefect(error, correlation, details),
+      (error, correlation, details, inspect) =>
+        this.#classifyCausedServerDefect(error, correlation, details, inspect),
       (_error, _correlation, details) => this.#classifyHttpOutcome(details),
     ];
   }
@@ -309,12 +320,13 @@ export class NestErrorBoundary<Catalog extends ErrorCatalogReference = ErrorCata
     error: Error,
     correlation: CorrelationContext,
     details: Option.Option<HttpExceptionDetails>,
+    inspect: HttpDetailsInspector,
   ): Option.Option<UnexpectedDefect> {
     if (Option.isNone(details)) return Option.none();
     const isServerError = details.value.statusCode >= 500;
-    const causeIsHttpException =
-      error.cause instanceof Error && Option.isSome(httpExceptionDetails(error.cause));
-    if (!isServerError || error.cause === undefined || causeIsHttpException) return Option.none();
+    const cause = causeOf(error);
+    const causeIsHttpException = cause instanceof Error && Option.isSome(inspect(cause));
+    if (!isServerError || cause === undefined || causeIsHttpException) return Option.none();
     return Option.some(this.#classifyUnexpected(error, correlation));
   }
 
@@ -343,9 +355,17 @@ export class NestErrorBoundary<Catalog extends ErrorCatalogReference = ErrorCata
   }
 
   classify(error: Error, correlation: CorrelationContext): ClassifiedError {
-    const details = httpExceptionDetails(error);
+    const inspected = new WeakMap<Error, Option.Option<HttpExceptionDetails>>();
+    const inspect: HttpDetailsInspector = (candidate) => {
+      const cached = inspected.get(candidate);
+      if (cached !== undefined) return cached;
+      const details = httpExceptionDetails(candidate);
+      inspected.set(candidate, details);
+      return details;
+    };
+    const details = inspect(error);
     for (const classify of this.#classificationTable) {
-      const classified = classify(error, correlation, details);
+      const classified = classify(error, correlation, details, inspect);
       if (Option.isSome(classified)) return classified.value;
     }
     return this.#classifyUnexpected(error, correlation);
