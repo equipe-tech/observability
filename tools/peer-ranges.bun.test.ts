@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { satisfies } from "semver";
+import { Range, satisfies } from "semver";
 import { comparePeerRanges, type PeerRangeComparison } from "../scripts/compatibility-gate.ts";
 
 const relations: ReadonlyArray<readonly [string, string, PeerRangeComparison["classification"]]> = [
@@ -66,13 +66,15 @@ const versions = Array.from({ length: 5 }, (_, major) =>
 describe("peer range set coverage", () => {
   test.each(relations)("relates %s to %s as %s", (baseline, candidate, classification) => {
     expect(comparePeerRanges(baseline, candidate).classification).toBe(classification);
+    const normalizedBaseline = new Range(baseline).range || "*";
+    const normalizedCandidate = new Range(candidate).range || "*";
     let removed = false;
     let added = false;
     for (const version of versions) {
       const previous = satisfies(version, baseline);
       const next = satisfies(version, candidate);
-      expect(Bun.semver.satisfies(version, baseline)).toBe(previous);
-      expect(Bun.semver.satisfies(version, candidate)).toBe(next);
+      expect(Bun.semver.satisfies(version, normalizedBaseline)).toBe(previous);
+      expect(Bun.semver.satisfies(version, normalizedCandidate)).toBe(next);
       removed ||= previous && !next;
       added ||= !previous && next;
     }
@@ -118,6 +120,55 @@ describe("peer range set coverage", () => {
             .classification,
         ).toBe("equivalent");
         expect(comparePeerRanges(`>${start} <${split}`, "<0.0").classification).toBe("equivalent");
+      }
+    }
+  });
+
+  test("agrees with maintained membership across generated comparator intersections and unions", () => {
+    const comparators = [
+      "*",
+      "<0.0",
+      "<1.2",
+      "<=1.2",
+      ">1.2",
+      ">=1.2",
+      "1.2.x",
+      "^0.0",
+      "~1.2",
+      "<1.2.0-beta",
+      "<=1.2.0-beta",
+      ">1.2.0-beta",
+      ">=1.2.0-beta",
+      "1.2.0-beta",
+      "<2.0.0-alpha",
+      ">=2.0.0-alpha",
+    ];
+    const witnesses = [
+      "0.0.0",
+      "0.0.1",
+      "1.1.9",
+      "1.2.0-0",
+      "1.2.0-alpha",
+      "1.2.0-beta",
+      "1.2.0-beta.0",
+      "1.2.0-beta.1",
+      "1.2.0",
+      "1.2.1",
+      "1.3.0",
+      "2.0.0-0",
+      "2.0.0-alpha",
+      "2.0.0-alpha.0",
+      "2.0.0",
+      "3.0.0",
+    ];
+    for (const left of comparators) {
+      for (const right of comparators) {
+        for (const range of [`${left} ${right}`, `${left} || ${right}`]) {
+          for (const version of witnesses) {
+            const classification = comparePeerRanges(version, range).classification;
+            expect(classification !== "narrowed").toBe(satisfies(version, range));
+          }
+        }
       }
     }
   });

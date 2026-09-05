@@ -3,7 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } 
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Effect, Schema } from "effect";
-import { subset, validRange } from "semver";
+import { Range, validRange } from "semver";
+import { compareParsedPeerRanges } from "./peer-range-coverage.ts";
 import { Contract } from "../packages/telemetry/src/index.ts";
 import { decodeCompatibilityJson } from "./compatibility-json.ts";
 import { generateCompatibilityCandidate } from "./generate-compatibility-candidate.ts";
@@ -383,17 +384,10 @@ export const comparePeerRanges = (baseline: string, candidate: string): PeerRang
   if (baseline === candidate) return { baseline, candidate, classification: "equivalent" };
   if (validRange(baseline) === null || validRange(candidate) === null)
     return { baseline, candidate, classification: "narrowed" };
-  const baselineInCandidate = subset(baseline, candidate);
-  const candidateInBaseline = subset(candidate, baseline);
   return {
     baseline,
     candidate,
-    classification:
-      baselineInCandidate && candidateInBaseline
-        ? "equivalent"
-        : baselineInCandidate
-          ? "widened"
-          : "narrowed",
+    classification: compareParsedPeerRanges(new Range(baseline), new Range(candidate)),
   };
 };
 
