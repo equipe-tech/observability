@@ -45,6 +45,22 @@ const DockerPort = Schema.String.check(Schema.isPattern(/127[.]0[.]0[.]1:[0-9]+/
 const DockerGateway = Schema.String.check(Schema.isPattern(/^(?:[0-9]{1,3}[.]){3}[0-9]{1,3}$/));
 const decodeDockerPort = Schema.decodeUnknownSync(DockerPort);
 const decodeDockerGateway = Schema.decodeUnknownSync(DockerGateway);
+const collectorTraversalAttribute = "observability.collector.traversal";
+
+const traversedTelemetry = (
+  telemetry: CapturedTelemetry,
+  traversal: string,
+): CapturedTelemetry => ({
+  spans: telemetry.spans.filter(
+    (span) => span.resourceAttributes.get(collectorTraversalAttribute) === traversal,
+  ),
+  logs: telemetry.logs.filter(
+    (log) => log.resourceAttributes.get(collectorTraversalAttribute) === traversal,
+  ),
+  metrics: telemetry.metrics.filter(
+    (metric) => metric.resourceAttributes.get(collectorTraversalAttribute) === traversal,
+  ),
+});
 
 const command = (args: ReadonlyArray<string>): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -90,6 +106,7 @@ const waitForCollector = async (endpoint: URL): Promise<void> => {
 
 export const startLocalCollectorDestination = async (): Promise<LocalCollectorDestination> => {
   const collectorInstance = `observability-conformance-${crypto.randomUUID()}`;
+  const collectorTraversal = crypto.randomUUID();
   let destination: OtlpCaptureServer | undefined;
   let directory: string | undefined;
   let running = false;
@@ -127,16 +144,25 @@ export const startLocalCollectorDestination = async (): Promise<LocalCollectorDe
         `    endpoint: http://${destinationHost}:${destination.endpoint.port}`,
         "    compression: none",
         "    encoding: json",
+        "processors:",
+        "  resource/local_traversal:",
+        "    attributes:",
+        `      - key: ${collectorTraversalAttribute}`,
+        `        value: ${collectorTraversal}`,
+        "        action: upsert",
         "service:",
         "  pipelines:",
         "    traces:",
         "      receivers: [otlp]",
+        "      processors: [resource/local_traversal]",
         "      exporters: [otlphttp/destination]",
         "    metrics:",
         "      receivers: [otlp]",
+        "      processors: [resource/local_traversal]",
         "      exporters: [otlphttp/destination]",
         "    logs:",
         "      receivers: [otlp]",
+        "      processors: [resource/local_traversal]",
         "      exporters: [otlphttp/destination]",
         "",
       ].join("\n"),
@@ -166,19 +192,17 @@ export const startLocalCollectorDestination = async (): Promise<LocalCollectorDe
     let stopPromise: Promise<void> | undefined;
     const acquiredDestination = destination;
     const acquiredDirectory = directory;
+    const collectorTelemetry = () =>
+      traversedTelemetry(acquiredDestination.telemetry(), collectorTraversal);
     return {
       endpoint,
-      telemetry: acquiredDestination.telemetry,
-      destinationTelemetry: acquiredDestination.telemetry,
+      telemetry: collectorTelemetry,
+      destinationTelemetry: collectorTelemetry,
       destinationEndpoint: acquiredDestination.endpoint,
       collectorInstance,
       awaitDestination: async (runId) => {
         for (let attempt = 0; attempt < 40; attempt++) {
-          if (
-            acquiredDestination
-              .telemetry()
-              .logs.some((log) => log.attributes.get("run.id") === runId)
-          ) {
+          if (collectorTelemetry().logs.some((log) => log.attributes.get("run.id") === runId)) {
             return;
           }
           await new Promise((resolve) => setTimeout(resolve, 100));
@@ -195,7 +219,7 @@ export const startLocalCollectorDestination = async (): Promise<LocalCollectorDe
           runId,
           identity: binding.identity,
           observationId: collectorInstance,
-          readback: acquiredDestination.telemetry,
+          readback: collectorTelemetry,
         }),
       stop: () => {
         stopPromise ??= Promise.all([

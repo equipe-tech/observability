@@ -134,6 +134,34 @@ describe("defineTelemetryContract", () => {
     }),
   );
 
+  it.effect("keeps compiled producer indexes immutable for the contract lifetime", () =>
+    Effect.gen(function* () {
+      const contract = yield* compileApplicationContract;
+      const definition = contract.eventByAlias.get("RequestCompleted");
+      assert.isDefined(definition);
+      if (definition === undefined) return;
+      assert.throws(() => Object.assign(definition, { kind: "domain" }), TypeError);
+      assert.throws(
+        () => Map.prototype.set.call(contract.eventByAlias, "RequestCompleted", definition),
+        TypeError,
+      );
+      assert.throws(() => Map.prototype.clear.call(definition.attributes), TypeError);
+      const sink = yield* makeCollectingTelemetryEventSink();
+      const receipt = yield* makeEventProducer(contract)
+        .emit("RequestCompleted", {
+          outcome: "success",
+          durationMs: 1,
+          http: { method: "GET", route: "/proof", statusCode: 200 },
+          attributes: {},
+        })
+        .pipe(Effect.provide(sink.layer));
+      assert.strictEqual(receipt.decision, "recorded");
+      if (receipt.decision !== "recorded") return;
+      assert.strictEqual(receipt.event.kind, contract.definition.events.RequestCompleted.kind);
+      assert.strictEqual(receipt.contractProvenance, contract.provenance);
+    }),
+  );
+
   it.effect("compiles typed metric definitions and canonical indexes", () =>
     Effect.gen(function* () {
       const contract = yield* defineTelemetryContract({

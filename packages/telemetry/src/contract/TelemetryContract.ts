@@ -267,6 +267,31 @@ const canonicalTelemetryContractProvenance = (definition: TelemetryContractInput
     version: definition.version,
   });
 
+const immutableMap = <Key, Value>(
+  entries: Iterable<readonly [Key, Value]>,
+): ReadonlyMap<Key, Value> => {
+  const values = new Map(entries);
+  let readonlyValues: ReadonlyMap<Key, Value>;
+  readonlyValues = Object.freeze({
+    get size() {
+      return values.size;
+    },
+    get: (key: Key) => values.get(key),
+    has: (key: Key) => values.has(key),
+    entries: () => values.entries(),
+    keys: () => values.keys(),
+    values: () => values.values(),
+    forEach(
+      callback: (value: Value, key: Key, map: ReadonlyMap<Key, Value>) => void,
+      thisArg?: never,
+    ) {
+      values.forEach((value, key) => callback.call(thisArg, value, key, readonlyValues));
+    },
+    [Symbol.iterator]: () => values[Symbol.iterator](),
+  });
+  return readonlyValues;
+};
+
 const freezeTelemetryContractDefinition = <Definition extends TelemetryContractInput>(
   definition: Definition,
 ): Definition => {
@@ -718,62 +743,63 @@ export const defineTelemetryContract = Effect.fn("defineTelemetryContract")(func
   const compiledDefinition = freezeTelemetryContractDefinition(structuredClone(definition));
   const provenance = canonicalTelemetryContractProvenance(compiledDefinition);
   const eventNames: Array<EventName> = [];
-  const eventByAlias = new Map<string, CompiledEventDefinition>();
-  const eventByName = new Map<EventName, CompiledEventDefinition>();
+  const mutableEventByAlias = new Map<string, CompiledEventDefinition>();
+  const mutableEventByName = new Map<EventName, CompiledEventDefinition>();
   for (const [alias, event] of Object.entries(compiledDefinition.events)) {
     const name = EventName.make(event.name);
-    const attributes = new Map(Object.entries(event.attributes));
-    const compiled = {
+    const compiled = Object.freeze({
       alias,
       name,
       kind: event.kind,
       defaultSeverity: event.defaultSeverity,
       mandatory: event.mandatory,
       sampling: event.sampling,
-      attributes,
-      requiredAttributes: Object.entries(event.attributes)
-        .filter((entry) => entry[1].required)
-        .map((entry) => entry[0]),
-    } satisfies CompiledEventDefinition;
+      attributes: immutableMap(Object.entries(event.attributes)),
+      requiredAttributes: Object.freeze(
+        Object.entries(event.attributes)
+          .filter((entry) => entry[1].required)
+          .map((entry) => entry[0]),
+      ),
+    } satisfies CompiledEventDefinition);
     eventNames.push(name);
-    eventByAlias.set(alias, compiled);
-    eventByName.set(name, compiled);
+    mutableEventByAlias.set(alias, compiled);
+    mutableEventByName.set(name, compiled);
   }
-  const auditActionByAlias = new Map<string, CompiledAuditActionDefinition>();
-  const auditActionByName = new Map<string, CompiledAuditActionDefinition>();
+  const mutableAuditActionByAlias = new Map<string, CompiledAuditActionDefinition>();
+  const mutableAuditActionByName = new Map<string, CompiledAuditActionDefinition>();
   for (const [alias, action] of Object.entries(compiledDefinition.auditActions)) {
-    const compiled: CompiledAuditActionDefinition = {
+    const compiled = Object.freeze({
       alias,
       action: AuditAction.make(action.action),
       resourceType: action.resourceType,
       allowedOutcomes: action.allowedOutcomes,
-      reasonCodes: action.reasonCodes ?? [],
-    };
-    auditActionByAlias.set(alias, compiled);
-    auditActionByName.set(action.action, compiled);
+      reasonCodes: action.reasonCodes ?? Object.freeze([]),
+    } satisfies CompiledAuditActionDefinition);
+    mutableAuditActionByAlias.set(alias, compiled);
+    mutableAuditActionByName.set(action.action, compiled);
   }
-  const metricByAlias = new Map<string, CompiledMetricDefinition>();
-  const metricByName = new Map<string, CompiledMetricDefinition>();
+  const mutableMetricByAlias = new Map<string, CompiledMetricDefinition>();
+  const mutableMetricByName = new Map<string, CompiledMetricDefinition>();
   for (const [alias, metric] of Object.entries(compiledDefinition.metrics)) {
-    const compiled: CompiledMetricDefinition = {
+    const compiled = Object.freeze({
       ...metric,
       alias,
-      attributes: new Map(Object.entries(metric.attributes)),
-    };
-    metricByAlias.set(alias, compiled);
-    metricByName.set(metric.name, compiled);
+      attributes: immutableMap(Object.entries(metric.attributes)),
+    } satisfies CompiledMetricDefinition);
+    mutableMetricByAlias.set(alias, compiled);
+    mutableMetricByName.set(metric.name, compiled);
   }
   return Object.freeze({
     version: compiledDefinition.version,
     definition: compiledDefinition,
     provenance,
     eventNames: Object.freeze(eventNames),
-    eventByAlias,
-    eventByName,
-    auditActionByAlias,
-    auditActionByName,
+    eventByAlias: immutableMap(mutableEventByAlias),
+    eventByName: immutableMap(mutableEventByName),
+    auditActionByAlias: immutableMap(mutableAuditActionByAlias),
+    auditActionByName: immutableMap(mutableAuditActionByName),
     metrics: compiledDefinition.metrics,
-    metricByAlias,
-    metricByName,
+    metricByAlias: immutableMap(mutableMetricByAlias),
+    metricByName: immutableMap(mutableMetricByName),
   });
 });
