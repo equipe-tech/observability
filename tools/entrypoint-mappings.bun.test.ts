@@ -15,6 +15,7 @@ const expected = new Map([
   ["@equipe-tech/observability-cli", "packages/cli/src/index.ts"],
   ["@equipe-tech/observability-react/testing", "packages/react/src/testing/index.ts"],
   ["@equipe-tech/observability-react", "packages/react/src/index.ts"],
+  ["@equipe-tech/observability-sentry/release", "packages/sentry/src/release/index.ts"],
   ["@equipe-tech/observability-sentry/browser", "packages/sentry/src/browser/index.ts"],
   ["@equipe-tech/observability-sentry/node", "packages/sentry/src/node/index.ts"],
   ["@equipe-tech/observability-sentry/testing", "packages/sentry/src/testing/index.ts"],

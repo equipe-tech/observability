@@ -31,6 +31,7 @@
       "@equipe-tech/observability-evlog/testing": ["./packages/evlog/src/testing/index.ts"],
       "@equipe-tech/observability-evlog": ["./packages/evlog/src/index.ts"],
       "@equipe-tech/observability-sentry/testing": ["./packages/sentry/src/testing/index.ts"],
+      "@equipe-tech/observability-sentry/release": ["./packages/sentry/src/release/index.ts"],
       "@equipe-tech/observability-sentry": ["./packages/sentry/src/index.ts"],
       "@equipe-tech/observability-sentry/node": ["./packages/sentry/src/node/index.ts"],
       "@equipe-tech/observability-sentry/browser": ["./packages/sentry/src/browser/index.ts"],
