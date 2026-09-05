@@ -43,6 +43,16 @@ Não sugira repetir quando a operação pode ter completado parcialmente, ou qua
 
 - `OBS_CONFORMANCE_LOCAL_COLLECTOR_FAILED` indica que o Collector isolado de teste não iniciou, não ficou pronto, não entregou o run esperado ou não concluiu uma aquisição local. Verifique o daemon Docker e a rota local antes de repetir a suíte.
 
+## Setup de aplicações
+
+- `OBS_SETUP_PROFILE_INVALID` indica uma seleção de capacidade incompatível com o perfil oficial. Escolha apenas capacidades permitidas pelo perfil.
+- `OBS_SETUP_INPUT_MISSING` indica que uma declaração obrigatória da aplicação não foi fornecida. Passe a flag nomeada pela mensagem e tente novamente.
+- `OBS_SETUP_INPUT_INVALID` indica que identidade, topologia, nome de variável ou configuração de pipeline não passou pelo schema público. Corrija o valor indicado sem fornecer credenciais.
+- `OBS_SETUP_CONFLICT` indica arquivo desconhecido ou mudança em arquivo gerenciado. Revise todos os conflitos antes de repetir. Nenhum arquivo é escrito quando o conflito é detectado.
+- `OBS_SETUP_RECONCILE_FAILED` indica falha ao regenerar o contrato ou ler a declaração de operações. Corrija a declaração local antes de repetir.
+- `OBS_SETUP_CONFORMANCE_FAILED` indica falha ou pré-requisito bloqueado na suíte pública de conformidade. Forneça evidência produzida pelos donos e execute todos os canários aplicáveis antes da release.
+- `OBS_SETUP_FORBIDDEN_OUTPUT` indica que uma saída gerada tentou incorporar implementação pertencente à plataforma ou um valor semelhante a segredo. Use somente composição por entrypoints públicos.
+
 ## Contratos públicos
 
 - Cada código de erro alcançável pelo chamador é parte do contrato e tem cobertura de teste.

@@ -18,6 +18,7 @@ import {
   validateRemoteProvisionRequest,
 } from "./RemoteEnvironment.ts";
 import { StackAssets } from "./StackAssets.ts";
+import { SetupError, SetupGenerator, type SetupInputEncoded } from "./setup/SetupGenerator.ts";
 
 const composeFile = Flag.string("file").pipe(
   Flag.withAlias("f"),
@@ -458,7 +459,158 @@ const operations = Command.make("ops").pipe(
   Command.withDescription("Reconcilia o manifesto versionado de operações"),
 );
 
+const setupDirectory = Flag.string("dir").pipe(
+  Flag.withAlias("d"),
+  Flag.withDescription("Application directory"),
+  Flag.withDefault("."),
+);
+const setupProfile = Flag.string("profile").pipe(Flag.withDescription("Official profile"));
+const setupServiceName = Flag.string("service-name").pipe(Flag.optional);
+const setupEnvironments = Flag.string("environment").pipe(Flag.atMost(20));
+const setupOtlpEndpoint = Flag.string("otlp-endpoint").pipe(Flag.optional);
+const setupPublicOrigin = Flag.string("public-origin").pipe(Flag.optional);
+const setupIngestPath = Flag.string("ingest-path").pipe(Flag.withDefault("_telemetry/events"));
+const setupProxyPolicy = Flag.string("proxy-policy").pipe(Flag.withDefault("direct"));
+const setupSentryDsnVariable = Flag.string("sentry-dsn-variable").pipe(
+  Flag.withDefault("SENTRY_DSN"),
+);
+const setupReleaseVariable = Flag.string("release-variable").pipe(
+  Flag.withDefault("OTEL_SERVICE_VERSION"),
+);
+const setupSentryOrganization = Flag.string("sentry-org").pipe(Flag.optional);
+const setupSentryProject = Flag.string("sentry-project").pipe(Flag.optional);
+const setupPipeline = Flag.string("pipeline").pipe(Flag.withDefault("github-actions"));
+const setupBrowserIngest = Flag.boolean("with-browser-ingest").pipe(Flag.withDefault(false));
+const setupDefects = Flag.boolean("with-defects").pipe(Flag.withDefault(false));
+const setupMetrics = Flag.boolean("with-metrics").pipe(Flag.withDefault(false));
+const setupForce = Flag.boolean("force").pipe(Flag.withDefault(false));
+
+const setupOptions = {
+  dir: setupDirectory,
+  profile: setupProfile,
+  serviceName: setupServiceName,
+  environments: setupEnvironments,
+  otlpEndpoint: setupOtlpEndpoint,
+  publicOrigin: setupPublicOrigin,
+  ingestPath: setupIngestPath,
+  proxyPolicy: setupProxyPolicy,
+  sentryDsnVariable: setupSentryDsnVariable,
+  releaseVariable: setupReleaseVariable,
+  sentryOrganization: setupSentryOrganization,
+  sentryProject: setupSentryProject,
+  pipeline: setupPipeline,
+  browserIngest: setupBrowserIngest,
+  defects: setupDefects,
+  metrics: setupMetrics,
+};
+
+const setupInput = (options: {
+  readonly profile: string;
+  readonly serviceName: Option.Option<string>;
+  readonly environments: ReadonlyArray<string>;
+  readonly otlpEndpoint: Option.Option<string>;
+  readonly publicOrigin: Option.Option<string>;
+  readonly ingestPath: string;
+  readonly proxyPolicy: string;
+  readonly sentryDsnVariable: string;
+  readonly releaseVariable: string;
+  readonly sentryOrganization: Option.Option<string>;
+  readonly sentryProject: Option.Option<string>;
+  readonly pipeline: string;
+  readonly browserIngest: boolean;
+  readonly defects: boolean;
+  readonly metrics: boolean;
+}): SetupInputEncoded => ({
+  profile: options.profile,
+  serviceName: Option.getOrUndefined(options.serviceName),
+  environments: [...options.environments],
+  otlpEndpoint: Option.getOrUndefined(options.otlpEndpoint),
+  publicOrigin: Option.getOrUndefined(options.publicOrigin),
+  ingestPath: options.ingestPath,
+  proxyPolicy: options.proxyPolicy,
+  sentryDsnVariable: options.sentryDsnVariable,
+  releaseVariable: options.releaseVariable,
+  sentryOrganization: Option.getOrUndefined(options.sentryOrganization),
+  sentryProject: Option.getOrUndefined(options.sentryProject),
+  pipeline: options.pipeline,
+  browserIngest: options.browserIngest || options.profile === "react-web",
+  defects: options.defects,
+  metrics: options.metrics || options.profile === "nestjs-api" || options.profile === "worker",
+});
+
+const printSetupFiles = Effect.fn("printSetupFiles")(function* (
+  files: ReadonlyArray<{ readonly action: string; readonly path: string }>,
+) {
+  for (const file of files) yield* Console.log(`${file.action}  ${file.path}`);
+});
+
+const setupPlan = Command.make(
+  "plan",
+  setupOptions,
+  Effect.fn(function* (options) {
+    const generator = yield* SetupGenerator;
+    const plan = yield* generator.plan(options.dir, setupInput(options));
+    yield* printSetupFiles(plan.files);
+    yield* Console.log(`packages  ${plan.packages.join(",")}`);
+    yield* Console.log("step  filesystem  no writes");
+    yield* Console.log("step  providers  no reads or mutations");
+  }),
+).pipe(Command.withDescription("Plans application composition without writing"));
+
+const setupWrite = Command.make(
+  "write",
+  { ...setupOptions, force: setupForce },
+  Effect.fn(function* (options) {
+    const generator = yield* SetupGenerator;
+    const plan = yield* generator.write(options.dir, setupInput(options), options.force);
+    yield* printSetupFiles(plan.files);
+    yield* Console.log("step  filesystem  application files written explicitly");
+    yield* Console.log("step  providers  no reads or mutations");
+  }),
+).pipe(Command.withDescription("Writes application composition after atomic conflict checks"));
+
+const setupVerifyEnvironment = Flag.string("environment").pipe(Flag.optional);
+const setupReconcile = Flag.boolean("reconcile").pipe(Flag.withDefault(false));
+const setupConform = Flag.boolean("conform").pipe(Flag.withDefault(false));
+const setupJson = Flag.boolean("json").pipe(Flag.withDefault(false));
+const setupVerify = Command.make(
+  "verify",
+  {
+    dir: setupDirectory,
+    environment: setupVerifyEnvironment,
+    reconcile: setupReconcile,
+    conform: setupConform,
+    json: setupJson,
+  },
+  Effect.fn(function* ({ conform, dir, environment, json, reconcile }) {
+    const generator = yield* SetupGenerator;
+    const report = yield* generator.verify(
+      dir,
+      Option.getOrUndefined(environment),
+      reconcile,
+      conform,
+    );
+    if (json) yield* Console.log(JSON.stringify(report));
+    else
+      for (const step of report.steps)
+        yield* Console.log(`step  ${step.name}  ${step.status}  ${step.detail}`);
+    if (!report.passed) {
+      return yield* new SetupError({
+        code: "OBS_SETUP_CONFORMANCE_FAILED",
+        message:
+          "Setup verification did not pass every applicable local gate. Resolve failed and blocked steps before release.",
+        cause: report,
+      });
+    }
+  }),
+).pipe(Command.withDescription("Verifies generated files and explicit application conformance"));
+
+const setup = Command.make("setup").pipe(
+  Command.withSubcommands([setupPlan, setupWrite, setupVerify]),
+  Command.withDescription("Assembles applications from official observability profiles"),
+);
+
 export const observability = Command.make("observability").pipe(
-  Command.withSubcommands([dev, auth, provision, environment, operations]),
+  Command.withSubcommands([dev, auth, provision, environment, operations, setup]),
   Command.withDescription("Plataforma de observabilidade da Equipe Tech"),
 );

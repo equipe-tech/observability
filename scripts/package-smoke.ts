@@ -328,6 +328,8 @@ try {
         "package/dist/query.d.ts",
         "package/dist/testing/index.js",
         "package/dist/testing/index.d.ts",
+        "package/dist/setup/SetupGenerator.js",
+        "package/dist/setup/SetupGenerator.d.ts",
         "package/package.json",
         "package/dist/assets/docker-compose.yml",
         "package/dist/assets/local.yaml",
@@ -506,7 +508,13 @@ try {
         "@equipe-tech/observability-react": `file:${join(temporaryDirectory, "react.tgz")}`,
         "@sentry/browser": "10.72.0",
         "@sentry/node-core": "10.72.0",
+        "@types/bun": "1.4.0",
+        "@nestjs/common": "^11.0.0",
+        "@nestjs/core": "^11.0.0",
+        "@nestjs/platform-express": "^11.0.0",
         effect: "4.0.0-rc.111",
+        "reflect-metadata": "^0.2.2",
+        rxjs: "^7.8.2",
       },
       overrides: {
         "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
@@ -514,6 +522,197 @@ try {
     }),
   );
   requireSuccess(await run(["bun", "install"], consumer), "Installing packed packages");
+
+  const setupCli = join(consumer, "node_modules/@equipe-tech/observability-cli/dist/main.js");
+  const generatedNest = join(consumer, "generated-nest");
+  requireSuccess(
+    await run(
+      [
+        "bun",
+        setupCli,
+        "setup",
+        "write",
+        "--dir",
+        generatedNest,
+        "--profile",
+        "nestjs-api",
+        "--service-name",
+        "packed-nest",
+        "--environment",
+        "test",
+        "--otlp-endpoint",
+        "http://127.0.0.1:4318",
+        "--with-browser-ingest",
+        "--public-origin",
+        "https://telemetry.example.com",
+      ],
+      consumer,
+    ),
+    "Generating the fresh packed Nest setup consumer",
+  );
+  const generatedReact = join(consumer, "generated-react");
+  requireSuccess(
+    await run(
+      [
+        "bun",
+        setupCli,
+        "setup",
+        "write",
+        "--dir",
+        generatedReact,
+        "--profile",
+        "react-web",
+        "--service-name",
+        "packed-react",
+        "--environment",
+        "test",
+        "--public-origin",
+        "https://telemetry.example.com",
+        "--with-metrics",
+        "--with-defects",
+        "--sentry-org",
+        "packed-org",
+        "--sentry-project",
+        "packed-project",
+      ],
+      consumer,
+    ),
+    "Generating the fresh packed React setup consumer",
+  );
+  for (const profile of ["worker", "cli"]) {
+    requireSuccess(
+      await run(
+        [
+          "bun",
+          setupCli,
+          "setup",
+          "write",
+          "--dir",
+          join(consumer, `generated-${profile}`),
+          "--profile",
+          profile,
+          "--service-name",
+          `packed-${profile}`,
+          "--environment",
+          "test",
+          "--otlp-endpoint",
+          "http://127.0.0.1:4318",
+        ],
+        consumer,
+      ),
+      `Generating the fresh packed ${profile} setup consumer`,
+    );
+  }
+  const generatedLibrary = join(consumer, "generated-library");
+  requireSuccess(
+    await run(
+      ["bun", setupCli, "setup", "write", "--dir", generatedLibrary, "--profile", "library"],
+      consumer,
+    ),
+    "Generating the fresh packed library setup consumer",
+  );
+  requireSuccess(
+    await run(
+      [
+        "bun",
+        setupCli,
+        "setup",
+        "verify",
+        "--dir",
+        generatedLibrary,
+        "--reconcile",
+        "--conform",
+        "--json",
+      ],
+      consumer,
+      { ...process.env, OTEL_SERVICE_VERSION: "1.0.0" },
+    ),
+    "Executing generated conformance through the packed OBS-60 API",
+  );
+  const failingProductionCanary = await run(
+    ["bun", join(generatedNest, "observability/canary.ts")],
+    consumer,
+    { ...process.env, OBSERVABILITY_APPLICATION_CANARY_COMMAND: "exit 23" },
+  );
+  if (failingProductionCanary.exitCode !== 23) {
+    throw new Error("The generated production canary did not propagate its transport failure.");
+  }
+  const failingBrowserCanary = await run(
+    ["bun", join(generatedReact, "observability/browser-canary.ts")],
+    consumer,
+    { ...process.env, OBSERVABILITY_BROWSER_CANARY_ENDPOINT: "http://127.0.0.1:1" },
+  );
+  if (failingBrowserCanary.exitCode === 0) {
+    throw new Error("The generated published browser-route canary accepted an invalid transport.");
+  }
+  const failingSentryPlan = await run(
+    ["bun", join(generatedReact, "observability/source-maps.ts")],
+    consumer,
+  );
+  if (failingSentryPlan.exitCode === 0) {
+    throw new Error("The generated Sentry release step accepted a missing release identity.");
+  }
+  await writeFile(
+    join(consumer, "generated-consumers.ts"),
+    `import "reflect-metadata";
+import { Module } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+import { createNestBrowserObservability } from "./generated-nest/src/observability/bootstrap.ts";
+import { startBrowserObservability } from "./generated-react/src/observability/bootstrap.ts";
+const nest = await createNestBrowserObservability({ OTEL_SERVICE_NAME: "packed-nest", OTEL_SERVICE_VERSION: "1.0.0", OTEL_DEPLOYMENT_ENVIRONMENT: "test", OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4318" });
+class AppModule {}
+Module({ imports: [nest.module] })(AppModule);
+const app = await NestFactory.create(AppModule, { logger: false });
+await app.listen(0, "127.0.0.1");
+const response = await fetch(\`\${await app.getUrl()}/_telemetry/events\`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ version: 1, events: [] }) });
+if (response.status !== 202) throw new Error(\`Generated Nest browser route returned \${response.status}.\`);
+await app.close();
+await nest.handle.close();
+const browser = startBrowserObservability({ serviceVersion: "1.0.0", environment: "test", ingestEndpoint: "http://127.0.0.1:3000/_telemetry/events" });
+if (browser.reactRootOptions.onUncaughtError === undefined) throw new Error("Generated React root options are unavailable.");
+const report = await browser.dispose();
+if (report.degraded) throw new Error("Generated React composition degraded during disposal.");
+`,
+  );
+  await writeFile(
+    join(consumer, "generated-tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: {
+        target: "ESNext",
+        module: "Preserve",
+        moduleResolution: "Bundler",
+        lib: ["ESNext", "DOM"],
+        strict: true,
+        noEmit: true,
+        skipLibCheck: true,
+        allowImportingTsExtensions: true,
+        types: ["bun"],
+      },
+      include: [
+        "generated-consumers.ts",
+        "generated-nest/observability/**/*.ts",
+        "generated-nest/src/**/*.ts",
+        "generated-react/observability/**/*.ts",
+        "generated-react/src/**/*.ts",
+        "generated-worker/observability/**/*.ts",
+        "generated-worker/src/**/*.ts",
+        "generated-cli/observability/**/*.ts",
+        "generated-cli/src/**/*.ts",
+        "generated-library/observability/**/*.ts",
+      ],
+    }),
+  );
+  requireSuccess(
+    await run(
+      ["bun", join(root, "node_modules/typescript/bin/tsc"), "-p", "generated-tsconfig.json"],
+      consumer,
+    ),
+    "Type-checking all five fresh packed generated profile consumers",
+  );
+  requireSuccess(
+    await run(["bun", "generated-consumers.ts"], consumer),
+    "Executing fresh packed generated Nest and React consumers",
+  );
 
   await mkdir(join(consumer, "conformance-source", "positive"), { recursive: true });
   await mkdir(join(consumer, "conformance-source", "negative"), { recursive: true });
