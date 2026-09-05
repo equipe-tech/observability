@@ -8,7 +8,10 @@ import type {
 } from "../Metrics.ts";
 import {
   prepareContractMetricAttributes,
+  prepareContractMetricBatch,
+  prepareMetricCounter,
   registerContractGaugeObservation,
+  type ContractMetricAdmission,
 } from "../MetricsRuntime.ts";
 import type { TelemetryContract, TelemetryContractInput } from "./TelemetryContract.ts";
 import type {
@@ -251,13 +254,16 @@ const histogramHandle = (
   };
 };
 
-export const recordContractCounterByName = (
+type NamedContractCounterMeasurement = {
+  readonly name: string;
+  readonly value: number;
+  readonly attributes: { readonly [name: string]: MetricAttributeValue };
+};
+
+const resolveContractCounterByName = (
   contract: { readonly metricByName: ReadonlyMap<string, CompiledMetricDefinition> },
-  metrics: Metrics,
   name: string,
-  value: number,
-  attributes: { readonly [name: string]: MetricAttributeValue },
-): void => {
+): Extract<CompiledMetricDefinition, { readonly kind: "counter" }> => {
   const definition = contract.metricByName.get(name);
   if (definition === undefined) {
     throw measurementError(
@@ -277,8 +283,47 @@ export const recordContractCounterByName = (
       `Metric "${name}" has kind "${definition.kind}", not "counter". Use a declared counter.`,
     );
   }
-  counterHandle(metrics, definition.alias, definition).add(value, attributes);
+  return definition;
 };
+
+export const prepareContractCounterBatchByName = (
+  contract: { readonly metricByName: ReadonlyMap<string, CompiledMetricDefinition> },
+  metrics: Metrics,
+  measurements: ReadonlyArray<NamedContractCounterMeasurement>,
+): (() => void) => {
+  const commits: Array<() => void> = [];
+  const admissions: Array<ContractMetricAdmission> = [];
+  for (const measurement of measurements) {
+    const definition = resolveContractCounterByName(contract, measurement.name);
+    const attributes = parseContractAttributes(
+      definition.alias,
+      definition,
+      measurement.attributes,
+    );
+    commits.push(prepareMetricCounter(metrics, definition, measurement.value, attributes));
+    admissions.push({
+      metrics,
+      metricAlias: definition.alias,
+      metricName: definition.name,
+      definitionIdentity: definition,
+      attributes,
+      limits: cardinalityLimits(definition),
+    });
+  }
+  const commitAdmission = prepareContractMetricBatch(admissions);
+  return () => {
+    for (const commit of commits) commit();
+    commitAdmission();
+  };
+};
+
+export const recordContractCounterByName = (
+  contract: { readonly metricByName: ReadonlyMap<string, CompiledMetricDefinition> },
+  metrics: Metrics,
+  name: string,
+  value: number,
+  attributes: { readonly [name: string]: MetricAttributeValue },
+): void => prepareContractCounterBatchByName(contract, metrics, [{ name, value, attributes }])();
 
 export const makeMetricProducer = <const Definition extends TelemetryContractInput>(
   contract: TelemetryContract<Definition>,

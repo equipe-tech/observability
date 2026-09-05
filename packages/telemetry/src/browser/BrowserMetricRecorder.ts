@@ -1,17 +1,21 @@
 import { Context, Effect, Layer } from "effect";
 import type { BrowserMetricPoint } from "../BrowserEvents.ts";
 import { InvalidMetricMeasurement } from "../contract/MetricContractError.ts";
-import { recordContractCounterByName } from "../contract/MetricProducer.ts";
+import { prepareContractCounterBatchByName } from "../contract/MetricProducer.ts";
 import { LayerMetricsRuntime, releaseMetricsLease } from "../MetricsRuntime.ts";
 import type { ContractRegistry } from "../profile/ObservabilityAdapter.ts";
 
+export type BrowserMetricBatchAdmission = { readonly commit: () => void };
+
 export class BrowserMetricRecorder extends Context.Service<
   BrowserMetricRecorder,
-  { readonly record: (metrics: ReadonlyArray<BrowserMetricPoint>) => void }
+  {
+    readonly admit: (metrics: ReadonlyArray<BrowserMetricPoint>) => BrowserMetricBatchAdmission;
+  }
 >()("@equipe-tech/observability/node/BrowserMetricRecorder") {}
 
 export const unavailableBrowserMetricRecorder = BrowserMetricRecorder.of({
-  record: () => {
+  admit: () => {
     throw new InvalidMetricMeasurement({
       code: "OBS_METRIC_UNKNOWN_ALIAS",
       operation: "counter",
@@ -32,17 +36,17 @@ export const layerBrowserMetricRecorder = (contract: ContractRegistry | undefine
         const metrics = runtime.acquireMetrics();
         return {
           service: BrowserMetricRecorder.of({
-            record: (points) => {
-              for (const point of points) {
-                recordContractCounterByName(
-                  contract,
-                  metrics,
-                  point.name,
-                  point.value,
-                  point.fields,
-                );
-              }
-            },
+            admit: (points) => ({
+              commit: prepareContractCounterBatchByName(
+                contract,
+                metrics,
+                points.map((point) => ({
+                  name: point.name,
+                  value: point.value,
+                  attributes: point.fields,
+                })),
+              ),
+            }),
           }),
           metrics,
         };

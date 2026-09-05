@@ -148,6 +148,7 @@ const defaultShutdownTimeoutMs = 2_000;
 const maxBatchSizeLimit = 64;
 const fallbackEventName = "browser.event";
 const browserFieldValueByteBudget = 2_048;
+const browserKeepaliveByteBudget = 64 * 1_024;
 const textEncoder = new TextEncoder();
 
 const boundedOperationalText = (
@@ -226,7 +227,7 @@ const fetchTransport =
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(batch),
-        keepalive: true,
+        keepalive: browserBatchByteLength(batch) <= browserKeepaliveByteBudget,
         signal,
       });
     } catch (cause) {
@@ -397,6 +398,17 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
       : { ...batch, resource: this.options.resource };
   }
 
+  private deliveryBatch(
+    events: ReadonlyArray<BrowserTelemetryClientEvent>,
+    spans: ReadonlyArray<BrowserTelemetryClientSpan>,
+    metrics: ReadonlyArray<BrowserTelemetryClientMetric>,
+  ): BrowserTelemetryClientBatch {
+    let batch = this.batchWithResource({ version: 1, events });
+    if (spans.length > 0) batch = { ...batch, spans };
+    if (metrics.length > 0) batch = { ...batch, metrics };
+    return batch;
+  }
+
   private enqueue(event: BrowserTelemetryClientEvent): void {
     const fitted = fitEventToRequestBudget(event);
     if (
@@ -502,6 +514,7 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
         }
       }
       await Promise.race([this.flushQueued(true), deadline]);
+      if (this.pending() > 0) this.dropPending();
     } finally {
       if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
     }
@@ -532,15 +545,8 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
         const batchEvents: Array<BrowserTelemetryClientEvent> = [];
         const batchSpans: Array<BrowserTelemetryClientSpan> = [];
         const batchMetrics: Array<BrowserTelemetryClientMetric> = [];
-        const candidateBatch = (): BrowserTelemetryClientBatch => {
-          const batch = {
-            version: 1 as const,
-            events: batchEvents,
-            spans: batchSpans,
-            metrics: batchMetrics,
-          };
-          return this.batchWithResource(batch);
-        };
+        const candidateBatch = (): BrowserTelemetryClientBatch =>
+          this.deliveryBatch(batchEvents, batchSpans, batchMetrics);
         const activeTraceIds = new Set(
           Array.from(this.activeSpans.values(), (span) => span.traceId),
         );
@@ -605,14 +611,7 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
         }
         if (batchEvents.length === 0 && batchSpans.length === 0 && batchMetrics.length === 0)
           return;
-        let batch = this.batchWithResource({ version: 1, events: batchEvents });
-        if (batchSpans.length > 0 && batchMetrics.length > 0) {
-          batch = { ...batch, spans: batchSpans, metrics: batchMetrics };
-        } else if (batchSpans.length > 0) {
-          batch = { ...batch, spans: batchSpans };
-        } else if (batchMetrics.length > 0) {
-          batch = { ...batch, metrics: batchMetrics };
-        }
+        const batch = candidateBatch();
         const delivery: ActiveDelivery = { batch, abandoned: false };
         const controller = new AbortController();
         this.activeDelivery = delivery;

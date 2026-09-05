@@ -99,7 +99,7 @@ const contractAdmissionLayer = Layer.succeed(
   TelemetryEventSink,
   TelemetryEventSink.of({
     record: () => Effect.void,
-    recordBrowserBatch: (events) =>
+    admitBrowserBatch: (events) =>
       Effect.gen(function* () {
         for (const event of events) {
           const validation = Contract.validateContractEvent(
@@ -111,6 +111,7 @@ const contractAdmissionLayer = Layer.succeed(
             return yield* validation;
           }
         }
+        return { commit: Effect.void };
       }),
   }),
 );
@@ -330,7 +331,11 @@ describe("browser events endpoint", () => {
     ];
     for (const request of requests) {
       const response = await postEvents(harness.baseUrl, JSON.stringify(request));
-      assert.strictEqual(response.status, 400);
+      assert.strictEqual(
+        response.status,
+        400,
+        `${JSON.stringify(request)} ${await response.clone().text()}`,
+      );
       const rejection = await Effect.runPromise(decodeRejection(await response.json()));
       assert.strictEqual(rejection.code, "OBS_BROWSER_EVENTS_INVALID_BATCH");
     }
@@ -382,7 +387,7 @@ describe("browser events endpoint", () => {
   }, 30_000);
 
   it("rejects complete signal batches before committing metrics or cardinality", async () => {
-    const harness = await startApp(false);
+    const harness = await startApp(false, contractAdmissionLayer);
     const metric = (value: number, runId: string) => ({
       name: "react.render_count",
       value,
@@ -616,7 +621,7 @@ describe("browser events endpoint", () => {
       TelemetryEventSink,
       TelemetryEventSink.of({
         record: () => Effect.void,
-        recordBrowserBatch: (events) =>
+        admitBrowserBatch: (events) =>
           Effect.gen(function* () {
             for (const event of events) {
               const validation = Contract.validateContractEvent(
@@ -626,7 +631,7 @@ describe("browser events endpoint", () => {
               );
               if (validation instanceof Contract.InvalidTelemetryEvent) return yield* validation;
             }
-            offered.push(...events);
+            return { commit: Effect.sync(() => offered.push(...events)).pipe(Effect.asVoid) };
           }),
       }),
     );

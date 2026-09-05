@@ -133,13 +133,16 @@ export const ingestBrowserEventBatch = Effect.fn("ingestBrowserEventBatch")(func
       },
     };
   });
+  const eventAdmission = yield* sink.admitBrowserBatch(events);
+  let commitMetrics = (): void => undefined;
   if (metrics.length > 0) {
-    yield* Effect.try({
-      try: () => metricRecorder.record(metrics),
+    commitMetrics = yield* Effect.try({
+      try: () => metricRecorder.admit(metrics).commit,
       catch: (cause) => invalidSignalBatch(cause),
     });
   }
-  yield* sink.recordBrowserBatch(events);
+  yield* eventAdmission.commit;
+  commitMetrics();
   const signals = { spans };
   yield* signalExporter.export(
     resource === undefined

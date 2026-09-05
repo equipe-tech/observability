@@ -74,7 +74,10 @@ const closedFlush = (): Promise<LifecycleReport> =>
 
 const noopEventLayer = Layer.succeed(
   TelemetryEventSink,
-  TelemetryEventSink.of({ record: () => Effect.void, recordBrowserBatch: () => Effect.void }),
+  TelemetryEventSink.of({
+    record: () => Effect.void,
+    admitBrowserBatch: () => Effect.succeed({ commit: Effect.void }),
+  }),
 );
 
 const disabledHandle = (): NodeObservabilityDisabled => {

@@ -100,7 +100,7 @@ type ContractMetricAttribute = {
   readonly value: MetricAttributeValue;
 };
 
-type ContractGaugeObservation = {
+export type ContractMetricAdmission = {
   readonly metrics: Metrics;
   readonly metricAlias: string;
   readonly metricName: string;
@@ -108,6 +108,8 @@ type ContractGaugeObservation = {
   readonly attributes: ReadonlyArray<ContractMetricAttribute>;
   readonly limits: ReadonlyArray<ContractCardinalityLimit>;
 };
+
+type ContractGaugeObservation = ContractMetricAdmission;
 
 const gaugeObservationContracts = new WeakMap<GaugeObservation, ContractGaugeObservation>();
 
@@ -867,12 +869,12 @@ class MetricsRuntimeState {
     }
   }
 
-  addCounter(
+  prepareCounter(
     leaseId: number,
     entry: CounterEntry,
     value: number,
     attributes: NormalizedAttributes,
-  ): void {
+  ): () => void {
     this.assertLease(leaseId, "add", entry.definition.name);
     if (!Number.isFinite(value) || value < 0) {
       throw metricError(
@@ -884,18 +886,29 @@ class MetricsRuntimeState {
       );
     }
     this.prepareSeries(entry, attributes, "add");
-    let leaseSeries = entry.seriesByLease.get(leaseId);
-    if (leaseSeries === undefined) {
-      leaseSeries = new Map();
-      entry.seriesByLease.set(leaseId, leaseSeries);
-    }
-    const current = leaseSeries.get(attributes.identity);
-    if (current === undefined) {
-      leaseSeries.set(attributes.identity, { attributes, value });
-      this.commitSeries(entry, attributes);
-    } else {
-      current.value += value;
-    }
+    return () => {
+      let leaseSeries = entry.seriesByLease.get(leaseId);
+      if (leaseSeries === undefined) {
+        leaseSeries = new Map();
+        entry.seriesByLease.set(leaseId, leaseSeries);
+      }
+      const current = leaseSeries.get(attributes.identity);
+      if (current === undefined) {
+        leaseSeries.set(attributes.identity, { attributes, value });
+        this.commitSeries(entry, attributes);
+      } else {
+        current.value += value;
+      }
+    };
+  }
+
+  addCounter(
+    leaseId: number,
+    entry: CounterEntry,
+    value: number,
+    attributes: NormalizedAttributes,
+  ): void {
+    this.prepareCounter(leaseId, entry, value, attributes)();
   }
 
   recordHistogram(
@@ -1807,6 +1820,24 @@ class ActiveMetrics implements Metrics {
     this.timeoutMilliseconds = timeoutMilliseconds;
   }
 
+  prepareCounter(
+    definitionInput: CounterDefinition,
+    value: number,
+    attributes: ReadonlyArray<MetricAttribute> | undefined,
+  ): () => void {
+    this.assertOpen("counter");
+    const definition = parseDefinition(definitionInput, "counter");
+    const entry = this.lease.state.registerCounter(this.lease.leaseId, definition);
+    this.assertOpen("add", definition.name);
+    const parsedAttributes = parseAttributes(
+      attributes,
+      "add",
+      definition.name,
+      this.lease.state.policy,
+    );
+    return this.lease.state.prepareCounter(this.lease.leaseId, entry, value, parsedAttributes);
+  }
+
   counter(definitionInput: CounterDefinition): Counter {
     this.assertOpen("counter");
     const definition = parseDefinition(definitionInput, "counter");
@@ -1914,6 +1945,27 @@ class DisabledMetrics implements Metrics {
 
   constructor(private readonly policy: DataPolicy) {}
 
+  prepareCounter(
+    definitionInput: CounterDefinition,
+    value: number,
+    attributes: ReadonlyArray<MetricAttribute> | undefined,
+  ): () => void {
+    this.assertOpen("counter");
+    const definition = parseDefinition(definitionInput, "counter");
+    this.assertOpen("add", definition.name);
+    if (!Number.isFinite(value) || value < 0) {
+      throw metricError(
+        "INVALID_MEASUREMENT",
+        "add",
+        `Counter "${definition.name}" accepts only finite values greater than or equal to zero.`,
+        definition.name,
+        false,
+      );
+    }
+    parseAttributes(attributes, "add", definition.name, this.policy);
+    return () => undefined;
+  }
+
   counter(definitionInput: CounterDefinition): Counter {
     this.assertOpen("counter");
     const definition = parseDefinition(definitionInput, "counter");
@@ -2017,7 +2069,7 @@ class MetricContractTransaction {
     Map<ContractMetricDefinitionIdentity, Map<string, Set<string>>>
   >();
 
-  prepare(contract: ContractGaugeObservation): void {
+  prepare(contract: ContractMetricAdmission): void {
     const state = metricContractStates.get(contract.metrics);
     if (state === undefined) {
       throw unsupportedMetricsFacade(contract.metricAlias, contract.metricName);
@@ -2075,6 +2127,18 @@ const unsupportedMetricsFacade = (
     metricName,
   });
 
+export const prepareMetricCounter = (
+  metrics: Metrics,
+  definition: CounterDefinition,
+  value: number,
+  attributes: ReadonlyArray<MetricAttribute>,
+): (() => void) => {
+  if (metrics instanceof ActiveMetrics || metrics instanceof DisabledMetrics) {
+    return metrics.prepareCounter(definition, value, attributes);
+  }
+  throw unsupportedMetricsFacade(definition.name, definition.name);
+};
+
 const prepareContractValues = (
   stagedValues: Map<string, Set<string>>,
   committedValues: Map<string, Set<string>> | undefined,
@@ -2106,6 +2170,14 @@ const prepareContractValues = (
   }
 };
 
+export const prepareContractMetricBatch = (
+  admissions: ReadonlyArray<ContractMetricAdmission>,
+): (() => void) => {
+  const transaction = new MetricContractTransaction();
+  for (const admission of admissions) transaction.prepare(admission);
+  return () => transaction.commit();
+};
+
 export const prepareContractMetricAttributes = (
   metrics: Metrics,
   metricAlias: string,
@@ -2113,18 +2185,10 @@ export const prepareContractMetricAttributes = (
   definitionIdentity: ContractMetricDefinitionIdentity,
   attributes: ReadonlyArray<ContractMetricAttribute>,
   limits: ReadonlyArray<ContractCardinalityLimit>,
-): (() => void) => {
-  const transaction = new MetricContractTransaction();
-  transaction.prepare({
-    metrics,
-    metricAlias,
-    metricName,
-    definitionIdentity,
-    attributes,
-    limits,
-  });
-  return () => transaction.commit();
-};
+): (() => void) =>
+  prepareContractMetricBatch([
+    { metrics, metricAlias, metricName, definitionIdentity, attributes, limits },
+  ]);
 
 export const releaseMetricsLease = async (metrics: Metrics): Promise<void> => {
   if (metrics instanceof ActiveMetrics) {

@@ -63,36 +63,38 @@ export const layerWideEvent: Layer.Layer<TelemetryEventSink> = Layer.succeed(
         ...fieldsForEvent(event),
         "event.policy_dropped_attributes": admission.policyDroppedAttributes,
       }),
-    recordBrowserBatch: (events) =>
-      Effect.forEach(
-        events,
-        (event) => {
-          const fields: { [name: string]: string | number | boolean } = {
-            ...event.attributes,
-            "event.source": "browser",
-            "event.outcome": event.error === undefined ? "success" : "failure",
-            "browser.event.id": event.id,
-            "browser.event.occurred_at": event.occurredAt,
-            "event.policy_dropped_attributes": event.admission.policyDroppedAttributes,
-          };
-          if (event.error !== undefined) {
-            fields["error.type"] = event.error.type;
-            fields["error.message"] = event.error.message;
-            fields["error.retryable"] = event.error.retryable;
-          }
-          const emission = WideEvent.emit(event.name, fields);
-          return event.trace === undefined
-            ? emission
-            : emission.pipe(
-                Effect.withParentSpan(
-                  Tracer.externalSpan({
-                    traceId: event.trace.traceId,
-                    spanId: event.trace.spanId,
-                  }),
-                ),
-              );
-        },
-        { discard: true },
-      ),
+    admitBrowserBatch: (events) =>
+      Effect.succeed({
+        commit: Effect.forEach(
+          events,
+          (event) => {
+            const fields: { [name: string]: string | number | boolean } = {
+              ...event.attributes,
+              "event.source": "browser",
+              "event.outcome": event.error === undefined ? "success" : "failure",
+              "browser.event.id": event.id,
+              "browser.event.occurred_at": event.occurredAt,
+              "event.policy_dropped_attributes": event.admission.policyDroppedAttributes,
+            };
+            if (event.error !== undefined) {
+              fields["error.type"] = event.error.type;
+              fields["error.message"] = event.error.message;
+              fields["error.retryable"] = event.error.retryable;
+            }
+            const emission = WideEvent.emit(event.name, fields);
+            return event.trace === undefined
+              ? emission
+              : emission.pipe(
+                  Effect.withParentSpan(
+                    Tracer.externalSpan({
+                      traceId: event.trace.traceId,
+                      spanId: event.trace.spanId,
+                    }),
+                  ),
+                );
+          },
+          { discard: true },
+        ),
+      }),
   }),
 );

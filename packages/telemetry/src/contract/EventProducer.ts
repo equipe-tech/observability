@@ -42,6 +42,10 @@ export type BrowserTelemetryEvent = {
   readonly admission: EventAdmissionMetadata;
 };
 
+export type BrowserEventBatchAdmission = {
+  readonly commit: Effect.Effect<void>;
+};
+
 export class TelemetryEventSink extends Context.Service<
   TelemetryEventSink,
   {
@@ -49,9 +53,9 @@ export class TelemetryEventSink extends Context.Service<
       event: TelemetryEvent,
       admission: EventAdmissionMetadata,
     ) => Effect.Effect<void, InvalidTelemetryEvent>;
-    readonly recordBrowserBatch: (
+    readonly admitBrowserBatch: (
       events: ReadonlyArray<BrowserTelemetryEvent>,
-    ) => Effect.Effect<void, InvalidTelemetryEvent>;
+    ) => Effect.Effect<BrowserEventBatchAdmission, InvalidTelemetryEvent>;
   }
 >()("@equipe-tech/observability/TelemetryEventSink") {}
 
