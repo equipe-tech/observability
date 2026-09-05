@@ -578,7 +578,6 @@ describe("compatibility gate", () => {
   test("classifies semantic peer range narrowing", () => {
     const narrowingCases: ReadonlyArray<readonly [string, string]> = [
       [">=1", ">=10"],
-      ["^1.0.0", "^1.0.0-beta"],
       ["^18 || ^19", "^19"],
       ["^0.0", "^0.0.0"],
     ];
@@ -616,6 +615,7 @@ describe("compatibility gate", () => {
       ["^0 || ^1", "^1", "narrowed"],
       ["^1", "^0 || ^1", "widened"],
       [">=1.0.0-beta", ">=1.0.0", "narrowed"],
+      ["^1.0.0", "^1.0.0-beta", "widened"],
       ["^1.0.0-beta", "^1.0.0", "narrowed"],
       ["1.2.3+one", "1.2.3+two", "equivalent"],
     ];

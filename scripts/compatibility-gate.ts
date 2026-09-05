@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } 
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Effect, Schema } from "effect";
+import { subset, validRange } from "semver";
 import { Contract } from "../packages/telemetry/src/index.ts";
 import { decodeCompatibilityJson } from "./compatibility-json.ts";
 import { generateCompatibilityCandidate } from "./generate-compatibility-candidate.ts";
@@ -367,23 +368,6 @@ const setChange = (
   path: string,
   severity: SetChange["severity"],
 ): SetChange => ({ code, path, severity });
-type SemanticVersion = {
-  readonly major: number;
-  readonly minor: number;
-  readonly patch: number;
-  readonly prerelease: ReadonlyArray<string>;
-};
-
-type SemanticRangeBoundary = {
-  readonly version: SemanticVersion;
-  readonly inclusive: boolean;
-};
-
-type SemanticRangeInterval = {
-  readonly lower?: SemanticRangeBoundary;
-  readonly upper?: SemanticRangeBoundary;
-};
-
 export type PeerRangeComparison = {
   readonly baseline: string;
   readonly candidate: string;
@@ -395,216 +379,12 @@ const dependencyEntry = (entry: string): { readonly name: string; readonly range
   return { name: entry.slice(0, separator), range: entry.slice(separator + 1) };
 };
 
-const parseSemanticVersion = (value: string): SemanticVersion | undefined => {
-  const match =
-    /^(0|[1-9]\d*)(?:[.](0|[1-9]\d*|x|X|[*]))?(?:[.](0|[1-9]\d*|x|X|[*]))?(?:-([0-9A-Za-z.-]+))?$/.exec(
-      value,
-    );
-  if (match === null) return undefined;
-  const minor = match[2] === undefined || /^[xX*]$/.test(match[2]) ? 0 : Number(match[2]);
-  const patch = match[3] === undefined || /^[xX*]$/.test(match[3]) ? 0 : Number(match[3]);
-  return {
-    major: Number(match[1]),
-    minor,
-    patch,
-    prerelease: match[4]?.split(".") ?? [],
-  };
-};
-
-const compareSemanticVersions = (left: SemanticVersion, right: SemanticVersion): number => {
-  if (left.major !== right.major) return left.major < right.major ? -1 : 1;
-  if (left.minor !== right.minor) return left.minor < right.minor ? -1 : 1;
-  if (left.patch !== right.patch) return left.patch < right.patch ? -1 : 1;
-  if (left.prerelease.length === 0 || right.prerelease.length === 0)
-    return left.prerelease.length === right.prerelease.length
-      ? 0
-      : left.prerelease.length === 0
-        ? 1
-        : -1;
-  const length = Math.max(left.prerelease.length, right.prerelease.length);
-  for (let index = 0; index < length; index += 1) {
-    const leftPart = left.prerelease[index];
-    const rightPart = right.prerelease[index];
-    if (leftPart === undefined || rightPart === undefined)
-      return leftPart === rightPart ? 0 : leftPart === undefined ? -1 : 1;
-    if (leftPart === rightPart) continue;
-    const leftNumeric = /^\d+$/.test(leftPart);
-    const rightNumeric = /^\d+$/.test(rightPart);
-    if (leftNumeric && rightNumeric) return Number(leftPart) < Number(rightPart) ? -1 : 1;
-    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
-    return leftPart < rightPart ? -1 : 1;
-  }
-  return 0;
-};
-
-const incrementVersion = (
-  version: SemanticVersion,
-  component: "major" | "minor" | "patch",
-): SemanticVersion =>
-  component === "major"
-    ? { major: version.major + 1, minor: 0, patch: 0, prerelease: [] }
-    : component === "minor"
-      ? { major: version.major, minor: version.minor + 1, patch: 0, prerelease: [] }
-      : { major: version.major, minor: version.minor, patch: version.patch + 1, prerelease: [] };
-
-const intersectIntervals = (
-  left: SemanticRangeInterval,
-  right: SemanticRangeInterval,
-): SemanticRangeInterval | undefined => {
-  const lower =
-    left.lower === undefined
-      ? right.lower
-      : right.lower === undefined
-        ? left.lower
-        : compareSemanticVersions(left.lower.version, right.lower.version) > 0
-          ? left.lower
-          : compareSemanticVersions(left.lower.version, right.lower.version) < 0
-            ? right.lower
-            : {
-                version: left.lower.version,
-                inclusive: left.lower.inclusive && right.lower.inclusive,
-              };
-  const upper =
-    left.upper === undefined
-      ? right.upper
-      : right.upper === undefined
-        ? left.upper
-        : compareSemanticVersions(left.upper.version, right.upper.version) < 0
-          ? left.upper
-          : compareSemanticVersions(left.upper.version, right.upper.version) > 0
-            ? right.upper
-            : {
-                version: left.upper.version,
-                inclusive: left.upper.inclusive && right.upper.inclusive,
-              };
-  if (lower !== undefined && upper !== undefined) {
-    const order = compareSemanticVersions(lower.version, upper.version);
-    if (order > 0 || (order === 0 && (!lower.inclusive || !upper.inclusive))) return undefined;
-  }
-  if (lower === undefined) return upper === undefined ? {} : { upper };
-  return upper === undefined ? { lower } : { lower, upper };
-};
-
-const tokenInterval = (token: string): SemanticRangeInterval | undefined => {
-  if (token === "" || token === "*" || /^[xX]$/.test(token)) return {};
-  const match = /^(\^|~|>=|<=|>|<|=)?(.+)$/.exec(token);
-  if (match === null || match[2] === undefined) return undefined;
-  const operator = match[1] ?? "";
-  const value = match[2];
-  const version = parseSemanticVersion(value);
-  if (version === undefined) return undefined;
-  const parts = value.replace(/-.+$/, "").split(".");
-  const wildcardMinor = parts[1] === undefined || /^[xX*]$/.test(parts[1]);
-  const wildcardPatch = parts[2] === undefined || /^[xX*]$/.test(parts[2]);
-  if (operator === "^") {
-    const component = wildcardMinor
-      ? "major"
-      : wildcardPatch
-        ? version.major === 0
-          ? "minor"
-          : "major"
-        : version.major > 0
-          ? "major"
-          : version.minor > 0
-            ? "minor"
-            : "patch";
-    return {
-      lower: { version, inclusive: true },
-      upper: { version: incrementVersion(version, component), inclusive: false },
-    };
-  }
-  if (operator === "~")
-    return {
-      lower: { version, inclusive: true },
-      upper: {
-        version: incrementVersion(version, wildcardMinor ? "major" : "minor"),
-        inclusive: false,
-      },
-    };
-  if (operator === ">=" || operator === ">")
-    return { lower: { version, inclusive: operator === ">=" } };
-  if (operator === "<=" || operator === "<")
-    return { upper: { version, inclusive: operator === "<=" } };
-  if (wildcardMinor)
-    return {
-      lower: { version, inclusive: true },
-      upper: { version: incrementVersion(version, "major"), inclusive: false },
-    };
-  if (wildcardPatch)
-    return {
-      lower: { version, inclusive: true },
-      upper: { version: incrementVersion(version, "minor"), inclusive: false },
-    };
-  return {
-    lower: { version, inclusive: true },
-    upper: { version, inclusive: true },
-  };
-};
-
-const parseSemanticRange = (range: string): ReadonlyArray<SemanticRangeInterval> | undefined => {
-  const intervals: Array<SemanticRangeInterval> = [];
-  for (const alternative of range.split("||")) {
-    const trimmed = alternative.trim();
-    const hyphen = /^([^\s]+)\s+-\s+([^\s]+)$/.exec(trimmed);
-    const tokens =
-      hyphen === null ? trimmed.split(/\s+/) : [`>=${hyphen[1] ?? ""}`, `<=${hyphen[2] ?? ""}`];
-    let interval: SemanticRangeInterval = {};
-    for (const token of tokens) {
-      const parsed = tokenInterval(token);
-      if (parsed === undefined) return undefined;
-      const intersection = intersectIntervals(interval, parsed);
-      if (intersection === undefined) return undefined;
-      interval = intersection;
-    }
-    intervals.push(interval);
-  }
-  return intervals;
-};
-
-const lowerContains = (
-  container: SemanticRangeBoundary | undefined,
-  contained: SemanticRangeBoundary | undefined,
-): boolean => {
-  if (container === undefined) return true;
-  if (contained === undefined) return false;
-  const order = compareSemanticVersions(container.version, contained.version);
-  return order < 0 || (order === 0 && (container.inclusive || !contained.inclusive));
-};
-
-const upperContains = (
-  container: SemanticRangeBoundary | undefined,
-  contained: SemanticRangeBoundary | undefined,
-): boolean => {
-  if (container === undefined) return true;
-  if (contained === undefined) return false;
-  const order = compareSemanticVersions(container.version, contained.version);
-  return order > 0 || (order === 0 && (container.inclusive || !contained.inclusive));
-};
-
-const rangeContains = (
-  container: ReadonlyArray<SemanticRangeInterval>,
-  contained: ReadonlyArray<SemanticRangeInterval>,
-): boolean =>
-  contained.every((interval) =>
-    container.some(
-      (candidate) =>
-        lowerContains(candidate.lower, interval.lower) &&
-        upperContains(candidate.upper, interval.upper),
-    ),
-  );
-
 export const comparePeerRanges = (baseline: string, candidate: string): PeerRangeComparison => {
   if (baseline === candidate) return { baseline, candidate, classification: "equivalent" };
-  const previous = parseSemanticRange(baseline);
-  const next = parseSemanticRange(candidate);
-  if (
-    previous === undefined ||
-    next === undefined ||
-    (!baseline.includes("-") && candidate.includes("-"))
-  )
+  if (validRange(baseline) === null || validRange(candidate) === null)
     return { baseline, candidate, classification: "narrowed" };
-  const baselineInCandidate = rangeContains(next, previous);
-  const candidateInBaseline = rangeContains(previous, next);
+  const baselineInCandidate = subset(baseline, candidate);
+  const candidateInBaseline = subset(candidate, baseline);
   return {
     baseline,
     candidate,
