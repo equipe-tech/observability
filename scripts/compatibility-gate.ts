@@ -497,7 +497,17 @@ const tokenInterval = (token: string): SemanticRangeInterval | undefined => {
   const wildcardMinor = parts[1] === undefined || /^[xX*]$/.test(parts[1]);
   const wildcardPatch = parts[2] === undefined || /^[xX*]$/.test(parts[2]);
   if (operator === "^") {
-    const component = version.major > 0 ? "major" : version.minor > 0 ? "minor" : "patch";
+    const component = wildcardMinor
+      ? "major"
+      : wildcardPatch
+        ? version.major === 0
+          ? "minor"
+          : "major"
+        : version.major > 0
+          ? "major"
+          : version.minor > 0
+            ? "minor"
+            : "patch";
     return {
       lower: { version, inclusive: true },
       upper: { version: incrementVersion(version, component), inclusive: false },
