@@ -247,6 +247,17 @@ const httpExceptionDetails = (error: Error): Option.Option<HttpExceptionDetails>
   }
 };
 
+const httpExceptionCause = (
+  cause: unknown,
+  inspect: HttpDetailsInspector,
+): Option.Option<HttpExceptionDetails> => {
+  try {
+    return cause instanceof Error ? inspect(cause) : Option.none();
+  } catch {
+    return Option.none();
+  }
+};
+
 const publicResponse = (
   details: { readonly code: string; readonly message: string },
   correlation: CorrelationContext,
@@ -322,11 +333,11 @@ export class NestErrorBoundary<Catalog extends ErrorCatalogReference = ErrorCata
     details: Option.Option<HttpExceptionDetails>,
     inspect: HttpDetailsInspector,
   ): Option.Option<UnexpectedDefect> {
-    if (Option.isNone(details)) return Option.none();
-    const isServerError = details.value.statusCode >= 500;
+    if (Option.isNone(details) || details.value.statusCode < 500) return Option.none();
     const cause = causeOf(error);
-    const causeIsHttpException = cause instanceof Error && Option.isSome(inspect(cause));
-    if (!isServerError || cause === undefined || causeIsHttpException) return Option.none();
+    if (cause === undefined || Option.isSome(httpExceptionCause(cause, inspect))) {
+      return Option.none();
+    }
     return Option.some(this.#classifyUnexpected(error, correlation));
   }
 

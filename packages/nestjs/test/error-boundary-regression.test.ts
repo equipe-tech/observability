@@ -865,6 +865,76 @@ describe("Nest error boundary regressions", () => {
     }, 30_000);
   }
 
+  it("inspects each reached HTTP exception once per classification", () => {
+    let statusCalls = 0;
+    let responseCalls = 0;
+    let causeReads = 0;
+    class CountedHttpException extends Error {
+      getStatus(): number {
+        statusCalls += 1;
+        return 503;
+      }
+
+      getResponse(): string {
+        responseCalls += 1;
+        return "planned maintenance";
+      }
+    }
+    const outer = new CountedHttpException();
+    const inner = new CountedHttpException();
+    Object.defineProperty(outer, "cause", {
+      get() {
+        causeReads += 1;
+        return inner;
+      },
+    });
+    Object.defineProperty(inner, "cause", {
+      get() {
+        assert.fail("Classification must not traverse the cause's cause.");
+      },
+    });
+    const boundary = new NestErrorBoundary({
+      catalog: defineErrorCatalog("memoized_causes", {}),
+      recordDefect: () => undefined,
+    });
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      assert.strictEqual(boundary.classify(outer, new CorrelationContext({})).kind, "http-outcome");
+      assert.strictEqual(statusCalls, 2 * attempt);
+      assert.strictEqual(responseCalls, 2 * attempt);
+      assert.strictEqual(causeReads, attempt);
+    }
+  });
+
+  it("keeps non-HTTP server causes unexpected when foreign property inspection fails", () => {
+    const boundary = new NestErrorBoundary({
+      catalog: defineErrorCatalog("foreign_properties", {}),
+      recordDefect: () => undefined,
+    });
+    const causes = [
+      "plain failure",
+      new Error("genuine defect"),
+      new Proxy(new Error("get trap"), {
+        has() {
+          return true;
+        },
+        get() {
+          throw new Error("property read failed");
+        },
+      }),
+      new Proxy(new Error("has trap"), {
+        has() {
+          throw new Error("property membership failed");
+        },
+      }),
+    ];
+    for (const cause of causes) {
+      const error = new HttpException("private failure", 503, { cause });
+      const classified = boundary.classify(error, new CorrelationContext({}));
+      assert.strictEqual(classified.kind, "unexpected");
+      assert.strictEqual(classified.error, error);
+    }
+  });
+
   it("does not read irrelevant client HTTP causes", () => {
     let causeReads = 0;
     const error = new HttpException("expected missing item", 404);
