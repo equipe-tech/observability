@@ -34,18 +34,21 @@ const browserFields = Object.fromEntries(
     { classification: "public", required: false, metricLabel: false },
   ]),
 );
-const poisonMetrics = Object.fromEntries(
-  Array.from({ length: 101 }, (_, index): [string, Contract.CounterMetricDefinitionInput] => [
-    `PoisonCounter${index}`,
-    {
-      name: `poison.counter_${index}`,
-      description: `Poison counter ${index}`,
-      unit: "1",
-      kind: "counter",
-      attributes: {},
-    },
-  ]),
-);
+const counterDefinitions = (prefix: string, count: number) =>
+  Object.fromEntries(
+    Array.from({ length: count }, (_, index): [string, Contract.CounterMetricDefinitionInput] => [
+      `${prefix}Counter${index}`,
+      {
+        name: `${prefix}.counter_${index}`,
+        description: `${prefix} counter ${index}`,
+        unit: "1",
+        kind: "counter",
+        attributes: {},
+      },
+    ]),
+  );
+const poisonMetrics = counterDefinitions("poison", 101);
+const fillMetrics = counterDefinitions("fill", 96);
 const contract = Effect.runSync(
   Contract.defineTelemetryContract(
     Contract.telemetryContractDefinition({
@@ -99,6 +102,7 @@ const contract = Effect.runSync(
           },
         },
         ...poisonMetrics,
+        ...fillMetrics,
       },
       auditActions: {},
     }),

@@ -103,11 +103,13 @@ test("enforces transactional metric capacity at the Collector destination", asyn
     name: string,
     fields: { readonly [name: string]: string | number | boolean } = {},
   ) => ({ name, value: 1, occurredAt: Date.now(), fields });
-  const series = (index: number) =>
-    metric("capacity.series", {
+  const series = (index: number, value = 1) => ({
+    ...metric("capacity.series", {
       "label.first": `f${Math.floor(index / 100)}`,
       "label.second": `s${index % 100}`,
-    });
+    }),
+    value,
+  });
 
   for (let index = 0; index < 999; index += 32) {
     const response = await post({
@@ -123,14 +125,14 @@ test("enforces transactional metric capacity at the Collector destination", asyn
   const cumulativeOverflow = await post({
     version: 1,
     events: [],
-    metrics: [series(999), series(1_000)],
+    metrics: [series(999, 31), series(1_000, 37)],
   });
   expect(cumulativeOverflow.status).toBe(400);
 
   const repeatedSeries = await post({
     version: 1,
     events: [],
-    metrics: [series(999), series(999)],
+    metrics: [series(999, 7), series(999, 7)],
   });
   expect(repeatedSeries.status).toBe(202);
 
@@ -157,10 +159,38 @@ test("enforces transactional metric capacity at the Collector destination", asyn
   });
   expect(admittedAfterRejections.status).toBe(202);
 
-  const content = await readExport("poison.counter_100");
+  for (let index = 0; index < 96; index += 32) {
+    const response = await post({
+      version: 1,
+      events: [],
+      metrics: Array.from({ length: 32 }, (_, offset) => metric(`fill.counter_${index + offset}`)),
+    });
+    expect(response.status).toBe(202);
+  }
+
+  const cumulativeInstrumentOverflow = await post({
+    version: 1,
+    events: [],
+    metrics: [metric("poison.counter_96"), metric("poison.counter_97")],
+  });
+  expect(cumulativeInstrumentOverflow.status).toBe(400);
+
+  const admittedAfterInstrumentRejection = await post({
+    version: 1,
+    events: [],
+    metrics: [metric("poison.counter_98")],
+  });
+  expect(admittedAfterInstrumentRejection.status).toBe(202);
+
+  const content = await readExport("poison.counter_98");
   expect(content).toContain("capacity.series");
   expect(content).toContain("poison.counter_100");
-  expect(content).not.toContain('poison.counter_0"');
+  expect(content).toContain("poison.counter_98");
+  expect(content).not.toContain('poison.counter_96"');
+  expect(content).not.toContain('poison.counter_97"');
+  expect(content).toContain('"asDouble":14');
+  expect(content).not.toContain('"asDouble":31');
+  expect(content).not.toContain('"asDouble":37');
   expect(content).not.toContain('"stringValue":"f10"');
 });
 

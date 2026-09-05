@@ -8,10 +8,10 @@ import type {
 } from "../Metrics.ts";
 import {
   prepareContractMetricAttributes,
-  prepareContractMetricBatch,
-  prepareMetricCounter,
   registerContractGaugeObservation,
+  reserveMetricCounterBatch,
   type ContractMetricAdmission,
+  type MetricCounterBatchMeasurement,
 } from "../MetricsRuntime.ts";
 import type { TelemetryContract, TelemetryContractInput } from "./TelemetryContract.ts";
 import type {
@@ -291,8 +291,7 @@ export const prepareContractCounterBatchByName = (
   metrics: Metrics,
   measurements: ReadonlyArray<NamedContractCounterMeasurement>,
 ): (() => void) => {
-  const commits: Array<() => void> = [];
-  const admissions: Array<ContractMetricAdmission> = [];
+  const batch: Array<MetricCounterBatchMeasurement> = [];
   for (const measurement of measurements) {
     const definition = resolveContractCounterByName(contract, measurement.name);
     const attributes = parseContractAttributes(
@@ -300,21 +299,17 @@ export const prepareContractCounterBatchByName = (
       definition,
       measurement.attributes,
     );
-    commits.push(prepareMetricCounter(metrics, definition, measurement.value, attributes));
-    admissions.push({
+    const admission: ContractMetricAdmission = {
       metrics,
       metricAlias: definition.alias,
       metricName: definition.name,
       definitionIdentity: definition,
       attributes,
       limits: cardinalityLimits(definition),
-    });
+    };
+    batch.push({ definition, value: measurement.value, attributes, admission });
   }
-  const commitAdmission = prepareContractMetricBatch(admissions);
-  return () => {
-    for (const commit of commits) commit();
-    commitAdmission();
-  };
+  return reserveMetricCounterBatch(metrics, batch);
 };
 
 export const recordContractCounterByName = (

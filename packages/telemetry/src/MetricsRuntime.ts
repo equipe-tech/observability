@@ -226,6 +226,12 @@ interface CounterSeries {
   value: number;
 }
 
+type NormalizedCounterMeasurement = {
+  readonly definition: NormalizedDefinition;
+  readonly value: number;
+  readonly attributes: NormalizedAttributes;
+};
+
 interface HistogramSeries {
   readonly attributes: NormalizedAttributes;
   count: number;
@@ -898,6 +904,159 @@ class MetricsRuntimeState {
         this.commitSeries(entry, attributes);
       } else {
         current.value += value;
+      }
+    };
+  }
+
+  reserveCounterBatch(
+    leaseId: number,
+    measurements: ReadonlyArray<NormalizedCounterMeasurement>,
+  ): () => void {
+    const projectedInstrumentNames = new Set(this.lifetimeInstrumentNames);
+    const projectedRuntimeSeries = new Set(this.runtimeLifetimeSeries);
+    const projectedSeriesByInstrument = new Map<string, Set<string>>();
+    const projectedValuesByInstrumentKey = new Map<string, Set<string>>();
+    const entries = new Map<string, CounterEntry>();
+    const prepared: Array<{
+      readonly entry: CounterEntry;
+      readonly value: number;
+      readonly attributes: NormalizedAttributes;
+    }> = [];
+
+    for (const measurement of measurements) {
+      this.assertLease(leaseId, "add", measurement.definition.name);
+      let entry = entries.get(measurement.definition.name);
+      if (entry === undefined) {
+        const existing = this.catalog.get(measurement.definition.name);
+        if (existing !== undefined) {
+          if (
+            existing.kind !== "counter" ||
+            !sameDefinition(existing, "counter", measurement.definition, undefined)
+          ) {
+            throw this.instrumentConflict("counter", measurement.definition.name);
+          }
+          entry = existing;
+        } else {
+          if (!projectedInstrumentNames.has(measurement.definition.name)) {
+            if (projectedInstrumentNames.size >= maximumInstruments) {
+              throw metricError(
+                "LIMIT_EXCEEDED",
+                "registerInstrument",
+                `Metric runtime exceeds the ${maximumInstruments}-instrument lifetime limit while registering "${measurement.definition.name}".`,
+                measurement.definition.name,
+                false,
+              );
+            }
+            projectedInstrumentNames.add(measurement.definition.name);
+          }
+          entry = {
+            kind: "counter",
+            definition: measurement.definition,
+            leases: new Set(),
+            residualSeries: new Map(),
+            seriesByLease: new Map(),
+            lifetimeSeries:
+              this.lifetimeSeriesByInstrument.get(measurement.definition.name) ?? new Set(),
+          };
+        }
+        entries.set(measurement.definition.name, entry);
+      } else if (!sameDefinition(entry, "counter", measurement.definition, undefined)) {
+        throw this.instrumentConflict("counter", measurement.definition.name);
+      }
+
+      if (!Number.isFinite(measurement.value) || measurement.value < 0) {
+        throw metricError(
+          "INVALID_MEASUREMENT",
+          "add",
+          `Counter "${entry.definition.name}" accepts only finite values greater than or equal to zero.`,
+          entry.definition.name,
+          false,
+        );
+      }
+
+      for (const attribute of measurement.attributes.values) {
+        const key = `${entry.definition.name}:${attribute.key}`;
+        let values = projectedValuesByInstrumentKey.get(key);
+        if (values === undefined) {
+          values = new Set(this.lifetimeValuesByInstrumentKey.get(key));
+          projectedValuesByInstrumentKey.set(key, values);
+        }
+        const identity = metricScalarIdentity(attribute.value);
+        if (!values.has(identity) && values.size >= maximumAttributeCardinality) {
+          throw metricError(
+            "LIMIT_EXCEEDED",
+            "add",
+            `Metric "${entry.definition.name}" exceeds the ${maximumAttributeCardinality}-value lifetime limit for one label.`,
+            entry.definition.name,
+            false,
+            undefined,
+            attribute.key,
+          );
+        }
+        values.add(identity);
+      }
+
+      let series = projectedSeriesByInstrument.get(entry.definition.name);
+      if (series === undefined) {
+        series = new Set(entry.lifetimeSeries);
+        projectedSeriesByInstrument.set(entry.definition.name, series);
+      }
+      if (!series.has(measurement.attributes.identity)) {
+        if (series.size >= maximumInstrumentSeries) {
+          throw metricError(
+            "LIMIT_EXCEEDED",
+            "add",
+            `Metric "${entry.definition.name}" exceeds the ${maximumInstrumentSeries}-series lifetime limit.`,
+            entry.definition.name,
+            false,
+          );
+        }
+        series.add(measurement.attributes.identity);
+      }
+
+      const runtimeIdentity = `${entry.definition.name}:${measurement.attributes.identity}`;
+      if (!projectedRuntimeSeries.has(runtimeIdentity)) {
+        if (projectedRuntimeSeries.size >= maximumRuntimeSeries) {
+          throw metricError(
+            "LIMIT_EXCEEDED",
+            "add",
+            `Metric runtime exceeds the ${maximumRuntimeSeries}-series lifetime limit.`,
+            entry.definition.name,
+            false,
+          );
+        }
+        projectedRuntimeSeries.add(runtimeIdentity);
+      }
+      prepared.push({ entry, value: measurement.value, attributes: measurement.attributes });
+    }
+
+    for (const [name, entry] of entries) {
+      this.lifetimeInstrumentNames.add(name);
+      entry.leases.add(leaseId);
+      if (!this.lifetimeSeriesByInstrument.has(name)) {
+        this.lifetimeSeriesByInstrument.set(name, entry.lifetimeSeries);
+      }
+      if (!this.catalog.has(name)) this.catalog.set(name, entry);
+    }
+    for (const measurement of prepared)
+      this.commitSeries(measurement.entry, measurement.attributes);
+
+    return () => {
+      for (const measurement of prepared) {
+        let leaseSeries = measurement.entry.seriesByLease.get(leaseId);
+        if (leaseSeries === undefined) {
+          leaseSeries = new Map();
+          measurement.entry.seriesByLease.set(leaseId, leaseSeries);
+        }
+        const current = leaseSeries.get(measurement.attributes.identity);
+        if (current === undefined) {
+          leaseSeries.set(measurement.attributes.identity, {
+            attributes: measurement.attributes,
+            value: measurement.value,
+          });
+        } else {
+          current.value += measurement.value;
+        }
       }
     };
   }
@@ -1820,22 +1979,23 @@ class ActiveMetrics implements Metrics {
     this.timeoutMilliseconds = timeoutMilliseconds;
   }
 
-  prepareCounter(
-    definitionInput: CounterDefinition,
-    value: number,
-    attributes: ReadonlyArray<MetricAttribute> | undefined,
-  ): () => void {
+  reserveCounterBatch(measurements: ReadonlyArray<MetricCounterBatchMeasurement>): () => void {
     this.assertOpen("counter");
-    const definition = parseDefinition(definitionInput, "counter");
-    const entry = this.lease.state.registerCounter(this.lease.leaseId, definition);
-    this.assertOpen("add", definition.name);
-    const parsedAttributes = parseAttributes(
-      attributes,
-      "add",
-      definition.name,
-      this.lease.state.policy,
-    );
-    return this.lease.state.prepareCounter(this.lease.leaseId, entry, value, parsedAttributes);
+    const normalized = measurements.map((measurement) => {
+      const definition = parseDefinition(measurement.definition, "counter");
+      this.assertOpen("add", definition.name);
+      return {
+        definition,
+        value: measurement.value,
+        attributes: parseAttributes(
+          measurement.attributes,
+          "add",
+          definition.name,
+          this.lease.state.policy,
+        ),
+      };
+    });
+    return this.lease.state.reserveCounterBatch(this.lease.leaseId, normalized);
   }
 
   counter(definitionInput: CounterDefinition): Counter {
@@ -1945,24 +2105,22 @@ class DisabledMetrics implements Metrics {
 
   constructor(private readonly policy: DataPolicy) {}
 
-  prepareCounter(
-    definitionInput: CounterDefinition,
-    value: number,
-    attributes: ReadonlyArray<MetricAttribute> | undefined,
-  ): () => void {
-    this.assertOpen("counter");
-    const definition = parseDefinition(definitionInput, "counter");
-    this.assertOpen("add", definition.name);
-    if (!Number.isFinite(value) || value < 0) {
-      throw metricError(
-        "INVALID_MEASUREMENT",
-        "add",
-        `Counter "${definition.name}" accepts only finite values greater than or equal to zero.`,
-        definition.name,
-        false,
-      );
+  reserveCounterBatch(measurements: ReadonlyArray<MetricCounterBatchMeasurement>): () => void {
+    for (const measurement of measurements) {
+      this.assertOpen("counter");
+      const definition = parseDefinition(measurement.definition, "counter");
+      this.assertOpen("add", definition.name);
+      if (!Number.isFinite(measurement.value) || measurement.value < 0) {
+        throw metricError(
+          "INVALID_MEASUREMENT",
+          "add",
+          `Counter "${definition.name}" accepts only finite values greater than or equal to zero.`,
+          definition.name,
+          false,
+        );
+      }
+      parseAttributes(measurement.attributes, "add", definition.name, this.policy);
     }
-    parseAttributes(attributes, "add", definition.name, this.policy);
     return () => undefined;
   }
 
@@ -2127,16 +2285,29 @@ const unsupportedMetricsFacade = (
     metricName,
   });
 
-export const prepareMetricCounter = (
+export type MetricCounterBatchMeasurement = {
+  readonly definition: CounterDefinition;
+  readonly value: number;
+  readonly attributes: ReadonlyArray<MetricAttribute>;
+  readonly admission: ContractMetricAdmission;
+};
+
+export const reserveMetricCounterBatch = (
   metrics: Metrics,
-  definition: CounterDefinition,
-  value: number,
-  attributes: ReadonlyArray<MetricAttribute>,
+  measurements: ReadonlyArray<MetricCounterBatchMeasurement>,
 ): (() => void) => {
+  const contractTransaction = new MetricContractTransaction();
+  for (const measurement of measurements) contractTransaction.prepare(measurement.admission);
   if (metrics instanceof ActiveMetrics || metrics instanceof DisabledMetrics) {
-    return metrics.prepareCounter(definition, value, attributes);
+    const commit = metrics.reserveCounterBatch(measurements);
+    contractTransaction.commit();
+    return commit;
   }
-  throw unsupportedMetricsFacade(definition.name, definition.name);
+  const measurement = measurements[0];
+  throw unsupportedMetricsFacade(
+    measurement?.definition.name ?? "counter",
+    measurement?.definition.name ?? "counter",
+  );
 };
 
 const prepareContractValues = (
