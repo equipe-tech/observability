@@ -1,4 +1,4 @@
-import { compareIdentifiers, type Comparator, type Range, type SemVer } from "semver";
+import { type Comparator, type Range, type SemVer } from "semver";
 
 type Interval<Point> = {
   readonly start: Point;
@@ -23,7 +23,22 @@ const comparePrerelease: Order<Prerelease> = (left, right) => {
   for (const [index, identifier] of left.entries()) {
     const other = right[index];
     if (other === undefined) return 1;
-    const comparison = compareIdentifiers(String(identifier), String(other));
+    const a = String(identifier);
+    const b = String(other);
+    const numericA = /^[0-9]+$/.test(a);
+    const numericB = /^[0-9]+$/.test(b);
+    const comparison =
+      numericA && numericB
+        ? compareStable(BigInt(a), BigInt(b))
+        : numericA !== numericB
+          ? numericA
+            ? -1
+            : 1
+          : a < b
+            ? -1
+            : a > b
+              ? 1
+              : 0;
     if (comparison !== 0) return comparison;
   }
   return left.length - right.length;
