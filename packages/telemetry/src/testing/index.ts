@@ -460,8 +460,40 @@ export type OtlpCaptureServer = {
   readonly stop: () => Promise<void>;
 };
 
-const ServerAddress = Schema.Struct({ port: Schema.Number });
+const ServerAddress = Schema.Struct({ address: Schema.String, port: Schema.Number });
 const decodeServerAddress = Schema.decodeUnknownSync(ServerAddress);
+
+const listenForCapture = (server: Server, host: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const onError = (cause: Error): void => {
+      server.off("listening", onListening);
+      reject(cause);
+    };
+    const onListening = (): void => {
+      server.off("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    try {
+      server.listen(0, host);
+    } catch (cause) {
+      server.off("error", onError);
+      server.off("listening", onListening);
+      reject(cause);
+    }
+  });
+
+const closeCaptureServer = (server: Server): Promise<void> =>
+  new Promise((resolve, reject) => {
+    server.close((cause) => (cause === undefined ? resolve() : reject(cause)));
+    server.closeAllConnections();
+  });
+
+const captureEndpoint = (host: string, port: number): URL => {
+  const hostname = host.includes(":") ? `[${host}]` : host;
+  return new URL(`http://${hostname}:${port}`);
+};
 
 type OtlpCapturePayload = typeof SpanExport.Type | typeof LogExport.Type | typeof MetricExport.Type;
 
@@ -497,20 +529,23 @@ export const startOtlpCaptureServer = async (options?: {
     });
   });
   const host = options?.host ?? "127.0.0.1";
-  await new Promise<void>((resolve) => server.listen(0, host, resolve));
-  const address = decodeServerAddress(server.address());
-  let stopPromise: Promise<void> | undefined;
-  return {
-    endpoint: new URL(`http://${host}:${address.port}`),
-    telemetry: () => Effect.runSync(decodeCapturedTelemetry(requests)),
-    stop: () => {
-      stopPromise ??= new Promise<void>((resolve, reject) => {
-        server.close((cause) => (cause === undefined ? resolve() : reject(cause)));
-        server.closeAllConnections();
-      });
-      return stopPromise;
-    },
-  };
+  await listenForCapture(server, host);
+  try {
+    const address = decodeServerAddress(server.address());
+    const endpoint = captureEndpoint(address.address, address.port);
+    let stopPromise: Promise<void> | undefined;
+    return {
+      endpoint,
+      telemetry: () => Effect.runSync(decodeCapturedTelemetry(requests)),
+      stop: () => {
+        stopPromise ??= closeCaptureServer(server);
+        return stopPromise;
+      },
+    };
+  } catch (cause) {
+    await closeCaptureServer(server).catch(() => undefined);
+    throw cause;
+  }
 };
 
 export const makeCapture = Effect.fn("makeCapture")(function* (

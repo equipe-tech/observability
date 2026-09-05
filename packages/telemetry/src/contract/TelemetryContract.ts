@@ -194,11 +194,14 @@ export const telemetryContractProvenance = <Definition extends TelemetryContract
   contract: TelemetryContract<Definition>,
 ): string => contract.provenance;
 
+const compareContractKeys = (left: string, right: string): number =>
+  left < right ? -1 : left > right ? 1 : 0;
+
 const canonicalTelemetryContractProvenance = (definition: TelemetryContractInput): string =>
   JSON.stringify({
     auditActions: Object.fromEntries(
       Object.entries(definition.auditActions)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareContractKeys(left, right))
         .map(([alias, action]) => [
           alias,
           {
@@ -211,13 +214,13 @@ const canonicalTelemetryContractProvenance = (definition: TelemetryContractInput
     ),
     events: Object.fromEntries(
       Object.entries(definition.events)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareContractKeys(left, right))
         .map(([alias, event]) => [
           alias,
           {
             attributes: Object.fromEntries(
               Object.entries(event.attributes)
-                .sort(([left], [right]) => left.localeCompare(right))
+                .sort(([left], [right]) => compareContractKeys(left, right))
                 .map(([name, attribute]) => [
                   name,
                   {
@@ -240,13 +243,13 @@ const canonicalTelemetryContractProvenance = (definition: TelemetryContractInput
     ),
     metrics: Object.fromEntries(
       Object.entries(definition.metrics)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareContractKeys(left, right))
         .map(([alias, metric]) => [
           alias,
           {
             attributes: Object.fromEntries(
               Object.entries(metric.attributes)
-                .sort(([left], [right]) => left.localeCompare(right))
+                .sort(([left], [right]) => compareContractKeys(left, right))
                 .map(([name, attribute]) => [
                   name,
                   {
