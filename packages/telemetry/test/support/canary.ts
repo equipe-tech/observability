@@ -1,4 +1,5 @@
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
+import { readFile } from "node:fs/promises";
 import { defineTelemetryContract, generateRunId, type RunId, Telemetry } from "../../src/index.ts";
 import * as Observability from "../../src/index.ts";
 import { createMetrics, MetricsError } from "../../src/Metrics.ts";
@@ -7,6 +8,15 @@ import type { TelemetryConfig } from "../../src/TelemetryConfig.ts";
 import type { InvalidDataPolicy } from "../../src/policy/DataPolicyError.ts";
 import * as WideEvent from "../../src/effect/WideEvent.ts";
 import { layerWideEvent } from "../../src/effect/WideEventSink.ts";
+
+const CanaryManifest = Schema.Struct({ version: Schema.NonEmptyString });
+const decodeCanaryManifest = Schema.decodeUnknownSync(CanaryManifest);
+const canaryManifestValue: unknown = JSON.parse(
+  await readFile(new URL("../../package.json", import.meta.url), "utf8"),
+);
+const canaryManifest = decodeCanaryManifest(canaryManifestValue);
+
+export const canaryServiceVersion = process.env["OTEL_SERVICE_VERSION"] || canaryManifest.version;
 
 export const canaryRunId = (): Effect.Effect<RunId> =>
   generateRunId("canary", process.env["USER"] ?? "ci");

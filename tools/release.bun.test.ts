@@ -1,7 +1,19 @@
 import { expect, test } from "bun:test";
+import { Effect } from "effect";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  deployedCanaryTestCount,
+  DeployedCanaryError,
+  requireDeployedCanaryTests,
+} from "../scripts/test-deployed-canary.ts";
+import {
+  ReleaseCanaryError,
+  ReleaseCanaryIdentity,
+  requireReleaseCanaryCredential,
+  resolveReleaseCanaryIdentity,
+} from "../scripts/release-canary.ts";
 
 interface CommandRequest {
   readonly command: ReadonlyArray<string>;
@@ -22,6 +34,7 @@ interface ReleaseRepository {
 
 const projectRoot = join(import.meta.dirname, "..");
 const releaseScript = await Bun.file(join(projectRoot, "scripts/release.ts")).text();
+const releaseCanaryScript = await Bun.file(join(projectRoot, "scripts/release-canary.ts")).text();
 
 const execute = async (request: CommandRequest): Promise<CommandResult> => {
   const child = Bun.spawn([...request.command], {
@@ -90,6 +103,303 @@ const withReleaseRepository = async (
     await rm(root, { recursive: true, force: true });
   }
 };
+
+const withReleaseCanaryRepository = async (
+  manifestContent: string | undefined,
+  use: (root: string) => Promise<void>,
+): Promise<void> => {
+  const root = await mkdtemp(join(tmpdir(), "release-canary-test-"));
+  try {
+    await mkdir(join(root, "scripts"), { recursive: true });
+    await symlink(join(projectRoot, "node_modules"), join(root, "node_modules"));
+    await writeFile(join(root, "scripts", "release-canary.ts"), releaseCanaryScript);
+    if (manifestContent !== undefined) {
+      await mkdir(join(root, "packages", "alpha"), { recursive: true });
+      await writeFile(join(root, "packages", "alpha", "package.json"), manifestContent);
+    }
+    await use(root);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+};
+
+const runReleaseCanary = (
+  root: string,
+  args: ReadonlyArray<string>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<CommandResult> =>
+  execute({ command: [process.execPath, "scripts/release-canary.ts", ...args], cwd: root, env });
+
+const expectSanitizedReleaseCanaryFailure = (
+  result: CommandResult,
+  root: string,
+  code: string,
+): void => {
+  expect(result.exitCode).toBe(1);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toStartWith(`${code}: `);
+  expect(result.stderr).not.toContain(root);
+  expect(result.stderr).not.toContain(" at ");
+};
+
+test("derives one release canary identity from the matching package manifest", async () => {
+  await withReleaseRepository(async ({ root }) => {
+    const identity = await Effect.runPromise(resolveReleaseCanaryIdentity(root, "alpha@1.2.3"));
+    expect(identity).toEqual(
+      new ReleaseCanaryIdentity({
+        releaseTag: "alpha@1.2.3",
+        packageName: "@equipe-tech/alpha",
+        packageSlug: "alpha",
+        packageVersion: "1.2.3",
+        otelServiceVersion: "1.2.3",
+      }),
+    );
+  });
+});
+
+test("accepts each scoped release canary credential independently", async () => {
+  await Effect.runPromise(
+    requireReleaseCanaryCredential({ AXIOM_INGEST_TOKEN: "ingest-secret" }, "AXIOM_INGEST_TOKEN"),
+  );
+  await Effect.runPromise(
+    requireReleaseCanaryCredential({ AXIOM_READ_TOKEN: "read-secret" }, "AXIOM_READ_TOKEN"),
+  );
+});
+
+test("rejects a missing release canary credential with a correlated error", async () => {
+  const error = await Effect.runPromise(
+    Effect.flip(requireReleaseCanaryCredential({}, "AXIOM_READ_TOKEN", "test-correlation")),
+  );
+  expect(error).toBeInstanceOf(ReleaseCanaryError);
+  expect(error.code).toBe("OBS_RELEASE_CANARY_CREDENTIALS_MISSING");
+  expect(error.correlationId).toBe("test-correlation");
+  expect(error.message).toContain("Correlation ID: test-correlation.");
+});
+
+test("writes release metadata from the matching manifest", async () => {
+  await withReleaseCanaryRepository(manifest("@equipe-tech/alpha", "1.2.3"), async (root) => {
+    const output = join(root, "github-output");
+    const result = await runReleaseCanary(root, [
+      "--tag",
+      "alpha@1.2.3",
+      "--github-output",
+      output,
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(await readFile(output, "utf8")).toBe(
+      "tag=alpha@1.2.3\narchive=equipe-tech-alpha-1.2.3.tgz\nprerelease=false\nnpm_tag=latest\n",
+    );
+  });
+});
+
+test("selects the rc npm tag from a prerelease package version", async () => {
+  await withReleaseCanaryRepository(manifest("@equipe-tech/alpha", "1.2.3-rc.4"), async (root) => {
+    const output = join(root, "github-output");
+    const result = await runReleaseCanary(root, [
+      "--tag",
+      "alpha@1.2.3-rc.4",
+      "--github-output",
+      output,
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(await readFile(output, "utf8")).toBe(
+      "tag=alpha@1.2.3-rc.4\narchive=equipe-tech-alpha-1.2.3-rc.4.tgz\nprerelease=true\nnpm_tag=rc\n",
+    );
+  });
+});
+
+test("sanitizes a release tag version mismatch", async () => {
+  await withReleaseCanaryRepository(manifest("@equipe-tech/alpha", "1.2.3"), async (root) => {
+    const result = await runReleaseCanary(root, [
+      "--tag",
+      "alpha@9.9.9",
+      "--github-output",
+      join(root, "output"),
+    ]);
+    expectSanitizedReleaseCanaryFailure(result, root, "OBS_RELEASE_CANARY_VERSION_MISMATCH");
+  });
+});
+
+test("sanitizes a missing package manifest", async () => {
+  await withReleaseCanaryRepository(undefined, async (root) => {
+    const result = await runReleaseCanary(root, [
+      "--tag",
+      "alpha@1.2.3",
+      "--github-output",
+      join(root, "output"),
+    ]);
+    expectSanitizedReleaseCanaryFailure(result, root, "OBS_RELEASE_CANARY_PACKAGE_UNKNOWN");
+  });
+});
+
+test("sanitizes a malformed release tag", async () => {
+  await withReleaseCanaryRepository(manifest("@equipe-tech/alpha", "1.2.3"), async (root) => {
+    const result = await runReleaseCanary(root, [
+      "--tag",
+      "not-a-tag",
+      "--github-output",
+      join(root, "output"),
+    ]);
+    expectSanitizedReleaseCanaryFailure(result, root, "OBS_RELEASE_CANARY_TAG_INVALID");
+  });
+});
+
+test("sanitizes a malformed package manifest", async () => {
+  await withReleaseCanaryRepository("{", async (root) => {
+    const result = await runReleaseCanary(root, [
+      "--tag",
+      "alpha@1.2.3",
+      "--github-output",
+      join(root, "output"),
+    ]);
+    expectSanitizedReleaseCanaryFailure(result, root, "OBS_RELEASE_CANARY_MANIFEST_INVALID");
+  });
+});
+
+test("sanitizes missing release canary arguments", async () => {
+  await withReleaseCanaryRepository(undefined, async (root) => {
+    const result = await runReleaseCanary(root, []);
+    expectSanitizedReleaseCanaryFailure(result, root, "OBS_RELEASE_CANARY_ARGUMENTS_INVALID");
+  });
+});
+
+test("requires an explicit deployed canary request", async () => {
+  const result = await execute({
+    command: [process.execPath, "run", "test:canary:deployed"],
+    cwd: projectRoot,
+    env: { ...process.env, OBSERVABILITY_E2E_DEPLOYED: "" },
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain(
+    "OBS_DEPLOYED_CANARY_NOT_REQUESTED: OBSERVABILITY_E2E_DEPLOYED=1 is required for the deployed canary gate.",
+  );
+});
+
+test("rejects a zero-test report through the deployed canary entrypoint", async () => {
+  const root = await mkdtemp(join(tmpdir(), "deployed-canary-entrypoint-test-"));
+  const fakeVp = join(root, "deployed-canary-runner");
+  try {
+    await writeFile(
+      fakeVp,
+      [
+        "#!/bin/sh",
+        'for argument in "$@"; do',
+        '  case "$argument" in',
+        '    --outputFile.json=*) report="${argument#*=}" ;;',
+        "  esac",
+        "done",
+        `printf '{"numPassedTests":0}\\n' > "$report"`,
+      ].join("\n"),
+    );
+    await chmod(fakeVp, 0o755);
+    const result = await execute({
+      command: [process.execPath, "scripts/test-deployed-canary.ts"],
+      cwd: projectRoot,
+      env: {
+        ...process.env,
+        OBSERVABILITY_E2E_DEPLOYED: "1",
+        OBSERVABILITY_DEPLOYED_CANARY_RUNNER: fakeVp,
+      },
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("OBS_DEPLOYED_CANARY_NO_TESTS:");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("fails when the deployed canary runner exits nonzero", async () => {
+  const root = await mkdtemp(join(tmpdir(), "deployed-canary-suite-failure-test-"));
+  const fallbackRunner = join(root, "vp");
+  try {
+    await writeFile(fallbackRunner, "#!/bin/sh\nexit 99\n");
+    await chmod(fallbackRunner, 0o755);
+    for (const childExitCode of [1, 42]) {
+      const runner = join(root, `runner-${childExitCode}`);
+      await writeFile(runner, `#!/bin/sh\nexit ${childExitCode}\n`);
+      await chmod(runner, 0o755);
+      const result = await execute({
+        command: [process.execPath, "scripts/test-deployed-canary.ts"],
+        cwd: projectRoot,
+        env: {
+          ...process.env,
+          OBSERVABILITY_E2E_DEPLOYED: "1",
+          OBSERVABILITY_DEPLOYED_CANARY_RUNNER: runner,
+          PATH: root,
+        },
+      });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("OBS_DEPLOYED_CANARY_SUITE_FAILED:");
+      expect(result.stderr).toContain(`exit code ${childExitCode}`);
+      expect(result.stderr).toContain("vitest-report.json");
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses the real deployed canary runner in a test context", async () => {
+  const result = await execute({
+    command: [process.execPath, "scripts/test-deployed-canary.ts"],
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      NODE_ENV: "test",
+      OBSERVABILITY_E2E_DEPLOYED: "1",
+      OBSERVABILITY_DEPLOYED_CANARY_RUNNER: undefined,
+    },
+  });
+  expect(result.exitCode).not.toBe(0);
+  expect(result.stderr).toContain("OBS_DEPLOYED_CANARY_RUNNER_REQUIRED:");
+});
+
+test("reads the executed test count from the deployed canary report", () => {
+  expect(Effect.runSync(deployedCanaryTestCount('{"numPassedTests":1}'))).toBe(1);
+  expect(Effect.runSync(deployedCanaryTestCount('{"numPassedTests":0}'))).toBe(0);
+});
+
+test("types and sanitizes a deployed canary report with no tests", () => {
+  const error = Effect.runSync(
+    requireDeployedCanaryTests('{"numPassedTests":0}', "test-empty").pipe(Effect.flip),
+  );
+  expect(error).toBeInstanceOf(DeployedCanaryError);
+  expect(error.code).toBe("OBS_DEPLOYED_CANARY_NO_TESTS");
+  expect(error.correlationId).toBe("test-empty");
+  expect(error.message).toBe(
+    "The deployed canary gate did not execute any tests. Correlation ID: test-empty.",
+  );
+});
+
+test("types and sanitizes a malformed deployed canary report", () => {
+  const error = Effect.runSync(
+    deployedCanaryTestCount("not json", "test-correlation").pipe(Effect.flip),
+  );
+  expect(error).toBeInstanceOf(DeployedCanaryError);
+  expect(error.code).toBe("OBS_DEPLOYED_CANARY_REPORT_INVALID");
+  expect(error.correlationId).toBe("test-correlation");
+  expect(error.message).toBe(
+    "The deployed canary test report is malformed. Correlation ID: test-correlation.",
+  );
+});
+
+test("types and sanitizes an unexpected deployed canary failure", async () => {
+  const missingTemporaryDirectory = join(tmpdir(), "missing-observability-deployed-canary");
+  const result = await execute({
+    command: [process.execPath, "run", "test:canary:deployed"],
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      OBSERVABILITY_E2E_DEPLOYED: "1",
+      OBSERVABILITY_DEPLOYED_CANARY_RUNNER: join(tmpdir(), "unused-deployed-canary-runner"),
+      TMPDIR: missingTemporaryDirectory,
+      TMP: missingTemporaryDirectory,
+      TEMP: missingTemporaryDirectory,
+    },
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("OBS_DEPLOYED_CANARY_UNEXPECTED:");
+  expect(result.stderr).not.toContain(missingTemporaryDirectory);
+});
 
 test("selects a package by slug", async () => {
   await withReleaseRepository(async ({ runRelease }) => {

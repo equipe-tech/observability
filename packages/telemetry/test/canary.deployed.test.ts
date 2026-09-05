@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Option } from "effect";
+import { Effect, Option, Ref } from "effect";
 import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 import {
@@ -14,10 +14,24 @@ import {
   type AxiomRedactionAttributes,
   type AxiomSpan,
 } from "./support/axiom.ts";
-import { canaryRunId, canarySensitiveValues, emitCanary } from "./support/canary.ts";
+import { assertCanaryMetricPolicy } from "./support/canaryAssessment.ts";
+import { deployedCanaryPollingBudget, deployedCanaryQueries } from "./support/deployedCanary.ts";
+import {
+  canaryRunId,
+  canarySensitiveValues,
+  canaryServiceVersion,
+  emitCanary,
+} from "./support/canary.ts";
 
 const deployedEnabled = process.env["OBSERVABILITY_E2E_DEPLOYED"] === "1";
 const canaryEnvironment = "e2e";
+
+type DeployedCanaryResponses = {
+  readonly root: string;
+  readonly child: string;
+  readonly logs: string;
+  readonly metric: string;
+};
 
 type DeployedRun = {
   readonly root: AxiomSpan;
@@ -32,41 +46,98 @@ const findDeployedRun = Effect.fn("findDeployedRun")(function* (
   env: AxiomEnvironment,
   runId: string,
 ): Effect.fn.Return<DeployedRun, never> {
-  for (let attempt = 0; attempt < 60; attempt++) {
-    const root = yield* findRootSpan(env, runId);
-    if (Option.isSome(root)) {
-      const child = yield* findChildSpan(env, root.value.traceId);
-      const logs = yield* findLogs(env, runId);
-      const metric = yield* findMetric(
-        env,
-        runId,
-        canaryEnvironment,
-        "observability-canary",
-        "0.1.0",
-      );
-      const completed = logs.find((log) => log.eventName === "canary.completed");
-      const browser = logs.find((log) => log.eventName === "canary.browser");
-      const redaction = logs.find((log) => log.eventName === "canary.redaction");
-      if (
-        Option.isSome(child) &&
-        completed !== undefined &&
-        browser !== undefined &&
-        redaction !== undefined &&
-        Option.isSome(metric)
-      ) {
-        return {
-          root: root.value,
-          child: child.value,
-          completed,
-          browser,
-          redaction,
-          metric: metric.value,
-        };
+  const responses = yield* Ref.make<DeployedCanaryResponses>({
+    root: "not queried",
+    child: "not queried",
+    logs: "not queried",
+    metric: "not queried",
+  });
+  const queryTimeoutMilliseconds = deployedCanaryPollingBudget.queryTimeoutMilliseconds;
+  for (let attempt = 0; attempt < deployedCanaryPollingBudget.attempts; attempt++) {
+    let root = Option.none<AxiomSpan>();
+    let child = Option.none<AxiomSpan>();
+    let logs: ReadonlyArray<AxiomLog> = [];
+    let metric = Option.none<AxiomMetric>();
+    for (const query of deployedCanaryQueries) {
+      switch (query) {
+        case "root":
+          root = yield* findRootSpan(env, runId, canaryServiceVersion, {
+            observe: (response) =>
+              Ref.update(responses, (current) => ({ ...current, root: response })),
+            timeoutMilliseconds: queryTimeoutMilliseconds,
+          });
+          break;
+        case "child":
+          if (Option.isSome(root)) {
+            child = yield* findChildSpan(env, root.value.traceId, {
+              observe: (response) =>
+                Ref.update(responses, (current) => ({ ...current, child: response })),
+              timeoutMilliseconds: queryTimeoutMilliseconds,
+            });
+          }
+          break;
+        case "logs":
+          logs = yield* findLogs(env, runId, canaryServiceVersion, {
+            observe: (response) =>
+              Ref.update(responses, (current) => ({ ...current, logs: response })),
+            timeoutMilliseconds: queryTimeoutMilliseconds,
+          });
+          break;
+        case "metric":
+          metric = yield* findMetric(
+            env,
+            runId,
+            canaryEnvironment,
+            "observability-canary",
+            canaryServiceVersion,
+            {
+              observe: (response) =>
+                Ref.update(responses, (current) => ({ ...current, metric: response })),
+              timeoutMilliseconds: queryTimeoutMilliseconds,
+            },
+          );
+          break;
+        default:
+          query satisfies never;
       }
     }
-    yield* Effect.sleep("3 seconds");
+    const completed = logs.find((log) => log.eventName === "canary.completed");
+    const browser = logs.find((log) => log.eventName === "canary.browser");
+    const redaction = logs.find((log) => log.eventName === "canary.redaction");
+    if (
+      Option.isSome(root) &&
+      Option.isSome(child) &&
+      completed !== undefined &&
+      browser !== undefined &&
+      redaction !== undefined &&
+      Option.isSome(metric)
+    ) {
+      yield* Effect.logInfo(
+        `Axiom trace query matched run_id=${runId} trace_id=${root.value.traceId} span_id=${root.value.spanId} service_version=${canaryServiceVersion}`,
+      );
+      yield* Effect.logInfo(
+        `Axiom log query matched run_id=${runId} trace_id=${Option.getOrElse(completed.traceId, () => "none")} service_version=${canaryServiceVersion}`,
+      );
+      yield* Effect.logInfo(
+        `Axiom metric query matched run_id=${runId} service_version=${canaryServiceVersion}`,
+      );
+      return {
+        root: root.value,
+        child: child.value,
+        completed,
+        browser,
+        redaction,
+        metric: metric.value,
+      };
+    }
+    if (attempt + 1 < deployedCanaryPollingBudget.attempts) {
+      yield* Effect.sleep(deployedCanaryPollingBudget.sleepMilliseconds);
+    }
   }
-  return yield* Effect.die(`The deployed canary run ${runId} was not found in Axiom.`);
+  const lastResponses = yield* Ref.get(responses);
+  return yield* Effect.die(
+    `The deployed canary run ${runId} for service version ${canaryServiceVersion} was not found in Axiom after ${deployedCanaryPollingBudget.attempts} attempts. Last provider responses: ${JSON.stringify(lastResponses)}.`,
+  );
 });
 
 const redactionAttributeValues = (attributes: AxiomRedactionAttributes): ReadonlyArray<string> => [
@@ -115,7 +186,7 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
         const runId = yield* canaryRunId();
         const identity = yield* parseResourceIdentity({
           serviceName: "observability-canary",
-          serviceVersion: "0.1.0",
+          serviceVersion: canaryServiceVersion,
           environment: canaryEnvironment,
         });
         const config = new TelemetryConfig({
@@ -134,7 +205,7 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
 
         assert.deepStrictEqual(run.root.serviceNamespace, Option.some("equipe-tech"));
         assert.deepStrictEqual(run.root.serviceName, Option.some("observability-canary"));
-        assert.deepStrictEqual(run.root.serviceVersion, Option.some("0.1.0"));
+        assert.deepStrictEqual(run.root.serviceVersion, Option.some(canaryServiceVersion));
         assert.isTrue(Option.isNone(run.root.serviceInstanceId));
         assertEnvironmentAliases(
           run.root.environmentName,
@@ -146,6 +217,7 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
         assert.deepStrictEqual(run.completed.eventKind, Option.some("wide"));
         assert.deepStrictEqual(run.completed.serviceNamespace, Option.some("equipe-tech"));
         assert.deepStrictEqual(run.completed.serviceName, Option.some("observability-canary"));
+        assert.deepStrictEqual(run.completed.serviceVersion, Option.some(canaryServiceVersion));
         assert.isTrue(Option.isNone(run.completed.serviceInstanceId));
         assertEnvironmentAliases(
           run.completed.environmentName,
@@ -168,7 +240,6 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
         const exportedContent = [
           rootEvents,
           redactedBody,
-          run.metric.content,
           ...redactionAttributeValues(run.root.redaction),
           ...redactionAttributeValues(run.redaction.redaction),
         ];
@@ -177,13 +248,10 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
             assert.notInclude(content, marker);
           }
         }
-        for (const preservedValue of sensitive.preservedValues) {
-          assert.include(run.metric.content, preservedValue);
-        }
-        assert.include(run.metric.content, "****");
+        assertCanaryMetricPolicy({ content: run.metric.content, runId }, sensitive);
         assert.include(rootEvents, "[REDACTED]");
         assert.include(redactedBody, "[REDACTED]");
       }),
-    240_000,
+    deployedCanaryPollingBudget.suiteTimeoutMilliseconds,
   );
 });

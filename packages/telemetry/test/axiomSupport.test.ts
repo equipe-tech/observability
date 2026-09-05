@@ -1,7 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Option, Schema } from "effect";
+import { readFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import {
+  axiomServiceResourceFields,
   decodeAxiomEnvironment,
   findChildSpan,
   findLogs,
@@ -9,6 +11,13 @@ import {
   findRootSpan,
   type AxiomEnvironment,
 } from "./support/axiom.ts";
+import { assertCanaryMetricPolicy } from "./support/canaryAssessment.ts";
+import { canarySensitiveValues } from "./support/canary.ts";
+import {
+  deployedCanaryPollingBudget,
+  deployedCanaryPollingBudgetFor,
+  deployedCanaryQueries,
+} from "./support/deployedCanary.ts";
 
 const AddressInfo = Schema.Struct({ port: Schema.Number });
 const decodeAddressInfo = Schema.decodeUnknownOption(AddressInfo);
@@ -16,6 +25,7 @@ const decodeAddressInfo = Schema.decodeUnknownOption(AddressInfo);
 type RecordedQuery = {
   readonly path: string;
   readonly authorization: string;
+  readonly organizationId: string;
   readonly query: string;
 };
 
@@ -27,6 +37,34 @@ const MplQueryBody = Schema.Struct({
 });
 const decodeAplQueryBody = Schema.decodeUnknownOption(AplQueryBody);
 const decodeMplQueryBody = Schema.decodeUnknownOption(MplQueryBody);
+const productionCollectorConfig = await readFile(
+  new URL("../../cli/src/assets/production.yaml", import.meta.url),
+  "utf8",
+);
+
+const RetainedMetricAttribute = Schema.Struct({
+  key: Schema.String,
+  value: Schema.Struct({ stringValue: Schema.String }),
+});
+const RetainedCanaryMetric = Schema.Struct({
+  resource: Schema.Struct({ attributes: Schema.Array(RetainedMetricAttribute) }),
+  metric: Schema.Struct({
+    name: Schema.String,
+    sum: Schema.Struct({
+      dataPoints: Schema.Array(
+        Schema.Struct({
+          attributes: Schema.Array(RetainedMetricAttribute),
+          asDouble: Schema.Number,
+        }),
+      ),
+    }),
+  }),
+});
+const decodeRetainedCanaryMetric = Schema.decodeUnknownSync(RetainedCanaryMetric);
+const retainedCanaryMetricValue: unknown = JSON.parse(
+  await readFile(new URL("./fixtures/canary-operations.otlp.json", import.meta.url), "utf8"),
+);
+const retainedCanaryMetric = decodeRetainedCanaryMetric(retainedCanaryMetricValue);
 
 type StubAxiom = {
   readonly env: AxiomEnvironment;
@@ -34,9 +72,15 @@ type StubAxiom = {
   readonly server: Server;
 };
 
+type StubAxiomResponse = {
+  readonly aplBody?: string;
+  readonly aplStatus?: number;
+};
+
 const startStubAxiom = (
   matches: ReadonlyArray<{ readonly data: unknown }>,
   metricsResponse = "{}",
+  responseOptions: StubAxiomResponse = {},
 ): Promise<StubAxiom> =>
   new Promise((resolve, reject) => {
     const queries: Array<RecordedQuery> = [];
@@ -60,11 +104,17 @@ const startStubAxiom = (
         queries.push({
           path: request.url ?? "",
           authorization: request.headers.authorization ?? "",
+          organizationId: request.headers["x-axiom-org-id"]?.toString() ?? "",
           query: Option.getOrElse(apl, () => Option.getOrElse(mpl, () => "")),
         });
-        response.writeHead(200, { "content-type": "application/json" });
+        const metricsRequest = request.url?.startsWith("/v1/query/_mpl") ?? false;
+        response.writeHead(metricsRequest ? 200 : (responseOptions.aplStatus ?? 200), {
+          "content-type": "application/json",
+        });
         response.end(
-          request.url?.startsWith("/v1/query/_mpl") ? metricsResponse : JSON.stringify({ matches }),
+          metricsRequest
+            ? metricsResponse
+            : (responseOptions.aplBody ?? JSON.stringify({ matches })),
         );
       });
     });
@@ -77,7 +127,8 @@ const startStubAxiom = (
       const env = Effect.runSync(
         decodeAxiomEnvironment({
           AXIOM_URL: `http://127.0.0.1:${address.value.port}`,
-          AXIOM_TOKEN: "stub-token",
+          AXIOM_READ_TOKEN: "stub-read-token",
+          AXIOM_ORGANIZATION_ID: "stub-organization",
           AXIOM_DATASET_TRACES: "e2e-traces",
           AXIOM_DATASET_LOGS: "e2e-logs",
           AXIOM_DATASET_METRICS: "e2e-metrics",
@@ -106,7 +157,7 @@ describe("axiom query support", () => {
           },
         ]),
       );
-      const root = yield* findRootSpan(stub.env, "test-run-1").pipe(
+      const root = yield* findRootSpan(stub.env, "test-run-1", "0.1.0").pipe(
         Effect.ensuring(Effect.sync(() => stub.server.close())),
       );
 
@@ -122,10 +173,14 @@ describe("axiom query support", () => {
       const query = stub.queries[0];
       assert.isDefined(query);
       assert.strictEqual(query.path, "/v1/datasets/_apl?format=legacy");
-      assert.strictEqual(query.authorization, "Bearer stub-token");
+      assert.strictEqual(query.authorization, "Bearer stub-read-token");
+      assert.strictEqual(query.organizationId, "stub-organization");
       assert.include(query.query, "['e2e-traces']");
       assert.include(query.query, "['attributes.custom']['canary.run_id'] == 'test-run-1'");
+      assert.include(query.query, "['service.version'] == '0.1.0'");
       assert.include(query.query, "name == 'canary.operation'");
+      assert.include(query.query, "service_name = tostring(['service.name'])");
+      assert.include(query.query, "service_version = tostring(['service.version'])");
       assert.include(
         query.query,
         "environment_name = tostring(['resource.custom']['deployment.environment.name'])",
@@ -175,6 +230,7 @@ describe("axiom query support", () => {
               event_kind: "wide",
               event_source: null,
               service_name: "observability-canary",
+              service_version: "0.1.0",
               environment_name: "e2e",
               environment_alias: "e2e",
             },
@@ -182,7 +238,7 @@ describe("axiom query support", () => {
           { data: { unrelated: true } },
         ]),
       );
-      const logs = yield* findLogs(stub.env, "test-run-1").pipe(
+      const logs = yield* findLogs(stub.env, "test-run-1", "0.1.0").pipe(
         Effect.ensuring(Effect.sync(() => stub.server.close())),
       );
 
@@ -193,11 +249,26 @@ describe("axiom query support", () => {
       assert.deepStrictEqual(log.traceId, Option.some("trace-1"));
       assert.deepStrictEqual(log.eventKind, Option.some("wide"));
       assert.deepStrictEqual(log.eventSource, Option.none());
+      assert.deepStrictEqual(log.serviceVersion, Option.some("0.1.0"));
       assert.deepStrictEqual(log.environmentName, Option.some("e2e"));
       assert.deepStrictEqual(log.environmentAlias, log.environmentName);
       const query = stub.queries[0];
       assert.isDefined(query);
       assert.include(query.query, "['e2e-logs']");
+      assert.deepStrictEqual(axiomServiceResourceFields, {
+        namespace: "['resource.custom']['service.namespace']",
+        name: "['service.name']",
+        version: "['service.version']",
+      });
+      assert.isTrue(Object.isFrozen(axiomServiceResourceFields));
+      assert.include(query.query, `service_name = tostring(${axiomServiceResourceFields.name})`);
+      assert.include(
+        query.query,
+        `service_version = tostring(${axiomServiceResourceFields.version})`,
+      );
+      assert.include(query.query, `${axiomServiceResourceFields.version} == '0.1.0'`);
+      assert.include(productionCollectorConfig, "otlphttp/logs:");
+      assert.include(productionCollectorConfig, "X-Axiom-Dataset: ${env:AXIOM_DATASET_LOGS}");
       assert.include(
         query.query,
         "environment_name = tostring(['resource.custom']['deployment.environment.name'])",
@@ -209,40 +280,112 @@ describe("axiom query support", () => {
     }),
   );
 
-  it.live("queries the metrics dataset with MPL and returns the complete response", () =>
+  it.live("observes a non-JSON provider response before decoding", () =>
     Effect.gen(function* () {
-      const metricsResponse = JSON.stringify({
-        series: [
-          {
-            tags: {
-              "canary.run_id": "test-run-1",
-              accessToken: "****",
-              tokenizer: "tokenizer-control",
-            },
-          },
-        ],
-      });
+      const observed: Array<string> = [];
+      const stub = yield* Effect.promise(() =>
+        startStubAxiom([], "{}", { aplBody: "gateway unavailable", aplStatus: 502 }),
+      );
+      yield* findRootSpan(stub.env, "test-run-1", "0.1.0", {
+        observe: (response) => Effect.sync(() => observed.push(response)),
+      }).pipe(Effect.exit, Effect.ensuring(Effect.sync(() => stub.server.close())));
+      assert.deepStrictEqual(observed, ["status=502 body=gateway unavailable"]);
+    }),
+  );
+
+  it("derives the polling query budget from the executed query list", () => {
+    assert.strictEqual(deployedCanaryPollingBudget.queriesPerAttempt, deployedCanaryQueries.length);
+    const fifthQueryBudget = deployedCanaryPollingBudgetFor([...deployedCanaryQueries, "logs"]);
+    assert.strictEqual(
+      fifthQueryBudget.queriesPerAttempt,
+      deployedCanaryPollingBudget.queriesPerAttempt + 1,
+    );
+  });
+
+  it("covers collector flush and Axiom query visibility within the suite timeout", () => {
+    const queryBudget =
+      deployedCanaryPollingBudget.attempts *
+      deployedCanaryPollingBudget.queriesPerAttempt *
+      deployedCanaryPollingBudget.queryTimeoutMilliseconds;
+    const sleepBudget =
+      (deployedCanaryPollingBudget.attempts - 1) * deployedCanaryPollingBudget.sleepMilliseconds;
+    const ingestionBudget = deployedCanaryPollingBudget.ingestion;
+    assert.include(
+      productionCollectorConfig,
+      `flush_timeout: ${ingestionBudget.collectorFlushMilliseconds}ms`,
+    );
+    const requiredVisibilityBudget =
+      ingestionBudget.collectorFlushMilliseconds + ingestionBudget.axiomQueryVisibilityMilliseconds;
+    const visibilityMargin = sleepBudget - requiredVisibilityBudget;
+    assert.isAtLeast(
+      sleepBudget,
+      requiredVisibilityBudget,
+      `Polling visibility margin: ${visibilityMargin}ms`,
+    );
+    assert.isBelow(queryBudget + sleepBudget, deployedCanaryPollingBudget.suiteTimeoutMilliseconds);
+  });
+
+  it.live("assesses retained local metric telemetry through the deployed query owner", () =>
+    Effect.gen(function* () {
+      const runId = "test-nothing-1788635705006-5rpp5y51";
+      const metricsResponse = JSON.stringify(retainedCanaryMetric);
       const stub = yield* Effect.promise(() => startStubAxiom([], metricsResponse));
       const metric = yield* findMetric(
         stub.env,
-        "test-run-1",
-        "e2e",
+        runId,
+        "test",
         "observability-canary",
-        "0.1.0",
+        "0.3.0",
       ).pipe(Effect.ensuring(Effect.sync(() => stub.server.close())));
 
       assert.isTrue(Option.isSome(metric));
-      assert.include(Option.getOrThrow(metric).content, "tokenizer-control");
+      assert.strictEqual(retainedCanaryMetric.metric.name, "canary.operations");
+      assert.strictEqual(retainedCanaryMetric.metric.sum.dataPoints.length, 1);
+      const dataPoint = retainedCanaryMetric.metric.sum.dataPoints[0];
+      assert.isDefined(dataPoint);
+      assert.strictEqual(dataPoint.asDouble, 2);
+      assert.deepStrictEqual(dataPoint.attributes, [
+        { key: "canary.run_id", value: { stringValue: runId } },
+      ]);
+      assert.deepStrictEqual(retainedCanaryMetric.resource.attributes, [
+        { key: "service.namespace", value: { stringValue: "equipe-tech" } },
+        { key: "service.name", value: { stringValue: "observability-canary" } },
+        { key: "service.version", value: { stringValue: "0.3.0" } },
+        { key: "deployment.environment.name", value: { stringValue: "test" } },
+        { key: "deployment.environment", value: { stringValue: "test" } },
+      ]);
+      const sensitive = canarySensitiveValues(runId);
+      const content = Option.getOrThrow(metric).content;
+      assertCanaryMetricPolicy({ content, runId }, sensitive);
+      for (const forbidden of [
+        "canary.probe_a",
+        sensitive.tokenizerValue,
+        sensitive.documentationValue,
+        "****",
+        "[REDACTED]",
+      ]) {
+        assert.throws(() =>
+          assertCanaryMetricPolicy({ content: `${content}${forbidden}`, runId }, sensitive),
+        );
+      }
+      for (const invalidContent of ["{}", content.replaceAll(runId, "other-run")]) {
+        assert.throws(() =>
+          assertCanaryMetricPolicy({ content: invalidContent, runId }, sensitive),
+        );
+      }
+
       const query = stub.queries[0];
       assert.isDefined(query);
       assert.strictEqual(query.path, "/v1/query/_mpl?format=metrics-v2");
+      assert.strictEqual(query.authorization, "Bearer stub-read-token");
+      assert.strictEqual(query.organizationId, "stub-organization");
       assert.include(query.query, "`e2e-metrics`:`canary.operations`");
-      assert.include(query.query, '`canary.run_id` == "test-run-1"');
+      assert.include(query.query, `\`canary.run_id\` == "${runId}"`);
       assert.include(query.query, '`service.namespace` == "equipe-tech"');
       assert.include(query.query, '`service.name` == "observability-canary"');
-      assert.include(query.query, '`service.version` == "0.1.0"');
-      assert.include(query.query, '`deployment.environment.name` == "e2e"');
-      assert.include(query.query, '`deployment.environment` == "e2e"');
+      assert.include(query.query, '`service.version` == "0.3.0"');
+      assert.include(query.query, '`deployment.environment.name` == "test"');
+      assert.include(query.query, '`deployment.environment` == "test"');
     }),
   );
 });

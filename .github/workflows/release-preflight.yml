@@ -30,18 +30,17 @@ jobs:
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
+      - name: Resolve the selected release
+        env:
+          SLUG: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: bun scripts/release-canary.ts --tag "$SLUG@$VERSION" --github-env "$GITHUB_ENV"
       - name: Validate the selected release
         env:
           SLUG: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          manifest=""
-          for candidate in packages/*/package.json; do
-            if [[ "$(jq -r .name "$candidate" | sed 's#^@equipe-tech/##')" == "$SLUG" ]]; then manifest="$candidate"; break; fi
-          done
-          [[ -n "$manifest" ]] || { echo "Unknown package $SLUG."; exit 1; }
-          [[ "$(jq -r .version "$manifest")" == "$VERSION" ]] || { echo "Version $VERSION does not match $manifest."; exit 1; }
           bun scripts/release.ts "$VERSION" --package "$SLUG" --dry-run
           bun run build
           OBSERVABILITY_COMPATIBILITY_DATE="$(date -u +%F)" bun run compat --release "$SLUG@$VERSION"
@@ -51,4 +50,4 @@ jobs:
           test -s "$output/$SLUG@$VERSION.sha256"
           (cd "$output" && sha256sum --check "$SLUG@$VERSION.sha256")
           bun run test:package
-          bun scripts/npm-publication-state.ts "$(jq -r .name "$manifest")" "$VERSION"
+          bun scripts/npm-publication-state.ts "$RELEASE_PACKAGE_NAME" "$VERSION"

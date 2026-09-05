@@ -17,7 +17,13 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseResourceIdentity, serviceNamespace } from "../src/ResourceIdentity.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
-import { canaryRunId, canarySensitiveValues, emitCanary } from "./support/canary.ts";
+import { assertCanaryMetricPolicy } from "./support/canaryAssessment.ts";
+import {
+  canaryRunId,
+  canarySensitiveValues,
+  canaryServiceVersion,
+  emitCanary,
+} from "./support/canary.ts";
 
 const cliManifest: unknown = JSON.parse(
   await readFile(new URL("../../cli/package.json", import.meta.url).pathname, "utf8"),
@@ -477,7 +483,7 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
         const runId = yield* canaryRunId();
         const identity = yield* parseResourceIdentity({
           serviceName: "observability-canary",
-          serviceVersion: "0.1.0",
+          serviceVersion: canaryServiceVersion,
           environment: "test",
         });
         const config = new TelemetryConfig({
@@ -502,7 +508,11 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
         const auditConfig = yield* parseNodeObservabilityConfig({
           enabled: true,
           profile: "worker",
-          service: { name: "observability-canary", version: "0.1.0", environment: "test" },
+          service: {
+            name: "observability-canary",
+            version: canaryServiceVersion,
+            environment: "test",
+          },
           telemetry: { endpoint: new URL("http://localhost:4318") },
           evlog: {
             contract: auditContract,
@@ -557,7 +567,7 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
         );
         assert.strictEqual(
           Option.getOrUndefined(attributeValue(resource, "service.version")),
-          "0.1.0",
+          canaryServiceVersion,
         );
         assertEnvironmentAliases(run.root.resource, "test");
 
@@ -645,20 +655,8 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
             assert.strictEqual(Option.getOrUndefined(attributeValue(attributes, key)), "****");
           }
         }
-        assert.strictEqual(
-          Option.getOrUndefined(attributeValue(run.metric.dataPoint.attributes, "canary.run_id")),
-          runId,
-        );
         const metricAttributes = JSON.stringify(run.metric.dataPoint.attributes);
-        for (const value of [
-          sensitive.authorization,
-          sensitive.password,
-          sensitive.accessToken,
-          sensitive.email,
-          sensitive.phoneNumber,
-        ]) {
-          assert.notInclude(metricAttributes, value);
-        }
+        assertCanaryMetricPolicy({ content: metricAttributes, runId }, sensitive);
         assert.include(redactedBody, "[REDACTED]");
         assert.include(run.redactionSpanEvent.name, "[REDACTED]");
 
@@ -673,7 +671,7 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
           );
           assert.strictEqual(
             Option.getOrUndefined(attributeValue(signalResource.attributes, "service.version")),
-            "0.1.0",
+            canaryServiceVersion,
           );
           assertEnvironmentAliases(signalResource, "test");
         }
