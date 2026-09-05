@@ -118,6 +118,8 @@ type CanaryLogRecord = typeof ExportedLogRecord.Type;
 type CanaryMetric = typeof ExportedMetric.Type;
 type CanaryMetricDataPoint = typeof MetricDataPoint.Type;
 
+type CanarySpanExport = { readonly span: CanarySpan; readonly resource: CanaryResource };
+
 type CanaryExport = {
   readonly content: string;
   readonly spans: ReadonlyArray<{ readonly span: CanarySpan; readonly resource: CanaryResource }>;
@@ -205,13 +207,19 @@ const readTelemetryExport = Effect.fn("readTelemetryExport")(function* (): Effec
   return { content, spans, logs, metrics };
 });
 
+const selectCanaryRoot = (
+  spans: ReadonlyArray<CanarySpanExport>,
+  runId: string,
+): CanarySpanExport | undefined =>
+  spans.find(
+    (candidate) =>
+      Option.getOrUndefined(attributeValue(candidate.span.attributes, "canary.run_id")) === runId,
+  );
+
 const findRun = Effect.fn("findRun")(function* (runId: string) {
   for (let attempt = 0; attempt < 40; attempt++) {
     const telemetryExport = yield* readTelemetryExport();
-    const root = telemetryExport.spans.find(
-      (candidate) =>
-        Option.getOrUndefined(attributeValue(candidate.span.attributes, "canary.run_id")) === runId,
-    );
+    const root = selectCanaryRoot(telemetryExport.spans, runId);
     if (root !== undefined) {
       const redactionSpanEvent = root.span.events.find(
         (event) =>
@@ -297,6 +305,62 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
     yield* Effect.sleep("500 millis");
   }
   return yield* Effect.die(`canary run ${runId} not found in ${telemetryExportPath}`);
+});
+
+const testAttribute = (key: string, value: string): typeof Attribute.Type => ({
+  key,
+  value: { stringValue: value },
+});
+
+const testResource = (serviceName: string): CanaryResource => ({
+  attributes: [
+    testAttribute("service.namespace", "equipe-tech"),
+    testAttribute("service.name", serviceName),
+    testAttribute("service.version", "0.1.0"),
+    testAttribute("deployment.environment.name", "test"),
+    testAttribute("deployment.environment", "test"),
+  ],
+});
+
+const testRoot = (
+  name: string,
+  runId: string,
+  spanId: string,
+  serviceName = "observability-canary",
+): CanarySpanExport => ({
+  span: {
+    traceId: `${spanId}-trace`,
+    spanId,
+    name,
+    attributes: [testAttribute("canary.run_id", runId)],
+    events: [],
+  },
+  resource: testResource(serviceName),
+});
+
+const expectedRoot = testRoot("canary.operation", "test-run", "server-root");
+const browserRoot = testRoot("canary.browser.operation", "test-run", "browser-root");
+
+describe("local canary root selection", () => {
+  it.each([
+    [browserRoot, expectedRoot],
+    [expectedRoot, browserRoot],
+  ])("selects the server root independently of export order", (...spans) => {
+    assert.strictEqual(selectCanaryRoot(spans, "test-run"), expectedRoot);
+  });
+
+  it("rejects roots with the wrong signal or identity", () => {
+    const wrongRun = testRoot("canary.operation", "other-run", "wrong-run");
+    const wrongSignal = testRoot("unrelated.operation", "test-run", "wrong-signal");
+    const wrongIdentity = testRoot(
+      "canary.operation",
+      "test-run",
+      "wrong-identity",
+      "other-service",
+    );
+
+    assert.isUndefined(selectCanaryRoot([wrongRun, wrongSignal, wrongIdentity], "test-run"));
+  });
 });
 
 const canaryEnabled = process.env["OBSERVABILITY_E2E"] === "1";
