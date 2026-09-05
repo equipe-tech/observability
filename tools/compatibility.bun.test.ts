@@ -399,6 +399,70 @@ describe("compatibility gate", () => {
     ).toBe(true);
   });
 
+  test("validates every declared export runtime target", () => {
+    const directory = mkdtempSync(join(tmpdir(), "observability-compatibility-exports-"));
+    const packageRoot = join(directory, "package");
+    const writeManifest = (exports: {
+      readonly [name: string]:
+        | string
+        | {
+            readonly types?: string;
+            readonly import?: string;
+            readonly default?: string;
+          };
+    }): void =>
+      writeFileSync(
+        join(packageRoot, "package.json"),
+        JSON.stringify({
+          name: "@equipe-tech/example",
+          version: "0.2.1",
+          type: "module",
+          exports,
+        }),
+      );
+    const conditionalExport = {
+      types: "./dist/index.d.ts",
+      import: "./dist/index.js",
+      default: "./dist/index.default.js",
+    };
+    try {
+      mkdirSync(join(packageRoot, "dist"), { recursive: true });
+      writeFileSync(join(packageRoot, "dist/index.d.ts"), "export declare const example: true;\n");
+      writeFileSync(join(packageRoot, "dist/index.js"), "export const example = true;\n");
+      writeFileSync(join(packageRoot, "dist/index.default.js"), "export const example = true;\n");
+      writeFileSync(join(packageRoot, "dist/direct.js"), "export const direct = true;\n");
+
+      writeManifest({ ".": conditionalExport });
+      const baseline = inspectPackageSurface(packageRoot);
+      expect(baseline.missingRuntimeEntrypoints).toEqual([]);
+      expect(baseline.surface.runtimeEntrypoints).toEqual(["."]);
+
+      writeManifest({ ".": conditionalExport, "./direct": "./dist/direct.js" });
+      const additive = inspectPackageSurface(packageRoot);
+      expect(additive.missingRuntimeEntrypoints).toEqual([]);
+      expect(additive.surface.runtimeEntrypoints).toEqual([".", "./direct"]);
+      expect(classifyPackageChange(baseline.surface, additive.surface, "0.2.2", [])).toEqual([
+        expect.objectContaining({ code: "OBS_PACKAGE_EXPORT_ADDED", satisfied: true }),
+        expect.objectContaining({ code: "OBS_PACKAGE_EXPORT_CONDITION_ADDED", satisfied: true }),
+      ]);
+
+      writeManifest({ ".": conditionalExport, "./missing": "./dist/missing.js" });
+      expect(inspectPackageSurface(packageRoot).missingRuntimeEntrypoints).toEqual(["./missing"]);
+
+      writeManifest({
+        ".": { ...conditionalExport, import: "./dist/missing-import.js" },
+      });
+      expect(inspectPackageSurface(packageRoot).missingRuntimeEntrypoints).toEqual(["."]);
+
+      writeManifest({
+        ".": { ...conditionalExport, default: "./dist/missing-default.js" },
+      });
+      expect(inspectPackageSurface(packageRoot).missingRuntimeEntrypoints).toEqual(["."]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("classifies and validates published bin entrypoints", () => {
     const directory = mkdtempSync(join(tmpdir(), "observability-compatibility-bin-"));
     const packageRoot = join(directory, "package");
