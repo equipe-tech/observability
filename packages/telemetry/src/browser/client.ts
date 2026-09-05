@@ -11,7 +11,13 @@ export type {
   BrowserTelemetryClientError,
   BrowserTelemetryClientEvent,
   BrowserTelemetryClientFields,
+  BrowserTelemetryClientMetric,
+  BrowserTelemetryClientResource,
+  BrowserTelemetryClientSpan,
   BrowserTelemetryDefectInput,
+  BrowserCounter,
+  BrowserTraceContext,
+  BrowserTraceHandle,
   BrowserTelemetryFieldTransform,
   BrowserTelemetryClientTransport,
 } from "./BrowserClient.ts";

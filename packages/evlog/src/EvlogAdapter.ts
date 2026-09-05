@@ -945,15 +945,18 @@ export const makeEvlogAdapter = (
                   projected,
                   event.admission.policyDroppedAttributes,
                 ),
+                event.trace?.traceId,
+                event.trace?.spanId,
               ),
             );
           });
 
         const admitBrowserBatch = (events: ReadonlyArray<BrowserTelemetryEvent>) =>
-          Effect.gen(function* () {
-            const records = yield* Effect.forEach(events, projectBrowser);
-            for (const record of records) offer(record);
-          });
+          Effect.map(Effect.forEach(events, projectBrowser), (records) => ({
+            commit: Effect.sync(() => {
+              for (const record of records) offer(record);
+            }),
+          }));
 
         const admitGlobal = (drainContext: DrainContext): void => {
           if (drainContext.event.audit !== undefined) {
@@ -1253,7 +1256,7 @@ export const makeEvlogAdapter = (
                 }
                 return admitContract(event, admission);
               }),
-            recordBrowserBatch: admitBrowserBatch,
+            admitBrowserBatch,
           }),
         );
 
