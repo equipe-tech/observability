@@ -1,4 +1,5 @@
 import { Clock, Context, Effect, Layer, Option, Schema } from "effect";
+import { classifyAxiomRetentionChange } from "./AxiomDatasetRetention.ts";
 import { CredentialsStore, type CredentialsError } from "./CredentialsStore.ts";
 import {
   type AxiomDataset,
@@ -70,6 +71,9 @@ const OperationsPlanEnvironment = Schema.Struct({
   NODE_ENV: Schema.NonEmptyString.pipe(Schema.optionalKey),
 });
 const operationsPlanEnvironment = Schema.decodeUnknownSync(OperationsPlanEnvironment)(process.env);
+
+const isDestructiveManualAction = (action: ManualAction): boolean =>
+  action.kind === "destructive" || (action.kind === undefined && action.capability === "retention");
 
 const mutationWithStatus = (
   mutation: MutationIntent,
@@ -237,14 +241,7 @@ const makePlan = (
           capability: "retention",
           environment,
           desiredFingerprint: fingerprint(JSON.stringify({ days: retention.days })),
-          kind: matchingDatasets.some(
-            (dataset) =>
-              dataset.useRetentionPeriod &&
-              dataset.retentionDays !== undefined &&
-              dataset.retentionDays > retention.days,
-          )
-            ? "destructive"
-            : "manual",
+          kind: classifyAxiomRetentionChange(matchingDatasets, retention.days),
           publiclySatisfied:
             environmentNames.every(
               (name) => matchingDatasets.filter((dataset) => dataset.name === name).length === 1,
@@ -336,14 +333,38 @@ const makePlan = (
       }))
       .sort((left, right) => left.name.localeCompare(right.name));
     const observedFingerprint = fingerprint(JSON.stringify(selectedDatasets));
-    const currentManualDefinitionIds = manualDefinitionIds(validated, selectedEnvironments);
-    const pendingManualActions = state.manualActions
-      .filter(
-        (action) =>
-          selectedEnvironments.includes(action.environment) &&
-          currentManualDefinitionIds.has(action.id) &&
-          action.status === "pending",
-      )
+    const pendingManualActions = manualDefinitions
+      .flatMap((manual) => {
+        const persisted = state.manualActions.find(
+          (action) =>
+            action.id === manual.id &&
+            action.desiredFingerprint === manual.desiredFingerprint &&
+            action.status === "pending",
+        );
+        if (persisted === undefined) return [];
+        const pending =
+          persisted.expiresAt === undefined
+            ? new ManualAction({
+                id: manual.id,
+                provider: manual.provider,
+                capability: manual.capability,
+                environment: manual.environment,
+                desiredFingerprint: manual.desiredFingerprint,
+                kind: manual.kind,
+                status: "pending",
+              })
+            : new ManualAction({
+                id: manual.id,
+                provider: manual.provider,
+                capability: manual.capability,
+                environment: manual.environment,
+                desiredFingerprint: manual.desiredFingerprint,
+                kind: manual.kind,
+                status: "pending",
+                expiresAt: persisted.expiresAt,
+              });
+        return [pending];
+      })
       .sort((left, right) => left.id.localeCompare(right.id));
     const withoutDigest: Omit<OperationsPlanDocument, "digest"> = {
       version: 1,
@@ -537,7 +558,15 @@ export class OperationsPlanner extends Context.Service<
             cause: supplied.digest,
           });
         }
-        if (current.actions.some((action) => action.kind === "destructive") && !allowDestructive) {
+        const confirmsDestructiveManualAction = current.pendingManualActions.some(
+          (action) =>
+            confirmedManualActions.includes(action.id) && isDestructiveManualAction(action),
+        );
+        if (
+          (current.actions.some((action) => action.kind === "destructive") ||
+            confirmsDestructiveManualAction) &&
+          !allowDestructive
+        ) {
           return yield* new OperationsError({
             code: "OBS_CLI_PLAN_DESTRUCTIVE",
             message: `Plan ${current.digest} contains destructive changes. Rerun with --allow-destructive and this exact plan.`,
@@ -618,11 +647,12 @@ export class OperationsPlanner extends Context.Service<
                 manualActions: state.manualActions.map((action) =>
                   action.id === confirmation
                     ? new ManualAction({
-                        id: action.id,
-                        provider: action.provider,
-                        capability: action.capability,
-                        environment: action.environment,
-                        desiredFingerprint: action.desiredFingerprint,
+                        id: pending.id,
+                        provider: pending.provider,
+                        capability: pending.capability,
+                        environment: pending.environment,
+                        desiredFingerprint: pending.desiredFingerprint,
+                        kind: isDestructiveManualAction(pending) ? "destructive" : "manual",
                         status: "operator-confirmed",
                       })
                     : action,
@@ -654,6 +684,7 @@ export class OperationsPlanner extends Context.Service<
                   capability: action.capability,
                   environment: action.environment,
                   desiredFingerprint: action.desiredFingerprint,
+                  kind: action.kind,
                   status: "operator-confirmed",
                 })
               : new ManualAction({
@@ -662,6 +693,7 @@ export class OperationsPlanner extends Context.Service<
                   capability: action.capability,
                   environment: action.environment,
                   desiredFingerprint: action.desiredFingerprint,
+                  kind: action.kind,
                   status: "pending",
                   expiresAt: new Date(
                     (yield* Clock.currentTimeMillis) + 30 * 24 * 60 * 60 * 1_000,

@@ -37,7 +37,66 @@ const BrowserEventFields = Schema.Record(BoundedFieldKey, BoundedFieldValue).che
   }),
 );
 
+const BrowserTraceId = Schema.String.check(
+  Schema.isPattern(/^[0-9a-f]{32}$/),
+  Schema.makeFilter((value) => value !== "00000000000000000000000000000000", {
+    expected: "a non-zero W3C trace identifier",
+  }),
+);
+
+const BrowserSpanId = Schema.String.check(
+  Schema.isPattern(/^[0-9a-f]{16}$/),
+  Schema.makeFilter((value) => value !== "0000000000000000", {
+    expected: "a non-zero W3C span identifier",
+  }),
+);
+
 export type BrowserEventFields = typeof BrowserEventFields.Type;
+
+export class BrowserResourceIdentity extends Schema.Class<BrowserResourceIdentity>(
+  "@equipe-tech/observability/BrowserResourceIdentity",
+)({
+  serviceName: Schema.NonEmptyString,
+  serviceVersion: Schema.NonEmptyString,
+  environment: Schema.NonEmptyString,
+}) {}
+
+export class BrowserTraceContext extends Schema.Class<BrowserTraceContext>(
+  "@equipe-tech/observability/BrowserTraceContext",
+)({
+  traceId: BrowserTraceId,
+  spanId: BrowserSpanId,
+}) {}
+
+export class BrowserTraceSpan extends Schema.Class<BrowserTraceSpan>(
+  "@equipe-tech/observability/BrowserTraceSpan",
+)({
+  traceId: BrowserTraceId,
+  spanId: BrowserSpanId,
+  parentSpanId: Schema.optional(BrowserSpanId),
+  name: Schema.NonEmptyString.check(Schema.isMaxLength(maxEventNameLength)),
+  startedAt: Schema.Number.check(
+    Schema.isFinite(),
+    Schema.isBetween({ minimum: 0, maximum: maxBrowserEventOccurredAt }),
+  ),
+  endedAt: Schema.Number.check(
+    Schema.isFinite(),
+    Schema.isBetween({ minimum: 0, maximum: maxBrowserEventOccurredAt }),
+  ),
+  fields: BrowserEventFields,
+}) {}
+
+export class BrowserMetricPoint extends Schema.Class<BrowserMetricPoint>(
+  "@equipe-tech/observability/BrowserMetricPoint",
+)({
+  name: Schema.NonEmptyString.check(Schema.isMaxLength(maxEventNameLength)),
+  value: Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)),
+  occurredAt: Schema.Number.check(
+    Schema.isFinite(),
+    Schema.isBetween({ minimum: 0, maximum: maxBrowserEventOccurredAt }),
+  ),
+  fields: BrowserEventFields,
+}) {}
 
 export class BrowserEventError extends Schema.Class<BrowserEventError>(
   "@equipe-tech/observability/BrowserEventError",
@@ -58,6 +117,7 @@ const BrowserEventDocument = {
   ),
   fields: BrowserEventFields,
   error: Schema.optional(BrowserEventError),
+  trace: Schema.optional(BrowserTraceContext),
 };
 
 export class BrowserEvent extends Schema.Class<BrowserEvent>(
@@ -69,10 +129,25 @@ const BrowserEventBatchDocument = {
     Schema.isGreaterThan(0),
     Schema.makeFilter(Number.isSafeInteger, { expected: "a positive safe integer" }),
   ),
+  resource: Schema.optional(BrowserResourceIdentity),
   events: Schema.Array(BrowserEvent).check(
     Schema.makeFilter((events) => events.length <= maxEventsPerBatch, {
       expected: `at most ${maxEventsPerBatch} events per batch`,
     }),
+  ),
+  spans: Schema.optional(
+    Schema.Array(BrowserTraceSpan).check(
+      Schema.makeFilter((spans) => spans.length <= maxEventsPerBatch, {
+        expected: `at most ${maxEventsPerBatch} spans per batch`,
+      }),
+    ),
+  ),
+  metrics: Schema.optional(
+    Schema.Array(BrowserMetricPoint).check(
+      Schema.makeFilter((metrics) => metrics.length <= maxEventsPerBatch, {
+        expected: `at most ${maxEventsPerBatch} metric points per batch`,
+      }),
+    ),
   ),
 };
 

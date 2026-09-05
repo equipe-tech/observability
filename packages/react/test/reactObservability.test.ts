@@ -513,7 +513,7 @@ describe("React browser observability", () => {
     });
     observability.defects.report({ error: new Error("page hidden"), origin: "manual" });
     fixture.dispatch("pagehide", new Event("pagehide"));
-    await new Promise((resolve) => setTimeout(resolve, 850));
+    await new Promise((resolve) => setTimeout(resolve, 1_300));
     assert.strictEqual(operationalFlushes, 1);
     assert.strictEqual(observability.reports().sentry.reasons.flushIncomplete, 1);
     assert.strictEqual(observability.reports().failed, 1);

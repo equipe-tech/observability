@@ -1232,16 +1232,18 @@ monitors: []
     await observability.runtime.runPromise(
       TelemetryEventSink.pipe(
         Effect.flatMap((sink) =>
-          sink.recordBrowserBatch([
-            {
-              id: "browser-defect",
-              name: "job.processing",
-              occurredAt: 1,
-              attributes: { "job.name": "billing" },
-              error: { type: "TypeError", message: "render failed", retryable: false },
-              admission: { policyDroppedAttributes: 0 },
-            },
-          ]),
+          sink
+            .admitBrowserBatch([
+              {
+                id: "browser-defect",
+                name: "job.processing",
+                occurredAt: 1,
+                attributes: { "job.name": "billing" },
+                error: { type: "TypeError", message: "render failed", retryable: false },
+                admission: { policyDroppedAttributes: 0 },
+              },
+            ])
+            .pipe(Effect.flatMap((admission) => admission.commit)),
         ),
         Effect.provide(observability.eventLayer),
       ),
@@ -1280,7 +1282,7 @@ monitors: []
       const failure = await observability.runtime.runPromise(
         Effect.flip(
           TelemetryEventSink.pipe(
-            Effect.flatMap((sink) => sink.recordBrowserBatch([event])),
+            Effect.flatMap((sink) => sink.admitBrowserBatch([event])),
             Effect.provide(observability.eventLayer),
           ),
         ),
@@ -1304,7 +1306,7 @@ monitors: []
       Effect.flip(
         TelemetryEventSink.pipe(
           Effect.flatMap((sink) =>
-            sink.recordBrowserBatch([
+            sink.admitBrowserBatch([
               {
                 id: "browser-1",
                 name: "job.completed",
@@ -1388,7 +1390,7 @@ monitors: []
       admission: { policyDroppedAttributes: 0 },
     };
     const contractFailure = await Effect.runPromise(
-      Effect.flip(sink.recordBrowserBatch([valid, invalidContract])),
+      Effect.flip(sink.admitBrowserBatch([valid, invalidContract])),
     );
     expect(contractFailure.code).toBe("OBS_EVENT_MISSING_ATTRIBUTE");
     expect(adapter.pending()).toEqual({ count: 0, serializedBytes: 0 });
@@ -1399,17 +1401,18 @@ monitors: []
       occurredAt: BrowserEvents.maxBrowserEventOccurredAt + 1,
     };
     const timestampFailure = await Effect.runPromise(
-      Effect.flip(sink.recordBrowserBatch([valid, invalidTimestamp])),
+      Effect.flip(sink.admitBrowserBatch([valid, invalidTimestamp])),
     );
     expect(timestampFailure.code).toBe("OBS_EVENT_INVALID_FIELD");
     expect(adapter.pending()).toEqual({ count: 0, serializedBytes: 0 });
 
-    await Effect.runPromise(
-      sink.recordBrowserBatch([
+    const admission = await Effect.runPromise(
+      sink.admitBrowserBatch([
         { ...valid, id: "atomic-one", attributes: { "job.name": "atomic-one" } },
         { ...valid, id: "atomic-two", attributes: { "job.name": "atomic-two" } },
       ]),
     );
+    await Effect.runPromise(admission.commit);
     await observability.close();
     await receiver.close();
     const wire = receiver.bodies.join("\n");
@@ -1453,7 +1456,7 @@ monitors: []
     for (const testCase of cases) {
       const failure = await Effect.runPromise(
         Effect.flip(
-          sink.recordBrowserBatch([
+          sink.admitBrowserBatch([
             {
               id: crypto.randomUUID(),
               name: testCase.name,
@@ -1837,8 +1840,8 @@ monitors: []
       const sink = await observability.runtime.runPromise(
         TelemetryEventSink.pipe(Effect.provide(observability.eventLayer)),
       );
-      await Effect.runPromise(
-        sink.recordBrowserBatch([
+      const browserAdmission = await Effect.runPromise(
+        sink.admitBrowserBatch([
           {
             id: secretText,
             name: "canonicalsecret.operation",
@@ -1848,6 +1851,7 @@ monitors: []
           },
         ]),
       );
+      await Effect.runPromise(browserAdmission.commit);
       if (drain === undefined) throw new Error("Expected an installed global drain.");
       await drain({
         event: {
