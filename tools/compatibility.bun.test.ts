@@ -21,6 +21,7 @@ import {
   type DeclaredPackageBreak,
   type PackageFinding,
   type PackageSurface,
+  type PeerRangeComparison,
 } from "../scripts/compatibility-gate.ts";
 import { generateCompatibilityCandidate } from "../scripts/generate-compatibility-candidate.ts";
 import { RegistryPackageFetchError } from "../scripts/registry-package.ts";
@@ -600,40 +601,38 @@ describe("compatibility gate", () => {
     expect(comparePeerRanges("^19", "^18 || ^19").classification).toBe("widened");
   });
 
-  test("matches Bun semver across partial zero-major caret ranges", () => {
-    const versions = Array.from({ length: 3 }, (_, major) =>
-      Array.from({ length: 5 }, (_, minor) =>
-        Array.from({ length: 5 }, (_, patch) => `${major}.${minor}.${patch}`),
-      ).flat(),
-    ).flat();
-    const cases: ReadonlyArray<readonly [string, string]> = [
-      ["^0", "^0.0"],
-      ["^0.0", "^0.0.0"],
-      ["^0.0.x", "^0.0.0"],
-      ["^0.0.0", "^0.0.x"],
-      ["^0.0", "^0.0.x"],
-      ["^0.1", "^0.1.0"],
-      ["^0.1.x", "^0.1.0"],
-      ["^1.0", "^1.0.0"],
-      ["0.x", "0.0.x"],
-      ["0.0.x", "0.x"],
-      ["^0.0 || ^0.1", "^0.1"],
-      ["^0.0", "^0.0 || ^0.1"],
+  test("preserves partial precision across the supported semver grammar", () => {
+    const cases: ReadonlyArray<readonly [string, string, PeerRangeComparison["classification"]]> = [
+      ["<0.0", "<0.0.0", "widened"],
+      ["<=0.0", "<=0.0.0", "narrowed"],
+      [">0.0", ">0.0.0", "widened"],
+      [">=0.0", ">=0.0.0", "equivalent"],
+      ["=0.0", "=0.0.0", "narrowed"],
+      ["^0.0", "^0.0.0", "narrowed"],
+      ["~0.0", "~0.0.0", "equivalent"],
+      ["0.0.x", "0.0.0", "narrowed"],
+      ["0.0 - 0.0", "0.0.0 - 0.0.0", "narrowed"],
+      [">=1 <3", ">=1 <2", "narrowed"],
+      ["^0 || ^1", "^1", "narrowed"],
+      ["^1", "^0 || ^1", "widened"],
+      [">=1.0.0-beta", ">=1.0.0", "narrowed"],
+      ["^1.0.0-beta", "^1.0.0", "narrowed"],
+      ["1.2.3+one", "1.2.3+two", "equivalent"],
     ];
-    for (const [baseline, candidate] of cases) {
-      const baselineOnly = versions.some(
-        (version) =>
-          Bun.semver.satisfies(version, baseline) && !Bun.semver.satisfies(version, candidate),
-      );
-      const candidateOnly = versions.some(
-        (version) =>
-          !Bun.semver.satisfies(version, baseline) && Bun.semver.satisfies(version, candidate),
-      );
-      const classification = baselineOnly ? "narrowed" : candidateOnly ? "widened" : "equivalent";
-      expect(comparePeerRanges(baseline, candidate).classification).toBe(classification);
+    for (const [baseline, candidate, classification] of cases) {
+      expect(comparePeerRanges(baseline, candidate)).toEqual({
+        baseline,
+        candidate,
+        classification,
+      });
     }
-    expect(Bun.semver.satisfies("0.0.5", "^0.0")).toBe(true);
-    expect(Bun.semver.satisfies("0.0.5", "^0.0.0")).toBe(false);
+    expect(Bun.semver.satisfies("0.0.5", "<=0.0")).toBe(true);
+    expect(Bun.semver.satisfies("0.0.5", "<=0.0.0")).toBe(false);
+    expect(Bun.semver.satisfies("0.0.1", ">0.0")).toBe(false);
+    expect(Bun.semver.satisfies("0.0.1", ">0.0.0")).toBe(true);
+    expect(Bun.semver.satisfies("1.0.0-beta", ">=1.0.0-beta")).toBe(true);
+    expect(Bun.semver.satisfies("1.0.0-beta", ">=1.0.0")).toBe(false);
+    expect(comparePeerRanges("workspace:*", "workspace:^1").classification).toBe("narrowed");
     expect(comparePeerRanges("workspace:*", "*").classification).toBe("narrowed");
     expect(comparePeerRanges("^0.0", "workspace:*").classification).toBe("narrowed");
   });
