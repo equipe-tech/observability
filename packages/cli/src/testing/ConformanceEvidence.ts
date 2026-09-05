@@ -4,6 +4,7 @@ import {
   type ConformanceCheckId,
   ConformanceViolation,
   type ConformanceEvidenceProvider,
+  type ConformanceTargetContext,
 } from "@equipe-tech/observability/testing";
 import {
   validateOperationsManifest,
@@ -24,6 +25,34 @@ const violation = (
 ): ConformanceViolation =>
   new ConformanceViolation({ message, offendingValue, cause: cause ?? offendingValue });
 
+const validateManifestBinding = Effect.fn("validateManifestBinding")(function* (
+  input: { readonly manifest: OperationsManifest; readonly contract: OperationsContractIndex },
+  target: ConformanceTargetContext,
+) {
+  const validated = yield* validateOperationsManifest(input.manifest, input.contract).pipe(
+    Effect.mapError((cause): ConformanceViolation =>
+      violation(
+        `The operations manifest or managed query is invalid: ${cause.message}`,
+        cause.code,
+        cause,
+      ),
+    ),
+  );
+  if (
+    validated.manifest.service !== target.binding.identity.serviceName ||
+    !validated.manifest.environments.includes(target.binding.identity.environment) ||
+    JSON.stringify(input.contract) !== JSON.stringify(target.binding.contract)
+  ) {
+    return yield* Effect.fail(
+      violation(
+        "The operations manifest, query index, environment, and service differ from the target binding.",
+        `${validated.manifest.service}@v${validated.manifest.contractVersion}`,
+      ),
+    );
+  }
+  return validated;
+});
+
 export const operationsManifestConformance = (input: {
   readonly manifest: OperationsManifest;
   readonly contract: OperationsContractIndex;
@@ -37,21 +66,7 @@ export const operationsManifestConformance = (input: {
       owner: "cli",
       verify: (target) =>
         Effect.gen(function* () {
-          const validated = yield* validateOperationsManifest(input.manifest, input.contract).pipe(
-            Effect.mapError((cause): ConformanceViolation =>
-              cause._tag === "OperationsManifestError"
-                ? violation(
-                    `The operations manifest is invalid for profile ${target.profile.name}: ${cause.message}`,
-                    cause.code,
-                    cause,
-                  )
-                : violation(
-                    `A managed query in the operations manifest is invalid: ${cause.message}`,
-                    cause.code,
-                    cause,
-                  ),
-            ),
-          );
+          const validated = yield* validateManifestBinding(input, target);
           return {
             owner: "cli",
             receiptType: "operations-manifest",
@@ -67,15 +82,7 @@ export const operationsManifestConformance = (input: {
       owner: "cli",
       verify: (target) =>
         Effect.gen(function* () {
-          const validated = yield* validateOperationsManifest(input.manifest, input.contract).pipe(
-            Effect.mapError((cause): ConformanceViolation =>
-              violation(
-                `The managed queries do not derive from the contract for profile ${target.profile.name}: ${cause.message}`,
-                cause.code,
-                cause,
-              ),
-            ),
-          );
+          const validated = yield* validateManifestBinding(input, target);
           const queryCount =
             validated.dashboards.reduce((total, dashboard) => total + dashboard.panels.length, 0) +
             validated.monitors.length;

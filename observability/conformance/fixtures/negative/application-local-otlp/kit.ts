@@ -5,17 +5,17 @@ import {
   runConformance,
   type ConformanceCheckId,
   type ConformanceProfileReport,
+  startOtlpCaptureServer,
   type ConformanceTarget,
 } from "@equipe-tech/observability/testing";
 import { fileURLToPath } from "node:url";
 import { buildWorkerTarget, workerProviders } from "../../positive/worker/kit.ts";
-import { startLocalCollector } from "../../../support/collector.ts";
 
 export const runLocalOtlpNegativeFixture = async (): Promise<ConformanceProfileReport> => {
-  const collector = await startLocalCollector();
+  const collector = await startOtlpCaptureServer();
   const kit = await buildWorkerTarget(collector);
   const target: ConformanceTarget = {
-    name: "negative-local-otlp",
+    name: "fixture-worker",
     profile: "worker",
     environment: "test",
     topology: "local",
@@ -26,8 +26,9 @@ export const runLocalOtlpNegativeFixture = async (): Promise<ConformanceProfileR
       browserIngest: false,
       audit: false,
     },
+    binding: kit.binding,
     providers: [
-      ...(await workerProviders(kit, collector)).filter(
+      ...(await workerProviders(kit)).filter(
         (provider) => provider.id !== "pipeline.no-application-otlp",
       ),
       packageBoundaryConformance({

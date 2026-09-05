@@ -80,6 +80,17 @@ export const scanImportSpecifiers = (source: string): ReadonlyArray<string> => {
     }
   }
   walk(program, {
+    CallExpression: (expression) => {
+      const argument = expression.arguments[0];
+      if (
+        expression.callee.type === "Identifier" &&
+        expression.callee.name === "require" &&
+        argument?.type === "Literal" &&
+        isString(argument.value)
+      ) {
+        specifiers.push(argument.value);
+      }
+    },
     ImportExpression: (expression) => {
       if (expression.source.type === "Literal" && isString(expression.source.value)) {
         specifiers.push(expression.source.value);
@@ -131,7 +142,11 @@ export const findApplicationOtlpImports = async (
       const file = `${sourceRoot}/${relative(absoluteRoot, absolute).split("\\").join("/")}`;
       const source = await readFile(absolute, "utf8");
       for (const specifier of scanImportSpecifiers(source)) {
-        if (classifyDependency(specifier) === "otlp") {
+        if (
+          classifyDependency(specifier) === "otlp" &&
+          specifier !== "effect/unstable/http" &&
+          !specifier.startsWith("effect/unstable/http/")
+        ) {
           violations.push({ rule: "boundary/application-otlp", file, specifier });
           continue;
         }

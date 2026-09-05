@@ -13,11 +13,12 @@ export const runNonDefectSentryCaptureFixture = async (): Promise<ConformancePro
   const built = await buildNestjsConformance(true);
   const expectedCapture = Option.getOrThrow(built.kit.expectedCaptureOutcome);
   const target: ConformanceTarget = {
-    name: "negative-expected-sentry-capture",
+    name: "fixture-api",
     profile: "nestjs-api",
     environment: "test",
     topology: "local",
     capabilities: { traces: true, metrics: true, defects: true, browserIngest: false, audit: true },
+    binding: built.kit.binding,
     providers: [
       ...built.providers.filter((provider) => provider.id !== "sentry.unexpected-defects-only"),
       nestjsDefectBoundaryConformance({

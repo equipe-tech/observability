@@ -26,7 +26,78 @@ const ProfileNameSchema = Schema.Literals([
   "library",
 ] as const);
 
-const decodeProfileName = Schema.decodeUnknownSync(ProfileNameSchema);
+const TargetText = Schema.String.check(Schema.isPattern(/\S/));
+const ContractIndexDocument = Schema.Struct({
+  index: Schema.Literal(1),
+  contractVersion: Schema.Int.check(Schema.isGreaterThan(0)),
+  service: TargetText,
+  events: Schema.Array(
+    Schema.Struct({
+      name: TargetText,
+      kind: Schema.Literals(["request", "operation", "domain", "defect", "audit"]),
+      attributes: Schema.Array(TargetText),
+      attributeClassifications: Schema.Array(
+        Schema.Struct({
+          name: TargetText,
+          classification: Schema.Literals(["public", "internal", "sensitive", "forbidden"]),
+        }),
+      ),
+    }),
+  ),
+  metrics: Schema.Array(
+    Schema.Struct({
+      name: TargetText,
+      kind: Schema.Literals(["counter", "histogram", "observable_gauge"]),
+      unit: Schema.String,
+      attributes: Schema.Array(TargetText),
+    }),
+  ),
+  aliases: Schema.Array(
+    Schema.Struct({
+      kind: Schema.Literals(["event", "metric"]),
+      from: TargetText,
+      to: TargetText,
+    }),
+  ),
+});
+
+const TargetDocument = Schema.Struct({
+  name: TargetText,
+  profile: ProfileNameSchema,
+  environment: TargetText,
+  topology: Schema.Literals(["local", "deployed"]),
+  capabilities: Schema.Struct({
+    traces: Schema.Boolean,
+    metrics: Schema.Boolean,
+    defects: Schema.Boolean,
+    browserIngest: Schema.Boolean,
+    audit: Schema.Boolean,
+  }),
+  binding: Schema.Struct({
+    identity: Schema.Struct({
+      serviceName: TargetText,
+      serviceVersion: TargetText,
+      environment: TargetText,
+    }),
+    contract: ContractIndexDocument,
+  }),
+  providers: Schema.Array(
+    Schema.Struct({
+      id: Schema.Literals(conformanceChecks.map((check) => check.id)),
+      owner: Schema.Literals([
+        "telemetry",
+        "cli",
+        "evlog",
+        "sentry",
+        "nestjs",
+        "react",
+        "application",
+      ]),
+      verify: Schema.instanceOf(Function),
+    }),
+  ),
+});
+const decodeTarget = Schema.decodeUnknownEffect(TargetDocument);
 
 const invalidSuite = (
   code:
@@ -54,31 +125,25 @@ const validateTarget = (
   target: ConformanceTarget,
 ): Effect.Effect<ConformanceTargetContext, InvalidConformanceSuite> =>
   Effect.gen(function* () {
-    if (target.name.trim().length === 0) {
-      return yield* invalidSuite(
-        "OBS_CONFORMANCE_TARGET_INVALID",
-        "The conformance target name must not be empty. Name the application target.",
-        target.name,
-      );
-    }
-    const profile = yield* Effect.try({
-      try: () => {
-        const name = decodeProfileName(target.profile);
-        return observabilityProfiles[name];
-      },
-      catch: (cause) =>
+    const document = yield* decodeTarget(target).pipe(
+      Effect.mapError((cause) =>
         invalidSuite(
           "OBS_CONFORMANCE_TARGET_INVALID",
-          `The conformance target profile "${String(target.profile)}" is not one of the five official profiles.`,
-          String(target.profile),
+          "The conformance target document is invalid. Supply valid identity, profile, environment, topology, boolean capabilities, and callable evidence providers.",
+          "conformance target",
           cause,
         ),
-    });
-    if (target.environment.trim().length === 0) {
+      ),
+    );
+    const profile = observabilityProfiles[document.profile];
+    if (
+      document.environment !== document.binding.identity.environment ||
+      document.binding.contract.service !== document.binding.identity.serviceName
+    ) {
       return yield* invalidSuite(
         "OBS_CONFORMANCE_TARGET_INVALID",
-        "The conformance target environment must not be empty. Name the deployment environment.",
-        target.name,
+        "The target environment, resource identity, and contract service must describe one application binding.",
+        `${document.name}:${document.environment}`,
       );
     }
     const capabilityRequirements = [
@@ -108,11 +173,12 @@ const validateTarget = (
       providerIds.add(provider.id);
     }
     return {
-      name: target.name,
+      name: document.name,
       profile,
-      environment: target.environment,
-      topology: target.topology,
-      capabilities: target.capabilities,
+      environment: document.environment,
+      topology: document.topology,
+      capabilities: document.capabilities,
+      binding: document.binding,
     };
   });
 
@@ -200,8 +266,18 @@ export const runConformanceSuite = (
   targets: ReadonlyArray<ConformanceTarget>,
 ): Effect.Effect<ConformanceReport, InvalidConformanceSuite> =>
   Effect.gen(function* () {
+    const documents = yield* Schema.decodeUnknownEffect(Schema.Array(TargetDocument))(targets).pipe(
+      Effect.mapError((cause) =>
+        invalidSuite(
+          "OBS_CONFORMANCE_TARGET_INVALID",
+          "The conformance suite input is invalid. Supply an array of complete target documents.",
+          "conformance suite",
+          cause,
+        ),
+      ),
+    );
     const seenProfiles = new Map<ProfileName, string>();
-    for (const target of targets) {
+    for (const target of documents) {
       const previous = seenProfiles.get(target.profile);
       if (previous !== undefined) {
         return yield* invalidSuite(

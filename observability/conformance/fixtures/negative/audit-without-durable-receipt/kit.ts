@@ -12,11 +12,12 @@ import { buildNestjsConformance } from "../../positive/nestjs-api/kit.ts";
 export const runAuditWithoutDurableReceiptFixture = async (): Promise<ConformanceProfileReport> => {
   const built = await buildNestjsConformance();
   const target: ConformanceTarget = {
-    name: "negative-audit-without-durable-receipt",
+    name: "fixture-api",
     profile: "nestjs-api",
     environment: "test",
     topology: "local",
     capabilities: { traces: true, metrics: true, defects: true, browserIngest: false, audit: true },
+    binding: built.kit.binding,
     providers: [
       ...built.providers.filter((provider) => provider.id !== "audit.durable-before-operational"),
       auditConformance({ commit: undefined, operationalAction: "fixture.updated" }),

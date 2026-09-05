@@ -18,12 +18,23 @@ O alvo seleciona um perfil oficial, a topologia e as capacidades. Os providers e
 
 ```ts
 import { Effect } from "effect";
-import { runConformance, type ConformanceTarget } from "@equipe-tech/observability/testing";
+import {
+  conformanceTargetBinding,
+  runConformance,
+  type ConformanceTarget,
+} from "@equipe-tech/observability/testing";
 import {
   operationsManifestConformance,
   packageBoundaryConformance,
 } from "@equipe-tech/observability-cli/testing";
 import { evlogConformance } from "@equipe-tech/observability-evlog/testing";
+
+const identity = {
+  serviceName: "billing-worker",
+  serviceVersion: "1.4.0",
+  environment: "test",
+};
+const binding = conformanceTargetBinding(compiledContract, identity);
 
 const target: ConformanceTarget = {
   name: "billing-worker",
@@ -37,10 +48,17 @@ const target: ConformanceTarget = {
     browserIngest: false,
     audit: false,
   },
+  binding,
   providers: [
     ...operationsManifestConformance({ manifest, contract: contractIndex }),
     packageBoundaryConformance({ projectRoot, sourceRoots: ["src"] }),
-    evlogConformance({ registration: evlog.registration, drops: evlog.drops() }),
+    evlogConformance({
+      registration: evlog.registration,
+      drops: evlog.drops(),
+      telemetry: capturedTelemetry,
+      runId,
+      eventName: "billing.run",
+    }),
     ...telemetryProviders,
   ],
 };
@@ -48,7 +66,7 @@ const target: ConformanceTarget = {
 const report = await Effect.runPromise(runConformance(target));
 ```
 
-`telemetryProviders` reúne os providers do contrato, identidade, correlação, política, ciclo de vida e canário exportados pelo mesmo entrypoint do runner. Um provider aplicável ausente encerra a construção da suíte com `InvalidConformanceSuite`.
+`compiledContract`, `capturedTelemetry`, `runId`, `evlog` e `telemetryProviders` são produzidos pelo kit da aplicação antes da execução. O exemplo completo executável está em `observability/conformance/fixtures/positive/worker/kit.ts`. `telemetryProviders` reúne os providers do contrato, identidade, correlação, política, ciclo de vida e canário exportados pelo mesmo entrypoint do runner. Um provider aplicável ausente encerra a construção da suíte com `InvalidConformanceSuite`.
 
 ## Resultado
 

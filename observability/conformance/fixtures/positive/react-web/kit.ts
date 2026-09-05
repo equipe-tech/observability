@@ -23,6 +23,7 @@ import {
 } from "@equipe-tech/observability-cli/testing";
 import {
   contractConformance,
+  conformanceTargetBinding,
   correlationConformance,
   identityConformance,
   policyConformance,
@@ -61,6 +62,7 @@ export type ReactKit = {
     readonly durationMillis: number;
   };
   readonly lifecycleReport: { readonly durationMillis: number; readonly degraded: boolean };
+  readonly binding: import("@equipe-tech/observability/testing").ConformanceTargetBinding;
 };
 
 export const buildReactKit = async (): Promise<ReactKit> => {
@@ -116,12 +118,17 @@ export const buildReactKit = async (): Promise<ReactKit> => {
     correlation,
     canaryReceipt,
     lifecycleReport,
+    binding: conformanceTargetBinding(contract, {
+      serviceName: "fixture-web",
+      serviceVersion: "1.4.0",
+      environment: "test",
+    }),
   };
 };
 
 export const runReactFixture = async (): Promise<ConformanceProfileReport> => {
   const kit = await buildReactKit();
-  const { manifest, contract: contractIndex } = await parseFixtureManifest();
+  const { manifest, contract: contractIndex } = await parseFixtureManifest(kit.binding);
   const target: ConformanceTarget = {
     name: "fixture-web",
     profile: "react-web",
@@ -134,6 +141,7 @@ export const runReactFixture = async (): Promise<ConformanceProfileReport> => {
       browserIngest: true,
       audit: false,
     },
+    binding: kit.binding,
     providers: [
       profileConformance({
         profile: "react-web",

@@ -12,12 +12,25 @@ import {
   type ConformanceTargetContext,
 } from "../src/testing/index.ts";
 
+const binding = {
+  identity: { serviceName: "delegation-service", serviceVersion: "1.0.0", environment: "staging" },
+  contract: {
+    index: 1 as const,
+    contractVersion: 1,
+    service: "delegation-service",
+    events: [],
+    metrics: [],
+    aliases: [],
+  },
+};
+
 const workerContext: ConformanceTargetContext = {
   name: "delegation-target",
   profile: observabilityProfiles.worker,
   environment: "staging",
   topology: "local",
   capabilities: { traces: true, metrics: true, defects: false, browserIngest: false, audit: false },
+  binding,
 };
 
 const applicableIds = conformanceChecks
@@ -32,6 +45,7 @@ const delegationTarget = (
   environment: "staging",
   topology: "local",
   capabilities: { traces: true, metrics: true, defects: false, browserIngest: false, audit: false },
+  binding,
   providers,
 });
 

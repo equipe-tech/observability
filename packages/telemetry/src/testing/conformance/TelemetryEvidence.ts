@@ -1,6 +1,11 @@
 import { Effect, Exit, Option, Schema } from "effect";
 import { parseResourceIdentity } from "../../ResourceIdentity.ts";
-import { defineTelemetryContract, type EmitReceipt } from "../../contract/index.ts";
+import {
+  contractIndex,
+  defineTelemetryContract,
+  type EmitReceipt,
+  type TelemetryContract,
+} from "../../contract/index.ts";
 import type { TelemetryContractInput } from "../../contract/TelemetryContract.ts";
 
 type StaticEventNames<Definition extends TelemetryContractInput> = {
@@ -15,14 +20,28 @@ import { parseDataPolicy } from "../../policy/DataPolicy.ts";
 import type { DataPolicyInput } from "../../policy/DataPolicy.ts";
 import { observabilityProfiles, type ProfileName } from "../../profile/ObservabilityProfile.ts";
 import type { LifecycleReport } from "../../profile/ObservabilityAdapter.ts";
-import type { AuditPublishReceipt, CommitAuditResult } from "../../audit/AuditPublisher.ts";
+import type {
+  AuditPublishReceipt,
+  CommitAuditResult,
+  CommittedAuditRecord,
+} from "../../audit/AuditPublisher.ts";
+import { isCommittedAuditRecord } from "../../audit/CommittedAuditRecordInternal.ts";
 import type { CapturedTelemetry } from "../index.ts";
 import {
   ConformanceViolation,
   defineConformanceEvidenceProvider,
   type ConformanceEvidenceProvider,
   type ConformanceCheckId,
+  type ConformanceTargetBinding,
 } from "./ConformanceModel.ts";
+
+export const conformanceTargetBinding = <Definition extends TelemetryContractInput>(
+  contract: TelemetryContract<Definition>,
+  identity: ConformanceTargetBinding["identity"],
+): ConformanceTargetBinding => ({
+  identity,
+  contract: contractIndex(contract, identity.serviceName),
+});
 
 export type ConformanceProvider<Id extends ConformanceCheckId> = ConformanceEvidenceProvider<Id>;
 
@@ -65,6 +84,18 @@ export const profileConformance = (input: {
             ),
           );
         }
+        if (
+          input.service.name !== target.binding.identity.serviceName ||
+          input.service.version !== target.binding.identity.serviceVersion ||
+          input.service.environment !== target.binding.identity.environment
+        ) {
+          return yield* Effect.fail(
+            violation(
+              "The profile service identity differs from the target binding.",
+              `${input.service.name}@${input.service.version}:${input.service.environment}`,
+            ),
+          );
+        }
         return {
           owner: "telemetry",
           receiptType: "profile-descriptor",
@@ -85,7 +116,7 @@ export const identityConformance = (input: {
   defineConformanceEvidenceProvider({
     id: "identity.canonical",
     owner: "telemetry",
-    verify: () =>
+    verify: (target) =>
       Effect.gen(function* () {
         const identity = yield* parseResourceIdentity(input.identity).pipe(
           Effect.mapError((cause): ConformanceViolation =>
@@ -96,6 +127,18 @@ export const identityConformance = (input: {
             ),
           ),
         );
+        if (
+          identity.serviceName !== target.binding.identity.serviceName ||
+          identity.serviceVersion !== target.binding.identity.serviceVersion ||
+          identity.environment !== target.binding.identity.environment
+        ) {
+          return yield* Effect.fail(
+            violation(
+              "The resource identity receipt differs from the target binding. Use the same service name, version, and environment for every provider.",
+              `${identity.serviceName}@${identity.serviceVersion}:${identity.environment}`,
+            ),
+          );
+        }
         return {
           owner: "telemetry",
           receiptType: "resource-identity",
@@ -113,7 +156,7 @@ export const contractConformance = <
   defineConformanceEvidenceProvider({
     id: "contract.compiles",
     owner: "telemetry",
-    verify: () =>
+    verify: (target) =>
       Effect.gen(function* () {
         const compiled = yield* Effect.exit(defineTelemetryContract(input.contract));
         if (!Exit.isSuccess(compiled)) {
@@ -122,6 +165,15 @@ export const contractConformance = <
               "The telemetry contract does not compile. Fix every reported contract issue.",
               "telemetry contract input",
               compiled.cause,
+            ),
+          );
+        }
+        const index = contractIndex(compiled.value, target.binding.identity.serviceName);
+        if (JSON.stringify(index) !== JSON.stringify(target.binding.contract)) {
+          return yield* Effect.fail(
+            violation(
+              "The compiled telemetry contract differs from the target contract binding. Derive every provider from the same compiled contract.",
+              `contract v${input.contract.version}`,
             ),
           );
         }
@@ -142,8 +194,18 @@ export const producersConformance = (input: {
   defineConformanceEvidenceProvider({
     id: "producers.contract-derived",
     owner: "telemetry",
-    verify: () =>
-      Effect.sync(() => {
+    verify: (target) =>
+      Effect.gen(function* () {
+        const eventName =
+          input.receipt.decision === "sampled_out" ? input.receipt.name : input.receipt.event.name;
+        if (!target.binding.contract.events.some((event) => event.name === eventName)) {
+          return yield* Effect.fail(
+            violation(
+              "The producer receipt does not name an event in the target contract binding.",
+              eventName,
+            ),
+          );
+        }
         if (input.receipt.decision === "sampled_out") {
           return {
             owner: "telemetry",
@@ -240,6 +302,18 @@ export const lifecycleConformance = (input: {
     verify: () =>
       Effect.gen(function* () {
         const failed = failedOutcomes(input.report);
+        const disposed = input.report.outcomes.some(
+          (outcome) =>
+            outcome.participant === "runtime-disposal" && outcome.result.kind === "completed",
+        );
+        if (input.report.operation !== "close" || !disposed) {
+          return yield* Effect.fail(
+            violation(
+              "Shutdown compliance requires a close receipt with completed runtime disposal. Close the runtime before submitting lifecycle evidence.",
+              input.report.operation,
+            ),
+          );
+        }
         if (input.report.degraded || failed.length > 0) {
           return yield* Effect.fail(
             violation(
@@ -286,6 +360,8 @@ export const libraryLifecycleConformance = (input: {
 export const auditConformance = (input: {
   readonly commit?: CommitAuditResult<unknown> | undefined;
   readonly operationalAction?: string | undefined;
+  readonly operationalRecordId?: string | undefined;
+  readonly operationalRecord?: CommittedAuditRecord | undefined;
 }): ConformanceProvider<"audit.durable-before-operational"> =>
   defineConformanceEvidenceProvider({
     id: "audit.durable-before-operational",
@@ -300,6 +376,19 @@ export const auditConformance = (input: {
             ),
           );
         }
+        if (
+          !isCommittedAuditRecord(input.commit.record) ||
+          input.commit.record !== input.operationalRecord ||
+          input.commit.record.action !== input.operationalAction ||
+          input.commit.record.recordId !== input.operationalRecordId
+        ) {
+          return yield* Effect.fail(
+            violation(
+              "The durable receipt does not identify the complete requested operational audit record and action. Supply the same owner-produced committed record to both paths.",
+              `${input.operationalRecordId ?? "missing record"}:${input.operationalAction ?? "missing action"}`,
+            ),
+          );
+        }
         return {
           owner: "telemetry",
           receiptType: "commit-audit-result",
@@ -309,28 +398,68 @@ export const auditConformance = (input: {
       }),
   });
 
+const matchesIdentity = (
+  attributes: CapturedTelemetry["logs"][number]["resourceAttributes"],
+  binding: ConformanceTargetBinding,
+): boolean =>
+  attributes.get("service.name") === binding.identity.serviceName &&
+  attributes.get("service.version") === binding.identity.serviceVersion &&
+  attributes.get("deployment.environment.name") === binding.identity.environment;
+
 export const telemetryCanaryConformance = (input: {
   readonly runId: string;
   readonly telemetry: CapturedTelemetry;
+  readonly metricRunIdAttribute?: string | undefined;
 }): ConformanceProvider<"canary.telemetry-destination"> =>
   defineConformanceEvidenceProvider({
     id: "canary.telemetry-destination",
     owner: "telemetry",
-    verify: () =>
+    verify: (target) =>
       Effect.gen(function* () {
-        const tracedSpans = input.telemetry.spans.filter(
-          (span) => span.traceId !== "" && span.spanId !== "",
+        const logs = input.telemetry.logs.filter(
+          (log) =>
+            log.attributes.get("run.id") === input.runId &&
+            matchesIdentity(log.resourceAttributes, target.binding) &&
+            target.binding.contract.events.some(
+              (event) => event.name === log.attributes.get("event.name"),
+            ),
         );
-        const logTraceIds = new Set(
-          input.telemetry.logs.flatMap((log) =>
-            Option.isSome(log.traceId) ? [log.traceId.value] : [],
-          ),
+        const currentTraceIds = new Set(
+          logs.flatMap((log) => (Option.isSome(log.traceId) ? [log.traceId.value] : [])),
         );
-        const correlated = tracedSpans.filter((span) => logTraceIds.has(span.traceId));
-        if (correlated.length === 0) {
+        const spans = input.telemetry.spans.filter(
+          (span) =>
+            currentTraceIds.has(span.traceId) &&
+            matchesIdentity(span.resourceAttributes, target.binding),
+        );
+        const metricRunIdAttribute = input.metricRunIdAttribute;
+        const metrics = input.telemetry.metrics.filter(
+          (metric) =>
+            matchesIdentity(metric.resourceAttributes, target.binding) &&
+            target.binding.contract.metrics.some(
+              (entry) =>
+                entry.name === metric.name &&
+                metricRunIdAttribute !== undefined &&
+                entry.attributes.includes(metricRunIdAttribute),
+            ) &&
+            metricRunIdAttribute !== undefined &&
+            metric.points.some(
+              (point) => point.attributes.get(metricRunIdAttribute) === input.runId,
+            ),
+        );
+        const linked = spans.some(
+          (span) =>
+            Option.isSome(span.parentSpanId) &&
+            logs.some((log) => Option.isSome(log.traceId) && log.traceId.value === span.traceId),
+        );
+        if (
+          logs.length === 0 ||
+          (target.capabilities.traces && (spans.length === 0 || !linked)) ||
+          (target.capabilities.metrics && metrics.length === 0)
+        ) {
           return yield* Effect.fail(
             violation(
-              "The telemetry canary did not capture correlated spans and events through the Collector pipeline. Run the local pipeline canary for an exported signal.",
+              "The telemetry canary lacks current-run contract events, selected signals, canonical resources, or trace parentage.",
               input.runId,
             ),
           );
@@ -339,7 +468,7 @@ export const telemetryCanaryConformance = (input: {
           owner: "telemetry",
           receiptType: "telemetry-canary",
           receiptId: input.runId,
-          summary: `captured ${correlated.length} spans correlated with exported events through the Collector pipeline`,
+          summary: `captured current-run telemetry with ${logs.length} events, ${spans.length} spans, and ${metrics.length} metrics`,
         } as const;
       }),
   });

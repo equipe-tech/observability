@@ -35,7 +35,11 @@ export const sentryUnexpectedDefectsConformance = (input: {
     verify: () =>
       Effect.gen(function* () {
         for (const capture of input.captures) {
-          if (capture.code !== undefined && input.expectedCodes.includes(capture.code)) {
+          if (
+            capture.outcome.kind === "queued" &&
+            capture.code !== undefined &&
+            input.expectedCodes.includes(capture.code)
+          ) {
             return yield* Effect.fail(
               violation(
                 `Expected error ${capture.code} reached Sentry. Only unexpected defects are captured; keep catalog errors inside the application error boundary.`,
@@ -44,7 +48,9 @@ export const sentryUnexpectedDefectsConformance = (input: {
             );
           }
         }
-        const captured = input.captures.length;
+        const captured = input.captures.filter(
+          (capture) => capture.outcome.kind === "queued",
+        ).length;
         if (captured < input.unexpectedCount) {
           return yield* Effect.fail(
             violation(
@@ -57,7 +63,7 @@ export const sentryUnexpectedDefectsConformance = (input: {
           owner: "sentry",
           receiptType: "sentry-captures",
           receiptId: `${captured}`,
-          summary: `Sentry received only unexpected defects (${captured} of ${input.unexpectedCount})`,
+          summary: `Sentry queued only unexpected defects (${captured} of ${input.unexpectedCount})`,
         } as const;
       }),
   });

@@ -1,4 +1,5 @@
 import { Schema, type Effect } from "effect";
+import type { ContractIndex } from "../../contract/ContractIndex.ts";
 import type { ObservabilityProfile, ProfileName } from "../../profile/ObservabilityProfile.ts";
 import type { ConformanceFailure } from "./ConformanceFailure.ts";
 
@@ -45,12 +46,22 @@ export type ConformanceCapabilitySelection = {
   readonly audit: boolean;
 };
 
+export type ConformanceTargetBinding = {
+  readonly identity: {
+    readonly serviceName: string;
+    readonly serviceVersion: string;
+    readonly environment: string;
+  };
+  readonly contract: ContractIndex;
+};
+
 export type ConformanceTargetContext = {
   readonly name: string;
   readonly profile: ObservabilityProfile;
   readonly environment: string;
   readonly topology: ConformanceTopology;
   readonly capabilities: ConformanceCapabilitySelection;
+  readonly binding: ConformanceTargetBinding;
 };
 
 export type ConformanceEvidence = {
@@ -83,6 +94,7 @@ export type ConformanceTarget = {
   readonly environment: string;
   readonly topology: ConformanceTopology;
   readonly capabilities: ConformanceCapabilitySelection;
+  readonly binding: ConformanceTargetBinding;
   readonly providers: ReadonlyArray<ConformanceEvidenceProvider>;
 };
 

@@ -7,6 +7,7 @@ import {
 import { packageBoundaryConformance } from "@equipe-tech/observability-cli/testing";
 import {
   contractConformance,
+  conformanceTargetBinding,
   libraryLifecycleConformance,
   profileConformance,
   runConformance,
@@ -52,7 +53,12 @@ export const libraryRuntimeMarkerProbe = (): ReadonlyArray<string> => {
 };
 
 export const runLibraryFixture = async (): Promise<ConformanceProfileReport> => {
-  await Effect.runPromise(defineTelemetryContract(libraryContractInput));
+  const contract = await Effect.runPromise(defineTelemetryContract(libraryContractInput));
+  const binding = conformanceTargetBinding(contract, {
+    serviceName: "fixture-library",
+    serviceVersion: "1.4.0",
+    environment: "test",
+  });
   const target: ConformanceTarget = {
     name: "fixture-library",
     profile: "library",
@@ -65,6 +71,7 @@ export const runLibraryFixture = async (): Promise<ConformanceProfileReport> => 
       browserIngest: false,
       audit: false,
     },
+    binding,
     providers: [
       profileConformance({
         profile: "library",

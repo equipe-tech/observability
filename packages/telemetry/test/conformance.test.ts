@@ -21,12 +21,32 @@ import {
   type ConformanceTargetContext,
 } from "../src/testing/index.ts";
 
+const binding = {
+  identity: { serviceName: "unit-service", serviceVersion: "1.0.0", environment: "test" },
+  contract: {
+    index: 1 as const,
+    contractVersion: 1,
+    service: "unit-service",
+    events: [
+      {
+        name: "unit.event",
+        kind: "operation" as const,
+        attributes: [],
+        attributeClassifications: [],
+      },
+    ],
+    metrics: [{ name: "unit.metric", kind: "counter" as const, unit: "1", attributes: [] }],
+    aliases: [],
+  },
+};
+
 const workerContext: ConformanceTargetContext = {
   name: "unit-target",
   profile: observabilityProfiles.worker,
   environment: "test",
   topology: "local",
   capabilities: { traces: true, metrics: true, defects: false, browserIngest: false, audit: false },
+  binding,
 };
 
 const passingProvider = (id: ConformanceCheckId): ConformanceEvidenceProvider =>
@@ -53,6 +73,7 @@ const targetWith = (overrides: Partial<ConformanceTarget>): ConformanceTarget =>
   environment: "test",
   topology: "local",
   capabilities: { traces: true, metrics: true, defects: false, browserIngest: false, audit: false },
+  binding,
   providers: workerProviders(),
   ...overrides,
 });
@@ -64,6 +85,63 @@ const suiteError = (exit: Exit.Exit<unknown, InvalidConformanceSuite>): string =
 };
 
 describe("conformance suite", () => {
+  it("parses the complete target before accessing fields", async () => {
+    const malformed = [
+      Object.assign(targetWith({}), { name: undefined }),
+      Object.assign(targetWith({}), { name: "   " }),
+      Object.assign(targetWith({}), { environment: 1 }),
+      Object.assign(targetWith({}), { topology: "typo" }),
+      Object.assign(targetWith({}), { capabilities: { traces: "enabled" } }),
+      Object.assign(targetWith({}), { capabilities: null }),
+      Object.assign(targetWith({}), { binding: null }),
+      Object.assign(targetWith({}), { providers: null }),
+      Object.assign(targetWith({}), {
+        providers: [{ id: "invalid", owner: "application", verify: () => Effect.void }],
+      }),
+      Object.assign(targetWith({}), {
+        providers: [{ id: "profile.official", owner: "invalid", verify: () => Effect.void }],
+      }),
+      Object.assign(targetWith({}), {
+        providers: [{ id: "profile.official", owner: "application", verify: true }],
+      }),
+    ];
+    for (const target of malformed) {
+      const failure = await Effect.runPromiseExit(runConformance(target));
+      expect(suiteError(failure)).toBe("OBS_CONFORMANCE_TARGET_INVALID");
+      const suiteFailure = await Effect.runPromiseExit(runConformanceSuite([target]));
+      expect(suiteError(suiteFailure)).toBe("OBS_CONFORMANCE_TARGET_INVALID");
+    }
+  });
+
+  it("rejects flush and incomplete close receipts for terminal lifecycle compliance", async () => {
+    for (const operation of ["flush", "close"] as const) {
+      const result = await Effect.runPromiseExit(
+        lifecycleConformance({
+          report: {
+            operation,
+            degraded: false,
+            durationMillis: 0,
+            outcomes: [],
+          },
+        }).verify(workerContext),
+      );
+      expect(result._tag).toBe("Failure");
+    }
+    const result = await Effect.runPromiseExit(
+      lifecycleConformance({
+        report: {
+          operation: "close",
+          degraded: false,
+          durationMillis: 0,
+          outcomes: [
+            { participant: "runtime-disposal", result: { kind: "completed", durationMillis: 0 } },
+          ],
+        },
+      }).verify(workerContext),
+    );
+    expect(result._tag).toBe("Success");
+  });
+
   it("registers every stable check with a unique id, code, and rule reference", () => {
     const ids = conformanceChecks.map((check) => check.id);
     expect(new Set(ids).size).toBe(ids.length);
@@ -159,7 +237,7 @@ describe("conformance suite", () => {
           providers: [
             profileConformance({
               profile: "nestjs-api",
-              service: { name: "unit-target", version: "1.0.0", environment: "test" },
+              service: { name: "unit-service", version: "1.0.0", environment: "test" },
             }),
             ...workerProviders().slice(1),
           ],
@@ -240,7 +318,7 @@ describe("conformance suite", () => {
           providers: [
             profileConformance({
               profile: "library",
-              service: { name: "fixture-library", version: "1.0.0", environment: "test" },
+              service: { name: "unit-service", version: "1.0.0", environment: "test" },
             }),
             passingProvider("contract.compiles"),
             libraryLifecycleConformance({ runtimeMarkers: [] }),
