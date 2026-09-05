@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { reactWebLifecycle } from "../src/profile/ReactWebProfile.ts";
 import {
   cliProfile,
   libraryProfile,
@@ -32,6 +33,27 @@ describe("official observability profiles", () => {
     expect(() => Object.defineProperty(serverOrder[1], 0, { value: "metrics" })).toThrow(TypeError);
   });
 
+  it("keeps every React lifecycle and security constant immutable", () => {
+    expect(Object.isFrozen(reactWebLifecycle)).toBe(true);
+    expect(Object.getOwnPropertyDescriptors(reactWebLifecycle)).toMatchObject({
+      environmentRequiringDefects: { writable: false, configurable: false },
+      shutdownDeadlineMillis: { writable: false, configurable: false },
+      eventShutdownDeadlineMillis: { writable: false, configurable: false },
+      sentryDeadlineMillis: { writable: false, configurable: false },
+      flushDeadlineMillis: { writable: false, configurable: false },
+    });
+    expect(() =>
+      Object.defineProperty(reactWebLifecycle, "environmentRequiringDefects", {
+        value: "bypassed",
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      Object.defineProperty(reactWebLifecycle, "eventShutdownDeadlineMillis", { value: 1 }),
+    ).toThrow(TypeError);
+    expect(reactWebLifecycle.environmentRequiringDefects).toBe("production");
+    expect(reactWebLifecycle.eventShutdownDeadlineMillis).toBe(1_150);
+  });
+
   it("matches the normative capability matrix", () => {
     const cells = Object.values(observabilityProfiles).map((profile) => [
       profile.name,
@@ -53,7 +75,10 @@ describe("official observability profiles", () => {
   it("publishes nested absolute deadlines", () => {
     expect(profileStageDeadlineMillis(workerProfile, "server")).toBe(5_000);
     expect(profileStageDeadlineMillis(workerProfile, "metrics")).toBe(3_000);
-    expect(profileStageDeadlineMillis(reactWebProfile, "browser")).toBe(2_000);
+    expect(profileStageDeadlineMillis(reactWebProfile, "browser")).toBe(
+      reactWebLifecycle.shutdownDeadlineMillis,
+    );
+    expect(reactWebProfile.shutdownDeadlineMillis).toBe(reactWebLifecycle.shutdownDeadlineMillis);
     expect(workerProfile.capabilityOrder[0]).toEqual(["server", ["events", "traces", "defects"]]);
     expect([
       nestjsApiProfile.shutdownDeadlineMillis,

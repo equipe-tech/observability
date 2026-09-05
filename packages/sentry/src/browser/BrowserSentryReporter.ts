@@ -9,7 +9,7 @@ import { Effect, Option, Result, Schema } from "effect";
 import { parseSentryDsn } from "../SentryDsn.ts";
 import { SentryAdapterError } from "../SentryAdapterError.ts";
 import { captureDefectNow, type CaptureResult } from "../policy/CaptureOwner.ts";
-import { defectDeduplicator } from "../policy/Deduplication.ts";
+import { defectDeduplicator, type DefectDeduplicator } from "../policy/Deduplication.ts";
 import { eventSettlements } from "../policy/EventSettlement.ts";
 import { secureEventId } from "../policy/EventId.ts";
 import {
@@ -31,12 +31,14 @@ export type BrowserSentryDefectReporterConfig = {
     readonly version: string;
     readonly environment: string;
   };
-  readonly policy: DataPolicyInput;
+  readonly policy?: DataPolicyInput;
+  readonly policyOwnership?: "owned" | "delegated";
   readonly flushDeadlineMillis?: number;
   readonly closeDeadlineMillis?: number;
   readonly terminalSettlementDeadlineMillis?: number;
   readonly dedupeWindowMillis?: number;
   readonly dedupeCapacity?: number;
+  readonly deduplication?: "owned" | "delegated";
 };
 
 export type BrowserSentryDefectReporter = {
@@ -59,12 +61,14 @@ const ConfigDocument = Schema.Struct({
     version: Schema.NonEmptyString,
     environment: Schema.NonEmptyString,
   }),
-  policy: Schema.Any,
+  policy: Schema.optional(Schema.Any),
+  policyOwnership: Schema.optional(Schema.Literals(["owned", "delegated"])),
   flushDeadlineMillis: Schema.optional(Deadline),
   closeDeadlineMillis: Schema.optional(Deadline),
   terminalSettlementDeadlineMillis: Schema.optional(Deadline),
   dedupeWindowMillis: Schema.optional(PositiveInteger),
   dedupeCapacity: Schema.optional(PositiveInteger),
+  deduplication: Schema.optional(Schema.Literals(["owned", "delegated"])),
 });
 const decodeConfig = Schema.decodeUnknownOption(ConfigDocument);
 const decodeDsn = Schema.decodeUnknownOption(Schema.URLFromString);
@@ -73,11 +77,13 @@ const configNames = new Set([
   "disabled",
   "service",
   "policy",
+  "policyOwnership",
   "flushDeadlineMillis",
   "closeDeadlineMillis",
   "terminalSettlementDeadlineMillis",
   "dedupeWindowMillis",
   "dedupeCapacity",
+  "deduplication",
 ]);
 const serviceNames = new Set(["name", "version", "environment"]);
 
@@ -88,6 +94,12 @@ const invalidConfig = (cause: unknown): never => {
       "The browser Sentry reporter configuration is invalid. Set canonical service identity, a compilable data policy, and positive bounded timing values.",
     cause,
   });
+};
+
+const delegatedDeduplicator: DefectDeduplicator = {
+  admit: () => ({ kind: "admitted" }),
+  rollback: () => undefined,
+  release: () => undefined,
 };
 
 const terminalSettlementDeadlineMillis = 5_000;
@@ -106,9 +118,18 @@ export const createBrowserSentryDefectReporter = (
   ) {
     return invalidConfig("invalid browser Sentry configuration");
   }
-  const policyResult = Effect.runSync(Effect.result(parseDataPolicy(config.policy)));
-  if (Result.isFailure(policyResult)) return invalidConfig(policyResult.failure);
-  const policy = policyResult.success;
+  const delegatedPolicy = config.policyOwnership === "delegated";
+  if (!delegatedPolicy && config.policy === undefined) {
+    return invalidConfig("owned policy is missing");
+  }
+  const policyResult =
+    config.policy === undefined
+      ? undefined
+      : Effect.runSync(Effect.result(parseDataPolicy(config.policy)));
+  if (policyResult !== undefined && Result.isFailure(policyResult)) {
+    return invalidConfig(policyResult.failure);
+  }
+  const policy = delegatedPolicy || policyResult === undefined ? undefined : policyResult.success;
   const reportState = sentryReportState();
   const flushDeadline = config.flushDeadlineMillis ?? 2_000;
   const closeDeadline = config.closeDeadlineMillis ?? 2_000;
@@ -117,10 +138,10 @@ export const createBrowserSentryDefectReporter = (
     serviceVersion: config.service.version,
     environment: config.service.environment,
   };
-  const dedupe = defectDeduplicator(
-    config.dedupeWindowMillis ?? 60_000,
-    config.dedupeCapacity ?? 256,
-  );
+  const dedupe =
+    config.deduplication === "delegated"
+      ? delegatedDeduplicator
+      : defectDeduplicator(config.dedupeWindowMillis ?? 60_000, config.dedupeCapacity ?? 256);
   const settlements = eventSettlements<ProjectedSentryEvent>(
     config.dedupeCapacity ?? 256,
     config.terminalSettlementDeadlineMillis ?? terminalSettlementDeadlineMillis,

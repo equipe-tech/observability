@@ -15,7 +15,7 @@ const PackageManifest = Schema.Struct({
 });
 export const decodePackageManifest = Schema.decodeUnknownSync(PackageManifest);
 
-type BoundaryRole = "core" | "adapter" | "bootstrap" | "domain";
+type BoundaryRole = "core" | "adapter" | "bootstrap" | "domain" | "react";
 type BoundaryViolation = {
   readonly rule: string;
   readonly file: string;
@@ -48,6 +48,7 @@ const ownership = defineOwnership([
   { kind: "exact", path: "packages/cli/src/main.ts", role: "bootstrap" },
   { kind: "prefix", path: "packages/sentry/src/policy/", role: "domain" },
   { kind: "prefix", path: "packages/sentry/src/", role: "adapter" },
+  { kind: "prefix", path: "packages/react/src/", role: "react" },
   { kind: "prefix", path: "packages/nestjs/src/", role: "adapter" },
   { kind: "prefix", path: "packages/evlog/src/", role: "adapter" },
   { kind: "exact", path: "packages/telemetry/src/MetricsRuntime.ts", role: "adapter" },
@@ -104,6 +105,7 @@ const forbiddenByRole = new Map<BoundaryRole, ReadonlySet<DependencyKind>>([
   ["domain", new Set(["metric-api", "otlp", "provider", "runtime-platform"])],
   ["bootstrap", new Set(["framework", "provider"])],
   ["adapter", new Set()],
+  ["react", new Set(["framework", "otlp", "provider", "runtime-platform"])],
 ]);
 
 const dependencyKind = (specifier: string): DependencyKind | undefined => {

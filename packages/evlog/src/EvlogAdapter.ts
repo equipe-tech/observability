@@ -620,18 +620,46 @@ export const makeEvlogAdapter = (
               event.attributes,
             );
             if (validation instanceof Contract.InvalidTelemetryEvent) return yield* validation;
+            if (validation.kind === "defect" && event.error === undefined) {
+              return yield* new Contract.InvalidTelemetryEvent({
+                code: "OBS_EVENT_INVALID_FIELD",
+                message: `Defect event "${event.name}" requires a typed browser error member.`,
+                eventName: event.name,
+                attributeName: "error",
+              });
+            }
+            if (validation.kind !== "defect" && event.error !== undefined) {
+              return yield* new Contract.InvalidTelemetryEvent({
+                code: "OBS_EVENT_INVALID_FIELD",
+                message: `Non-defect event "${event.name}" cannot carry a browser error member.`,
+                eventName: event.name,
+                attributeName: "error",
+              });
+            }
             const projected: { [attributeName: string]: Contract.AttributeValue } = {
               "event.name": event.name,
               "event.kind": "wide",
               "event.type": validation.kind,
               "event.severity": validation.defaultSeverity,
-              "event.outcome": "success",
+              "event.outcome": validation.kind === "defect" ? "failure" : "success",
               "event.timestamp": timestamp,
               "event.source": "browser",
               "browser.event.id": event.id,
               "browser.event.occurred_at": event.occurredAt,
               ...event.attributes,
             };
+            if (event.error !== undefined) {
+              const structured = createError({
+                code: event.error.type,
+                message: event.error.message,
+                status: event.error.retryable ? 503 : 500,
+              });
+              projected["error.type"] = structured.code ?? structured.name;
+              projected["error.name"] = structured.name;
+              projected["error.message"] = structured.message;
+              projected["error.status"] = structured.status;
+              projected["error.retryable"] = event.error.retryable;
+            }
             return admittedRecord(
               wideEventFor(
                 context,
@@ -642,15 +670,18 @@ export const makeEvlogAdapter = (
                   projected,
                   event.admission.policyDroppedAttributes,
                 ),
+                event.trace?.traceId,
+                event.trace?.spanId,
               ),
             );
           });
 
         const admitBrowserBatch = (events: ReadonlyArray<BrowserTelemetryEvent>) =>
-          Effect.gen(function* () {
-            const records = yield* Effect.forEach(events, projectBrowser);
-            for (const record of records) offer(record);
-          });
+          Effect.map(Effect.forEach(events, projectBrowser), (records) => ({
+            commit: Effect.sync(() => {
+              for (const record of records) offer(record);
+            }),
+          }));
 
         const admitGlobal = (drainContext: DrainContext): void => {
           const timestamp = normalizeGlobalTimestamp(drainContext.event.timestamp);
@@ -793,7 +824,7 @@ export const makeEvlogAdapter = (
                 }
                 return admitContract(event, admission);
               }),
-            recordBrowserBatch: admitBrowserBatch,
+            admitBrowserBatch,
           }),
         );
 

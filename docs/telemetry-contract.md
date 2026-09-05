@@ -157,3 +157,7 @@ Falhas de emissão retornam `InvalidTelemetryEvent`. O produtor executa todas as
 ## Testes de consumidores
 
 `@equipe-tech/observability/testing` exporta os tipos derivados do contrato, a lista de eventos da organização, os códigos de fixture e um sink coletor. O sink expõe `events` para eventos de servidor e `browserEvents` para eventos de browser já transformados, incluindo `admission.policyDroppedAttributes`. `withFixedSampling` fornece o serviço `Random.Random` com um valor determinístico para um programa Effect. `Testing.run` continua sendo o caminho em memória para provar a exportação OTLP real sem mock de módulo.
+
+## Defeitos do browser
+
+O envelope versão 1 aceita um membro opcional `error` com `type`, `message` e `retryable`. Eventos de contrato do tipo `defect` exigem esse membro. Outros eventos o rejeitam. O servidor projeta defeitos com `event.outcome` igual a `failure` e com o mesmo contexto de erro dos defeitos do servidor. Decodificadores antigos removem o membro aditivo.

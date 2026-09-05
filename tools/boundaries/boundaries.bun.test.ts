@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "bun:test";
@@ -320,6 +320,40 @@ describe("package boundaries", () => {
     });
   }
 
+  it("keeps every forbidden React import fixture load-bearing", async () => {
+    const fixtures = [
+      { file: "react.txt", rule: "boundary/react-forbidden-framework" },
+      { file: "react-dom.txt", rule: "boundary/react-forbidden-framework" },
+      { file: "sentry.txt", rule: "boundary/react-forbidden-provider" },
+      { file: "otlp.txt", rule: "boundary/react-forbidden-otlp" },
+      {
+        file: "runtime-platform.txt",
+        rule: "boundary/react-forbidden-runtime-platform",
+      },
+    ];
+    for (const fixture of fixtures) {
+      const temporary = await mkdtemp(join(tmpdir(), "boundaries-react-"));
+      try {
+        await cp(join(projects, "allowed"), temporary, { recursive: true });
+        const directory = join(temporary, "packages", "react");
+        await mkdir(join(directory, "src"), { recursive: true });
+        await writeFile(join(directory, "package.json"), JSON.stringify({ name: "react-adapter" }));
+        await writeFile(
+          join(directory, "src", "forbidden.ts"),
+          await readFile(join(import.meta.dirname, "fixtures", "react", fixture.file), "utf8"),
+        );
+        assert.equal(
+          (await checkPackageBoundaries(temporary)).some(
+            (violation) => violation.rule === fixture.rule,
+          ),
+          true,
+        );
+      } finally {
+        await rm(temporary, { recursive: true, force: true });
+      }
+    }
+  });
+
   it("rejects provider and OTLP imports from Sentry policy", async () => {
     const temporary = await mkdtemp(join(tmpdir(), "boundaries-sentry-policy-"));
     try {
@@ -363,6 +397,7 @@ describe("package boundaries", () => {
   it("classifies every production role by repository-relative ownership", () => {
     assert.equal(sourceRole("packages/sentry/src/policy/DefectProjection.ts"), "domain");
     assert.equal(sourceRole("packages/sentry/src/node/SentryDefectAdapter.ts"), "adapter");
+    assert.equal(sourceRole("packages/react/src/index.ts"), "react");
     assert.equal(sourceRole("packages/telemetry/src/index.ts"), "core");
     assert.equal(sourceRole("packages/telemetry/src/contract/EventName.ts"), "domain");
     assert.equal(sourceRole("packages/telemetry/src/trace/HttpServerOtlpTracer.ts"), "adapter");
