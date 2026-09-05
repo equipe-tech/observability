@@ -19,6 +19,8 @@ reporter.capture({ envelope });
 
 O adapter não instala handlers globais. O chamador continua dono dos limites `catch`, `unhandledRejection` e `error` do browser. Essa escolha evita captura automática de erros operacionais esperados.
 
+No perfil NestJS, `NestErrorBoundaryModule` é o limite de defeitos controlado pela aplicação. Forneça o serviço `SentryDefects` do adapter em `sentryDefects`. O limite cria o `UnexpectedDefect` com a correlação da requisição e chama o serviço uma vez por instância de `Error`. O adapter continua dono da sanitização, da deduplicação por identidade e fingerprint, da identidade de serviço, da versão, do ambiente, da release e do transporte. Erros esperados do catálogo nunca chegam a `SentryDefects`. Quando Sentry está desabilitado, omita `sentryDefects`.
+
 O Node usa `LightNodeClient` de `@sentry/node-core/light`. O pacote não chama o inicializador global do SDK e não configura tracing. Integrações padrão ficam desativadas.
 
 A deduplicação combina identidade do envelope e fingerprint normalizado. A mesma instância permanece deduplicada por identidade depois que a janela do fingerprint vence. A janela e a capacidade têm limites configuráveis. `flushDeadlineMillis` limita somente a espera do chamador. Cada reserva tem um prazo terminal separado, `terminalSettlementDeadlineMillis`. Uma resposta HTTP 2xx tardia confirma a captura e mantém a deduplicação. Uma resposta não 2xx, falha de rede, drop anterior ao transporte ou prazo terminal vencido libera a reserva e permite nova tentativa.

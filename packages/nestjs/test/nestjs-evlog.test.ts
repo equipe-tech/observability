@@ -2,6 +2,7 @@ import "reflect-metadata";
 import { Controller, Get, Module, NotFoundException, Param } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { Effect, Schema } from "effect";
+import { defineErrorCatalog } from "evlog";
 import { createOTLPDrain } from "evlog/otlp";
 import { Contract, parseNodeObservabilityConfig } from "@equipe-tech/observability";
 import { createNodeObservabilityFromConfig } from "@equipe-tech/observability/node";
@@ -13,7 +14,9 @@ import { Observable } from "rxjs";
 import { assert, describe, it } from "vite-plus/test";
 import {
   createRequestWideEventTraceCorrelation,
+  NestErrorBoundaryModule,
   TelemetryModule,
+  type DefectEventInput,
   type RequestWideEventLoggerResolver,
   type TelemetryModuleOptions,
 } from "../src/index.ts";
@@ -568,6 +571,126 @@ describe("NestJS evlog trace correlation", () => {
       assert.isDefined(record);
       assert.strictEqual(stringAttribute(record, "event.name"), "request.completed");
       assert.strictEqual(stringAttribute(record, "event.type"), "request");
+      assert.strictEqual(adapter.drops().reasons.contractRejected, 0);
+      assert.isFalse(report.degraded);
+    } finally {
+      await app.close().catch(() => undefined);
+      await observability.close().catch(() => undefined);
+      await capture.close();
+    }
+  }, 30_000);
+
+  it("accepts boundary defect events through the official evlog pipeline", async () => {
+    const capture = await makeOtlpCapture();
+    const contract = await Effect.runPromise(
+      Contract.defineTelemetryContract(
+        Contract.telemetryContractDefinition({
+          version: 1,
+          events: {
+            RequestCompleted: Contract.organizationEvents.RequestCompleted,
+            BoundaryDefect: {
+              name: "boundary.defect",
+              kind: "defect",
+              defaultSeverity: "error",
+              mandatory: true,
+              sampling: { kind: "always" },
+              attributes: {},
+            },
+          },
+          metrics: {},
+          auditActions: {},
+        }),
+      ),
+    );
+    const config = await Effect.runPromise(
+      parseNodeObservabilityConfig({
+        enabled: true,
+        profile: "nestjs-api",
+        service: { name: "nestjs-defect-event", version: "1.0.0", environment: "test" },
+        telemetry: { endpoint: new URL(capture.endpoint) },
+        evlog: { contract, policy: { attributes: {}, blockedKeys: [], blockedValuePatterns: [] } },
+        sentry: { enabled: false },
+      }),
+    );
+    const adapter = evlogAdapter({
+      installGlobalLogger: false,
+      batchSize: 1,
+      transportRetries: 0,
+    });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    const producer = Contract.makeEventProducer(contract);
+    const correlation = createRequestWideEventTraceCorrelation((request) =>
+      request instanceof IncomingMessage ? request.log : undefined,
+    );
+
+    class BoundaryController {
+      missing(): never {
+        throw new NotFoundException("missing boundary fixture");
+      }
+
+      defect(): never {
+        throw new Error("boundary pipeline defect");
+      }
+    }
+    Controller("boundary-pipeline")(BoundaryController);
+    for (const method of ["missing", "defect"] as const) {
+      Get(method)(
+        BoundaryController.prototype,
+        method,
+        methodDescriptor(BoundaryController.prototype, method),
+      );
+    }
+
+    const recordDefect = (event: DefectEventInput): Promise<void> =>
+      observability.runtime
+        .runPromise(
+          producer
+            .emit("BoundaryDefect", {
+              error: event.error,
+              attributes: {},
+              correlation: event.correlation,
+            })
+            .pipe(Effect.provide(observability.eventLayer)),
+        )
+        .then(() => undefined);
+
+    class AppModule {}
+    Module({
+      imports: [
+        EvlogModule.forRoot({ drain: () => undefined }),
+        TelemetryModule.forRootAsync({
+          useFactory: () => ({
+            enabled: true,
+            serviceName: "nestjs-defect-event",
+            serviceVersion: "1.0.0",
+            environment: "test",
+            otlpEndpoint: capture.endpoint,
+            requestWideEventTraceCorrelation: correlation,
+            shutdownTimeoutMilliseconds: 2_000,
+          }),
+        }),
+        NestErrorBoundaryModule.forRoot({
+          catalog: defineErrorCatalog("boundary_pipeline", {}),
+          recordDefect,
+          requestWideEventTraceCorrelation: correlation,
+        }),
+      ],
+      controllers: [BoundaryController],
+    })(AppModule);
+    const app = await NestFactory.create(AppModule, { logger: false });
+    await app.listen(0, "127.0.0.1");
+    const baseUrl = applicationBaseUrl(app.getHttpServer().address());
+    try {
+      assert.strictEqual((await fetch(`${baseUrl}/boundary-pipeline/missing`)).status, 404);
+      assert.strictEqual((await fetch(`${baseUrl}/boundary-pipeline/defect`)).status, 500);
+      await app.close();
+      const report = await observability.close();
+      const records = logRecords(capture);
+      assert.lengthOf(
+        records.filter((record) => stringAttribute(record, "event.name") === "boundary.defect"),
+        1,
+      );
       assert.strictEqual(adapter.drops().reasons.contractRejected, 0);
       assert.isFalse(report.degraded);
     } finally {

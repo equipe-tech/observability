@@ -7,6 +7,7 @@ export type ServerSpanCorrelation = {
 
 export type RequestWideEventLogger = {
   readonly set: (correlation: ServerSpanCorrelation) => void;
+  readonly error?: ((error: Error) => void) | undefined;
 };
 
 export type RequestWideEventLoggerResolver = (
@@ -23,6 +24,12 @@ export class RequestWideEventTraceCorrelation {
   correlate(request: RequestReference, correlation: ServerSpanCorrelation): void {
     try {
       this.#resolveLogger(request)?.set(correlation);
+    } catch {}
+  }
+
+  recordError(request: RequestReference, error: Error): void {
+    try {
+      this.#resolveLogger(request)?.error?.(error);
     } catch {}
   }
 }
