@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { Schema } from "effect";
 import { assert, describe, it } from "vite-plus/test";
 import type { BrowserTelemetryClientBatch } from "@equipe-tech/observability/browser/client";
+import * as Root from "@equipe-tech/observability";
 import { definePolicy } from "@equipe-tech/observability/policy";
 import {
   BrowserObservabilityError,
@@ -9,6 +10,7 @@ import {
   runBrowserDeliveryCanary,
   type BrowserEventHost,
 } from "../src/index.ts";
+import * as ReactEntrypoint from "../src/index.ts";
 
 const policy = definePolicy({
   attributes: {
@@ -73,6 +75,12 @@ const assertCanaryError = async (
 };
 
 describe("React browser observability", () => {
+  it("keeps the audit API out of the React source entrypoint", () => {
+    const auditApiNames = Object.keys(Root).filter((name) => name.toLowerCase().includes("audit"));
+    assert.isAbove(auditApiNames.length, 0);
+    for (const name of auditApiNames) assert.notProperty(ReactEntrypoint, name);
+  });
+
   it("shares one defect identity and removes every global listener", async () => {
     const batches: Array<BrowserTelemetryClientBatch> = [];
     const fixture = recordingHost();

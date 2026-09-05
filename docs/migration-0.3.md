@@ -57,6 +57,8 @@ Cada instrumento aceita no máximo 100 valores distintos por rótulo durante a v
 
 A versão 0.3 reserva campos preenchidos pelos sinks. Remova das definições de atributos da aplicação `event.source`, `event.policy_dropped_attributes`, `browser.event.id`, `browser.event.occurred_at`, `error.name` e `error.status`. Esses nomes, junto com os demais campos canônicos listados no contrato de telemetria, produzem `OBS_CONTRACT_RESERVED_ATTRIBUTE_NAME` durante a compilação do contrato.
 
+Remova também os atributos da aplicação `audit.outcome`, `audit.reason_code`, `audit.tenant.id`, `audit.record.id`, `audit.record.hash`, `audit.occurred_at` e `audit.schema_version`. A versão 0.3 reserva esses campos para cópias operacionais de auditoria.
+
 ## Limitar timestamps ao intervalo do OTLP
 
 Eventos de servidor e browser aceitam timestamps entre `1970-01-01T00:00:00.000Z` e `2554-07-21T23:34:33.709Z`, inclusive. O limite superior corresponde a `18446744073709` milissegundos desde o epoch. Corrija relógios de dispositivo e timestamps fornecidos pela aplicação antes da emissão. Valores fora desse intervalo podem fazer o Collector rejeitar o lote inteiro.
@@ -132,6 +134,14 @@ O núcleo mantém `./metrics`, `./node`, `./browser`, `./browser/client` e `./te
 Instale `@equipe-tech/observability-evlog@0.3.x` e registre `evlogAdapter().registration` em `createNodeObservability`. Forneça `observability.eventLayer` ao `EventProducer.emit`. O adapter depende diretamente de `evlog@2.27.1`; a aplicação não monta fila, retry ou transporte.
 
 O ingest HTTP do browser agora exige a mesma layer. Passe `{ eventLayer: observability.eventLayer }` para `createBrowserEventsController`. Implementações próprias de `TelemetryEventSink` devem trocar `recordBrowser` por `recordBrowserBatch` e validar o lote inteiro antes de produzir qualquer efeito. Remova a composição manual de `EvlogModule` para o fluxo de eventos de contrato.
+
+## Migrar auditorias do servidor
+
+Declare ações em `auditActions` e use `AuditOutcome` quando uma auditoria precisa representar `denied`. `EventOutcome` não mudou. Troque razões livres por códigos fechados em `reasonCodes`. Cada `action` aceita de 3 a 128 caracteres e exige pelo menos dois segmentos separados por ponto. Cada segmento começa com uma letra minúscula e continua com letras minúsculas, números ou sublinhados.
+
+A versão 0.3 restringe `resourceType` a 1 até 64 caracteres sem controles. Cada segmento separado por ponto começa com uma letra minúscula e continua com letras minúsculas, números ou sublinhados. Contratos 0.2 com maiúsculas, hífens, espaços, caracteres de controle ou mais de 64 caracteres agora falham na compilação. Renomeie esses tipos antes da atualização e use o mesmo valor no ledger da aplicação.
+
+Mantenha o ledger no banco de dados da aplicação. Use `commitAuditRecord` ou `recordAudit` e persista o `AuditCommitDocument` recebido pelo callback na mesma operação durável do ledger. Forneça `layerNodeAuditDigest` e `observability.auditLayer` no runtime Node. Todo contrato com `auditActions` deve adicionar `Contract.organizationEvents.AuditRecorded` em `events` antes do startup. Sem essa migração, o adapter evlog falha ao iniciar com `OBS_EVLOG_AUDIT_CONTRACT_INVALID`. Não publique auditorias pelo browser ou pelo pacote React. A chamada direta `log.audit()` não é suportada.
 
 ## Usar releases independentes
 

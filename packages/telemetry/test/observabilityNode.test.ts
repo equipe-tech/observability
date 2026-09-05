@@ -80,6 +80,7 @@ const events = registerTestingAdapter({
           }),
         ),
       ),
+      auditLayer: Option.none(),
       degraded: () => false,
     }),
 });

@@ -17,6 +17,7 @@ import {
   type TelemetryContractInput,
 } from "../src/contract/index.ts";
 import {
+  auditRecordErrorFixtures,
   contractIssueFixtures,
   invalidMetricDefinitionFixtures,
   makeCollectingTelemetryEventSink,
@@ -78,6 +79,17 @@ const issueCodes = (error: { readonly issues: ReadonlyArray<{ readonly code: str
   error.issues.map((contractIssue) => contractIssue.code);
 
 describe("defineTelemetryContract", () => {
+  it("exports every reachable audit record error code", () => {
+    assert.sameMembers(Array.from(auditRecordErrorFixtures), [
+      "OBS_AUDIT_UNKNOWN_ACTION",
+      "OBS_AUDIT_INVALID_ACTOR",
+      "OBS_AUDIT_INVALID_RESOURCE",
+      "OBS_AUDIT_INVALID_OUTCOME",
+      "OBS_AUDIT_UNKNOWN_REASON_CODE",
+      "OBS_AUDIT_INVALID_FIELD",
+    ]);
+  });
+
   it("exports every reachable contract issue code", () => {
     assert.sameMembers(Array.from(contractIssueFixtures), [
       "OBS_CONTRACT_INVALID_DOCUMENT",
@@ -92,6 +104,7 @@ describe("defineTelemetryContract", () => {
       "OBS_CONTRACT_INVALID_SAMPLING_RATE",
       "OBS_CONTRACT_INVALID_AUDIT_ACTION",
       "OBS_CONTRACT_DUPLICATE_AUDIT_ACTION",
+      "OBS_CONTRACT_INVALID_AUDIT_REASON_CODE",
       "OBS_CONTRACT_INVALID_METRIC_NAME",
       "OBS_CONTRACT_DUPLICATE_METRIC_NAME",
       "OBS_CONTRACT_INVALID_METRIC_KIND",
@@ -110,7 +123,7 @@ describe("defineTelemetryContract", () => {
       const contract = yield* compileApplicationContract;
       assert.strictEqual(contract.version, 1);
       assert.strictEqual(contract.eventByAlias.get("BrowserError")?.name, "browser.error");
-      assert.strictEqual(contract.eventByName.size, 11);
+      assert.strictEqual(contract.eventByName.size, 12);
       assert.strictEqual(
         contract.auditActionByAlias.get("AccessReviewed")?.resourceType,
         "account",
@@ -402,6 +415,128 @@ describe("defineTelemetryContract", () => {
     }),
   );
 
+  it.effect("reports the exact failed audit action rule for every invalid matrix", () =>
+    Effect.gen(function* () {
+      const actionMessage =
+        'Audit action alias "AccessReviewed" has an invalid canonical action. Use 3 to 128 characters in dotted lowercase form with at least two segments.';
+      for (const action of [
+        "access",
+        "Access.reviewed",
+        "access-reviewed",
+        "access.\nreviewed",
+        `a.${"a".repeat(127)}`,
+      ]) {
+        const error = yield* defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {},
+          auditActions: {
+            AccessReviewed: {
+              action,
+              resourceType: "account",
+              allowedOutcomes: ["success"],
+            },
+          },
+        }).pipe(Effect.flip);
+        assert.deepStrictEqual(error.issues, [
+          {
+            code: "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+            message: actionMessage,
+            auditActionAlias: "AccessReviewed",
+            auditActionName: action,
+          },
+        ]);
+      }
+
+      const resourceMessage =
+        'Audit action "access.reviewed" has an invalid resourceType. Use 1 to 64 characters without control characters, starting each dot-separated segment with a lowercase letter and continuing with lowercase letters, digits, or underscores.';
+      for (const resourceType of [
+        "",
+        "Invoice",
+        "invoice-item",
+        "some resource",
+        "a".repeat(65),
+        "account\n",
+      ]) {
+        const error = yield* defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {},
+          auditActions: {
+            AccessReviewed: {
+              action: "access.reviewed",
+              resourceType,
+              allowedOutcomes: ["success"],
+            },
+          },
+        }).pipe(Effect.flip);
+        assert.deepStrictEqual(error.issues, [
+          {
+            code: "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+            message: resourceMessage,
+            auditActionAlias: "AccessReviewed",
+            auditActionName: "access.reviewed",
+          },
+        ]);
+      }
+
+      const outcomesMessage =
+        'Audit action "access.reviewed" has invalid allowedOutcomes. Use a non-empty list containing only success, failure, cancelled, or denied.';
+      for (const allowedOutcomes of [[], ["unknown"]]) {
+        const error = yield* defineTelemetryContract(
+          JSON.parse(
+            JSON.stringify({
+              version: 1,
+              events: {},
+              metrics: {},
+              auditActions: {
+                AccessReviewed: {
+                  action: "access.reviewed",
+                  resourceType: "account",
+                  allowedOutcomes,
+                },
+              },
+            }),
+          ),
+        ).pipe(Effect.flip);
+        assert.deepStrictEqual(error.issues, [
+          {
+            code: "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+            message: outcomesMessage,
+            auditActionAlias: "AccessReviewed",
+            auditActionName: "access.reviewed",
+          },
+        ]);
+      }
+    }),
+  );
+
+  it.effect("rejects malformed and duplicate audit reason codes with action context", () =>
+    Effect.gen(function* () {
+      const error = yield* defineTelemetryContract({
+        version: 1,
+        events: {},
+        metrics: {},
+        auditActions: {
+          AccessReviewed: {
+            action: "access.reviewed",
+            resourceType: "account",
+            allowedOutcomes: ["success"],
+            reasonCodes: ["approval.missing", "approval.missing", "free text"],
+          },
+        },
+      }).pipe(Effect.flip);
+      const reasons = error.issues.filter(
+        (entry) => entry.code === "OBS_CONTRACT_INVALID_AUDIT_REASON_CODE",
+      );
+      assert.lengthOf(reasons, 2);
+      for (const reason of reasons) {
+        assert.strictEqual(reason.auditActionAlias, "AccessReviewed");
+        assert.strictEqual(reason.auditActionName, "access.reviewed");
+      }
+    }),
+  );
+
   it.effect("rejects required and metric flags for every restricted classification", () =>
     Effect.gen(function* () {
       const error = yield* Effect.flip(
@@ -635,6 +770,13 @@ describe("defineTelemetryContract", () => {
         "audit.actor.id",
         "audit.resource.type",
         "audit.resource.id",
+        "audit.outcome",
+        "audit.reason_code",
+        "audit.tenant.id",
+        "audit.record.id",
+        "audit.record.hash",
+        "audit.occurred_at",
+        "audit.schema_version",
         "request.id",
         "run.id",
       ];
@@ -713,6 +855,8 @@ describe("defineTelemetryContract", () => {
         "OBS_CONTRACT_INVALID_ATTRIBUTE_NAME",
         "OBS_CONTRACT_INVALID_ATTRIBUTE_DEFINITION",
         "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+        "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+        "OBS_CONTRACT_INVALID_AUDIT_ACTION",
       ]);
       const messageFragments = new Map([
         ["OBS_CONTRACT_INVALID_VERSION", "version is invalid"],
@@ -725,7 +869,7 @@ describe("defineTelemetryContract", () => {
           "OBS_CONTRACT_INVALID_ATTRIBUTE_DEFINITION",
           "invalid classification or incompatible flags",
         ],
-        ["OBS_CONTRACT_INVALID_AUDIT_ACTION", "is invalid"],
+        ["OBS_CONTRACT_INVALID_AUDIT_ACTION", "invalid"],
       ]);
       for (const entry of error.issues) {
         assert.include(entry.message, messageFragments.get(entry.code) ?? "unreachable");
@@ -811,9 +955,9 @@ describe("defineTelemetryContract", () => {
 });
 
 describe("organization contracts", () => {
-  it("exports the independent version identity and eight product-neutral boundary contracts", () => {
+  it("exports the independent version identity and product-neutral boundary contracts", () => {
     assert.strictEqual(organizationContractVersion, 1);
-    assert.lengthOf(organizationEventFixtures, 8);
+    assert.lengthOf(organizationEventFixtures, 9);
     const serialized = JSON.stringify(organizationEventFixtures).toLowerCase();
     for (const deniedName of [
       "hibou",
@@ -834,6 +978,7 @@ describe("organization contracts", () => {
         "queue.job",
         "payment.attempt",
         "usage.recorded",
+        "audit.recorded",
         "browser.error",
       ],
     );
@@ -872,6 +1017,7 @@ describe("contract event producer", () => {
       "OBS_EVENT_UNKNOWN_AUDIT_ACTION",
       "OBS_EVENT_INVALID_AUDIT_RESOURCE",
       "OBS_EVENT_INVALID_AUDIT_OUTCOME",
+      "OBS_EVENT_INVALID_AUDIT_REASON",
     ]);
   });
 
@@ -1370,7 +1516,62 @@ describe("contract event producer", () => {
       assert.strictEqual(wrongOutcome.eventName, "access.reviewed");
       assert.strictEqual(wrongOutcome.attributeName, "event.outcome");
       assert.include(wrongOutcome.message, "does not allow outcome");
-      assert.lengthOf(yield* sink.events, 0);
+      const wrongReason = yield* producer
+        .emit("AuditTracked", {
+          outcome: "success",
+          audit: {
+            action: "access.reviewed",
+            actor: { kind: "system" },
+            resourceType: "account",
+            resourceId: "account-1",
+            reasonCode: "free text",
+          },
+          attributes: {},
+        })
+        .pipe(Effect.provide(sink.layer), Effect.flip);
+      assert.strictEqual(wrongReason.code, "OBS_EVENT_INVALID_AUDIT_REASON");
+      assert.strictEqual(wrongReason.attributeName, "audit.reason_code");
+      for (const candidate of [
+        { actorId: "a".repeat(129), resourceId: "account-1" },
+        { actorId: "actor\nforged", resourceId: "account-1" },
+        { actorId: "a".repeat(300), resourceId: "account-1" },
+        { actorId: "actor-1", resourceId: "r".repeat(129) },
+        { actorId: "actor-1", resourceId: "resource\nforged" },
+        { actorId: "actor-1", resourceId: "r".repeat(300) },
+      ]) {
+        const invalid = yield* producer
+          .emit("AuditTracked", {
+            outcome: "success",
+            audit: {
+              action: "access.reviewed",
+              actor: { kind: "user", id: candidate.actorId },
+              resourceType: "account",
+              resourceId: candidate.resourceId,
+            },
+            attributes: {},
+          })
+          .pipe(Effect.provide(sink.layer), Effect.flip);
+        assert.strictEqual(invalid.code, "OBS_EVENT_INVALID_FIELD");
+      }
+      for (const boundary of [
+        { actorId: "a".repeat(128), resourceId: "account-1" },
+        { actorId: "actor-1", resourceId: "r".repeat(128) },
+      ]) {
+        const accepted = yield* producer
+          .emit("AuditTracked", {
+            outcome: "success",
+            audit: {
+              action: "access.reviewed",
+              actor: { kind: "user", id: boundary.actorId },
+              resourceType: "account",
+              resourceId: boundary.resourceId,
+            },
+            attributes: {},
+          })
+          .pipe(Effect.provide(sink.layer));
+        assert.strictEqual(accepted.decision, "recorded");
+      }
+      assert.lengthOf(yield* sink.events, 2);
     }),
   );
 

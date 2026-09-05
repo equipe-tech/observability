@@ -46,7 +46,7 @@ Um nome de evento tem de duas a quatro partes separadas por pontos e no máximo 
 
 Nomes de atributos usam pelo menos duas partes minúsculas separadas por pontos e têm no máximo 128 caracteres. Valores de atributos são strings, números finitos ou booleanos.
 
-O contrato reserva os campos canônicos exatos `event.name`, `event.kind`, `event.type`, `event.severity`, `event.outcome`, `event.timestamp`, `event.duration_ms`, `event.source`, `event.policy_dropped_attributes`, `browser.event.id`, `browser.event.occurred_at`, `http.request.method`, `http.route`, `http.response.status_code`, `error.type`, `error.name`, `error.message`, `error.status`, `error.retryable`, `audit.action`, `audit.actor.kind`, `audit.actor.id`, `audit.resource.type`, `audit.resource.id`, `request.id` e `run.id`. Outros campos nesses namespaces continuam disponíveis para atributos da aplicação.
+O contrato reserva os campos canônicos exatos `event.name`, `event.kind`, `event.type`, `event.severity`, `event.outcome`, `event.timestamp`, `event.duration_ms`, `event.source`, `event.policy_dropped_attributes`, `browser.event.id`, `browser.event.occurred_at`, `http.request.method`, `http.route`, `http.response.status_code`, `error.type`, `error.name`, `error.message`, `error.status`, `error.retryable`, `audit.action`, `audit.actor.kind`, `audit.actor.id`, `audit.resource.type`, `audit.resource.id`, `audit.outcome`, `audit.reason_code`, `audit.tenant.id`, `audit.record.id`, `audit.record.hash`, `audit.occurred_at`, `audit.schema_version`, `request.id` e `run.id`. Outros campos nesses namespaces continuam disponíveis para atributos da aplicação.
 
 A classificação não escolhe destino ou provedor. O produtor mascara atributos `sensitive` com `****` e rejeita atributos `forbidden` antes do sink. A política compilada também remove chaves proibidas, mascara valores bloqueados e aplica os limites de cada sinal antes da exportação.
 
@@ -68,7 +68,9 @@ A união `TelemetryEvent` tem cinco variantes.
 - `operation` exige `outcome` e `durationMs`.
 - `domain` exige `outcome`.
 - `defect` exige contexto de erro. O resultado é sempre `failure`.
-- `audit` exige `outcome` e contexto de auditoria. A ação precisa existir em `auditActions`; o tipo de recurso e o resultado precisam corresponder à definição.
+- `audit` exige `outcome` e contexto de auditoria. A ação precisa existir em `auditActions`; o tipo de recurso, o resultado e o código de razão precisam corresponder à definição.
+
+`AuditOutcome` acrescenta `denied` sem alterar `EventOutcome`. Cada ação pode declarar um catálogo fechado `reasonCodes`. Consulte [Auditoria no servidor](audit.md) para o registro durável e a cópia operacional.
 
 Timestamps representam datas reais em RFC 3339 UTC, terminam em `Z` e não ultrapassam `2554-07-21T23:34:33.709Z`. Esse limite corresponde ao maior milissegundo que o encoder pode converter para o `fixed64` de nanossegundos do OTLP. Durações são números finitos maiores ou iguais a zero. `EventSeverity` e `EventOutcome` são uniões fechadas independentes. O compilador do contrato valida a severidade padrão. Severidade não escolhe destino ou provedor.
 
@@ -88,7 +90,7 @@ Canários usam `mandatory: true` na definição. Um resultado `cancelled` contin
 
 ## Eventos da organização
 
-`Contract.organizationEvents` exporta oito contratos sem nomes de produto ou serviço. `Contract.organizationContractVersion` identifica esse conjunto reutilizável com a versão `1`. Essa identidade evolui de forma independente da versão do contrato de cada aplicação que incorpora as definições.
+`Contract.organizationEvents` exporta nove contratos sem nomes de produto ou serviço. `Contract.organizationContractVersion` identifica esse conjunto reutilizável com a versão `1`. Essa identidade evolui de forma independente da versão do contrato de cada aplicação que incorpora as definições.
 
 | Alias              | Nome                | Tipo        | Atributos obrigatórios                       |
 | ------------------ | ------------------- | ----------- | -------------------------------------------- |
@@ -99,6 +101,7 @@ Canários usam `mandatory: true` na definição. Um resultado `cancelled` contin
 | `QueueJob`         | `queue.job`         | `operation` | `queue.name`, `queue.job`                    |
 | `PaymentAttempt`   | `payment.attempt`   | `operation` | `payment.provider`, `payment.operation`      |
 | `UsageRecorded`    | `usage.recorded`    | `domain`    | `usage.type`, `usage.unit`                   |
+| `AuditRecorded`    | `audit.recorded`    | `audit`     | nenhum                                       |
 | `BrowserError`     | `browser.error`     | `defect`    | `error.origin`                               |
 
 `BrowserError` mantém tipo, mensagem e possibilidade de repetição em `ErrorContext`. O atributo `error.origin` identifica a origem do erro no navegador sem duplicar esses campos.
@@ -153,6 +156,7 @@ Falhas de emissão retornam `InvalidTelemetryEvent`. O produtor executa todas as
 | `OBS_EVENT_UNKNOWN_AUDIT_ACTION`   | A ação de auditoria não existe no contrato.     |
 | `OBS_EVENT_INVALID_AUDIT_RESOURCE` | O tipo de recurso difere da ação declarada.     |
 | `OBS_EVENT_INVALID_AUDIT_OUTCOME`  | A ação de auditoria não permite o resultado.    |
+| `OBS_EVENT_INVALID_AUDIT_REASON`   | A ação de auditoria não declara o código.       |
 
 ## Testes de consumidores
 

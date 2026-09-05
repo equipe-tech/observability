@@ -88,6 +88,7 @@ const recordingAdapter = (
     }
     return Effect.succeed({
       eventLayer: Option.some(testEventLayer),
+      auditLayer: Option.none(),
       degraded: () => false,
       flush: Effect.sync(() => {
         calls.push(`flush:${name}`);
@@ -149,6 +150,7 @@ describe("observability lifecycle", () => {
             flush: Effect.void,
             close: Effect.void,
             eventLayer: Option.none(),
+            auditLayer: Option.none(),
             degraded: () => false,
           }),
       });
@@ -454,6 +456,7 @@ describe("observability lifecycle", () => {
       start: () =>
         Effect.succeed({
           eventLayer: Option.some(testEventLayer),
+          auditLayer: Option.none(),
           degraded: () => false,
           flush: Effect.promise(() => {
             calls.push("flush:events");
@@ -492,6 +495,7 @@ describe("observability lifecycle", () => {
           flush: operation === "flush" ? Effect.fail(failure) : Effect.void,
           close: operation === "close" ? Effect.fail(failure) : Effect.void,
           eventLayer: Option.none(),
+          auditLayer: Option.none(),
           degraded: () => false,
         },
       };
@@ -524,6 +528,7 @@ describe("observability lifecycle", () => {
         flush: Effect.void,
         close: Effect.void,
         eventLayer: Option.none(),
+        auditLayer: Option.none(),
         degraded: () => false,
       },
     };
@@ -572,6 +577,7 @@ describe("observability lifecycle", () => {
           flush: Effect.void,
           close: hangingClose,
           eventLayer: Option.none(),
+          auditLayer: Option.none(),
           degraded: () => false,
         },
       },
@@ -583,6 +589,7 @@ describe("observability lifecycle", () => {
             calls.push("close:defects");
           }),
           eventLayer: Option.none(),
+          auditLayer: Option.none(),
           degraded: () => false,
         },
       },
@@ -664,6 +671,7 @@ describe("observability lifecycle", () => {
       start: () =>
         Effect.succeed({
           eventLayer: Option.none(),
+          auditLayer: Option.none(),
           degraded: () => false,
           flush: Effect.void,
           close: Effect.sync(() => {

@@ -1,11 +1,15 @@
 import { Effect, Option, Schema } from "effect";
+import {
+  AuditAction,
+  AuditOutcome,
+  AuditReasonCode,
+  AuditResourceType,
+} from "../audit/AuditRecord.ts";
 import { EventName, isValidAttributeName, isValidEventName } from "./EventName.ts";
 import {
   EventKind,
-  EventOutcome,
   EventSeverity,
   type EventKind as EventKindType,
-  type EventOutcome as EventOutcomeType,
   type EventSeverity as EventSeverityType,
   type EventAttributes,
 } from "./TelemetryEvent.ts";
@@ -80,7 +84,8 @@ export const defineEventDefinitions = <const Events extends EventDefinitionsInpu
 export type AuditActionDefinitionInput = {
   readonly action: string;
   readonly resourceType: string;
-  readonly allowedOutcomes: ReadonlyArray<EventOutcomeType>;
+  readonly allowedOutcomes: ReadonlyArray<AuditOutcome>;
+  readonly reasonCodes?: ReadonlyArray<string>;
 };
 
 export type AuditActionDefinitionsInput = {
@@ -117,7 +122,14 @@ export type CompiledEventDefinition = {
   readonly requiredAttributes: ReadonlyArray<string>;
 };
 
-export type CompiledAuditActionDefinition = AuditActionDefinitionInput & {
+export type AuditActionDefinition = {
+  readonly action: AuditAction;
+  readonly resourceType: string;
+  readonly allowedOutcomes: ReadonlyArray<AuditOutcome>;
+  readonly reasonCodes: ReadonlyArray<string>;
+};
+
+export type CompiledAuditActionDefinition = AuditActionDefinition & {
   readonly alias: string;
 };
 
@@ -180,8 +192,10 @@ export type TelemetryContract<Definition extends TelemetryContractInput> = {
 const isAttributeClassification = Schema.is(AttributeClassification);
 const isEventKind = Schema.is(EventKind);
 const isEventSeverity = Schema.is(EventSeverity);
-const isEventOutcome = Schema.is(EventOutcome);
-const auditActionPattern = /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/;
+const isAuditAction = Schema.is(AuditAction);
+const isAuditOutcome = Schema.is(AuditOutcome);
+const isAuditReasonCode = Schema.is(AuditReasonCode);
+const isAuditResourceType = Schema.is(AuditResourceType);
 const canonicalSinkFields = new Set([
   "event.name",
   "event.kind",
@@ -207,6 +221,13 @@ const canonicalSinkFields = new Set([
   "audit.actor.id",
   "audit.resource.type",
   "audit.resource.id",
+  "audit.outcome",
+  "audit.reason_code",
+  "audit.tenant.id",
+  "audit.record.id",
+  "audit.record.hash",
+  "audit.occurred_at",
+  "audit.schema_version",
   "request.id",
   "run.id",
 ]);
@@ -245,6 +266,7 @@ const AuditActionDefinitionDocument = Schema.Struct({
   action: Schema.String,
   resourceType: Schema.String,
   allowedOutcomes: Schema.Array(Schema.String),
+  reasonCodes: Schema.Array(Schema.String).pipe(Schema.optionalKey),
 });
 const TelemetryContractDocument = Schema.Struct({
   version: Schema.Number,
@@ -508,20 +530,50 @@ const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<Contra
     } else {
       auditActionAliasesByName.set(action.action, alias);
     }
+    const actionContext = { auditActionAlias: alias, auditActionName: action.action };
+    if (!isAuditAction(action.action)) {
+      issues.push(
+        issue(
+          "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+          `Audit action alias "${alias}" has an invalid canonical action. Use 3 to 128 characters in dotted lowercase form with at least two segments.`,
+          actionContext,
+        ),
+      );
+    }
+    if (!isAuditResourceType(action.resourceType)) {
+      issues.push(
+        issue(
+          "OBS_CONTRACT_INVALID_AUDIT_ACTION",
+          `Audit action "${action.action}" has an invalid resourceType. Use 1 to 64 characters without control characters, starting each dot-separated segment with a lowercase letter and continuing with lowercase letters, digits, or underscores.`,
+          actionContext,
+        ),
+      );
+    }
     if (
-      action.action.length > 128 ||
-      !auditActionPattern.test(action.action) ||
-      action.resourceType.length === 0 ||
       action.allowedOutcomes.length === 0 ||
-      action.allowedOutcomes.some((outcome) => !isEventOutcome(outcome))
+      action.allowedOutcomes.some((outcome) => !isAuditOutcome(outcome))
     ) {
       issues.push(
         issue(
           "OBS_CONTRACT_INVALID_AUDIT_ACTION",
-          `Audit action "${alias}" is invalid. Use a dotted lowercase action, a resource type, and at least one allowed outcome.`,
-          { auditActionAlias: alias },
+          `Audit action "${action.action}" has invalid allowedOutcomes. Use a non-empty list containing only success, failure, cancelled, or denied.`,
+          actionContext,
         ),
       );
+    }
+    const reasonCodes = action.reasonCodes ?? [];
+    const seenReasonCodes = new Set<string>();
+    for (const reasonCode of reasonCodes) {
+      if (!isAuditReasonCode(reasonCode) || seenReasonCodes.has(reasonCode)) {
+        issues.push(
+          issue(
+            "OBS_CONTRACT_INVALID_AUDIT_REASON_CODE",
+            `Audit action "${action.action}" has malformed or duplicate reason code "${reasonCode}". Use unique dotted lowercase codes no longer than 64 characters.`,
+            { auditActionAlias: alias, auditActionName: action.action },
+          ),
+        );
+      }
+      seenReasonCodes.add(reasonCode);
     }
   }
   return issues;
@@ -581,7 +633,13 @@ export const defineTelemetryContract = Effect.fn("defineTelemetryContract")(func
   const auditActionByAlias = new Map<string, CompiledAuditActionDefinition>();
   const auditActionByName = new Map<string, CompiledAuditActionDefinition>();
   for (const [alias, action] of Object.entries(definition.auditActions)) {
-    const compiled = { alias, ...action };
+    const compiled: CompiledAuditActionDefinition = {
+      alias,
+      action: AuditAction.make(action.action),
+      resourceType: action.resourceType,
+      allowedOutcomes: action.allowedOutcomes,
+      reasonCodes: action.reasonCodes ?? [],
+    };
     auditActionByAlias.set(alias, compiled);
     auditActionByName.set(action.action, compiled);
   }

@@ -6,6 +6,7 @@ import type {
 } from "../contract/TelemetryContract.ts";
 import type { CompiledMetricDefinition } from "../contract/MetricDefinition.ts";
 import type { EventName } from "../contract/EventName.ts";
+import type { AuditPublisher } from "../audit/AuditPublisher.ts";
 import type { TelemetryEventSink } from "../contract/EventProducer.ts";
 import type { ResourceIdentity } from "../ResourceIdentity.ts";
 import type { TelemetryConfig } from "../TelemetryConfig.ts";
@@ -55,6 +56,7 @@ export type ObservabilityAdapterHandle = {
   readonly flush: Effect.Effect<void, AdapterFailure>;
   readonly close: Effect.Effect<void, AdapterFailure>;
   readonly eventLayer: Option.Option<Layer.Layer<TelemetryEventSink>>;
+  readonly auditLayer: Option.Option<Layer.Layer<AuditPublisher>>;
   readonly degraded: () => boolean;
 };
 

@@ -1,9 +1,14 @@
 import {
   AdapterFailure,
+  AuditPublisher,
+  type AuditPublishReport,
+  type AuditPublishReceipt,
+  type CommittedAuditRecord,
   AdapterName,
   BrowserEvents,
   Contract,
   instanceResourceAttributes,
+  isCommittedAuditRecord,
   registerOfficialAdapter,
   SpanId,
   TelemetryEventSink,
@@ -19,16 +24,23 @@ import {
   type TelemetryEvent,
 } from "@equipe-tech/observability";
 import {
+  AUDIT_SCHEMA_VERSION,
+  auditOnly,
+  buildAuditFields,
   createError,
+  signed,
   defineErrorCatalog,
   initLogger,
   log,
+  type AuditInput,
   type DrainContext,
+  type DrainFn,
+  type SignedOptions,
   type WideEvent,
 } from "evlog";
 import { sendBatchToOTLP } from "evlog/otlp";
 import { createDrainPipeline, type PipelineDrainFn } from "evlog/pipeline";
-import { Effect, Layer, Option, Schema } from "effect";
+import { Clock, DateTime, Effect, Layer, Option, Schema } from "effect";
 import { EvlogAdapterError } from "./EvlogAdapterError.ts";
 
 export type EvlogDropReasonCounts = {
@@ -56,6 +68,8 @@ type EvlogOutput = {
   readonly write: (line: string) => boolean;
 };
 
+export type EvlogAuditIntegrityOptions = SignedOptions;
+
 export type EvlogAdapterOptions = {
   readonly maximumBufferedEvents?: number;
   readonly maximumBufferedBytes?: number;
@@ -67,6 +81,9 @@ export type EvlogAdapterOptions = {
   readonly transportTimeoutMillis?: number;
   readonly transportRetries?: number;
   readonly installGlobalLogger?: boolean;
+  readonly auditDedupeWindowMillis?: number;
+  readonly auditDedupeCapacity?: number;
+  readonly auditIntegrity?: EvlogAuditIntegrityOptions;
   readonly requestEventName?: string;
   readonly stdout?: EvlogOutput;
 };
@@ -88,14 +105,33 @@ type ResolvedOptions = {
   readonly transportTimeoutMillis: number;
   readonly transportRetries: number;
   readonly installGlobalLogger: boolean;
+  readonly auditDedupeWindowMillis: number;
+  readonly auditDedupeCapacity: number;
+  readonly auditIntegrity: Option.Option<EvlogAuditIntegrityOptions>;
   readonly requestEventName: Option.Option<string>;
   readonly stdout: EvlogOutput;
+};
+
+type AuditReservationTerminal = "delivered" | "retry";
+
+type OfferResult =
+  | { readonly kind: "queued" }
+  | {
+      readonly kind: "closed" | "queue-overflow";
+      readonly droppedAt: string;
+    };
+
+type AuditReservation = {
+  readonly terminal: Promise<AuditReservationTerminal>;
+  readonly resolve: (terminal: AuditReservationTerminal) => void;
 };
 
 type AdmittedRecord = {
   readonly event: WideEvent;
   readonly serialized: string;
   readonly serializedBytes: number;
+  readonly auditRecordId?: string;
+  readonly auditReservation?: AuditReservation;
 };
 
 type MutableDropState = {
@@ -123,6 +159,21 @@ const adapterErrors = defineErrorCatalog("OBS_EVLOG", {
 
 const positiveInteger = Schema.Int.check(Schema.makeFilter((value) => value > 0));
 const nonNegativeInteger = Schema.Int.check(Schema.makeFilter((value) => value >= 0));
+const AuditIntegrityDocument = Schema.Union([
+  Schema.Struct({
+    strategy: Schema.Literal("hmac"),
+    secret: Schema.NonEmptyString,
+    algorithm: Schema.Literals(["sha256", "sha512"]).pipe(Schema.optionalKey),
+  }),
+  Schema.Struct({
+    strategy: Schema.Literal("hash-chain"),
+    state: Schema.Struct({
+      load: Schema.instanceOf(Function),
+      save: Schema.instanceOf(Function),
+    }).pipe(Schema.optionalKey),
+    algorithm: Schema.Literals(["sha256", "sha512"]).pipe(Schema.optionalKey),
+  }),
+]);
 const AdapterOptionsDocument = Schema.Struct({
   maximumBufferedEvents: Schema.optional(positiveInteger),
   maximumBufferedBytes: Schema.optional(positiveInteger),
@@ -134,6 +185,9 @@ const AdapterOptionsDocument = Schema.Struct({
   transportTimeoutMillis: Schema.optional(positiveInteger),
   transportRetries: Schema.optional(nonNegativeInteger),
   installGlobalLogger: Schema.optional(Schema.Boolean),
+  auditDedupeWindowMillis: Schema.optional(positiveInteger),
+  auditDedupeCapacity: Schema.optional(positiveInteger),
+  auditIntegrity: Schema.optional(AuditIntegrityDocument),
   requestEventName: Schema.optional(Schema.NonEmptyString),
   stdout: Schema.optional(
     Schema.Struct({
@@ -187,6 +241,9 @@ const optionNames = new Set([
   "transportTimeoutMillis",
   "transportRetries",
   "installGlobalLogger",
+  "auditDedupeWindowMillis",
+  "auditDedupeCapacity",
+  "auditIntegrity",
   "requestEventName",
   "stdout",
 ]);
@@ -221,6 +278,9 @@ const resolveOptions = (
       transportTimeoutMillis: options.transportTimeoutMillis ?? 5_000,
       transportRetries: options.transportRetries ?? 2,
       installGlobalLogger: options.installGlobalLogger ?? true,
+      auditDedupeWindowMillis: options.auditDedupeWindowMillis ?? 300_000,
+      auditDedupeCapacity: options.auditDedupeCapacity ?? 10_000,
+      auditIntegrity: Option.fromNullishOr(options.auditIntegrity),
       requestEventName: Option.fromNullishOr(options.requestEventName),
       stdout: options.stdout ?? defaultOutput,
     };
@@ -266,7 +326,7 @@ type DropReason =
   | "contract-rejected"
   | "closed";
 
-const incrementReason = (state: MutableDropState, reason: DropReason): void => {
+const incrementReason = (state: MutableDropState, reason: DropReason, droppedAt: string): void => {
   switch (reason) {
     case "count-overflow":
       state.countOverflow += 1;
@@ -287,7 +347,6 @@ const incrementReason = (state: MutableDropState, reason: DropReason): void => {
       state.closed += 1;
       break;
   }
-  const droppedAt = new Date().toISOString();
   state.total += 1;
   if (Option.isNone(state.firstDroppedAt)) state.firstDroppedAt = Option.some(droppedAt);
   state.lastDroppedAt = Option.some(droppedAt);
@@ -353,11 +412,16 @@ const fieldsForContractEvent = (
       break;
     }
     case "audit":
+      fields["event.outcome"] = event.outcome === "success" ? "success" : "failure";
+      fields["audit.outcome"] = event.outcome;
       fields["audit.action"] = event.audit.action;
       fields["audit.actor.kind"] = event.audit.actor.kind;
-      if (event.audit.actor.kind !== "system") fields["audit.actor.id"] = event.audit.actor.id;
+      fields["audit.actor.id"] =
+        event.audit.actor.kind === "system" ? "system" : event.audit.actor.id;
       fields["audit.resource.type"] = event.audit.resourceType;
       fields["audit.resource.id"] = event.audit.resourceId;
+      if (event.audit.reasonCode !== undefined)
+        fields["audit.reason_code"] = event.audit.reasonCode;
       break;
   }
   return fields;
@@ -415,9 +479,106 @@ const finalCanonicalFields = (
   };
 };
 
-const admittedRecord = (event: WideEvent): AdmittedRecord => {
+const admittedRecord = (
+  event: WideEvent,
+  auditRecordId?: string,
+  auditReservation?: AuditReservation,
+): AdmittedRecord => {
   const serialized = JSON.stringify(event);
-  return { event, serialized, serializedBytes: textEncoder.encode(serialized).byteLength };
+  const record = { event, serialized, serializedBytes: textEncoder.encode(serialized).byteLength };
+  if (auditRecordId === undefined) return record;
+  if (auditReservation === undefined) return { ...record, auditRecordId };
+  return { ...record, auditRecordId, auditReservation };
+};
+
+type MutableAuditPublishState = {
+  published: number;
+  deduplicated: number;
+  dropped: number;
+  firstDroppedAt: Option.Option<string>;
+  lastDroppedAt: Option.Option<string>;
+  unbound: number;
+  closed: number;
+  queueOverflow: number;
+  contractRejected: number;
+  policyRejected: number;
+  transport: number;
+};
+
+const emptyAuditPublishState = (): MutableAuditPublishState => ({
+  published: 0,
+  deduplicated: 0,
+  dropped: 0,
+  firstDroppedAt: Option.none(),
+  lastDroppedAt: Option.none(),
+  unbound: 0,
+  closed: 0,
+  queueOverflow: 0,
+  contractRejected: 0,
+  policyRejected: 0,
+  transport: 0,
+});
+
+const auditPublishReport = (state: MutableAuditPublishState): AuditPublishReport => ({
+  published: state.published,
+  deduplicated: state.deduplicated,
+  dropped: state.dropped,
+  firstDroppedAt: state.firstDroppedAt,
+  lastDroppedAt: state.lastDroppedAt,
+  reasons: {
+    unbound: state.unbound,
+    closed: state.closed,
+    queueOverflow: state.queueOverflow,
+    contractRejected: state.contractRejected,
+    policyRejected: state.policyRejected,
+    transport: state.transport,
+  },
+});
+
+const incrementAuditDrop = (
+  state: MutableAuditPublishState,
+  reason: "closed" | "queue-overflow" | "contract-rejected" | "policy-rejected" | "transport",
+  droppedAt: string,
+): AuditPublishReceipt => {
+  state.dropped += 1;
+  if (Option.isNone(state.firstDroppedAt)) state.firstDroppedAt = Option.some(droppedAt);
+  state.lastDroppedAt = Option.some(droppedAt);
+  switch (reason) {
+    case "closed":
+      state.closed += 1;
+      break;
+    case "queue-overflow":
+      state.queueOverflow += 1;
+      break;
+    case "contract-rejected":
+      state.contractRejected += 1;
+      break;
+    case "policy-rejected":
+      state.policyRejected += 1;
+      break;
+    case "transport":
+      state.transport += 1;
+      break;
+  }
+  return { kind: "dropped", reason };
+};
+
+const nativeAuditInput = (fields: EventAttributes): AuditInput => {
+  const actorKind = String(fields["audit.actor.kind"]);
+  const actorType = actorKind === "service" ? "api" : actorKind === "user" ? "user" : "system";
+  const outcome = String(fields["audit.outcome"]);
+  const input: AuditInput = {
+    action: String(fields["audit.action"]),
+    actor: { type: actorType, id: String(fields["audit.actor.id"]) },
+    target: {
+      type: String(fields["audit.resource.type"]),
+      id: String(fields["audit.resource.id"]),
+    },
+    outcome: outcome === "success" ? "success" : outcome === "denied" ? "denied" : "failure",
+    version: AUDIT_SCHEMA_VERSION,
+  };
+  if (fields["audit.reason_code"] !== undefined) input.reason = String(fields["audit.reason_code"]);
+  return input;
 };
 
 const safeAdapterFailure = (message: string, cause: EvlogAdapterError): AdapterFailure =>
@@ -432,6 +593,9 @@ export const makeEvlogAdapter = (
   initializeLogger: typeof initLogger = initLogger,
 ): EvlogAdapter => {
   const dropState = emptyDropState();
+  const auditState = emptyAuditPublishState();
+  const deliveredAuditRecords = new Map<string, number>();
+  const auditReservations = new Map<string, AuditReservation>();
   const loggerOwner = Symbol("evlog-adapter");
   let pendingBytes = 0;
   let pipeline: PipelineDrainFn<AdmittedRecord> | undefined;
@@ -452,6 +616,49 @@ export const makeEvlogAdapter = (
             ),
           ),
         );
+        const clock = yield* Clock.Clock;
+        const dropTimestamp = (): string =>
+          DateTime.formatIso(DateTime.makeUnsafe(clock.currentTimeMillisUnsafe()));
+        const makeAuditReservation = (): AuditReservation => {
+          const terminal = Promise.withResolvers<AuditReservationTerminal>();
+          return { terminal: terminal.promise, resolve: terminal.resolve };
+        };
+        const completeAuditReservation = (
+          recordId: string,
+          reservation: AuditReservation,
+          terminal: AuditReservationTerminal,
+        ): void => {
+          if (auditReservations.get(recordId) === reservation) {
+            auditReservations.delete(recordId);
+          }
+          reservation.resolve(terminal);
+        };
+        if (context.contract.auditActionByName.size > 0) {
+          const auditEventName = context.contract.eventNames.find(
+            (candidate) => candidate === "audit.recorded",
+          );
+          const auditEvent =
+            auditEventName === undefined
+              ? undefined
+              : context.contract.eventByName.get(auditEventName);
+          if (
+            auditEvent?.kind !== "audit" ||
+            auditEvent.defaultSeverity !== "info" ||
+            !auditEvent.mandatory ||
+            auditEvent.sampling.kind !== "always" ||
+            auditEvent.attributes.size !== 0
+          ) {
+            return yield* safeAdapterFailure(
+              "The telemetry contract cannot publish audit records. Add Contract.organizationEvents.AuditRecorded before retrying startup.",
+              new EvlogAdapterError({
+                code: "OBS_EVLOG_AUDIT_CONTRACT_INVALID",
+                message:
+                  "Audit publication requires Contract.organizationEvents.AuditRecorded when the contract declares audit actions.",
+                cause: "missing audit.recorded organization event",
+              }),
+            );
+          }
+        }
         if (Option.isSome(resolvedOptions.requestEventName)) {
           const configuredRequestName = resolvedOptions.requestEventName.value;
           const requestName = context.contract.eventNames.find(
@@ -494,14 +701,42 @@ export const makeEvlogAdapter = (
         let closePromise: Promise<void> | undefined;
         let probeSequence = 0;
         let observedProbe = 0;
+        let integrityTail = Promise.resolve();
+        let integrityResult: WideEvent | undefined;
+        const integrityDrain: DrainFn | undefined = Option.match(resolvedOptions.auditIntegrity, {
+          onNone: () => undefined,
+          onSome: (integrity) =>
+            auditOnly(
+              signed((drainContext) => {
+                integrityResult = drainContext.event;
+              }, integrity),
+              { await: true },
+            ),
+        });
+        const applyAuditIntegrity = (event: WideEvent): Promise<WideEvent> => {
+          if (integrityDrain === undefined) return Promise.resolve(event);
+          const operation = integrityTail.then(async () => {
+            integrityResult = undefined;
+            await integrityDrain({ event });
+            if (integrityResult === undefined) {
+              throw adapterErrors.TRANSPORT_FAILED();
+            }
+            return integrityResult;
+          });
+          integrityTail = operation.then(
+            () => undefined,
+            () => undefined,
+          );
+          return operation;
+        };
 
         const fallback = (record: AdmittedRecord): void => {
           try {
             if (!resolvedOptions.stdout.write(`${record.serialized}\n`)) {
-              incrementReason(dropState, "stdout-unavailable");
+              incrementReason(dropState, "stdout-unavailable", dropTimestamp());
             }
           } catch {
-            incrementReason(dropState, "stdout-unavailable");
+            incrementReason(dropState, "stdout-unavailable", dropTimestamp());
           }
         };
 
@@ -525,7 +760,20 @@ export const makeEvlogAdapter = (
           onDropped: (records, error) => {
             release(records);
             for (const record of records) {
-              incrementReason(dropState, error === undefined ? "count-overflow" : "transport");
+              const droppedAt = dropTimestamp();
+              incrementReason(
+                dropState,
+                error === undefined ? "count-overflow" : "transport",
+                droppedAt,
+              );
+              if (record.auditRecordId !== undefined && record.auditReservation !== undefined) {
+                completeAuditReservation(record.auditRecordId, record.auditReservation, "retry");
+                incrementAuditDrop(
+                  auditState,
+                  error === undefined ? "queue-overflow" : "transport",
+                  droppedAt,
+                );
+              }
               fallback(record);
             }
           },
@@ -541,25 +789,52 @@ export const makeEvlogAdapter = (
                 retries: resolvedOptions.transportRetries,
               },
             );
+            for (const record of records) {
+              if (record.auditRecordId !== undefined && record.auditReservation !== undefined) {
+                deliveredAuditRecords.set(record.auditRecordId, clock.currentTimeMillisUnsafe());
+                while (deliveredAuditRecords.size > resolvedOptions.auditDedupeCapacity) {
+                  const oldest = deliveredAuditRecords.keys().next().value;
+                  if (oldest === undefined) break;
+                  deliveredAuditRecords.delete(oldest);
+                }
+                completeAuditReservation(
+                  record.auditRecordId,
+                  record.auditReservation,
+                  "delivered",
+                );
+              }
+            }
             release(records);
           } catch {
             throw adapterErrors.TRANSPORT_FAILED();
           }
         });
 
-        const offer = (record: AdmittedRecord): void => {
+        const offer = (record: AdmittedRecord): OfferResult => {
           if (!accepting) {
-            incrementReason(dropState, "closed");
+            const droppedAt = dropTimestamp();
+            incrementReason(dropState, "closed", droppedAt);
             fallback(record);
-            return;
+            return { kind: "closed", droppedAt };
           }
           if (pendingBytes + record.serializedBytes > resolvedOptions.maximumBufferedBytes) {
-            incrementReason(dropState, "byte-overflow");
+            const droppedAt = dropTimestamp();
+            incrementReason(dropState, "byte-overflow", droppedAt);
             fallback(record);
-            return;
+            return { kind: "queue-overflow", droppedAt };
+          }
+          if (
+            record.auditRecordId !== undefined &&
+            (pipeline?.pending ?? 0) >= resolvedOptions.maximumBufferedEvents
+          ) {
+            const droppedAt = dropTimestamp();
+            incrementReason(dropState, "count-overflow", droppedAt);
+            fallback(record);
+            return { kind: "queue-overflow", droppedAt };
           }
           pendingBytes += record.serializedBytes;
           pipeline?.(record);
+          return { kind: "queued" };
         };
 
         const admitContract = (event: TelemetryEvent, admission: EventAdmissionMetadata) =>
@@ -684,9 +959,13 @@ export const makeEvlogAdapter = (
           }));
 
         const admitGlobal = (drainContext: DrainContext): void => {
+          if (drainContext.event.audit !== undefined) {
+            incrementReason(dropState, "contract-rejected", dropTimestamp());
+            return;
+          }
           const timestamp = normalizeGlobalTimestamp(drainContext.event.timestamp);
           if (Option.isNone(timestamp)) {
-            incrementReason(dropState, "contract-rejected");
+            incrementReason(dropState, "contract-rejected", dropTimestamp());
             return;
           }
           drainContext.event.timestamp = timestamp.value;
@@ -700,7 +979,7 @@ export const makeEvlogAdapter = (
             rawName = resolvedOptions.requestEventName;
           }
           if (Option.isNone(rawName)) {
-            incrementReason(dropState, "contract-rejected");
+            incrementReason(dropState, "contract-rejected", dropTimestamp());
             return;
           }
           const eventName = context.contract.eventNames.find(
@@ -709,7 +988,7 @@ export const makeEvlogAdapter = (
           const definition =
             eventName === undefined ? undefined : context.contract.eventByName.get(eventName);
           if (definition === undefined) {
-            incrementReason(dropState, "contract-rejected");
+            incrementReason(dropState, "contract-rejected", dropTimestamp());
             return;
           }
           const traceId = decodeTraceId(drainContext.event.traceId);
@@ -718,7 +997,7 @@ export const makeEvlogAdapter = (
             (drainContext.event.traceId !== undefined && Option.isNone(traceId)) ||
             (drainContext.event.spanId !== undefined && Option.isNone(spanId))
           ) {
-            incrementReason(dropState, "contract-rejected");
+            incrementReason(dropState, "contract-rejected", dropTimestamp());
             return;
           }
           const attributes: { [attributeName: string]: Contract.AttributeValue } = {};
@@ -726,14 +1005,14 @@ export const makeEvlogAdapter = (
             if (globalEnvelopeFields.has(name)) continue;
             const scalar = decodeScalar(value);
             if (Option.isNone(scalar)) {
-              incrementReason(dropState, "contract-rejected");
+              incrementReason(dropState, "contract-rejected", dropTimestamp());
               return;
             }
             attributes[name] = scalar.value;
           }
           const validation = validateContractEvent(context.contract, rawName.value, attributes);
           if (validation instanceof Contract.InvalidTelemetryEvent) {
-            incrementReason(dropState, "contract-rejected");
+            incrementReason(dropState, "contract-rejected", dropTimestamp());
             return;
           }
           const fields: { [attributeName: string]: Contract.AttributeValue } = {
@@ -814,6 +1093,159 @@ export const makeEvlogAdapter = (
           }
         }
 
+        const admitAudit = (record: CommittedAuditRecord): Effect.Effect<AuditPublishReceipt> => {
+          if (!isCommittedAuditRecord(record)) {
+            return Effect.sync(() =>
+              incrementAuditDrop(auditState, "contract-rejected", dropTimestamp()),
+            );
+          }
+          return Effect.promise<AuditPublishReceipt>(async () => {
+            const declaredAction = context.contract.auditActionByName.get(record.action);
+            if (
+              declaredAction === undefined ||
+              declaredAction.resourceType !== record.resource.type ||
+              !declaredAction.allowedOutcomes.includes(record.outcome) ||
+              (Option.isSome(record.reasonCode) &&
+                !declaredAction.reasonCodes.includes(record.reasonCode.value))
+            ) {
+              return incrementAuditDrop(auditState, "contract-rejected", dropTimestamp());
+            }
+            while (true) {
+              const now = clock.currentTimeMillisUnsafe();
+              for (const [recordId, deliveredAt] of deliveredAuditRecords) {
+                if (now - deliveredAt > resolvedOptions.auditDedupeWindowMillis) {
+                  deliveredAuditRecords.delete(recordId);
+                }
+              }
+              if (accepting && deliveredAuditRecords.has(record.recordId)) {
+                auditState.deduplicated += 1;
+                return { kind: "deduplicated" };
+              }
+              const existingReservation = auditReservations.get(record.recordId);
+              if (existingReservation !== undefined) {
+                const terminal = await existingReservation.terminal;
+                if (terminal === "delivered" && accepting) {
+                  auditState.deduplicated += 1;
+                  return { kind: "deduplicated" };
+                }
+                continue;
+              }
+              const recordId = record.recordId;
+              const fields: { [attributeName: string]: Contract.AttributeValue } = {
+                "event.name": "audit.recorded",
+                "event.kind": "wide",
+                "event.type": "audit",
+                "event.severity": "info",
+                "event.outcome": record.outcome === "success" ? "success" : "failure",
+                "event.timestamp": record.committedAt,
+                "audit.action": record.action,
+                "audit.actor.kind": record.actor.kind,
+                "audit.actor.id": record.actor.kind === "system" ? "system" : record.actor.id,
+                "audit.resource.type": record.resource.type,
+                "audit.resource.id": record.resource.id,
+                "audit.outcome": record.outcome,
+                "audit.record.id": recordId,
+                "audit.record.hash": record.ledgerHash,
+                "audit.occurred_at": record.occurredAt,
+                "audit.schema_version": record.schemaVersion,
+              };
+              if (Option.isSome(record.reasonCode)) {
+                fields["audit.reason_code"] = record.reasonCode.value;
+              }
+              if (Option.isSome(record.tenantId)) fields["audit.tenant.id"] = record.tenantId.value;
+              if (Option.isSome(record.correlation.requestId)) {
+                fields["request.id"] = record.correlation.requestId.value;
+              }
+              if (Option.isSome(record.correlation.runId)) {
+                fields["run.id"] = record.correlation.runId.value;
+              }
+              if (Option.isSome(record.correlation.traceId)) {
+                fields["trace.id"] = record.correlation.traceId.value;
+              }
+              if (Option.isSome(record.correlation.spanId)) {
+                fields["span.id"] = record.correlation.spanId.value;
+              }
+              const immutableAnchorNames = [
+                "event.outcome",
+                "event.timestamp",
+                "audit.record.id",
+                "audit.record.hash",
+                "audit.action",
+                "audit.actor.kind",
+                "audit.resource.type",
+                "audit.outcome",
+                "audit.schema_version",
+              ];
+              const decision = transformSignalFields(context.policy, "audit", fields);
+              const admittedFields: EventAttributes = {
+                ...decision.value,
+                "event.policy_dropped_attributes": decision.dropped,
+              };
+              const requiredFieldNames = [
+                ...immutableAnchorNames,
+                "audit.actor.id",
+                "audit.resource.id",
+                "audit.occurred_at",
+              ];
+              if (
+                requiredFieldNames.some((name) => decision.value[name] === undefined) ||
+                immutableAnchorNames.some((name) => decision.value[name] !== fields[name])
+              ) {
+                return incrementAuditDrop(auditState, "policy-rejected", dropTimestamp());
+              }
+              const reservation = makeAuditReservation();
+              auditReservations.set(recordId, reservation);
+              const native = {
+                ...buildAuditFields(nativeAuditInput(admittedFields)),
+                idempotencyKey: String(admittedFields["audit.record.id"]),
+              };
+              const nativeContext: { [name: string]: string } = {};
+              if (admittedFields["request.id"] !== undefined) {
+                nativeContext.requestId = String(admittedFields["request.id"]);
+              }
+              if (admittedFields["trace.id"] !== undefined) {
+                nativeContext.traceId = String(admittedFields["trace.id"]);
+              }
+              if (admittedFields["audit.tenant.id"] !== undefined) {
+                nativeContext.tenantId = String(admittedFields["audit.tenant.id"]);
+              }
+              if (Object.keys(nativeContext).length > 0) native.context = nativeContext;
+              const traceId = decodeTraceId(admittedFields["trace.id"]);
+              const spanId = decodeSpanId(admittedFields["span.id"]);
+              const event = Object.assign(
+                wideEventFor(
+                  context,
+                  record.committedAt,
+                  "info",
+                  admittedFields,
+                  Option.getOrUndefined(traceId),
+                  Option.getOrUndefined(spanId),
+                ),
+                { audit: native },
+              );
+              let integrityEvent: WideEvent;
+              try {
+                integrityEvent = await applyAuditIntegrity(event);
+              } catch {
+                completeAuditReservation(recordId, reservation, "retry");
+                return incrementAuditDrop(auditState, "transport", dropTimestamp());
+              }
+              const admission = offer(admittedRecord(integrityEvent, recordId, reservation));
+              if (admission.kind !== "queued") {
+                completeAuditReservation(recordId, reservation, "retry");
+                return incrementAuditDrop(auditState, admission.kind, admission.droppedAt);
+              }
+              auditState.published += 1;
+              return { kind: "published" };
+            }
+          });
+        };
+
+        const auditLayer = Layer.succeed(
+          AuditPublisher,
+          AuditPublisher.of({ publish: admitAudit, report: () => auditPublishReport(auditState) }),
+        );
+
         const eventLayer = Layer.succeed(
           TelemetryEventSink,
           TelemetryEventSink.of({
@@ -849,7 +1281,8 @@ export const makeEvlogAdapter = (
           flush,
           close,
           eventLayer: Option.some(eventLayer),
-          degraded: () => dropState.total > 0 || detached,
+          auditLayer: Option.some(auditLayer),
+          degraded: () => dropState.total > 0 || auditState.dropped > 0 || detached,
         };
       }),
   });
