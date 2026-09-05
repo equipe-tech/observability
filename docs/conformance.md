@@ -99,30 +99,34 @@ Leia `failure.code`, `failure.offendingValue`, `rule.document` e `rule.heading` 
 
 ## Catálogo de checks
 
-| Check                              | Perfis ou condição            | Regra                                                    |
-| ---------------------------------- | ----------------------------- | -------------------------------------------------------- |
-| `profile.official`                 | todos                         | `docs/profiles.md`, `Perfis oficiais de observabilidade` |
-| `identity.canonical`               | exceto `library`              | `docs/profiles.md`, `Configuração de Node`               |
-| `contract.compiles`                | todos                         | `docs/telemetry-contract.md`, `Contrato de telemetria`   |
-| `manifest.valid`                   | exceto `library`              | `docs/operations-manifest.md`, `Manifesto de operações`  |
-| `producers.contract-derived`       | perfis com eventos            | `docs/telemetry-contract.md`, `Recibo de emissão`        |
-| `queries.contract-derived`         | perfis com manifesto          | `docs/operations-manifest.md`, `Queries gerenciadas`     |
-| `correlation.canonical`            | perfis com eventos ou traces  | `docs/telemetry-contract.md`, `Correlação tipada`        |
-| `policy.compiles`                  | perfis com sinais de runtime  | `docs/data-policy.md`, `Declaração da política`          |
-| `server-events.evlog-collector`    | `nestjs-api`, `worker`, `cli` | `docs/profiles.md`, `Configuração de Node`               |
-| `sentry.unexpected-defects-only`   | capacidade `defects`          | `docs/sentry-adapters.md`, `Adaptadores Sentry`          |
-| `lifecycle.profile-compliant`      | todos                         | `docs/profiles.md`, `Ciclo de vida`                      |
-| `audit.durable-before-operational` | capacidade `audit`            | `docs/audit.md`, `Ordem durável`                         |
-| `pipeline.no-application-otlp`     | todos                         | `docs/coding-standards.md`, `Fronteiras do monorepo`     |
-| `canary.telemetry-destination`     | runtimes Node                 | `docs/testing.md`, `Canário do pipeline`                 |
-| `canary.sentry`                    | capacidade `defects`          | `docs/sentry-adapters.md`, `Adaptadores Sentry`          |
-| `canary.browser-route`             | `react-web`                   | `docs/profiles.md`, `Runtime React web`                  |
-| `canary.audit`                     | capacidade `audit`            | `docs/audit.md`, `Ordem durável`                         |
+| Check                              | Perfis ou condição                           | Regra                                                    |
+| ---------------------------------- | -------------------------------------------- | -------------------------------------------------------- |
+| `profile.official`                 | todos                                        | `docs/profiles.md`, `Perfis oficiais de observabilidade` |
+| `identity.canonical`               | exceto `library`                             | `docs/profiles.md`, `Configuração de Node`               |
+| `contract.compiles`                | todos                                        | `docs/telemetry-contract.md`, `Contrato de telemetria`   |
+| `manifest.valid`                   | exceto `library`                             | `docs/operations-manifest.md`, `Manifesto de operações`  |
+| `producers.contract-derived`       | perfis com eventos                           | `docs/telemetry-contract.md`, `Recibo de emissão`        |
+| `queries.contract-derived`         | perfis com manifesto                         | `docs/operations-manifest.md`, `Queries gerenciadas`     |
+| `correlation.canonical`            | perfis com eventos ou traces                 | `docs/telemetry-contract.md`, `Correlação tipada`        |
+| `policy.compiles`                  | perfis com sinais de runtime                 | `docs/data-policy.md`, `Declaração da política`          |
+| `server-events.evlog-collector`    | `nestjs-api`, `worker`, `cli`                | `docs/profiles.md`, `Configuração de Node`               |
+| `sentry.unexpected-defects-only`   | capacidade `defects`                         | `docs/sentry-adapters.md`, `Adaptadores Sentry`          |
+| `lifecycle.profile-compliant`      | todos                                        | `docs/profiles.md`, `Ciclo de vida`                      |
+| `audit.durable-before-operational` | capacidade `audit`                           | `docs/audit.md`, `Ordem durável`                         |
+| `pipeline.no-application-otlp`     | todos                                        | `docs/coding-standards.md`, `Fronteiras do monorepo`     |
+| `canary.telemetry-destination`     | runtimes Node ou traces/metrics selecionados | `docs/testing.md`, `Canário do pipeline`                 |
+| `canary.sentry`                    | capacidade `defects`                         | `docs/sentry-adapters.md`, `Adaptadores Sentry`          |
+| `canary.browser-route`             | capacidade `browserIngest`                   | `docs/profiles.md`, `Runtime React web`                  |
+| `canary.audit`                     | capacidade `audit`                           | `docs/audit.md`, `Ordem durável`                         |
 
 ## Recibos e topologia
 
 Recibos podem conter IDs de execução, digests de manifesto, IDs de evento e resumos limitados. Não inclua credenciais, DSNs, payloads de provider, documentos de auditoria, stacks ou dados pessoais.
 
-Na topologia `local`, os providers podem usar o Collector e transportes locais. Na topologia `deployed`, a aplicação executa seus probes e entrega os recibos ao runner. A suíte não carrega credenciais, não consulta Axiom ou Sentry diretamente e não altera recursos de provider.
+Na topologia `local`, o recibo de telemetria deve vir da leitura do destino após um Collector real. Captura direta no endpoint do exporter não é evidência de destino. O recibo vincula a topologia, o run ID, a identidade de resource e a observação do destino. Na topologia `deployed`, a aplicação executa seus probes, lê o destino e entrega o recibo vinculado ao runner. A suíte não carrega credenciais, não consulta Axiom ou Sentry diretamente e não altera recursos de provider.
+
+O recibo de produtor carrega a proveniência da definição completa do contrato. Nome de evento, índice de consulta ou tipo de evento isolados não substituem essa proveniência.
+
+Signals selecionados sempre exigem avaliação. Enquanto o runtime React não exportar traces ou metrics selecionados, o provider React retorna falha explícita em `canary.telemetry-destination`. Toda seleção de `browserIngest`, inclusive em `nestjs-api`, exige `canary.browser-route`.
 
 Use `assertConforms` para transformar um relatório recusado em falha de teste. Use `assertConformanceFailure` em fixtures negativas para exigir o check discriminante exato.

@@ -42,6 +42,25 @@ export const browserLifecycleConformance = (input: {
       }),
   });
 
+export const unsupportedBrowserSignalsConformance =
+  (): ConformanceProvider<"canary.telemetry-destination"> =>
+    defineConformanceEvidenceProvider({
+      id: "canary.telemetry-destination",
+      owner: "react",
+      verify: (target) =>
+        Effect.fail(
+          violation(
+            "The selected React traces or metrics have no owner-verified destination delivery. Install a React runtime that exports every selected signal before claiming conformance.",
+            [
+              target.capabilities.traces ? "traces" : undefined,
+              target.capabilities.metrics ? "metrics" : undefined,
+            ]
+              .filter((signal) => signal !== undefined)
+              .join(","),
+          ),
+        ),
+    });
+
 export const browserRouteCanaryConformance = (input: {
   readonly receipt?: BrowserDeliveryCanaryReceipt | undefined;
   readonly failure?: { readonly message: string; readonly cause?: unknown } | undefined;

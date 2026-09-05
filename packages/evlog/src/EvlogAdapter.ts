@@ -41,7 +41,10 @@ import {
 import { sendBatchToOTLP } from "evlog/otlp";
 import { createDrainPipeline, type PipelineDrainFn } from "evlog/pipeline";
 import { Clock, DateTime, Effect, Layer, Option, Schema } from "effect";
+import { sealEvlogDeliveryReceipt, type EvlogDeliveryReceipt } from "./DeliveryEvidence.ts";
 import { EvlogAdapterError } from "./EvlogAdapterError.ts";
+
+export type { EvlogDeliveryReceipt } from "./DeliveryEvidence.ts";
 
 export type EvlogDropReasonCounts = {
   readonly countOverflow: number;
@@ -92,6 +95,7 @@ export type EvlogAdapter = {
   readonly registration: OfficialAdapterRegistration;
   readonly drops: () => EvlogDropReport;
   readonly pending: () => EvlogPending;
+  readonly delivery: (runId: string, eventName: string) => Option.Option<EvlogDeliveryReceipt>;
 };
 
 type ResolvedOptions = {
@@ -597,6 +601,7 @@ export const makeEvlogAdapter = (
   const deliveredAuditRecords = new Map<string, number>();
   const auditReservations = new Map<string, AuditReservation>();
   const loggerOwner = Symbol("evlog-adapter");
+  let latestDeliveryReceipt: EvlogDeliveryReceipt | undefined;
   let pendingBytes = 0;
   let pipeline: PipelineDrainFn<AdmittedRecord> | undefined;
   let started = false;
@@ -860,7 +865,7 @@ export const makeEvlogAdapter = (
             );
             const traceId = Option.getOrUndefined(event.correlation.traceId);
             const spanId = Option.getOrUndefined(event.correlation.spanId);
-            offer(
+            const offered = offer(
               admittedRecord(
                 wideEventFor(
                   context,
@@ -872,6 +877,17 @@ export const makeEvlogAdapter = (
                 ),
               ),
             );
+            const runId = Option.getOrUndefined(event.correlation.runId);
+            if (offered.kind === "queued" && runId !== undefined) {
+              const receipt = sealEvlogDeliveryReceipt({
+                runId,
+                eventName: event.name,
+                serviceName: context.identity.serviceName,
+                serviceVersion: context.identity.serviceVersion,
+                environment: context.identity.environment,
+              });
+              latestDeliveryReceipt = receipt;
+            }
           });
 
         const projectBrowser = (event: BrowserTelemetryEvent) =>
@@ -1288,6 +1304,10 @@ export const makeEvlogAdapter = (
     registration,
     drops: () => reportFor(dropState),
     pending: () => ({ count: pipeline?.pending ?? 0, serializedBytes: pendingBytes }),
+    delivery: (runId, eventName) =>
+      Option.fromNullishOr(latestDeliveryReceipt).pipe(
+        Option.filter((receipt) => receipt.runId === runId && receipt.eventName === eventName),
+      ),
   };
 };
 

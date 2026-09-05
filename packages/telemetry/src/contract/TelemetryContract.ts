@@ -189,6 +189,10 @@ export type TelemetryContract<Definition extends TelemetryContractInput> = {
   readonly metricByName: ReadonlyMap<string, CompiledMetricDefinition>;
 };
 
+export const telemetryContractProvenance = <Definition extends TelemetryContractInput>(
+  contract: TelemetryContract<Definition>,
+): string => JSON.stringify(contract.definition);
+
 const isAttributeClassification = Schema.is(AttributeClassification);
 const isEventKind = Schema.is(EventKind);
 const isEventSeverity = Schema.is(EventSeverity);

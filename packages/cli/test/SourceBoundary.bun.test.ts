@@ -24,6 +24,28 @@ test("scans CommonJS require calls for application-local exporters", async () =>
   }
 });
 
+test("scans TypeScript ESM and CommonJS application exporters", async () => {
+  const root = await mkdtemp(join(tmpdir(), "obs-source-boundary-"));
+  try {
+    for (const extension of ["mts", "cts", "ts"]) {
+      await mkdir(join(root, extension));
+      await writeFile(
+        join(root, extension, `index.${extension}`),
+        'import { OtlpTracer } from "effect/unstable/observability"; export const exporter = OtlpTracer.layer;',
+      );
+      expect(await findApplicationOtlpImports(root, [extension])).toEqual([
+        {
+          rule: "boundary/application-otlp",
+          file: `${extension}/index.${extension}`,
+          specifier: "effect/unstable/observability",
+        },
+      ]);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("allows ordinary Effect HTTP clients while rejecting OTLP imports", async () => {
   const root = await mkdtemp(join(tmpdir(), "obs-source-boundary-"));
   try {

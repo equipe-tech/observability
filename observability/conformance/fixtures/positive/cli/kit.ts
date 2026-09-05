@@ -30,9 +30,10 @@ import {
   type ConformanceTarget,
 } from "@equipe-tech/observability/testing";
 import { fileURLToPath } from "node:url";
-import { startOtlpCaptureServer, type OtlpCaptureServer } from "@equipe-tech/observability/testing";
+import type { OtlpCaptureServer } from "@equipe-tech/observability/testing";
 import { packageBoundaryConformance } from "@equipe-tech/observability-cli/testing";
 import { fixtureError } from "../../../support/FixtureError.ts";
+import { startLocalCollector, type LocalCollector } from "../../../support/collector.ts";
 import { parseFixtureManifest } from "../../../support/manifest.ts";
 import { operationsManifestConformance } from "@equipe-tech/observability-cli/testing";
 
@@ -66,9 +67,14 @@ export type CliKit = {
   readonly lifecycleReport: import("@equipe-tech/observability").LifecycleReport;
   readonly binding: import("@equipe-tech/observability/testing").ConformanceTargetBinding;
   readonly telemetry: import("@equipe-tech/observability/testing").CapturedTelemetry;
+  readonly destinationReceipt?:
+    | import("@equipe-tech/observability/testing").TelemetryDestinationReceipt
+    | undefined;
 };
 
-export const buildCliKit = async (collector: OtlpCaptureServer): Promise<CliKit> => {
+export const buildCliKit = async (
+  collector: OtlpCaptureServer | LocalCollector,
+): Promise<CliKit> => {
   try {
     const contract = await Effect.runPromise(defineTelemetryContract(cliContractInput));
     const runId = await Effect.runPromise(generateRunId("job", "fixture-cli"));
@@ -102,6 +108,7 @@ export const buildCliKit = async (collector: OtlpCaptureServer): Promise<CliKit>
           .pipe(Effect.provide(handle.eventLayer)),
       );
       const lifecycleReport = await handle.close();
+      if ("awaitDestination" in collector) await collector.awaitDestination(runId);
       return {
         evlog,
         emitReceipt,
@@ -114,6 +121,17 @@ export const buildCliKit = async (collector: OtlpCaptureServer): Promise<CliKit>
           environment: "test",
         }),
         telemetry: collector.telemetry(),
+        destinationReceipt:
+          "destinationReceipt" in collector
+            ? collector.destinationReceipt(
+                runId,
+                conformanceTargetBinding(contract, {
+                  serviceName: "fixture-cli",
+                  serviceVersion: "1.4.0",
+                  environment: "test",
+                }),
+              )
+            : undefined,
       };
     } finally {
       await handle.close();
@@ -124,9 +142,13 @@ export const buildCliKit = async (collector: OtlpCaptureServer): Promise<CliKit>
 };
 
 export const runCliFixture = async (): Promise<ConformanceProfileReport> => {
-  const collector = await startOtlpCaptureServer();
+  const collector = await startLocalCollector();
   const kit = await buildCliKit(collector);
   const { manifest, contract: contractIndex } = await parseFixtureManifest(kit.binding);
+  const destination = kit.destinationReceipt;
+  if (destination === undefined) {
+    throw fixtureError("The CLI fixture requires Collector destination read-back.");
+  }
   const target: ConformanceTarget = {
     name: "fixture-cli",
     profile: "cli",
@@ -153,9 +175,9 @@ export const runCliFixture = async (): Promise<ConformanceProfileReport> => {
       correlationConformance({ correlation: kit.correlation }),
       policyConformance({ policy: cliPolicy }),
       evlogConformance({
-        registration: kit.evlog.registration,
+        delivery: Option.getOrThrow(kit.evlog.delivery(kit.runId, "cli.command")),
         drops: kit.evlog.drops(),
-        telemetry: kit.telemetry,
+        destination,
         runId: kit.runId,
         eventName: "cli.command",
       }),
@@ -165,7 +187,10 @@ export const runCliFixture = async (): Promise<ConformanceProfileReport> => {
         projectRoot: fileURLToPath(new URL(".", import.meta.url)),
         sourceRoots: ["."],
       }),
-      telemetryCanaryConformance({ runId: kit.runId, telemetry: kit.telemetry }),
+      telemetryCanaryConformance({
+        runId: kit.runId,
+        receipt: destination,
+      }),
     ],
   };
   return Effect.runPromise(runConformance(target));

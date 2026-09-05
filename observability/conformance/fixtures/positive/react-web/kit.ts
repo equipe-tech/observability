@@ -16,6 +16,7 @@ import {
 import {
   browserLifecycleConformance,
   browserRouteCanaryConformance,
+  unsupportedBrowserSignalsConformance,
 } from "@equipe-tech/observability-react/testing";
 import {
   operationsManifestConformance,
@@ -163,6 +164,7 @@ export const runReactFixture = async (): Promise<ConformanceProfileReport> => {
         report: kit.lifecycleReport,
         service: { name: "fixture-web", environment: "test" },
       }),
+      unsupportedBrowserSignalsConformance(),
       browserRouteCanaryConformance({ receipt: kit.canaryReceipt }),
     ],
   };

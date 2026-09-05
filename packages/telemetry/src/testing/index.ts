@@ -462,6 +462,16 @@ export type OtlpCaptureServer = {
 const ServerAddress = Schema.Struct({ port: Schema.Number });
 const decodeServerAddress = Schema.decodeUnknownSync(ServerAddress);
 
+type OtlpCapturePayload = typeof SpanExport.Type | typeof LogExport.Type | typeof MetricExport.Type;
+
+const capturePayloadDecoders = new Map<string, (body: string) => Option.Option<OtlpCapturePayload>>(
+  [
+    ["/v1/traces", Schema.decodeUnknownOption(Schema.fromJsonString(SpanExport))],
+    ["/v1/logs", Schema.decodeUnknownOption(Schema.fromJsonString(LogExport))],
+    ["/v1/metrics", Schema.decodeUnknownOption(Schema.fromJsonString(MetricExport))],
+  ],
+);
+
 export const startOtlpCaptureServer = async (): Promise<OtlpCaptureServer> => {
   const requests: Array<CapturedRequest> = [];
   const server: Server = createServer((request, response) => {
@@ -469,15 +479,15 @@ export const startOtlpCaptureServer = async (): Promise<OtlpCaptureServer> => {
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
     request.on("end", () => {
       const path = request.url ?? "";
-      if (
-        path.endsWith("/v1/traces") ||
-        path.endsWith("/v1/logs") ||
-        path.endsWith("/v1/metrics")
-      ) {
-        const payload = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(
-          Buffer.concat(chunks).toString("utf8"),
-        );
-        requests.push({ path, payload });
+      const decodePayload = capturePayloadDecoders.get(path);
+      if (decodePayload !== undefined) {
+        const payload = decodePayload(Buffer.concat(chunks).toString("utf8"));
+        if (Option.isNone(payload)) {
+          response.writeHead(400, { "content-type": "application/json" });
+          response.end(JSON.stringify({ code: 3, message: "Invalid OTLP JSON payload." }));
+          return;
+        }
+        requests.push({ path, payload: payload.value });
       }
       response.writeHead(200, { "content-type": "application/json" });
       response.end("{}");

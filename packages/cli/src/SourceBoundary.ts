@@ -114,7 +114,7 @@ const PackageManifest = Schema.Struct({
 });
 export const decodePackageManifest = Schema.decodeUnknownSync(PackageManifest);
 
-const sourceExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
+const sourceExtensions = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
 
 const scanSourceFiles = async (directory: string): Promise<ReadonlyArray<string>> => {
   const files: Array<string> = [];

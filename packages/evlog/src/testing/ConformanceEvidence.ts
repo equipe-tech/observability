@@ -1,12 +1,13 @@
 import { Effect } from "effect";
-import type { AdapterRegistration } from "@equipe-tech/observability";
 import {
   defineConformanceEvidenceProvider,
   type ConformanceCheckId,
   ConformanceViolation,
-  type CapturedTelemetry,
   type ConformanceEvidenceProvider,
+  telemetryDestinationMatches,
+  type TelemetryDestinationReceipt,
 } from "@equipe-tech/observability/testing";
+import { isEvlogDeliveryReceipt, type EvlogDeliveryReceipt } from "../DeliveryEvidence.ts";
 import type { EvlogDropReport } from "../EvlogAdapter.ts";
 
 export type ConformanceProvider<Id extends ConformanceCheckId> = ConformanceEvidenceProvider<Id>;
@@ -19,9 +20,9 @@ const violation = (
   new ConformanceViolation({ message, offendingValue, cause: cause ?? offendingValue });
 
 export const evlogConformance = (input: {
-  readonly registration: AdapterRegistration;
+  readonly delivery: EvlogDeliveryReceipt;
   readonly drops: EvlogDropReport;
-  readonly telemetry: CapturedTelemetry;
+  readonly destination: TelemetryDestinationReceipt;
   readonly runId: string;
   readonly eventName: string;
 }): ConformanceProvider<"server-events.evlog-collector"> =>
@@ -30,12 +31,33 @@ export const evlogConformance = (input: {
     owner: "evlog",
     verify: (target) =>
       Effect.gen(function* () {
-        const registration = input.registration;
-        if (registration.kind !== "official" || registration.adapter.capability !== "events") {
+        if (
+          !isEvlogDeliveryReceipt(input.delivery) ||
+          input.delivery.runId !== input.runId ||
+          input.delivery.eventName !== input.eventName ||
+          input.delivery.serviceName !== target.binding.identity.serviceName ||
+          input.delivery.serviceVersion !== target.binding.identity.serviceVersion ||
+          input.delivery.environment !== target.binding.identity.environment
+        ) {
           return yield* Effect.fail(
             violation(
-              "The server event path does not run through an official evlog events registration. Register the official evlog adapter with registerOfficialAdapter.",
-              registration.kind,
+              "The server event has no sealed receipt from the evlog adapter instance that admitted the current run and contract event.",
+              `${input.runId}:${input.eventName}`,
+            ),
+          );
+        }
+        if (
+          !telemetryDestinationMatches(
+            input.destination,
+            target.topology,
+            input.runId,
+            target.binding,
+          )
+        ) {
+          return yield* Effect.fail(
+            violation(
+              "The evlog event has no Collector or destination read-back bound to its topology, run, and identity.",
+              `${input.runId}:${input.eventName}`,
             ),
           );
         }
@@ -48,7 +70,7 @@ export const evlogConformance = (input: {
             ),
           );
         }
-        const delivered = input.telemetry.logs.some(
+        const delivered = input.destination.telemetry.logs.some(
           (log) =>
             log.attributes.get("run.id") === input.runId &&
             log.attributes.get("event.name") === input.eventName &&

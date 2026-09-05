@@ -53,6 +53,7 @@ export type ConformanceTargetBinding = {
     readonly environment: string;
   };
   readonly contract: ContractIndex;
+  readonly producerContractProvenance: string;
 };
 
 export type ConformanceTargetContext = {

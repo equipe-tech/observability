@@ -41,4 +41,7 @@ export {
   producersConformance,
   profileConformance,
   telemetryCanaryConformance,
+  telemetryDestinationMatches,
+  telemetryDestinationReceipt,
 } from "./TelemetryEvidence.ts";
+export type { TelemetryDestinationReceipt } from "./TelemetryEvidence.ts";

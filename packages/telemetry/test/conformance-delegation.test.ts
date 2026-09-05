@@ -22,6 +22,7 @@ const binding = {
     metrics: [],
     aliases: [],
   },
+  producerContractProvenance: "delegation-contract",
 };
 
 const workerContext: ConformanceTargetContext = {

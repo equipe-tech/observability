@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import { Effect, Option } from "effect";
-import { unexpectedDefect } from "@equipe-tech/observability";
+import {
+  defineTelemetryContract,
+  makeEventProducer,
+  unexpectedDefect,
+} from "@equipe-tech/observability";
 import type { NodeObservability } from "@equipe-tech/observability/node";
 import { createBrowserSentryDefectReporter } from "@equipe-tech/observability-sentry/browser";
 import { sentryUnexpectedDefectsConformance } from "@equipe-tech/observability-sentry/testing";
@@ -11,9 +15,12 @@ import {
   contractConformance,
   identityConformance,
   lifecycleConformance,
+  makeCollectingTelemetryEventSink,
   producersConformance,
   telemetryCanaryConformance,
+  telemetryDestinationReceipt,
   type ConformanceTargetContext,
+  type TelemetryDestinationReceipt,
 } from "@equipe-tech/observability/testing";
 import { observabilityProfiles } from "../../packages/telemetry/src/profile/ObservabilityProfile.ts";
 import { startOtlpCaptureServer } from "@equipe-tech/observability/testing";
@@ -44,6 +51,7 @@ const context: ConformanceTargetContext = {
       metrics: [],
       aliases: [],
     },
+    producerContractProvenance: "{}",
   },
 };
 
@@ -221,46 +229,109 @@ test("contract, producer, manifest, and query evidence stay on the target bindin
     expect((await Effect.runPromiseExit(provider.verify(workerContext)))._tag).toBe("Success");
     expect((await Effect.runPromiseExit(provider.verify(mismatchedContext)))._tag).toBe("Failure");
   }
+
+  const foreignContract = await Effect.runPromise(
+    defineTelemetryContract({
+      version: 1,
+      events: {
+        SchedulerRun: {
+          name: "scheduler.run",
+          kind: "domain",
+          defaultSeverity: "warn",
+          mandatory: false,
+          sampling: { kind: "always" },
+          attributes: {
+            "foreign.value": {
+              classification: "internal",
+              required: true,
+              metricLabel: false,
+            },
+          },
+        },
+      },
+      metrics: {},
+      auditActions: {},
+    }),
+  );
+  const foreignSink = await Effect.runPromise(makeCollectingTelemetryEventSink());
+  const foreignReceipt = await Effect.runPromise(
+    makeEventProducer(foreignContract)
+      .emit("SchedulerRun", {
+        outcome: "success",
+        attributes: { "foreign.value": "foreign" },
+      })
+      .pipe(Effect.provide(foreignSink.layer)),
+  );
+  expect(
+    (
+      await Effect.runPromiseExit(
+        producersConformance({ receipt: foreignReceipt }).verify(workerContext),
+      )
+    )._tag,
+  ).toBe("Failure");
 });
 
-test("capture evidence requires the current run, identity, selected metrics, and parentage", async () => {
+test("destination evidence requires provenance, current run, identity, selected metrics, and parentage", async () => {
   const collector = await startOtlpCaptureServer();
   const kit = await buildWorkerTarget(collector);
   const workerContext = { ...context, binding: kit.binding };
+  const unsealedExporterCapture: TelemetryDestinationReceipt = {
+    topology: "local",
+    runId: kit.runId,
+    identity: kit.binding.identity,
+    observationId: "pre-collector-exporter-capture",
+    telemetry: kit.telemetry,
+  };
+  expect(
+    (
+      await Effect.runPromiseExit(
+        telemetryCanaryConformance({ runId: kit.runId, receipt: unsealedExporterCapture }).verify(
+          workerContext,
+        ),
+      )
+    )._tag,
+  ).toBe("Failure");
+  const receipt = telemetryDestinationReceipt({
+    ...unsealedExporterCapture,
+    observationId: "destination-unit-readback",
+  });
   expect(
     (
       await Effect.runPromiseExit(
         telemetryCanaryConformance({
           runId: kit.runId,
-          telemetry: kit.telemetry,
+          receipt,
           metricRunIdAttribute: "fixture.run_id",
         }).verify(workerContext),
       )
     )._tag,
   ).toBe("Success");
-  const mutations = [
-    { runId: "job-never-emitted", telemetry: kit.telemetry },
-    { runId: kit.runId, telemetry: { ...kit.telemetry, metrics: [] } },
-    {
-      runId: kit.runId,
+  const mutations: ReadonlyArray<TelemetryDestinationReceipt> = [
+    telemetryDestinationReceipt({ ...receipt, runId: "job-never-emitted" }),
+    telemetryDestinationReceipt({ ...receipt, telemetry: { ...kit.telemetry, metrics: [] } }),
+    telemetryDestinationReceipt({
+      ...receipt,
       telemetry: {
         ...kit.telemetry,
         spans: kit.telemetry.spans.map((span) => ({ ...span, parentSpanId: Option.none() })),
       },
-    },
-    {
-      runId: kit.runId,
+    }),
+    telemetryDestinationReceipt({
+      ...receipt,
       telemetry: {
         ...kit.telemetry,
         logs: kit.telemetry.logs.map((log) => ({ ...log, resourceAttributes: new Map() })),
       },
-    },
+    }),
+    telemetryDestinationReceipt({ ...receipt, topology: "deployed" }),
   ];
   for (const mutation of mutations) {
     const result = await Effect.runPromiseExit(
-      telemetryCanaryConformance({ ...mutation, metricRunIdAttribute: "fixture.run_id" }).verify(
-        workerContext,
-      ),
+      telemetryCanaryConformance({
+        runId: kit.runId,
+        receipt: mutation,
+        metricRunIdAttribute: "fixture.run_id",
+      }).verify(workerContext),
     );
     expect(result._tag).toBe("Failure");
   }
@@ -271,9 +342,15 @@ test("evlog evidence requires an actual current-run contract event capture", asy
   const kit = await buildWorkerTarget(collector);
   const workerContext = { ...context, binding: kit.binding };
   const evidence = {
-    registration: kit.evlog.registration,
+    delivery: Option.getOrThrow(kit.evlog.delivery(kit.runId, "scheduler.run")),
     drops: kit.evlog.drops(),
-    telemetry: kit.telemetry,
+    destination: telemetryDestinationReceipt({
+      topology: "local",
+      runId: kit.runId,
+      identity: kit.binding.identity,
+      observationId: "evlog-unit-readback",
+      telemetry: kit.telemetry,
+    }),
     runId: kit.runId,
     eventName: "scheduler.run",
   };
@@ -284,6 +361,22 @@ test("evlog evidence requires an actual current-run contract event capture", asy
     (
       await Effect.runPromiseExit(
         evlogConformance({ ...evidence, runId: "job-never-emitted" }).verify(workerContext),
+      )
+    )._tag,
+  ).toBe("Failure");
+  const unrelated = await buildWorkerTarget(await startOtlpCaptureServer());
+  expect(
+    (
+      await Effect.runPromiseExit(
+        evlogConformance({
+          ...evidence,
+          delivery: Option.getOrThrow(unrelated.evlog.delivery(unrelated.runId, "scheduler.run")),
+          destination: telemetryDestinationReceipt({
+            ...evidence.destination,
+            runId: unrelated.runId,
+            telemetry: unrelated.telemetry,
+          }),
+        }).verify(workerContext),
       )
     )._tag,
   ).toBe("Failure");

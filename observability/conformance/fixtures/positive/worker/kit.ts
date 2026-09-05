@@ -42,8 +42,9 @@ import {
   operationsManifestConformance,
   packageBoundaryConformance,
 } from "@equipe-tech/observability-cli/testing";
-import { startOtlpCaptureServer, type OtlpCaptureServer } from "@equipe-tech/observability/testing";
+import type { OtlpCaptureServer } from "@equipe-tech/observability/testing";
 import { fixtureError } from "../../../support/FixtureError.ts";
+import { startLocalCollector, type LocalCollector } from "../../../support/collector.ts";
 import { parseFixtureManifest } from "../../../support/manifest.ts";
 
 export const workerContractInput = Contract.telemetryContractDefinition({
@@ -79,7 +80,7 @@ export const workerPolicy: DataPolicyInput = {
 };
 
 export const buildWorkerTarget = async (
-  collector: OtlpCaptureServer,
+  collector: OtlpCaptureServer | LocalCollector,
   options: {
     readonly lifecycleOperation?: "close" | "flush" | undefined;
     readonly failAfterStart?: boolean | undefined;
@@ -115,24 +116,28 @@ export const buildWorkerTarget = async (
       }
       const producer = makeEventProducer(contract);
       const runId = await Effect.runPromise(generateRunId("job", "fixture"));
-      const correlation = new CorrelationContext({
-        trace: {
-          _tag: "Traced",
-          traceId: await Effect.runPromise(parseTraceId("a1b2c3d4e5f60718293a4b5c6d7e8f99")),
-          spanId: await Effect.runPromise(parseSpanId("1111111111111111")),
-        },
-        runId: Option.some(runId),
-      });
-      const emitReceipt = await handle.runtime.runPromise(
-        producer
-          .emit("SchedulerRun", { outcome: "success", durationMs: 3, attributes: {} })
-          .pipe(withBackgroundCorrelation(correlation, "fixture.job"))
-          .pipe(Effect.provide(handle.eventLayer)),
+      const { correlation, emitReceipt } = await handle.runtime.runPromise(
+        Effect.gen(function* () {
+          const root = yield* Effect.currentSpan;
+          const correlation = new CorrelationContext({
+            trace: {
+              _tag: "Traced",
+              traceId: yield* parseTraceId(root.traceId),
+              spanId: yield* parseSpanId(root.spanId),
+            },
+            runId: Option.some(runId),
+          });
+          const emitReceipt = yield* producer
+            .emit("SchedulerRun", { outcome: "success", durationMs: 3, attributes: {} })
+            .pipe(withBackgroundCorrelation(correlation, "fixture.job"));
+          return { correlation, emitReceipt };
+        }).pipe(Effect.withSpan("fixture.root"), Effect.provide(handle.eventLayer)),
       );
       makeMetricProducer(contract, handle.metrics)
         .counter("WorkerJobs")
         .add(1, { "fixture.run_id": runId });
       const report = await handle[options.lifecycleOperation ?? "close"]();
+      if ("awaitDestination" in collector) await collector.awaitDestination(runId);
       return {
         identity,
         emitReceipt,
@@ -142,6 +147,10 @@ export const buildWorkerTarget = async (
         evlog,
         binding: conformanceTargetBinding(contract, identity),
         telemetry: collector.telemetry(),
+        destinationReceipt:
+          "destinationReceipt" in collector
+            ? collector.destinationReceipt(runId, conformanceTargetBinding(contract, identity))
+            : undefined,
       };
     } finally {
       await handle.close();
@@ -160,12 +169,19 @@ export type WorkerKit = {
   readonly evlog: ReturnType<typeof evlogAdapter>;
   readonly binding: import("@equipe-tech/observability/testing").ConformanceTargetBinding;
   readonly telemetry: import("@equipe-tech/observability/testing").CapturedTelemetry;
+  readonly destinationReceipt?:
+    | import("@equipe-tech/observability/testing").TelemetryDestinationReceipt
+    | undefined;
 };
 
 export const workerProviders = async (
   kit: WorkerKit,
 ): Promise<ReadonlyArray<ConformanceEvidenceProvider>> => {
   const { manifest, contract: contractIndex } = await parseFixtureManifest(kit.binding);
+  const destination = kit.destinationReceipt;
+  if (destination === undefined) {
+    throw fixtureError("The worker fixture requires Collector destination read-back.");
+  }
   return [
     profileConformance({
       profile: "worker",
@@ -177,9 +193,9 @@ export const workerProviders = async (
     correlationConformance({ correlation: kit.correlation }),
     policyConformance({ policy: workerPolicy }),
     evlogConformance({
-      registration: kit.evlog.registration,
+      delivery: Option.getOrThrow(kit.evlog.delivery(kit.runId, "scheduler.run")),
       drops: kit.evlog.drops(),
-      telemetry: kit.telemetry,
+      destination,
       runId: kit.runId,
       eventName: "scheduler.run",
     }),
@@ -191,14 +207,14 @@ export const workerProviders = async (
     lifecycleConformance({ report: kit.lifecycleReport }),
     telemetryCanaryConformance({
       runId: kit.runId,
-      telemetry: kit.telemetry,
+      receipt: destination,
       metricRunIdAttribute: "fixture.run_id",
     }),
   ];
 };
 
 export const runWorkerFixture = async (): Promise<ConformanceProfileReport> => {
-  const collector = await startOtlpCaptureServer();
+  const collector = await startLocalCollector();
   const kit = await buildWorkerTarget(collector);
   const target: ConformanceTarget = {
     name: "fixture-worker",

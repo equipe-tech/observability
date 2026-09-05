@@ -3,6 +3,7 @@ import { parseResourceIdentity } from "../../ResourceIdentity.ts";
 import {
   contractIndex,
   defineTelemetryContract,
+  telemetryContractProvenance,
   type EmitReceipt,
   type TelemetryContract,
 } from "../../contract/index.ts";
@@ -41,6 +42,7 @@ export const conformanceTargetBinding = <Definition extends TelemetryContractInp
 ): ConformanceTargetBinding => ({
   identity,
   contract: contractIndex(contract, identity.serviceName),
+  producerContractProvenance: telemetryContractProvenance(contract),
 });
 
 export type ConformanceProvider<Id extends ConformanceCheckId> = ConformanceEvidenceProvider<Id>;
@@ -169,7 +171,10 @@ export const contractConformance = <
           );
         }
         const index = contractIndex(compiled.value, target.binding.identity.serviceName);
-        if (JSON.stringify(index) !== JSON.stringify(target.binding.contract)) {
+        if (
+          JSON.stringify(index) !== JSON.stringify(target.binding.contract) ||
+          telemetryContractProvenance(compiled.value) !== target.binding.producerContractProvenance
+        ) {
           return yield* Effect.fail(
             violation(
               "The compiled telemetry contract differs from the target contract binding. Derive every provider from the same compiled contract.",
@@ -198,10 +203,13 @@ export const producersConformance = (input: {
       Effect.gen(function* () {
         const eventName =
           input.receipt.decision === "sampled_out" ? input.receipt.name : input.receipt.event.name;
-        if (!target.binding.contract.events.some((event) => event.name === eventName)) {
+        if (
+          input.receipt.contractProvenance !== target.binding.producerContractProvenance ||
+          !target.binding.contract.events.some((event) => event.name === eventName)
+        ) {
           return yield* Effect.fail(
             violation(
-              "The producer receipt does not name an event in the target contract binding.",
+              "The producer receipt does not originate from the complete target contract binding or name one of its events.",
               eventName,
             ),
           );
@@ -398,6 +406,36 @@ export const auditConformance = (input: {
       }),
   });
 
+export type TelemetryDestinationReceipt = {
+  readonly topology: "local" | "deployed";
+  readonly runId: string;
+  readonly identity: ConformanceTargetBinding["identity"];
+  readonly observationId: string;
+  readonly telemetry: CapturedTelemetry;
+};
+
+const destinationReceipts = new WeakSet<TelemetryDestinationReceipt>();
+
+export const telemetryDestinationReceipt = (
+  receipt: TelemetryDestinationReceipt,
+): TelemetryDestinationReceipt => {
+  destinationReceipts.add(receipt);
+  return receipt;
+};
+
+export const telemetryDestinationMatches = (
+  receipt: TelemetryDestinationReceipt,
+  topology: "local" | "deployed",
+  runId: string,
+  binding: ConformanceTargetBinding,
+): boolean =>
+  destinationReceipts.has(receipt) &&
+  receipt.topology === topology &&
+  receipt.runId === runId &&
+  receipt.identity.serviceName === binding.identity.serviceName &&
+  receipt.identity.serviceVersion === binding.identity.serviceVersion &&
+  receipt.identity.environment === binding.identity.environment;
+
 const matchesIdentity = (
   attributes: CapturedTelemetry["logs"][number]["resourceAttributes"],
   binding: ConformanceTargetBinding,
@@ -408,7 +446,7 @@ const matchesIdentity = (
 
 export const telemetryCanaryConformance = (input: {
   readonly runId: string;
-  readonly telemetry: CapturedTelemetry;
+  readonly receipt: TelemetryDestinationReceipt;
   readonly metricRunIdAttribute?: string | undefined;
 }): ConformanceProvider<"canary.telemetry-destination"> =>
   defineConformanceEvidenceProvider({
@@ -416,9 +454,18 @@ export const telemetryCanaryConformance = (input: {
     owner: "telemetry",
     verify: (target) =>
       Effect.gen(function* () {
-        const logs = input.telemetry.logs.filter(
+        const receipt = input.receipt;
+        if (!telemetryDestinationMatches(receipt, target.topology, input.runId, target.binding)) {
+          return yield* Effect.fail(
+            violation(
+              "The telemetry canary lacks a Collector or destination read-back receipt bound to the current topology, run, and resource identity.",
+              receipt?.observationId ?? "exporter capture",
+            ),
+          );
+        }
+        const logs = receipt.telemetry.logs.filter(
           (log) =>
-            log.attributes.get("run.id") === input.runId &&
+            log.attributes.get("run.id") === receipt.runId &&
             matchesIdentity(log.resourceAttributes, target.binding) &&
             target.binding.contract.events.some(
               (event) => event.name === log.attributes.get("event.name"),
@@ -427,13 +474,13 @@ export const telemetryCanaryConformance = (input: {
         const currentTraceIds = new Set(
           logs.flatMap((log) => (Option.isSome(log.traceId) ? [log.traceId.value] : [])),
         );
-        const spans = input.telemetry.spans.filter(
+        const spans = receipt.telemetry.spans.filter(
           (span) =>
             currentTraceIds.has(span.traceId) &&
             matchesIdentity(span.resourceAttributes, target.binding),
         );
         const metricRunIdAttribute = input.metricRunIdAttribute;
-        const metrics = input.telemetry.metrics.filter(
+        const metrics = receipt.telemetry.metrics.filter(
           (metric) =>
             matchesIdentity(metric.resourceAttributes, target.binding) &&
             target.binding.contract.metrics.some(
@@ -444,14 +491,28 @@ export const telemetryCanaryConformance = (input: {
             ) &&
             metricRunIdAttribute !== undefined &&
             metric.points.some(
-              (point) => point.attributes.get(metricRunIdAttribute) === input.runId,
+              (point) => point.attributes.get(metricRunIdAttribute) === receipt.runId,
             ),
         );
-        const linked = spans.some(
-          (span) =>
-            Option.isSome(span.parentSpanId) &&
-            logs.some((log) => Option.isSome(log.traceId) && log.traceId.value === span.traceId),
-        );
+        const linked = logs.some((log) => {
+          if (Option.isNone(log.traceId) || Option.isNone(log.spanId)) return false;
+          const traceId = log.traceId.value;
+          const spanId = log.spanId.value;
+          const linkedSpan = spans.find(
+            (span) => span.traceId === traceId && span.spanId === spanId,
+          );
+          if (linkedSpan === undefined) return false;
+          return spans.some((child) => {
+            if (child.traceId !== traceId || Option.isNone(child.parentSpanId)) return false;
+            const parentSpanId = child.parentSpanId.value;
+            return spans.some(
+              (parent) =>
+                parent.traceId === traceId &&
+                parent.spanId === parentSpanId &&
+                parent.spanId !== child.spanId,
+            );
+          });
+        });
         if (
           logs.length === 0 ||
           (target.capabilities.traces && (spans.length === 0 || !linked)) ||
@@ -460,14 +521,14 @@ export const telemetryCanaryConformance = (input: {
           return yield* Effect.fail(
             violation(
               "The telemetry canary lacks current-run contract events, selected signals, canonical resources, or trace parentage.",
-              input.runId,
+              receipt.runId,
             ),
           );
         }
         return {
           owner: "telemetry",
           receiptType: "telemetry-canary",
-          receiptId: input.runId,
+          receiptId: receipt.observationId,
           summary: `captured current-run telemetry with ${logs.length} events, ${spans.length} spans, and ${metrics.length} metrics`,
         } as const;
       }),

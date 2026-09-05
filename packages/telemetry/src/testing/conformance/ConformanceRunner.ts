@@ -80,6 +80,7 @@ const TargetDocument = Schema.Struct({
       environment: TargetText,
     }),
     contract: ContractIndexDocument,
+    producerContractProvenance: TargetText,
   }),
   providers: Schema.Array(
     Schema.Struct({

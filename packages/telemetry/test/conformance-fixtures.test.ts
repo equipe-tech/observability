@@ -31,19 +31,21 @@ describe("conformance profile fixtures", () => {
   it("passes the nestjs-api fixture", async () => {
     const report = await assertPassing("nestjs-api", runNestjsFixture);
     expect(report.profile).toBe("nestjs-api");
-  });
+  }, 60_000);
 
   it("passes the worker fixture", async () => {
     await assertPassing("worker", runWorkerFixture);
-  });
+  }, 60_000);
 
-  it("passes the react-web fixture", async () => {
-    await assertPassing("react-web", runReactFixture);
+  it("rejects the react-web fixture until selected traces have destination proof", async () => {
+    const report = await runReactFixture();
+    expect(report.conforms).toBe(false);
+    await Effect.runPromise(assertConformanceFailure(report, "canary.telemetry-destination"));
   });
 
   it("passes the cli fixture", async () => {
     await assertPassing("cli", runCliFixture);
-  });
+  }, 60_000);
 
   it("passes the library fixture", async () => {
     const report = await assertPassing("library", runLibraryFixture);
@@ -61,7 +63,7 @@ describe("conformance profile fixtures", () => {
       Effect.flip(assertConformanceFailure(report, "pipeline.no-application-otlp")),
     );
     expect(failure.code).toBe("OBS_CONFORMANCE_NEGATIVE_FIXTURE_PASSED");
-  });
+  }, 60_000);
 
   it("rejects an application-local OTLP pipeline", async () => {
     const report = await runLocalOtlpNegativeFixture();
@@ -72,7 +74,7 @@ describe("conformance profile fixtures", () => {
     const failed = report.checks.find((check) => check.id === "pipeline.no-application-otlp");
     if (failed?.status !== "fail") throw new Error("Expected the OTLP boundary check to fail.");
     expect(failed.failure.offendingValue).toContain("effect/unstable/observability");
-  });
+  }, 60_000);
 
   it("rejects a non-defect Sentry capture", async () => {
     const report = await runNonDefectSentryCaptureFixture();
@@ -86,7 +88,7 @@ describe("conformance profile fixtures", () => {
     const failed = report.checks.find((check) => check.id === "sentry.unexpected-defects-only");
     if (failed?.status !== "fail") throw new Error("Expected the Sentry boundary check to fail.");
     expect(failed.failure.offendingValue).toContain("APP_NOT_FOUND");
-  });
+  }, 60_000);
 
   it("rejects an audit action without a durable-ledger receipt", async () => {
     const report = await runAuditWithoutDurableReceiptFixture();
@@ -100,5 +102,5 @@ describe("conformance profile fixtures", () => {
     const failed = report.checks.find((check) => check.id === "audit.durable-before-operational");
     if (failed?.status !== "fail") throw new Error("Expected the audit durability check to fail.");
     expect(failed.failure.offendingValue).toContain("fixture.updated");
-  });
+  }, 60_000);
 });

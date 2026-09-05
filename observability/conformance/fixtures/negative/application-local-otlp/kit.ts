@@ -5,14 +5,14 @@ import {
   runConformance,
   type ConformanceCheckId,
   type ConformanceProfileReport,
-  startOtlpCaptureServer,
   type ConformanceTarget,
 } from "@equipe-tech/observability/testing";
 import { fileURLToPath } from "node:url";
 import { buildWorkerTarget, workerProviders } from "../../positive/worker/kit.ts";
+import { startLocalCollector } from "../../../support/collector.ts";
 
 export const runLocalOtlpNegativeFixture = async (): Promise<ConformanceProfileReport> => {
-  const collector = await startOtlpCaptureServer();
+  const collector = await startLocalCollector();
   const kit = await buildWorkerTarget(collector);
   const target: ConformanceTarget = {
     name: "fixture-worker",

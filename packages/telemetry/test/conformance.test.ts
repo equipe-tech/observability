@@ -38,6 +38,7 @@ const binding = {
     metrics: [{ name: "unit.metric", kind: "counter" as const, unit: "1", attributes: [] }],
     aliases: [],
   },
+  producerContractProvenance: "unit-contract",
 };
 
 const workerContext: ConformanceTargetContext = {
@@ -230,7 +231,7 @@ describe("conformance suite", () => {
     );
     expect(suiteError(missingRequiredTrace)).toBe("OBS_CONFORMANCE_TARGET_INVALID");
 
-    const optionalNestBrowser = await Effect.runPromise(
+    const optionalNestBrowser = await Effect.runPromiseExit(
       runConformance(
         targetWith({
           profile: "nestjs-api",
@@ -251,7 +252,7 @@ describe("conformance suite", () => {
         }),
       ),
     );
-    expect(optionalNestBrowser.conforms).toBe(true);
+    expect(suiteError(optionalNestBrowser)).toBe("OBS_CONFORMANCE_PROVIDER_MISSING");
 
     const reactMissingIngest = await Effect.runPromiseExit(
       runConformance(

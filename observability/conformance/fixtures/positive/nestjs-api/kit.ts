@@ -60,8 +60,9 @@ import {
 } from "@equipe-tech/observability/testing";
 import { defineErrorCatalog } from "evlog";
 import { fileURLToPath } from "node:url";
-import { startOtlpCaptureServer, type OtlpCaptureServer } from "@equipe-tech/observability/testing";
+import type { OtlpCaptureServer } from "@equipe-tech/observability/testing";
 import { fixtureError } from "../../../support/FixtureError.ts";
+import { startLocalCollector, type LocalCollector } from "../../../support/collector.ts";
 import { parseFixtureManifest } from "../../../support/manifest.ts";
 
 export const nestjsContractInput = Contract.telemetryContractDefinition({
@@ -114,6 +115,9 @@ export type NestjsKit = {
   readonly lifecycleReport: LifecycleReport;
   readonly binding: import("@equipe-tech/observability/testing").ConformanceTargetBinding;
   readonly telemetry: import("@equipe-tech/observability/testing").CapturedTelemetry;
+  readonly destinationReceipt?:
+    | import("@equipe-tech/observability/testing").TelemetryDestinationReceipt
+    | undefined;
 };
 
 const recordNestjsAudit = <Definition extends TelemetryContractInput>(
@@ -141,20 +145,12 @@ const recordNestjsAudit = <Definition extends TelemetryContractInput>(
   });
 
 export const buildNestjsKit = async (
-  collector: OtlpCaptureServer,
+  collector: OtlpCaptureServer | LocalCollector,
   captureExpectedError = false,
 ): Promise<NestjsKit> => {
   try {
     const contract = await Effect.runPromise(defineTelemetryContract(nestjsContractInput));
     const runId = await Effect.runPromise(generateRunId("job", "fixture-api"));
-    const correlation = new CorrelationContext({
-      trace: {
-        _tag: "Traced",
-        traceId: await Effect.runPromise(parseTraceId("a1b2c3d4e5f60718293a4b5c6d7e8f98")),
-        spanId: await Effect.runPromise(parseSpanId("1111111111111111")),
-      },
-      runId: Option.some(runId),
-    });
     const config = await Effect.runPromise(
       parseNodeObservabilityConfig({
         enabled: true,
@@ -162,7 +158,16 @@ export const buildNestjsKit = async (
         service: { name: "fixture-api", version: "1.4.0", environment: "test" },
         telemetry: { endpoint: collector.endpoint },
         evlog: { contract, policy: nestjsPolicy },
-        sentry: { enabled: true, dsn: new URL(`http://fixturekey@${collector.endpoint.host}/42`) },
+        sentry: {
+          enabled: true,
+          dsn: new URL(
+            `http://fixturekey@${
+              "destinationEndpoint" in collector
+                ? collector.destinationEndpoint.host
+                : collector.endpoint.host
+            }/42`,
+          ),
+        },
       }),
     );
     const evlog = evlogAdapter({ installGlobalLogger: false });
@@ -175,6 +180,29 @@ export const buildNestjsKit = async (
       if (!handle.enabled) {
         throw fixtureError("The nestjs-api fixture requires an enabled runtime.");
       }
+      const producer = makeEventProducer(contract);
+      const { correlation, emitReceipt } = await handle.runtime.runPromise(
+        Effect.gen(function* () {
+          const root = yield* Effect.currentSpan;
+          const correlation = new CorrelationContext({
+            trace: {
+              _tag: "Traced",
+              traceId: yield* parseTraceId(root.traceId),
+              spanId: yield* parseSpanId(root.spanId),
+            },
+            runId: Option.some(runId),
+          });
+          const emitReceipt = yield* producer
+            .emit("RequestCompleted", {
+              outcome: "success",
+              durationMs: 4,
+              http: { method: "GET", route: "/fixture", statusCode: 200 },
+              attributes: {},
+            })
+            .pipe(withBackgroundCorrelation(correlation, "fixture.request"));
+          return { correlation, emitReceipt };
+        }).pipe(Effect.withSpan("fixture.root"), Effect.provide(handle.eventLayer)),
+      );
       const boundary = new NestErrorBoundary({
         catalog: nestjsCatalog,
         recordDefect: () => undefined,
@@ -216,19 +244,8 @@ export const buildNestjsKit = async (
       makeMetricProducer(contract, handle.metrics)
         .counter("FixtureRequests")
         .add(1, { "fixture.run_id": runId });
-      const producer = makeEventProducer(contract);
-      const emitReceipt = await handle.runtime.runPromise(
-        producer
-          .emit("RequestCompleted", {
-            outcome: "success",
-            durationMs: 4,
-            http: { method: "GET", route: "/fixture", statusCode: 200 },
-            attributes: {},
-          })
-          .pipe(withBackgroundCorrelation(correlation, "fixture.request"))
-          .pipe(Effect.provide(handle.eventLayer)),
-      );
       const lifecycleReport = await handle.close();
+      if ("awaitDestination" in collector) await collector.awaitDestination(runId);
       return {
         boundary,
         evlog,
@@ -247,6 +264,17 @@ export const buildNestjsKit = async (
           environment: "test",
         }),
         telemetry: collector.telemetry(),
+        destinationReceipt:
+          "destinationReceipt" in collector
+            ? collector.destinationReceipt(
+                runId,
+                conformanceTargetBinding(contract, {
+                  serviceName: "fixture-api",
+                  serviceVersion: "1.4.0",
+                  environment: "test",
+                }),
+              )
+            : undefined,
       };
     } finally {
       await handle.close();
@@ -266,9 +294,13 @@ export type NestjsConformance = {
 export const buildNestjsConformance = async (
   captureExpectedError = false,
 ): Promise<NestjsConformance> => {
-  const collector = await startOtlpCaptureServer();
+  const collector = await startLocalCollector();
   const kit = await buildNestjsKit(collector, captureExpectedError);
   const { manifest, contract: contractIndex } = await parseFixtureManifest(kit.binding);
+  const destination = kit.destinationReceipt;
+  if (destination === undefined) {
+    throw fixtureError("The NestJS fixture requires Collector destination read-back.");
+  }
   const providers = [
     profileConformance({
       profile: "nestjs-api",
@@ -282,9 +314,9 @@ export const buildNestjsConformance = async (
     correlationConformance({ correlation: kit.correlation }),
     policyConformance({ policy: nestjsPolicy }),
     evlogConformance({
-      registration: kit.evlog.registration,
+      delivery: Option.getOrThrow(kit.evlog.delivery(kit.runId, "request.completed")),
       drops: kit.evlog.drops(),
-      telemetry: kit.telemetry,
+      destination,
       runId: kit.runId,
       eventName: "request.completed",
     }),
@@ -311,7 +343,7 @@ export const buildNestjsConformance = async (
     }),
     telemetryCanaryConformance({
       runId: kit.runId,
-      telemetry: kit.telemetry,
+      receipt: destination,
       metricRunIdAttribute: "fixture.run_id",
     }),
     auditCanaryConformance({

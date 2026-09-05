@@ -7,6 +7,7 @@ import {
   type CompiledEventDefinition,
   type TelemetryContract,
   type TelemetryContractInput,
+  telemetryContractProvenance,
   validateContractEvent,
 } from "./TelemetryContract.ts";
 import type { BrowserEventError } from "../BrowserEvents.ts";
@@ -128,8 +129,13 @@ export type EmitReceipt =
       readonly event: TelemetryEvent;
       readonly redactions: ReadonlyArray<PolicyRedaction>;
       readonly admission: EventAdmissionMetadata;
+      readonly contractProvenance: string;
     }
-  | { readonly decision: "sampled_out"; readonly name: string };
+  | {
+      readonly decision: "sampled_out";
+      readonly name: string;
+      readonly contractProvenance: string;
+    };
 
 export type EventProducer<Definition extends TelemetryContractInput> = {
   readonly emit: <Alias extends keyof Definition["events"] & string>(
@@ -504,46 +510,50 @@ const buildEvent = Effect.fn("buildEvent")(function* (
 
 export const makeEventProducer = <const Definition extends TelemetryContractInput>(
   contract: TelemetryContract<Definition>,
-): EventProducer<Definition> => ({
-  emit: Effect.fn("EventProducer.emit")(function* (alias, payload) {
-    const definition = contract.eventByAlias.get(alias);
-    if (definition === undefined) {
-      return yield* eventError(
-        "OBS_EVENT_UNKNOWN_NAME",
-        `Event alias "${alias}" is not declared by this telemetry contract. Use one of the contract aliases.`,
-        { eventAlias: alias },
+): EventProducer<Definition> => {
+  const contractProvenance = telemetryContractProvenance(contract);
+  return {
+    emit: Effect.fn("EventProducer.emit")(function* (alias, payload) {
+      const definition = contract.eventByAlias.get(alias);
+      if (definition === undefined) {
+        return yield* eventError(
+          "OBS_EVENT_UNKNOWN_NAME",
+          `Event alias "${alias}" is not declared by this telemetry contract. Use one of the contract aliases.`,
+          { eventAlias: alias },
+        );
+      }
+      const parsedPayload = parseEventPayload(definition, payload);
+      if (parsedPayload instanceof InvalidTelemetryEvent) {
+        return yield* parsedPayload;
+      }
+      const policy = yield* CurrentDataPolicy;
+      const parsedAttributes = parseAttributes(
+        policy,
+        contract,
+        definition,
+        parsedPayload.attributes,
       );
-    }
-    const parsedPayload = parseEventPayload(definition, payload);
-    if (parsedPayload instanceof InvalidTelemetryEvent) {
-      return yield* parsedPayload;
-    }
-    const policy = yield* CurrentDataPolicy;
-    const parsedAttributes = parseAttributes(
-      policy,
-      contract,
-      definition,
-      parsedPayload.attributes,
-    );
-    if (parsedAttributes instanceof InvalidTelemetryEvent) {
-      return yield* parsedAttributes;
-    }
-    const event = yield* buildEvent(
-      definition,
-      contract,
-      parsedAttributes.attributes,
-      parsedPayload,
-    );
-    if (!(yield* shouldRecord(definition, event.outcome))) {
-      return { decision: "sampled_out", name: definition.name };
-    }
-    const sink = yield* TelemetryEventSink;
-    yield* sink.record(event, parsedAttributes.admission);
-    return {
-      decision: "recorded",
-      event,
-      redactions: parsedAttributes.redactions,
-      admission: parsedAttributes.admission,
-    };
-  }),
-});
+      if (parsedAttributes instanceof InvalidTelemetryEvent) {
+        return yield* parsedAttributes;
+      }
+      const event = yield* buildEvent(
+        definition,
+        contract,
+        parsedAttributes.attributes,
+        parsedPayload,
+      );
+      if (!(yield* shouldRecord(definition, event.outcome))) {
+        return { decision: "sampled_out", name: definition.name, contractProvenance };
+      }
+      const sink = yield* TelemetryEventSink;
+      yield* sink.record(event, parsedAttributes.admission);
+      return {
+        decision: "recorded",
+        event,
+        redactions: parsedAttributes.redactions,
+        admission: parsedAttributes.admission,
+        contractProvenance,
+      };
+    }),
+  };
+};

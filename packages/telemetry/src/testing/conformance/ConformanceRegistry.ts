@@ -189,9 +189,11 @@ export const conformanceChecks: ReadonlyArray<ConformanceCheck> = Object.freeze(
     owner: "telemetry",
     code: "OBS_CONFORMANCE_TELEMETRY_CANARY_FAILED",
     rule: canaryRule,
-    applies: (target) => nodeCanaryProfiles.has(target.profile.name),
-    notApplicableReason: () =>
-      "the profile owns no Node runtime pipeline canary for an exported signal",
+    applies: (target) =>
+      nodeCanaryProfiles.has(target.profile.name) ||
+      target.capabilities.traces ||
+      target.capabilities.metrics,
+    notApplicableReason: () => "the target selects no telemetry signal requiring destination proof",
     run: (target, provider) => provider.verify(target),
   },
   {
@@ -208,11 +210,8 @@ export const conformanceChecks: ReadonlyArray<ConformanceCheck> = Object.freeze(
     owner: "react",
     code: "OBS_CONFORMANCE_BROWSER_CANARY_FAILED",
     rule: browserRule,
-    applies: (target) => target.profile.name === "react-web" && target.capabilities.browserIngest,
-    notApplicableReason: (target) =>
-      target.profile.name === "react-web"
-        ? notApplicableWithoutCapability("browser-ingest")(target)
-        : "the browser delivery canary applies to the react-web profile only",
+    applies: (target) => target.capabilities.browserIngest,
+    notApplicableReason: notApplicableWithoutCapability("browser-ingest"),
     run: (target, provider) => provider.verify(target),
   },
   {
