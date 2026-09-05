@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Effect, Schema } from "effect";
 import { Contract } from "../packages/telemetry/src/index.ts";
 import { decodeCompatibilityJson } from "./compatibility-json.ts";
@@ -125,8 +125,17 @@ export type PackageFinding = {
 };
 
 export type PackageSurface = typeof PackageSurfaceDocument.Type;
+export type PackageSurfaceInspection = {
+  readonly surface: PackageSurface;
+  readonly missingRuntimeEntrypoints: ReadonlyArray<string>;
+};
 export type ContractGateResult = Contract.CompatibilityReport;
 type ExportEntry = readonly [string, typeof ExportTarget.Type];
+type RuntimeEntrypoint = {
+  readonly name: string;
+  readonly target: string;
+  readonly executable: boolean;
+};
 
 const parseJson = (path: string) => JSON.parse(readFileSync(path, "utf8"));
 const pairs = (entries: { readonly [key: string]: string } | undefined): ReadonlyArray<string> =>
@@ -236,20 +245,51 @@ export const declarationErrorCodes = (declarationText: string): ReadonlyArray<st
     ),
   ].sort();
 
-export const currentPackageSurface = (packageRoot: string): PackageSurface => {
+const runtimeEntrypointDeclarations = (
+  document: typeof PackageDocument.Type,
+): ReadonlyArray<RuntimeEntrypoint> => [
+  ...exportEntries(document).flatMap(([name, target]) => {
+    const path = exportRuntimePath(target);
+    return path === undefined ? [] : [{ name, target: path, executable: false }];
+  }),
+  ...Object.entries(document.bin ?? {}).map(([name, target]) => ({
+    name: `bin:${name}`,
+    target,
+    executable: true,
+  })),
+];
+
+const runtimeEntrypointDelivered = (
+  packageRoot: string,
+  entrypoint: RuntimeEntrypoint,
+): boolean => {
+  if (!entrypoint.target.startsWith("./")) return false;
+  const root = resolve(packageRoot);
+  const target = resolve(root, entrypoint.target);
+  const packageRelativeTarget = relative(root, target);
+  if (
+    packageRelativeTarget === "" ||
+    packageRelativeTarget === ".." ||
+    packageRelativeTarget.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+    isAbsolute(packageRelativeTarget)
+  )
+    return false;
+  try {
+    if (!statSync(target).isFile()) return false;
+    return !entrypoint.executable || readFileSync(target, "utf8").startsWith("#!");
+  } catch {
+    return false;
+  }
+};
+
+export const inspectPackageSurface = (packageRoot: string): PackageSurfaceInspection => {
   const document = decodePackage(parseJson(join(packageRoot, "package.json")));
   const exports = exportEntries(document).map((entry) => entry[0]);
-  const runtimeEntrypoints = [
-    ...exportEntries(document)
-      .filter((entry) => {
-        const path = exportRuntimePath(entry[1]);
-        return path !== undefined && existsSync(join(packageRoot, path));
-      })
-      .map((entry) => entry[0]),
-    ...Object.entries(document.bin ?? {})
-      .filter((entry) => existsSync(join(packageRoot, entry[1])))
-      .map((entry) => `bin:${entry[0]}`),
-  ].sort();
+  const declarations = runtimeEntrypointDeclarations(document);
+  const runtimeEntrypoints = declarations
+    .filter((entry) => runtimeEntrypointDelivered(packageRoot, entry))
+    .map((entry) => entry.name)
+    .sort();
   const optionalPeers = Object.entries(document.peerDependenciesMeta ?? {})
     .filter((entry) => entry[1].optional === true)
     .map((entry) => entry[0])
@@ -258,19 +298,28 @@ export const currentPackageSurface = (packageRoot: string): PackageSurface => {
   const declarationText = exportedDeclarationText(packageRoot, document);
   const publicErrorCodes = declarationErrorCodes(declarationText);
   return {
-    name: document.name,
-    version: document.version,
-    type: document.type,
-    exports,
-    exportConditions: exportConditions(document),
-    runtimeEntrypoints,
-    declarationSymbols: symbols,
-    dependencies: pairs(document.dependencies),
-    peerDependencies: pairs(document.peerDependencies),
-    optionalPeers,
-    publicErrorCodes,
+    surface: {
+      name: document.name,
+      version: document.version,
+      type: document.type,
+      exports,
+      exportConditions: exportConditions(document),
+      runtimeEntrypoints,
+      declarationSymbols: symbols,
+      dependencies: pairs(document.dependencies),
+      peerDependencies: pairs(document.peerDependencies),
+      optionalPeers,
+      publicErrorCodes,
+    },
+    missingRuntimeEntrypoints: declarations
+      .filter((entry) => !runtimeEntrypointDelivered(packageRoot, entry))
+      .map((entry) => entry.name)
+      .sort(),
   };
 };
+
+export const currentPackageSurface = (packageRoot: string): PackageSurface =>
+  inspectPackageSurface(packageRoot).surface;
 
 const semver = (version: string): readonly [number, number, number] | undefined => {
   const match = /^(0|[1-9]\d*)[.](0|[1-9]\d*)[.](0|[1-9]\d*)$/.exec(version);
@@ -672,7 +721,7 @@ export const classifyPackageChange = (
       "OBS_PACKAGE_ERROR_CODE_REMOVED",
       "publicErrorCodes",
     ),
-    ...baseline.exports
+    ...baseline.runtimeEntrypoints
       .filter((entry) => !candidate.runtimeEntrypoints.includes(entry))
       .map((entry) =>
         setChange("OBS_PACKAGE_RUNTIME_ENTRYPOINT_MISSING", `runtime/${entry}`, "breaking"),
@@ -814,7 +863,8 @@ export const runCompatibilityGate = async (): Promise<boolean> => {
       (entry) => entry.isDirectory() && existsSync(join("packages", entry.name, "package.json")),
     )
     .map((entry) => join("packages", entry.name));
-  const currentPackages = packageRoots.map(currentPackageSurface);
+  const packageInspections = packageRoots.map(inspectPackageSurface);
+  const currentPackages = packageInspections.map((inspection) => inspection.surface);
   const packageReports = baseline.packages.flatMap((previous) => {
     const candidate = currentPackages.find((entry) => entry.name === previous.name);
     const declaredVersion = versions.packages.find(
@@ -839,12 +889,8 @@ export const runCompatibilityGate = async (): Promise<boolean> => {
       (candidate) => versions.packages.find((entry) => entry.name === candidate.name) === undefined,
     )
     .map((candidate) => candidate.name);
-  const missingRuntime = currentPackages.flatMap((candidate) =>
-    candidate.exports
-      .filter(
-        (entry) => !candidate.runtimeEntrypoints.includes(entry) && entry !== "./package.json",
-      )
-      .map((entry) => `${candidate.name}:${entry}`),
+  const missingRuntime = packageInspections.flatMap((inspection) =>
+    inspection.missingRuntimeEntrypoints.map((entry) => `${inspection.surface.name}:${entry}`),
   );
   const releaseIndex = process.argv.indexOf("--release");
   const release = releaseIndex < 0 ? undefined : process.argv[releaseIndex + 1];
