@@ -2,7 +2,7 @@ import { Cause, Context, Duration, Effect, Layer, Option, Predicate, Schema, Tra
 import type { Exit } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 import { OtlpExporter, OtlpResource, OtlpSerialization } from "effect/unstable/observability";
-import type { BrowserMetricPoint, BrowserTraceSpan } from "../BrowserEvents.ts";
+import type { BrowserTraceSpan } from "../BrowserEvents.ts";
 import type { ResourceAttributes } from "../ResourceIdentity.ts";
 import type { DataPolicy } from "../policy/DataPolicy.ts";
 import { sanitizeText, transformSignalFields } from "../policy/PolicyTransform.ts";
@@ -332,7 +332,6 @@ export type BrowserSignals = {
     readonly environment: string;
   };
   readonly spans: ReadonlyArray<BrowserTraceSpan>;
-  readonly metrics: ReadonlyArray<BrowserMetricPoint>;
 };
 
 export class BrowserSignalExporter extends Context.Reference(
@@ -366,26 +365,6 @@ type BrowserTraceExport = {
   readonly span: BrowserOtlpSpan;
 };
 
-type BrowserOtlpMetric = {
-  readonly name: string;
-  readonly description: string;
-  readonly unit: "1";
-  readonly sum: {
-    readonly aggregationTemporality: 1;
-    readonly isMonotonic: true;
-    readonly dataPoints: Array<{
-      readonly attributes: Array<OtlpResource.KeyValue>;
-      readonly timeUnixNano: string;
-      readonly asDouble: number;
-    }>;
-  };
-};
-
-type BrowserMetricExport = {
-  readonly resource: OtlpResource.Resource;
-  readonly metric: BrowserOtlpMetric;
-};
-
 const unixNanos = (millis: number): string => String(BigInt(Math.trunc(millis)) * 1_000_000n);
 
 const browserResource = (
@@ -417,7 +396,6 @@ const browserResource = (
 
 export type BrowserSignalExporterOptions = {
   readonly tracesUrl: string;
-  readonly metricsUrl: string;
   readonly policy: DataPolicy;
   readonly resource: {
     readonly serviceName: string;
@@ -461,28 +439,6 @@ export const layerBrowserSignalExporter = (
         ],
         shutdownTimeout: options.shutdownTimeout ?? Duration.seconds(3),
       });
-      const metrics = yield* OtlpExporter.make({
-        label: "BrowserSignalMetrics",
-        url: options.metricsUrl,
-        headers: undefined,
-        exportInterval: Duration.seconds(5),
-        maxBatchSize: 1_000,
-        body: (exports: ReadonlyArray<BrowserMetricExport>) => [
-          serialization.metrics({
-            resourceMetrics: exports.map((entry) => ({
-              resource: entry.resource,
-              scopeMetrics: [
-                {
-                  scope: { name: OtlpResource.serviceNameUnsafe(entry.resource) },
-                  metrics: [entry.metric],
-                },
-              ],
-            })),
-          }),
-          Effect.void,
-        ],
-        shutdownTimeout: options.shutdownTimeout ?? Duration.seconds(3),
-      });
       return BrowserSignalExporter.of({
         export: (signals) =>
           Effect.sync(() => {
@@ -506,34 +462,6 @@ export const layerBrowserSignalExporter = (
                   status: { code: 1 },
                   links: [],
                   droppedLinksCount: 0,
-                },
-              });
-            }
-            for (const metric of signals.metrics) {
-              const decision = transformSignalFields(
-                options.policy,
-                "browser-ingest",
-                metric.fields,
-              );
-              metrics.push({
-                resource: selectedResource,
-                metric: {
-                  name: sanitizeText(options.policy, metric.name),
-                  description: `Browser counter ${metric.name}`,
-                  unit: "1",
-                  sum: {
-                    aggregationTemporality: 1,
-                    isMonotonic: true,
-                    dataPoints: [
-                      {
-                        attributes: OtlpResource.entriesToAttributes(
-                          Object.entries(decision.value),
-                        ),
-                        timeUnixNano: unixNanos(metric.occurredAt),
-                        asDouble: metric.value,
-                      },
-                    ],
-                  },
                 },
               });
             }

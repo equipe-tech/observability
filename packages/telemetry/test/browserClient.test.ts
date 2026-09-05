@@ -215,6 +215,93 @@ describe("browser telemetry client", () => {
     expect(forced?.fields["span.forced_end"]).toBe(true);
   });
 
+  it("waits for open ancestors and sends complete span-only trace groups", async () => {
+    const batches: Array<BrowserTelemetryClientBatch> = [];
+    const client = createBrowserTelemetryClient({
+      metrics: true,
+      maxBatchSize: 1,
+      transport: async (batch) => {
+        batches.push(batch);
+      },
+      flushIntervalMs: 60_000,
+    });
+    const root = client.traces.startSpan("page.load");
+    const child = client.traces.startSpan("react.render", {}, root.context);
+    child.end();
+    client.emit("page.rendered", {}, child.context);
+    client.emit("unrelated.event");
+    client.metrics.counter("unrelated.counter").add(1);
+
+    await client.flush();
+    expect(batches).toHaveLength(2);
+    expect(batches.flatMap((batch) => batch.events).map((event) => event.name)).toEqual([
+      "unrelated.event",
+    ]);
+    expect(batches.flatMap((batch) => batch.metrics ?? [])).toHaveLength(1);
+    expect(client.pending()).toBe(2);
+
+    root.end();
+    await client.flush();
+    const traceBatch = batches.find((batch) =>
+      batch.spans?.some((span) => span.name === "page.load"),
+    );
+    expect(traceBatch?.spans?.map((span) => span.name).toSorted()).toEqual([
+      "page.load",
+      "react.render",
+    ]);
+    expect(traceBatch?.events.map((event) => event.name)).toEqual(["page.rendered"]);
+    expect(client.pending()).toBe(0);
+    await client.dispose();
+
+    const spanOnlyBatches: Array<BrowserTelemetryClientBatch> = [];
+    const spanOnly = createBrowserTelemetryClient({
+      maxBatchSize: 1,
+      transport: async (batch) => {
+        spanOnlyBatches.push(batch);
+      },
+      flushIntervalMs: 60_000,
+    });
+    const spanOnlyRoot = spanOnly.traces.startSpan("split.root");
+    const spanOnlyChild = spanOnly.traces.startSpan("split.child", {}, spanOnlyRoot.context);
+    spanOnlyChild.end();
+    spanOnlyRoot.end();
+    await spanOnly.flush();
+    expect(spanOnlyBatches).toHaveLength(1);
+    expect(spanOnlyBatches[0]?.spans).toHaveLength(2);
+    await spanOnly.dispose();
+  });
+
+  it("drops stale correlation without starving unrelated delivery or disposal", async () => {
+    const batches: Array<BrowserTelemetryClientBatch> = [];
+    const client = createBrowserTelemetryClient({
+      metrics: true,
+      transport: async (batch) => {
+        batches.push(batch);
+      },
+      flushIntervalMs: 60_000,
+    });
+    const completed = client.traces.startSpan("completed.span");
+    completed.end();
+    await client.flush();
+
+    client.emit("stale.correlated", {}, completed.context);
+    client.emit("unrelated.event");
+    client.metrics.counter("unrelated.counter").add(1);
+    await client.flush();
+
+    expect(batches.flatMap((batch) => batch.events).map((event) => event.name)).toEqual([
+      "unrelated.event",
+    ]);
+    expect(batches.flatMap((batch) => batch.metrics ?? []).map((metric) => metric.name)).toEqual([
+      "unrelated.counter",
+    ]);
+    expect(client.pending()).toBe(0);
+    expect(client.dropped()).toBe(1);
+    await client.dispose();
+    expect(client.pending()).toBe(0);
+    expect(client.dropped()).toBe(1);
+  });
+
   it("splits maximum browser inputs below the HTTP request byte budget", async () => {
     const batches: Array<BrowserTelemetryClientBatch> = [];
     const client = createBrowserTelemetryClient({

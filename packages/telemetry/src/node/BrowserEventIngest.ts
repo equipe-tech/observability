@@ -1,10 +1,14 @@
-import { Effect, flow, Schema } from "effect";
+import { Effect, flow, Option, Schema } from "effect";
 import { BrowserEventBatch } from "../BrowserEvents.ts";
 import { parseResourceIdentity } from "../ResourceIdentity.ts";
 import { BrowserSignalExporter } from "../trace/HttpServerOtlpTracer.ts";
 import { TelemetryEventSink } from "../contract/EventProducer.ts";
 import { CurrentDataPolicy } from "../policy/DataPolicy.ts";
 import { transformSignalFields } from "../policy/PolicyTransform.ts";
+import {
+  BrowserMetricRecorder,
+  unavailableBrowserMetricRecorder,
+} from "../browser/BrowserMetricRecorder.ts";
 
 export class InvalidBrowserEventBatch extends Schema.TaggedError<InvalidBrowserEventBatch>()(
   "InvalidBrowserEventBatch",
@@ -38,7 +42,7 @@ export type BrowserEventIngestReceipt = {
   readonly metrics?: number;
 };
 
-const invalidSignalBatch = (cause: string): InvalidBrowserEventBatch =>
+const invalidSignalBatch = (cause: unknown): InvalidBrowserEventBatch =>
   new InvalidBrowserEventBatch({
     code: "OBS_BROWSER_EVENTS_INVALID_BATCH",
     message:
@@ -52,6 +56,9 @@ export const ingestBrowserEventBatch = Effect.fn("ingestBrowserEventBatch")(func
   const policy = yield* CurrentDataPolicy;
   const sink = yield* TelemetryEventSink;
   const signalExporter = yield* BrowserSignalExporter;
+  const metricRecorder = yield* Effect.serviceOption(BrowserMetricRecorder).pipe(
+    Effect.map(Option.getOrElse(() => unavailableBrowserMetricRecorder)),
+  );
   const spans = batch.spans ?? [];
   const metrics = batch.metrics ?? [];
   const resource =
@@ -126,8 +133,14 @@ export const ingestBrowserEventBatch = Effect.fn("ingestBrowserEventBatch")(func
       },
     };
   });
+  if (metrics.length > 0) {
+    yield* Effect.try({
+      try: () => metricRecorder.record(metrics),
+      catch: (cause) => invalidSignalBatch(cause),
+    });
+  }
   yield* sink.recordBrowserBatch(events);
-  const signals = { spans, metrics };
+  const signals = { spans };
   yield* signalExporter.export(
     resource === undefined
       ? signals

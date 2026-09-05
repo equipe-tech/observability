@@ -541,14 +541,28 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
           };
           return this.batchWithResource(batch);
         };
-        const correlatedEvent = this.events.find((event) => event.trace !== undefined);
-        if (correlatedEvent?.trace !== undefined) {
-          const traceId = correlatedEvent.trace.traceId;
-          const correlatedSpans = this.spans.filter((span) => span.traceId === traceId);
-          if (correlatedSpans.length === 0) return;
-          const correlatedEvents = this.events.filter((event) => event.trace?.traceId === traceId);
-          batchSpans.push(...correlatedSpans);
-          batchEvents.push(...correlatedEvents);
+        const activeTraceIds = new Set(
+          Array.from(this.activeSpans.values(), (span) => span.traceId),
+        );
+        const queuedTraceIds = new Set(this.spans.map((span) => span.traceId));
+        const staleCorrelatedEvents = this.events.filter(
+          (event) =>
+            event.trace !== undefined &&
+            !queuedTraceIds.has(event.trace.traceId) &&
+            !activeTraceIds.has(event.trace.traceId),
+        );
+        if (staleCorrelatedEvents.length > 0) {
+          const staleIds = new Set(staleCorrelatedEvents.map((event) => event.id));
+          this.events = this.events.filter((event) => !staleIds.has(event.id));
+          this.droppedEvents += staleCorrelatedEvents.length;
+        }
+        const readySpan = this.spans.find((span) => !activeTraceIds.has(span.traceId));
+        if (readySpan !== undefined) {
+          const traceId = readySpan.traceId;
+          const traceSpans = this.spans.filter((span) => span.traceId === traceId);
+          const traceEvents = this.events.filter((event) => event.trace?.traceId === traceId);
+          batchSpans.push(...traceSpans);
+          batchEvents.push(...traceEvents);
           if (
             batchSpans.length > maxBatchSizeLimit ||
             batchEvents.length > maxBatchSizeLimit ||
@@ -556,34 +570,24 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
           ) {
             this.spans = this.spans.filter((span) => span.traceId !== traceId);
             this.events = this.events.filter((event) => event.trace?.traceId !== traceId);
-            this.droppedEvents += correlatedSpans.length + correlatedEvents.length;
+            this.droppedEvents += traceSpans.length + traceEvents.length;
             continue;
           }
           this.spans = this.spans.filter((span) => span.traceId !== traceId);
           this.events = this.events.filter((event) => event.trace?.traceId !== traceId);
         }
-        while (batchEvents.length < this.options.maxBatchSize && this.events.length > 0) {
-          const event = this.events[0];
-          if (event === undefined || event.trace !== undefined) break;
+        for (const event of this.events) {
+          if (event.trace !== undefined) continue;
+          if (batchEvents.length + batchSpans.length >= this.options.maxBatchSize) break;
           batchEvents.push(event);
           if (browserBatchByteLength(candidateBatch()) > browserRequestByteBudget) {
             batchEvents.pop();
             break;
           }
-          this.events.shift();
         }
-        while (
-          batchEvents.length + batchSpans.length < this.options.maxBatchSize &&
-          this.spans.length > 0
-        ) {
-          const span = this.spans[0];
-          if (span === undefined) break;
-          batchSpans.push(span);
-          if (browserBatchByteLength(candidateBatch()) > browserRequestByteBudget) {
-            batchSpans.pop();
-            break;
-          }
-          this.spans.shift();
+        if (batchEvents.length > 0) {
+          const selectedEventIds = new Set(batchEvents.map((event) => event.id));
+          this.events = this.events.filter((event) => !selectedEventIds.has(event.id));
         }
         while (
           batchEvents.length + batchSpans.length + batchMetrics.length <
@@ -599,6 +603,8 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
           }
           this.metricPoints.shift();
         }
+        if (batchEvents.length === 0 && batchSpans.length === 0 && batchMetrics.length === 0)
+          return;
         let batch = this.batchWithResource({ version: 1, events: batchEvents });
         if (batchSpans.length > 0 && batchMetrics.length > 0) {
           batch = { ...batch, spans: batchSpans, metrics: batchMetrics };

@@ -230,7 +230,7 @@ export const emitCanary = (
       ],
       metrics: [
         {
-          name: "canary.browser.operations",
+          name: "canary.operations",
           value: 1,
           occurredAt: Date.now(),
           fields: { "canary.run_id": runId },
@@ -256,6 +256,6 @@ export const emitCanary = (
   }).pipe(
     Effect.scoped,
     Effect.withSpan("canary.operation", { attributes: sensitiveAttributes }),
-    Effect.provide(Telemetry.layer(config)),
+    Effect.provide(Telemetry.layer(config, { contract: canaryContract })),
   );
 };

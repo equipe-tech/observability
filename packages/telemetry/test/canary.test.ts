@@ -258,7 +258,7 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
       );
       const browserMetric = telemetryExport.metrics.find(
         (candidate) =>
-          candidate.metric.name === "canary.browser.operations" &&
+          candidate.metric.name === "canary.operations" &&
           Option.getOrUndefined(attributeValue(candidate.dataPoint.attributes, "canary.run_id")) ===
             runId,
       );
@@ -362,7 +362,7 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
           Option.getOrUndefined(attributeValue(run.browserLog.log.attributes, "browser.event.id")),
           `browser-${runId}`,
         );
-        assert.strictEqual(run.browserMetric.metric.name, "canary.browser.operations");
+        assert.strictEqual(run.browserMetric.metric.name, "canary.operations");
         assert.strictEqual(run.browserMetric.dataPoint.asDouble, 1);
         assert.strictEqual(run.metric.metric.name, "canary.operations");
         assert.strictEqual(run.metric.dataPoint.asDouble, 1);

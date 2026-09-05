@@ -88,7 +88,7 @@ export class BrowserMetricPoint extends Schema.Class<BrowserMetricPoint>(
   "@equipe-tech/observability/BrowserMetricPoint",
 )({
   name: Schema.NonEmptyString.check(Schema.isMaxLength(maxEventNameLength)),
-  value: Schema.Number.check(Schema.isFinite()),
+  value: Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)),
   occurredAt: Schema.Number.check(
     Schema.isFinite(),
     Schema.isBetween({ minimum: 0, maximum: maxBrowserEventOccurredAt }),

@@ -76,7 +76,20 @@ const browserContract = Effect.runSync(
           },
         },
       },
-      metrics: {},
+      metrics: {
+        BrowserRenderCount: {
+          name: "react.render_count",
+          description: "Completed browser renders",
+          unit: "1",
+          kind: "counter",
+          attributes: {
+            "run.id": {
+              classification: "public",
+              maximumCardinality: 1,
+            },
+          },
+        },
+      },
       auditActions: {},
     }),
   ),
@@ -106,7 +119,7 @@ const startApp = async (
   withInterceptor: boolean,
   eventLayer: Layer.Layer<TelemetryEventSink> = layerWideEvent,
 ): Promise<Harness> => {
-  const capture = await Effect.runPromise(Testing.makeCapture());
+  const capture = await Effect.runPromise(Testing.makeCapture({ contract: browserContract }));
   const runtime = ManagedRuntime.make(capture.layer);
 
   class AppModule {}
@@ -252,7 +265,7 @@ describe("browser events endpoint", () => {
       root.context,
     );
     client.emit("page.rendered", { "run.id": "browser-route-e2e" }, child.context);
-    client.metrics.counter("react.render.count").add(1, { "run.id": "browser-route-e2e" });
+    client.metrics.counter("react.render_count").add(1, { "run.id": "browser-route-e2e" });
     child.end();
     root.end();
     await client.flush();
@@ -263,7 +276,7 @@ describe("browser events endpoint", () => {
     const log = telemetry.logs.find(
       (entry) => attributeOrUndefined(entry.attributes, "event.name") === "page.rendered",
     );
-    const metric = telemetry.metrics.find((entry) => entry.name === "react.render.count");
+    const metric = telemetry.metrics.find((entry) => entry.name === "react.render_count");
     assert.isDefined(rootSpan);
     assert.isDefined(childSpan);
     assert.deepStrictEqual(childSpan.parentSpanId, Option.some(root.context.spanId));
@@ -274,6 +287,98 @@ describe("browser events endpoint", () => {
       attributeOrUndefined(rootSpan.resourceAttributes, "service.name"),
       "browser-consumer",
     );
+  }, 30_000);
+
+  it("rejects unowned browser metrics before destination side effects", async () => {
+    const harness = await startApp(false);
+    const marker = "independentcredentialmarker";
+    const requests = [
+      {
+        version: 1,
+        events: [],
+        metrics: [{ name: `Bearer ${marker}`, value: 1, occurredAt: 1, fields: {} }],
+      },
+      {
+        version: 1,
+        events: [],
+        metrics: [
+          {
+            name: "react.render_count",
+            value: 1,
+            occurredAt: 1,
+            fields: { "customer.id": "unbounded-customer" },
+          },
+        ],
+      },
+      {
+        version: 1,
+        events: [],
+        metrics: [
+          {
+            name: "react.render_count",
+            value: 1,
+            occurredAt: 1,
+            fields: { "run.id": "x".repeat(65) },
+          },
+        ],
+      },
+      {
+        version: 1,
+        events: [],
+        metrics: [{ name: "react.render_count", value: -7, occurredAt: 1, fields: {} }],
+      },
+    ];
+    for (const request of requests) {
+      const response = await postEvents(harness.baseUrl, JSON.stringify(request));
+      assert.strictEqual(response.status, 400);
+      const rejection = await Effect.runPromise(decodeRejection(await response.json()));
+      assert.strictEqual(rejection.code, "OBS_BROWSER_EVENTS_INVALID_BATCH");
+    }
+
+    const accepted = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({
+        version: 1,
+        events: [],
+        metrics: [
+          {
+            name: "react.render_count",
+            value: 2,
+            occurredAt: 2,
+            fields: { "run.id": "browser-metric-owner" },
+          },
+        ],
+      }),
+    );
+    assert.strictEqual(accepted.status, 202);
+    const cardinalityRejected = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({
+        version: 1,
+        events: [],
+        metrics: [
+          {
+            name: "react.render_count",
+            value: 3,
+            occurredAt: 3,
+            fields: { "run.id": "second-browser-series" },
+          },
+        ],
+      }),
+    );
+    assert.strictEqual(cardinalityRejected.status, 400);
+
+    const telemetry = await harness.close();
+    assert.deepStrictEqual(
+      telemetry.metrics.map((metric) => metric.name),
+      ["react.render_count"],
+    );
+    assert.strictEqual(
+      Option.getOrUndefined(telemetry.metrics[0]?.points[0]?.value ?? Option.none()),
+      2,
+    );
+    assert.notInclude(JSON.stringify(telemetry), marker);
+    assert.strictEqual(telemetry.metrics[0]?.description, "Completed browser renders");
   }, 30_000);
 
   it("accepts old and new envelopes and preserves defect failure fields", async () => {

@@ -204,6 +204,7 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
     Telemetry.layer(config.telemetry, {
       shutdownTimeout: Duration.millis(nodeMetricsFlushTimeoutMilliseconds),
       policy: config.evlog.policy,
+      contract: config.evlog.contract,
     }),
   );
   const flusher = yield* acquireRuntimeFlusher(runtime);

@@ -40,7 +40,76 @@ const EventBatch = Schema.Struct({
   ),
 });
 
+test("keeps trace groups complete without starving unrelated browser signals", async () => {
+  const initialEventBodies = Schema.decodeUnknownSync(StringArray)(
+    await (await fetch("/_inspect/events")).json(),
+  ).length;
+  const observability = createBrowserObservability({
+    service: { name: "browser-app", version: "0.3.0", environment: "test" },
+    policy: definePolicy({ attributes: {}, blockedKeys: [], blockedValuePatterns: [] }),
+    metrics: true,
+    sentry: { disabled: true },
+    events: { flushIntervalMs: 60_000, maxBatchSize: 1 },
+  });
+  const root = observability.traces.startSpan("page.load");
+  const child = observability.traces.startSpan("react.render", {}, root.context);
+  child.end();
+  observability.events.emit("page.rendered", {}, child.context);
+  observability.events.emit("unrelated.event");
+  observability.metrics.counter("unrelated.counter").add(1);
+
+  await observability.flush();
+  const firstBodies = Schema.decodeUnknownSync(StringArray)(
+    await (await fetch("/_inspect/events")).json(),
+  ).slice(initialEventBodies);
+  const firstBatches = firstBodies.map((body) =>
+    Schema.decodeUnknownSync(EventBatch)(JSON.parse(body)),
+  );
+  expect(firstBatches.flatMap((batch) => batch.events).map((event) => event.name)).toEqual([
+    "unrelated.event",
+  ]);
+  expect(firstBatches.flatMap((batch) => batch.metrics ?? [])).toHaveLength(1);
+  expect(firstBatches.flatMap((batch) => batch.spans ?? [])).toHaveLength(0);
+
+  root.end();
+  await observability.flush();
+  const finalBodies = Schema.decodeUnknownSync(StringArray)(
+    await (await fetch("/_inspect/events")).json(),
+  ).slice(initialEventBodies);
+  const finalBatches = finalBodies.map((body) =>
+    Schema.decodeUnknownSync(EventBatch)(JSON.parse(body)),
+  );
+  const traceBatch = finalBatches.find((batch) =>
+    batch.spans?.some((span) => span.name === "page.load"),
+  );
+  expect(traceBatch?.spans).toHaveLength(2);
+  expect(traceBatch?.events.map((event) => event.name)).toEqual(["page.rendered"]);
+
+  observability.events.emit("stale.correlated", {}, child.context);
+  observability.events.emit("after.stale");
+  await observability.flush();
+  await observability.dispose();
+  const disposedBodies = Schema.decodeUnknownSync(StringArray)(
+    await (await fetch("/_inspect/events")).json(),
+  ).slice(initialEventBodies);
+  const disposedBatches = disposedBodies.map((body) =>
+    Schema.decodeUnknownSync(EventBatch)(JSON.parse(body)),
+  );
+  expect(disposedBatches.flatMap((batch) => batch.events).map((event) => event.name)).toContain(
+    "after.stale",
+  );
+  expect(disposedBatches.flatMap((batch) => batch.events).map((event) => event.name)).not.toContain(
+    "stale.correlated",
+  );
+});
+
 test("delivers one canonical defect through production browser entrypoints", async () => {
+  const initialEventBodies = Schema.decodeUnknownSync(StringArray)(
+    await (await fetch("/_inspect/events")).json(),
+  ).length;
+  const initialSentryBodies = Schema.decodeUnknownSync(StringArray)(
+    await (await fetch("/_inspect/sentry")).json(),
+  ).length;
   const listeners = new Map<string, Set<(event: Event) => void>>();
   const host: BrowserEventHost = {
     addEventListener: (name, listener) => {
@@ -93,10 +162,10 @@ test("delivers one canonical defect through production browser entrypoints", asy
   await observability.flush();
   const eventBodies = Schema.decodeUnknownSync(StringArray)(
     await (await fetch("/_inspect/events")).json(),
-  );
+  ).slice(initialEventBodies);
   const sentryBodies = Schema.decodeUnknownSync(StringArray)(
     await (await fetch("/_inspect/sentry")).json(),
-  );
+  ).slice(initialSentryBodies);
   expect(eventBodies).toHaveLength(1);
   expect(sentryBodies).toHaveLength(1);
   const batch = Schema.decodeUnknownSync(EventBatch)(JSON.parse(eventBodies[0] ?? ""));

@@ -5,7 +5,27 @@ import { ingestBrowserEvents } from "../src/node/index.ts";
 import { layerWideEvent } from "../src/effect/index.ts";
 import { CurrentDataPolicy, definePolicy, parseDataPolicy } from "../src/policy/DataPolicy.ts";
 import { sensitiveFieldReplacement, sensitiveTextReplacement } from "../src/policy/index.ts";
+import { defineTelemetryContract } from "../src/contract/TelemetryContract.ts";
 import * as Testing from "../src/testing/index.ts";
+
+const browserMetricContract = Effect.runSync(
+  defineTelemetryContract({
+    version: 1,
+    events: {},
+    metrics: {
+      BrowserRenderCount: {
+        name: "react.render_count",
+        description: "Completed browser renders",
+        unit: "1",
+        kind: "counter",
+        attributes: {
+          "run.id": { classification: "public", maximumCardinality: 10 },
+        },
+      },
+    },
+    auditActions: {},
+  }),
+);
 
 const attributeOrUndefined = (
   attributes: Testing.CapturedAttributes,
@@ -181,13 +201,14 @@ describe("ingestBrowserEvents", () => {
           ],
           metrics: [
             {
-              name: "react.render.count",
+              name: "react.render_count",
               value: 1,
               occurredAt: 3,
               fields: { "run.id": "browser-signals" },
             },
           ],
         }).pipe(Effect.provide(layerWideEvent)),
+        { contract: browserMetricContract },
       );
       assert.deepStrictEqual(
         exit,
@@ -198,7 +219,7 @@ describe("ingestBrowserEvents", () => {
       const log = telemetry.logs.find(
         (entry) => attributeOrUndefined(entry.attributes, "event.name") === "page.rendered",
       );
-      const metric = telemetry.metrics.find((entry) => entry.name === "react.render.count");
+      const metric = telemetry.metrics.find((entry) => entry.name === "react.render_count");
       assert.isDefined(root);
       assert.isDefined(child);
       assert.deepStrictEqual(child.parentSpanId, Option.some(rootSpanId));

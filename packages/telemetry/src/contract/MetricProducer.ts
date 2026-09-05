@@ -251,6 +251,35 @@ const histogramHandle = (
   };
 };
 
+export const recordContractCounterByName = (
+  contract: { readonly metricByName: ReadonlyMap<string, CompiledMetricDefinition> },
+  metrics: Metrics,
+  name: string,
+  value: number,
+  attributes: { readonly [name: string]: MetricAttributeValue },
+): void => {
+  const definition = contract.metricByName.get(name);
+  if (definition === undefined) {
+    throw measurementError(
+      "OBS_METRIC_UNKNOWN_ALIAS",
+      "counter",
+      name,
+      name,
+      `Metric "${name}" is not declared by the telemetry contract. Use a declared canonical metric name.`,
+    );
+  }
+  if (definition.kind !== "counter") {
+    throw measurementError(
+      "OBS_METRIC_KIND_MISMATCH",
+      "counter",
+      definition.alias,
+      definition.name,
+      `Metric "${name}" has kind "${definition.kind}", not "counter". Use a declared counter.`,
+    );
+  }
+  counterHandle(metrics, definition.alias, definition).add(value, attributes);
+};
+
 export const makeMetricProducer = <const Definition extends TelemetryContractInput>(
   contract: TelemetryContract<Definition>,
   metrics: Metrics,
