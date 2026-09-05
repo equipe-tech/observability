@@ -17,8 +17,8 @@
   ],
   "browserEnvelope": {
     "version": 2,
-    "batchFields": ["events", "version"],
-    "eventFields": ["error", "fields", "id", "name", "occurredAt"]
+    "batchFields": ["events", "metrics", "resource", "spans", "version"],
+    "eventFields": ["error", "fields", "id", "name", "occurredAt", "trace"]
   },
   "retentionWindowDays": 30
 }

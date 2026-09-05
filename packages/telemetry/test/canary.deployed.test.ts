@@ -14,6 +14,7 @@ import {
   type AxiomRedactionAttributes,
   type AxiomSpan,
 } from "./support/axiom.ts";
+import { assertCanaryMetricPolicy } from "./support/canaryAssessment.ts";
 import { deployedCanaryPollingBudget, deployedCanaryQueries } from "./support/deployedCanary.ts";
 import {
   canaryRunId,
@@ -239,7 +240,6 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
         const exportedContent = [
           rootEvents,
           redactedBody,
-          run.metric.content,
           ...redactionAttributeValues(run.root.redaction),
           ...redactionAttributeValues(run.redaction.redaction),
         ];
@@ -248,10 +248,7 @@ describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
             assert.notInclude(content, marker);
           }
         }
-        for (const preservedValue of sensitive.preservedValues) {
-          assert.include(run.metric.content, preservedValue);
-        }
-        assert.include(run.metric.content, "****");
+        assertCanaryMetricPolicy({ content: run.metric.content, runId }, sensitive);
         assert.include(rootEvents, "[REDACTED]");
         assert.include(redactedBody, "[REDACTED]");
       }),
