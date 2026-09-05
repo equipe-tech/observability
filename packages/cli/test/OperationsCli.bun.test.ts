@@ -228,6 +228,158 @@ describe("operations CLI", () => {
     }
   });
 
+  test("requires destructive authorization for disabled retention", async () => {
+    const root = await mkdtemp(join(tmpdir(), "observability-operations-disabled-retention-"));
+    roots.push(root);
+    const project = join(root, "project");
+    const home = join(root, "home");
+    await mkdir(join(project, "observability"), { recursive: true });
+    await mkdir(home, { recursive: true });
+    await writeFile(
+      join(project, "observability", "operations.yaml"),
+      "version: 1\ncontractVersion: 1\nservice: checkout\nenvironments: [prod]\nretention:\n  - environment: prod\n    days: 30\ndashboards: []\nmonitors: []\nsentry:\n  enabled: false\n",
+    );
+    await writeFile(
+      join(project, "observability", "contract.json"),
+      '{"index":1,"contractVersion":1,"service":"checkout","events":[],"metrics":[],"aliases":[]}\n',
+    );
+    const credentialsPath = join(home, "credentials.json");
+    await writeFile(
+      credentialsPath,
+      '{"version":3,"axiom":{"token":"secret-token","organizationId":"org"},"environments":[],"pendingAxiomMutations":[]}\n',
+      { mode: 0o600 },
+    );
+    await chmod(credentialsPath, 0o600);
+
+    const datasets = ["traces", "logs", "metrics"].map((signal, index) => ({
+      id: `dataset-${index}`,
+      name: `checkout-prod-${signal}`,
+      description: signal,
+      kind: signal === "metrics" ? "otel:metrics:v1" : "axiom:events:v1",
+      retentionDays: 0,
+      useRetentionPeriod: false,
+    }));
+    let writes = 0;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const url = new URL(request.url);
+        if (url.pathname !== "/v2/datasets") return new Response("missing", { status: 404 });
+        if (request.method === "GET") return Response.json(datasets);
+        writes += 1;
+        return new Response("unexpected write", { status: 500 });
+      },
+    });
+    const baseUrl = `http://127.0.0.1:${server.port}`;
+    const planPath = (digest: string) => join(project, ".observability", `plan-${digest}.json`);
+    try {
+      const initialResult = await runCli(
+        ["ops", "plan", "--dir", project, "--json"],
+        home,
+        baseUrl,
+      );
+      expect(initialResult.exitCode).toBe(0);
+      const initialPlan = JSON.parse(initialResult.stdout);
+      expect(
+        initialPlan.actions.find((action: { id: string }) => action.id === "axiom.retention.prod")
+          ?.kind,
+      ).toBe("destructive");
+
+      const rejectedStage = await runCli(
+        ["ops", "apply", "--dir", project, "--plan", planPath(initialPlan.digest)],
+        home,
+        baseUrl,
+      );
+      expect(rejectedStage.exitCode).not.toBe(0);
+      expect(rejectedStage.stderr).toContain("OBS_CLI_PLAN_DESTRUCTIVE");
+      expect(await Bun.file(join(home, "operations", "checkout.json")).exists()).toBeFalse();
+      expect(writes).toBe(0);
+
+      const stagedResult = await runCli(
+        [
+          "ops",
+          "apply",
+          "--dir",
+          project,
+          "--plan",
+          planPath(initialPlan.digest),
+          "--allow-destructive",
+          "--json",
+        ],
+        home,
+        baseUrl,
+      );
+      expect(stagedResult.exitCode).toBe(0);
+      expect(writes).toBe(0);
+
+      const confirmationResult = await runCli(
+        ["ops", "plan", "--dir", project, "--json"],
+        home,
+        baseUrl,
+      );
+      expect(confirmationResult.exitCode).toBe(0);
+      const confirmationPlan = JSON.parse(confirmationResult.stdout);
+      expect(confirmationPlan.digest).toBe(JSON.parse(stagedResult.stdout).digest);
+      expect(confirmationPlan.pendingManualActions).toContainEqual(
+        expect.objectContaining({
+          id: "axiom.retention.prod",
+          kind: "destructive",
+          status: "pending",
+        }),
+      );
+      const statePath = join(home, "operations", "checkout.json");
+      const stateBeforeRejectedConfirmation = await readFile(statePath, "utf8");
+      const rejectedConfirmation = await runCli(
+        [
+          "ops",
+          "apply",
+          "--dir",
+          project,
+          "--plan",
+          planPath(confirmationPlan.digest),
+          "--confirm-manual",
+          "axiom.retention.prod",
+        ],
+        home,
+        baseUrl,
+      );
+      expect(rejectedConfirmation.exitCode).not.toBe(0);
+      expect(rejectedConfirmation.stderr).toContain("OBS_CLI_PLAN_DESTRUCTIVE");
+      expect(await readFile(statePath, "utf8")).toBe(stateBeforeRejectedConfirmation);
+      expect(writes).toBe(0);
+
+      const confirmed = await runCli(
+        [
+          "ops",
+          "apply",
+          "--dir",
+          project,
+          "--plan",
+          planPath(confirmationPlan.digest),
+          "--allow-destructive",
+          "--confirm-manual",
+          "axiom.retention.prod",
+          "--json",
+        ],
+        home,
+        baseUrl,
+      );
+      expect(confirmed.exitCode).toBe(0);
+      expect(writes).toBe(0);
+      const state = JSON.parse(await readFile(statePath, "utf8"));
+      expect(state.manualActions).toContainEqual(
+        expect.objectContaining({
+          id: "axiom.retention.prod",
+          kind: "destructive",
+          status: "operator-confirmed",
+        }),
+      );
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("refreshes pending retention classification from current desired and observed state", async () => {
     const root = await mkdtemp(join(tmpdir(), "observability-operations-retention-drift-"));
     roots.push(root);
