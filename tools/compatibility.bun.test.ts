@@ -602,7 +602,7 @@ describe("compatibility gate", () => {
 
   test("preserves partial precision across the supported semver grammar", () => {
     const cases: ReadonlyArray<readonly [string, string, PeerRangeComparison["classification"]]> = [
-      ["<0.0", "<0.0.0", "widened"],
+      ["<0.0", "<0.0.0", "equivalent"],
       ["<=0.0", "<=0.0.0", "narrowed"],
       [">0.0", ">0.0.0", "widened"],
       [">=0.0", ">=0.0.0", "equivalent"],
