@@ -1,8 +1,14 @@
-import { Effect, flow, Schema } from "effect";
+import { Effect, flow, Option, Schema } from "effect";
 import { BrowserEventBatch } from "../BrowserEvents.ts";
+import { parseResourceIdentity } from "../ResourceIdentity.ts";
+import { BrowserSignalExporter } from "../trace/HttpServerOtlpTracer.ts";
 import { TelemetryEventSink } from "../contract/EventProducer.ts";
 import { CurrentDataPolicy } from "../policy/DataPolicy.ts";
 import { transformSignalFields } from "../policy/PolicyTransform.ts";
+import {
+  BrowserMetricRecorder,
+  unavailableBrowserMetricRecorder,
+} from "../browser/BrowserMetricRecorder.ts";
 
 export class InvalidBrowserEventBatch extends Schema.TaggedError<InvalidBrowserEventBatch>()(
   "InvalidBrowserEventBatch",
@@ -32,13 +38,67 @@ export type BrowserEventIngestReceipt = {
   readonly accepted: number;
   readonly redacted: number;
   readonly dropped: number;
+  readonly spans?: number;
+  readonly metrics?: number;
 };
+
+const invalidSignalBatch = (cause: unknown): InvalidBrowserEventBatch =>
+  new InvalidBrowserEventBatch({
+    code: "OBS_BROWSER_EVENTS_INVALID_BATCH",
+    message:
+      "The browser event batch has invalid signal correlation. Send completed spans with valid parent and event references in the same trace.",
+    cause,
+  });
 
 export const ingestBrowserEventBatch = Effect.fn("ingestBrowserEventBatch")(function* (
   batch: BrowserEventBatch,
 ) {
   const policy = yield* CurrentDataPolicy;
   const sink = yield* TelemetryEventSink;
+  const signalExporter = yield* BrowserSignalExporter;
+  const metricRecorder = yield* Effect.serviceOption(BrowserMetricRecorder).pipe(
+    Effect.map(Option.getOrElse(() => unavailableBrowserMetricRecorder)),
+  );
+  const spans = batch.spans ?? [];
+  const metrics = batch.metrics ?? [];
+  const resource =
+    batch.resource === undefined
+      ? undefined
+      : yield* parseResourceIdentity(batch.resource).pipe(
+          Effect.mapError(() => invalidSignalBatch("invalid browser resource identity")),
+        );
+  const spanById = new Map(spans.map((span) => [span.spanId, span]));
+  if (spanById.size !== spans.length) return yield* invalidSignalBatch("duplicate span id");
+  for (const span of spans) {
+    if (span.endedAt < span.startedAt) return yield* invalidSignalBatch("span ended before start");
+    if (span.parentSpanId !== undefined) {
+      const parent = spanById.get(span.parentSpanId);
+      if (
+        parent === undefined ||
+        parent.traceId !== span.traceId ||
+        parent.spanId === span.spanId
+      ) {
+        return yield* invalidSignalBatch("invalid span parent");
+      }
+    }
+  }
+  for (const span of spans) {
+    const ancestors = new Set<string>([span.spanId]);
+    let parentId = span.parentSpanId;
+    while (parentId !== undefined) {
+      if (ancestors.has(parentId)) return yield* invalidSignalBatch("cyclic span parent");
+      ancestors.add(parentId);
+      parentId = spanById.get(parentId)?.parentSpanId;
+    }
+  }
+  for (const event of batch.events) {
+    if (event.trace !== undefined) {
+      const span = spanById.get(event.trace.spanId);
+      if (span === undefined || span.traceId !== event.trace.traceId) {
+        return yield* invalidSignalBatch("invalid event trace reference");
+      }
+    }
+  }
   let redacted = 0;
   let dropped = 0;
   const events = batch.events.map((event) => {
@@ -62,6 +122,7 @@ export const ingestBrowserEventBatch = Effect.fn("ingestBrowserEventBatch")(func
       attributes: decision.value,
       admission: { policyDroppedAttributes: eventDropped },
     };
+    if (event.trace !== undefined) Object.assign(ingested, { trace: event.trace });
     if (event.error === undefined || errorDecision === undefined) return ingested;
     return {
       ...ingested,
@@ -72,8 +133,33 @@ export const ingestBrowserEventBatch = Effect.fn("ingestBrowserEventBatch")(func
       },
     };
   });
-  yield* sink.recordBrowserBatch(events);
-  return { accepted: events.length, redacted, dropped };
+  const eventAdmission = yield* sink.admitBrowserBatch(events);
+  let commitMetrics = (): void => undefined;
+  if (metrics.length > 0) {
+    commitMetrics = yield* Effect.try({
+      try: () => metricRecorder.admit(metrics).commit,
+      catch: (cause) => invalidSignalBatch(cause),
+    });
+  }
+  yield* eventAdmission.commit;
+  commitMetrics();
+  const signals = { spans };
+  yield* signalExporter.export(
+    resource === undefined
+      ? signals
+      : {
+          ...signals,
+          resource: {
+            serviceName: resource.serviceName,
+            serviceVersion: resource.serviceVersion,
+            environment: resource.environment,
+          },
+        },
+  );
+  const receipt: BrowserEventIngestReceipt = { accepted: events.length, redacted, dropped };
+  if (batch.spans !== undefined) Object.assign(receipt, { spans: spans.length });
+  if (batch.metrics !== undefined) Object.assign(receipt, { metrics: metrics.length });
+  return receipt;
 });
 
 export const ingestBrowserEvents = flow(

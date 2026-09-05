@@ -76,7 +76,20 @@ const browserContract = Effect.runSync(
           },
         },
       },
-      metrics: {},
+      metrics: {
+        BrowserRenderCount: {
+          name: "react.render_count",
+          description: "Completed browser renders",
+          unit: "1",
+          kind: "counter",
+          attributes: {
+            "run.id": {
+              classification: "public",
+              maximumCardinality: 1,
+            },
+          },
+        },
+      },
       auditActions: {},
     }),
   ),
@@ -86,7 +99,7 @@ const contractAdmissionLayer = Layer.succeed(
   TelemetryEventSink,
   TelemetryEventSink.of({
     record: () => Effect.void,
-    recordBrowserBatch: (events) =>
+    admitBrowserBatch: (events) =>
       Effect.gen(function* () {
         for (const event of events) {
           const validation = Contract.validateContractEvent(
@@ -98,6 +111,7 @@ const contractAdmissionLayer = Layer.succeed(
             return yield* validation;
           }
         }
+        return { commit: Effect.void };
       }),
   }),
 );
@@ -106,7 +120,7 @@ const startApp = async (
   withInterceptor: boolean,
   eventLayer: Layer.Layer<TelemetryEventSink> = layerWideEvent,
 ): Promise<Harness> => {
-  const capture = await Effect.runPromise(Testing.makeCapture());
+  const capture = await Effect.runPromise(Testing.makeCapture({ contract: browserContract }));
   const runtime = ManagedRuntime.make(capture.layer);
 
   class AppModule {}
@@ -231,6 +245,218 @@ describe("browser events endpoint", () => {
     assert.strictEqual(attributeOrUndefined(checkout.attributes, "event.source"), "browser");
     assert.strictEqual(attributeOrUndefined(checkout.attributes, "event.outcome"), "failure");
     assert.notInclude(JSON.stringify(telemetry), secret);
+  }, 30_000);
+
+  it("exports browser traces, correlated logs, and selected metrics through the real route", async () => {
+    const harness = await startApp(false);
+    const client = createBrowserTelemetryClient({
+      endpoint: `${harness.baseUrl}/_telemetry/events`,
+      metrics: true,
+      resource: {
+        serviceName: "browser-consumer",
+        serviceVersion: "1.2.3",
+        environment: "test",
+      },
+      flushIntervalMs: 60_000,
+    });
+    const root = client.traces.startSpan("page.load", { "run.id": "browser-route-e2e" });
+    const child = client.traces.startSpan(
+      "react.render",
+      { "run.id": "browser-route-e2e" },
+      root.context,
+    );
+    client.emit("page.rendered", { "run.id": "browser-route-e2e" }, child.context);
+    client.metrics.counter("react.render_count").add(1, { "run.id": "browser-route-e2e" });
+    child.end();
+    root.end();
+    await client.flush();
+    await client.dispose();
+    const telemetry = await harness.close();
+    const rootSpan = telemetry.spans.find((span) => span.spanId === root.context.spanId);
+    const childSpan = telemetry.spans.find((span) => span.spanId === child.context.spanId);
+    const log = telemetry.logs.find(
+      (entry) => attributeOrUndefined(entry.attributes, "event.name") === "page.rendered",
+    );
+    const metric = telemetry.metrics.find((entry) => entry.name === "react.render_count");
+    assert.isDefined(rootSpan);
+    assert.isDefined(childSpan);
+    assert.deepStrictEqual(childSpan.parentSpanId, Option.some(root.context.spanId));
+    assert.deepStrictEqual(log?.traceId, Option.some(root.context.traceId));
+    assert.deepStrictEqual(log?.spanId, Option.some(child.context.spanId));
+    assert.strictEqual(Option.getOrUndefined(metric?.points[0]?.value ?? Option.none()), 1);
+    assert.strictEqual(
+      attributeOrUndefined(rootSpan.resourceAttributes, "service.name"),
+      "browser-consumer",
+    );
+  }, 30_000);
+
+  it("rejects unowned browser metrics before destination side effects", async () => {
+    const harness = await startApp(false);
+    const marker = "independentcredentialmarker";
+    const requests = [
+      {
+        version: 1,
+        events: [],
+        metrics: [{ name: `Bearer ${marker}`, value: 1, occurredAt: 1, fields: {} }],
+      },
+      {
+        version: 1,
+        events: [],
+        metrics: [
+          {
+            name: "react.render_count",
+            value: 1,
+            occurredAt: 1,
+            fields: { "customer.id": "unbounded-customer" },
+          },
+        ],
+      },
+      {
+        version: 1,
+        events: [],
+        metrics: [
+          {
+            name: "react.render_count",
+            value: 1,
+            occurredAt: 1,
+            fields: { "run.id": "x".repeat(65) },
+          },
+        ],
+      },
+      {
+        version: 1,
+        events: [],
+        metrics: [{ name: "react.render_count", value: -7, occurredAt: 1, fields: {} }],
+      },
+    ];
+    for (const request of requests) {
+      const response = await postEvents(harness.baseUrl, JSON.stringify(request));
+      assert.strictEqual(
+        response.status,
+        400,
+        `${JSON.stringify(request)} ${await response.clone().text()}`,
+      );
+      const rejection = await Effect.runPromise(decodeRejection(await response.json()));
+      assert.strictEqual(rejection.code, "OBS_BROWSER_EVENTS_INVALID_BATCH");
+    }
+
+    const accepted = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({
+        version: 1,
+        events: [],
+        metrics: [
+          {
+            name: "react.render_count",
+            value: 2,
+            occurredAt: 2,
+            fields: { "run.id": "browser-metric-owner" },
+          },
+        ],
+      }),
+    );
+    assert.strictEqual(accepted.status, 202);
+    const cardinalityRejected = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({
+        version: 1,
+        events: [],
+        metrics: [
+          {
+            name: "react.render_count",
+            value: 3,
+            occurredAt: 3,
+            fields: { "run.id": "second-browser-series" },
+          },
+        ],
+      }),
+    );
+    assert.strictEqual(cardinalityRejected.status, 400);
+
+    const telemetry = await harness.close();
+    assert.deepStrictEqual(
+      telemetry.metrics.map((metric) => metric.name),
+      ["react.render_count"],
+    );
+    assert.strictEqual(
+      Option.getOrUndefined(telemetry.metrics[0]?.points[0]?.value ?? Option.none()),
+      2,
+    );
+    assert.notInclude(JSON.stringify(telemetry), marker);
+    assert.strictEqual(telemetry.metrics[0]?.description, "Completed browser renders");
+  }, 30_000);
+
+  it("rejects complete signal batches before committing metrics or cardinality", async () => {
+    const harness = await startApp(false, contractAdmissionLayer);
+    const metric = (value: number, runId: string) => ({
+      name: "react.render_count",
+      value,
+      occurredAt: 1,
+      fields: { "run.id": runId },
+    });
+    const event = (name: string) => ({ id: crypto.randomUUID(), name, occurredAt: 1, fields: {} });
+
+    const invalidEventAndMetric = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({
+        version: 1,
+        events: [event("undeclared.event")],
+        metrics: [{ ...metric(1, "unused"), name: "undeclared.metric" }],
+      }),
+    );
+    assert.strictEqual(invalidEventAndMetric.status, 400);
+    assert.strictEqual(
+      (await Effect.runPromise(decodeRejection(await invalidEventAndMetric.json()))).code,
+      "OBS_EVENT_UNKNOWN_NAME",
+    );
+
+    const invalidEvent = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({
+        version: 1,
+        events: [event("undeclared.event")],
+        metrics: [metric(13, "rejected-event")],
+      }),
+    );
+    assert.strictEqual(invalidEvent.status, 400);
+    assert.strictEqual(
+      (await Effect.runPromise(decodeRejection(await invalidEvent.json()))).code,
+      "OBS_EVENT_UNKNOWN_NAME",
+    );
+
+    const invalidLaterMetric = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({
+        version: 1,
+        events: [],
+        metrics: [
+          metric(17, "rejected-metric"),
+          { ...metric(1, "unused"), name: "undeclared.metric" },
+        ],
+      }),
+    );
+    assert.strictEqual(invalidLaterMetric.status, 400);
+
+    const overCardinality = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({
+        version: 1,
+        events: [],
+        metrics: [metric(19, "first-value"), metric(23, "second-value")],
+      }),
+    );
+    assert.strictEqual(overCardinality.status, 400);
+
+    const accepted = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({ version: 1, events: [], metrics: [metric(2, "second-value")] }),
+    );
+    assert.strictEqual(accepted.status, 202);
+
+    const telemetry = await harness.close();
+    const points = telemetry.metrics.flatMap((captured) => captured.points);
+    assert.lengthOf(points, 1);
+    assert.strictEqual(Option.getOrUndefined(points[0]?.value ?? Option.none()), 2);
   }, 30_000);
 
   it("accepts old and new envelopes and preserves defect failure fields", async () => {
@@ -395,7 +621,7 @@ describe("browser events endpoint", () => {
       TelemetryEventSink,
       TelemetryEventSink.of({
         record: () => Effect.void,
-        recordBrowserBatch: (events) =>
+        admitBrowserBatch: (events) =>
           Effect.gen(function* () {
             for (const event of events) {
               const validation = Contract.validateContractEvent(
@@ -405,7 +631,7 @@ describe("browser events endpoint", () => {
               );
               if (validation instanceof Contract.InvalidTelemetryEvent) return yield* validation;
             }
-            offered.push(...events);
+            return { commit: Effect.sync(() => offered.push(...events)).pipe(Effect.asVoid) };
           }),
       }),
     );

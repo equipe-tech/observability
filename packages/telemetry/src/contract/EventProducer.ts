@@ -10,7 +10,7 @@ import {
   telemetryContractProvenance,
   validateContractEvent,
 } from "./TelemetryContract.ts";
-import type { BrowserEventError } from "../BrowserEvents.ts";
+import type { BrowserEventError, BrowserTraceContext } from "../BrowserEvents.ts";
 import {
   type AttributeValue,
   ErrorContext,
@@ -38,7 +38,12 @@ export type BrowserTelemetryEvent = {
   readonly occurredAt: number;
   readonly attributes: EventAttributes;
   readonly error?: BrowserEventError;
+  readonly trace?: BrowserTraceContext;
   readonly admission: EventAdmissionMetadata;
+};
+
+export type BrowserEventBatchAdmission = {
+  readonly commit: Effect.Effect<void>;
 };
 
 export class TelemetryEventSink extends Context.Service<
@@ -48,9 +53,9 @@ export class TelemetryEventSink extends Context.Service<
       event: TelemetryEvent,
       admission: EventAdmissionMetadata,
     ) => Effect.Effect<void, InvalidTelemetryEvent>;
-    readonly recordBrowserBatch: (
+    readonly admitBrowserBatch: (
       events: ReadonlyArray<BrowserTelemetryEvent>,
-    ) => Effect.Effect<void, InvalidTelemetryEvent>;
+    ) => Effect.Effect<BrowserEventBatchAdmission, InvalidTelemetryEvent>;
   }
 >()("@equipe-tech/observability/TelemetryEventSink") {}
 
