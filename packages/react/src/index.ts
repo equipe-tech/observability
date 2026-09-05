@@ -4,6 +4,10 @@ import {
   type BrowserTelemetryClient,
   type BrowserTelemetryClientConfig,
   type BrowserTelemetryClientTransport,
+  type BrowserCounter,
+  type BrowserTraceHandle,
+  type BrowserTelemetryClientFields,
+  type BrowserTraceContext,
 } from "@equipe-tech/observability/browser/client";
 import {
   defectDeduplicator,
@@ -39,7 +43,11 @@ export type BrowserEventHost = {
 export type BrowserObservabilityConfig = {
   readonly service: BrowserServiceIdentity;
   readonly policy: DataPolicyInput;
-  readonly events?: Omit<BrowserTelemetryClientConfig, "disabled" | "policy" | "shutdownTimeoutMs">;
+  readonly events?: Omit<
+    BrowserTelemetryClientConfig,
+    "disabled" | "metrics" | "policy" | "resource" | "shutdownTimeoutMs"
+  >;
+  readonly metrics?: boolean;
   readonly sentry?: {
     readonly dsn?: string;
     readonly disabled?: boolean;
@@ -109,6 +117,14 @@ export type BrowserObservability = {
   readonly installed: boolean;
   readonly service: BrowserServiceIdentity;
   readonly events: BrowserTelemetryClient;
+  readonly traces: {
+    readonly startSpan: (
+      name: string,
+      fields?: BrowserTelemetryClientFields,
+      parent?: BrowserTraceContext,
+    ) => BrowserTraceHandle;
+  };
+  readonly metrics: { readonly counter: (name: string) => BrowserCounter };
   readonly defects: { readonly report: (input: DefectReportInput) => DefectOutcome };
   readonly reactRootOptions: ReactRootErrorOptions;
   readonly reports: () => BrowserObservabilityReport;
@@ -206,6 +222,8 @@ const inertHandle = (service: BrowserServiceIdentity): BrowserObservability => {
     installed: false,
     service,
     events,
+    traces: events.traces,
+    metrics: events.metrics,
     defects: { report },
     reactRootOptions: {
       onUncaughtError: () => undefined,
@@ -275,6 +293,7 @@ type PreparedBrowserObservabilityConfig = {
   readonly policy: DataPolicy;
   readonly events: PreparedBrowserEventConfig;
   readonly sentry: PreparedBrowserSentryConfig;
+  readonly metrics: boolean;
   readonly dedupeWindowMillis: number | undefined;
   readonly dedupeCapacity: number | undefined;
   readonly selected: { readonly host: BrowserEventHost; readonly owner: object } | undefined;
@@ -309,6 +328,7 @@ const prepareConfig = (config: BrowserObservabilityConfig): PreparedBrowserObser
     if (dsn !== undefined) sentry.dsn = dsn;
     if (disabled !== undefined) sentry.disabled = disabled;
     if (componentStack !== undefined) sentry.componentStack = componentStack;
+    const metrics = config.metrics ?? false;
     const dedupeWindowMillis = config.dedupeWindowMillis;
     const dedupeCapacity = config.dedupeCapacity;
     const hostInput = config.host;
@@ -331,6 +351,7 @@ const prepareConfig = (config: BrowserObservabilityConfig): PreparedBrowserObser
       };
     }
     if (
+      !Predicate.isBoolean(metrics) ||
       !validPositiveOption(dedupeWindowMillis) ||
       !validPositiveOption(dedupeCapacity) ||
       !validPositiveOption(events.maxBatchSize) ||
@@ -369,6 +390,7 @@ const prepareConfig = (config: BrowserObservabilityConfig): PreparedBrowserObser
       policy,
       events,
       sentry,
+      metrics,
       dedupeWindowMillis,
       dedupeCapacity,
       selected,
@@ -452,6 +474,12 @@ export const createBrowserObservability = (
   try {
     createdEvents = createBrowserTelemetryClient({
       ...eventConfig,
+      metrics: prepared.metrics,
+      resource: {
+        serviceName: identity.serviceName,
+        serviceVersion: identity.serviceVersion,
+        environment: identity.environment,
+      },
       policy: (fields) => transformSignalFields(policy, "browser-ingest", fields).value,
       shutdownTimeoutMs: reactWebLifecycle.eventShutdownDeadlineMillis,
     });
@@ -685,6 +713,8 @@ export const createBrowserObservability = (
     installed: true,
     service,
     events,
+    traces: events.traces,
+    metrics: events.metrics,
     defects: { report },
     reactRootOptions: {
       onUncaughtError: (cause, info) => safeReport(cause, "react.uncaught", info),
