@@ -127,6 +127,6 @@ Na topologia `local`, `startLocalCollectorDestination` inicia o Collector isolad
 
 O recibo de produtor carrega a proveniência da definição completa do contrato. Nome de evento, índice de consulta ou tipo de evento isolados não substituem essa proveniência.
 
-Signals selecionados sempre exigem avaliação. Enquanto o runtime React não exportar traces ou metrics selecionados, o provider React retorna falha explícita em `canary.telemetry-destination`. Toda seleção de `browserIngest`, inclusive em `nestjs-api`, exige `canary.browser-route`.
+Signals selecionados sempre exigem avaliação. O fixture `react-web` em `observability/conformance/fixtures/positive/react-web/kit.ts` cria traces e métricas pelo runtime React, envia o lote pela rota NestJS e exige leitura no destino depois do Collector. Quando a correlação de execução usa um atributo de contrato em vez do campo canônico `run.id`, passe `eventRunIdAttribute` e `metricRunIdAttribute` para `telemetryCanaryConformance`. Toda seleção de `browserIngest`, inclusive em `nestjs-api`, exige `canary.browser-route`.
 
 Use `assertConforms` para transformar um relatório recusado em falha de teste. Use `assertConformanceFailure` em fixtures negativas para exigir o check discriminante exato.

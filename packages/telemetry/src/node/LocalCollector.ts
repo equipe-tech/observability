@@ -34,7 +34,7 @@ export type LocalCollectorDestination = OtlpCaptureServer & {
   readonly destinationTelemetry: () => CapturedTelemetry;
   readonly destinationEndpoint: URL;
   readonly collectorInstance: string;
-  readonly awaitDestination: (runId: string) => Promise<void>;
+  readonly awaitDestination: (runId: string, eventRunIdAttribute?: string) => Promise<void>;
   readonly destinationReceipt: (
     runId: string,
     binding: ConformanceTargetBinding,
@@ -200,9 +200,13 @@ export const startLocalCollectorDestination = async (): Promise<LocalCollectorDe
       destinationTelemetry: collectorTelemetry,
       destinationEndpoint: acquiredDestination.endpoint,
       collectorInstance,
-      awaitDestination: async (runId) => {
+      awaitDestination: async (runId, eventRunIdAttribute = "run.id") => {
         for (let attempt = 0; attempt < 40; attempt++) {
-          if (collectorTelemetry().logs.some((log) => log.attributes.get("run.id") === runId)) {
+          if (
+            collectorTelemetry().logs.some(
+              (log) => log.attributes.get(eventRunIdAttribute) === runId,
+            )
+          ) {
             return;
           }
           await new Promise((resolve) => setTimeout(resolve, 100));

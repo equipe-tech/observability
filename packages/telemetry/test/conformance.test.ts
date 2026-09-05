@@ -254,6 +254,33 @@ describe("conformance suite", () => {
     );
     expect(suiteError(optionalNestBrowser)).toBe("OBS_CONFORMANCE_PROVIDER_MISSING");
 
+    const nestWithBrowserProof = await Effect.runPromise(
+      runConformance(
+        targetWith({
+          profile: "nestjs-api",
+          providers: [
+            profileConformance({
+              profile: "nestjs-api",
+              service: { name: "unit-service", version: "1.0.0", environment: "test" },
+            }),
+            ...workerProviders().slice(1),
+            passingProvider("canary.browser-route"),
+          ],
+          capabilities: {
+            traces: true,
+            metrics: true,
+            defects: false,
+            browserIngest: true,
+            audit: false,
+          },
+        }),
+      ),
+    );
+    expect(nestWithBrowserProof.conforms).toBe(true);
+    expect(
+      nestWithBrowserProof.checks.find((check) => check.id === "canary.browser-route")?.status,
+    ).toBe("pass");
+
     const reactMissingIngest = await Effect.runPromiseExit(
       runConformance(
         targetWith({

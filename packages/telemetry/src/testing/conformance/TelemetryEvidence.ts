@@ -549,6 +549,7 @@ const matchesIdentity = (
 export const telemetryCanaryConformance = (input: {
   readonly runId: string;
   readonly receipt: TelemetryDestinationReceipt;
+  readonly eventRunIdAttribute?: string | undefined;
   readonly metricRunIdAttribute?: string | undefined;
 }): ConformanceProvider<"canary.telemetry-destination"> =>
   defineConformanceEvidenceProvider({
@@ -569,14 +570,18 @@ export const telemetryCanaryConformance = (input: {
             ),
           );
         }
-        const logs = telemetry.logs.filter(
-          (log) =>
-            log.attributes.get("run.id") === receipt.runId &&
+        const eventRunIdAttribute = input.eventRunIdAttribute ?? "run.id";
+        const logs = telemetry.logs.filter((log) => {
+          const event = target.binding.contract.events.find(
+            (candidate) => candidate.name === log.attributes.get("event.name"),
+          );
+          return (
+            log.attributes.get(eventRunIdAttribute) === receipt.runId &&
             matchesIdentity(log.resourceAttributes, target.binding) &&
-            target.binding.contract.events.some(
-              (event) => event.name === log.attributes.get("event.name"),
-            ),
-        );
+            event !== undefined &&
+            (eventRunIdAttribute === "run.id" || event.attributes.includes(eventRunIdAttribute))
+          );
+        });
         const currentTraceIds = new Set(
           logs.flatMap((log) => (Option.isSome(log.traceId) ? [log.traceId.value] : [])),
         );

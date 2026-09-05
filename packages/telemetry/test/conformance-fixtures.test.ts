@@ -37,11 +37,14 @@ describe("conformance profile fixtures", () => {
     await assertPassing("worker", runWorkerFixture);
   }, 60_000);
 
-  it("rejects the react-web fixture until selected traces have destination proof", async () => {
-    const report = await runReactFixture();
-    expect(report.conforms).toBe(false);
-    await Effect.runPromise(assertConformanceFailure(report, "canary.telemetry-destination"));
-  });
+  it("passes the react-web fixture with browser traces and metrics delivered through Nest", async () => {
+    const report = await assertPassing("react-web", runReactFixture);
+    const destination = report.checks.find((check) => check.id === "canary.telemetry-destination");
+    expect(destination?.status).toBe("pass");
+    if (destination?.status !== "pass") throw new Error("Expected React destination evidence.");
+    expect(destination.evidence.summary).toMatch(/1 events, 2 spans, and [1-9][0-9]* metrics/);
+    expect(report.checks.find((check) => check.id === "canary.browser-route")?.status).toBe("pass");
+  }, 60_000);
 
   it("passes the cli fixture", async () => {
     await assertPassing("cli", runCliFixture);
