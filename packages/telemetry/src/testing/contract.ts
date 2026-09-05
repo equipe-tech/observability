@@ -127,13 +127,16 @@ export const makeCollectingTelemetryEventSink = Effect.fn("makeCollectingTelemet
     const browserStore = yield* Ref.make<ReadonlyArray<BrowserTelemetryEvent>>([]);
     const record = (event: TelemetryEvent): Effect.Effect<void> =>
       Ref.update(store, (events) => [...events, event]);
-    const recordBrowserBatch = (
+    const admitBrowserBatch = (
       events: ReadonlyArray<BrowserTelemetryEvent>,
-    ): Effect.Effect<void> => Ref.update(browserStore, (captured) => [...captured, ...events]);
+    ): Effect.Effect<{ readonly commit: Effect.Effect<void> }> =>
+      Effect.succeed({
+        commit: Ref.update(browserStore, (captured) => [...captured, ...events]),
+      });
     return {
       layer: Layer.succeed(
         TelemetryEventSink,
-        TelemetryEventSink.of({ record, recordBrowserBatch }),
+        TelemetryEventSink.of({ record, admitBrowserBatch }),
       ),
       events: Ref.get(store),
       browserEvents: Ref.get(browserStore),

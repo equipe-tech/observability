@@ -166,6 +166,21 @@ describe("operations manifest", () => {
     }
   });
 
+  test("accepts retention limits and rejects values outside them", async () => {
+    for (const days of [1, 3_650]) {
+      const manifest = await Effect.runPromise(
+        parseOperationsManifest(validManifest.replace("days: 30", `days: ${days}`)),
+      );
+      expect(manifest.retention[0]?.days).toBe(days);
+    }
+    for (const days of [-1, 0, 3_651]) {
+      const error = await Effect.runPromise(
+        Effect.flip(parseOperationsManifest(validManifest.replace("days: 30", `days: ${days}`))),
+      );
+      expect(error.code).toBe("OBS_CLI_MANIFEST_INVALID");
+    }
+  });
+
   test("rejects YAML directives, tags, anchors, aliases and merge keys", async () => {
     const unsupported = [
       validManifest.replace("version: 1", "%YAML 1.2\n---\nversion: 1"),

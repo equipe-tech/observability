@@ -24,7 +24,13 @@ export type {
   BrowserTelemetryClientError,
   BrowserTelemetryClientEvent,
   BrowserTelemetryClientFields,
+  BrowserTelemetryClientMetric,
+  BrowserTelemetryClientResource,
+  BrowserTelemetryClientSpan,
   BrowserTelemetryDefectInput,
+  BrowserCounter,
+  BrowserTraceContext,
+  BrowserTraceHandle,
   BrowserTelemetryFieldTransform,
   BrowserTelemetryClientTransport,
 } from "./BrowserClient.ts";
@@ -33,6 +39,10 @@ export {
   BrowserEvent,
   BrowserEventBatch,
   BrowserEventError,
+  BrowserMetricPoint,
+  BrowserResourceIdentity,
+  BrowserTraceContext as BrowserTraceContextSchema,
+  BrowserTraceSpan,
   browserRequestByteBudget,
   maxEventNameLength,
   maxEventsPerBatch,
@@ -106,6 +116,7 @@ export type BrowserTelemetryOptions = {
   readonly maxBatchSize?: number;
   readonly maxQueueSize?: number;
   readonly flushInterval?: Duration.Input;
+  readonly metrics?: boolean;
   readonly policy?: DataPolicyInput;
 };
 
@@ -124,6 +135,8 @@ const makeBrowserTelemetry = Effect.fn("makeBrowserTelemetry")(function* (
     maxQueueSize: normalizePositiveInteger(options?.maxQueueSize, 256),
     flushIntervalMs: normalizePositiveInteger(Duration.toMillis(flushInterval), 5_000),
     shutdownTimeoutMs: 2_000,
+    metrics: options?.metrics ?? false,
+    resource: undefined,
     policy:
       policy === undefined
         ? undefined

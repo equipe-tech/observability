@@ -7,6 +7,7 @@ import { TelemetryConfig } from "../TelemetryConfig.ts";
 import type { DataPolicy } from "../policy/DataPolicy.ts";
 import type { InvalidDataPolicy } from "../policy/DataPolicyError.ts";
 import type { ResourceAttribute } from "../policy/ResourceAttributePolicy.ts";
+import type { ContractRegistry } from "../profile/ObservabilityAdapter.ts";
 
 export * from "./contract.ts";
 export * from "./deployedCanary.ts";
@@ -444,6 +445,7 @@ export type RunOptions = {
   readonly config?: TelemetryConfig;
   readonly policy?: DataPolicy;
   readonly resourceAttributes?: ReadonlyArray<ResourceAttribute>;
+  readonly contract?: ContractRegistry;
 };
 
 export type TelemetryCapture = {
@@ -458,6 +460,7 @@ export const makeCapture = Effect.fn("makeCapture")(function* (
   const layer = layerOtlp(options?.config ?? defaultConfig, {
     policy: options?.policy,
     resourceAttributes: options?.resourceAttributes,
+    contract: options?.contract,
   }).pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, captureClient(store))));
   const telemetry = Ref.get(store).pipe(Effect.flatMap(decodeCapturedTelemetry));
   return { layer, telemetry };

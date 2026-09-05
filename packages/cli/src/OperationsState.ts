@@ -19,6 +19,7 @@ export class ManualAction extends Schema.Class<ManualAction>(
   capability: Schema.NonEmptyString,
   environment: Schema.NonEmptyString,
   desiredFingerprint: Schema.NonEmptyString,
+  kind: Schema.Literals(["manual", "destructive"]).pipe(Schema.optionalKey),
   status: Schema.Literals(["pending", "operator-confirmed"]),
   expiresAt: Schema.NonEmptyString.pipe(Schema.optionalKey),
 }) {}

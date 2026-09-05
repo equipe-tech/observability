@@ -13,12 +13,20 @@ const telemetry = createBrowserTelemetryClient({
   shutdownTimeoutMs: 2_000,
 });
 
-telemetry.emit("checkout.completed", { "page.path": "/checkout" });
+const page = telemetry.traces.startSpan("page.load", { "page.path": "/checkout" });
+const render = telemetry.traces.startSpan("react.render", {}, page.context);
+telemetry.emit("checkout.completed", { "page.path": "/checkout" }, render.context);
+render.end();
+page.end();
 await telemetry.flush();
 await telemetry.dispose();
 ```
 
-`emit`, `pending`, and `dropped` are synchronous. `flush` and `dispose` return Promises. Concurrent flushes share one delivery operation. A rejected delivery keeps the same sanitized batch queued for a later flush. Empty event names use the valid bounded name `browser.event`. Non-positive numeric options use their documented defaults.
+`emit`, `traces.startSpan`, `span.end`, `pending`, and `dropped` are synchronous. `flush` and `dispose` return Promises. A span receives W3C-compatible trace and span identifiers in the browser. Passing its context to `emit` preserves canonical log-to-span correlation after server ingestion. Ended spans share the existing browser batch, route, policy, retry queue, shutdown deadline, and Collector destination pipeline. The browser does not send OTLP.
+
+Optional counters require `metrics: true`. Create one with `telemetry.metrics.counter(name)` and call `add`. Unselected metrics are inert. Selected points share the same bounded delivery path as traces and events.
+
+Concurrent flushes share one delivery operation. A rejected delivery keeps the same sanitized batch queued for a later flush. Empty event names use the valid bounded name `browser.event`. Non-positive numeric options use their documented defaults.
 
 `dropped()` reports the aggregate number of events removed before delivery. Queue pressure evicts the oldest queued events, and permanent delivery failures or an incomplete shutdown remove the affected queued batch. A synchronous `emit` or React defect outcome can report an event as queued before a later eviction or delivery failure. Read `deliveryDropped` from `createBrowserObservability().reports()` to reconcile those later drops with aggregate `recorded` and `pendingEvents` counts.
 

@@ -195,18 +195,55 @@ export const emitCanary = (
         "event.kind": "wide",
       }),
     );
+    const browserTraceId = crypto.randomUUID().replaceAll("-", "");
+    const browserRootSpanId = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+    const browserChildSpanId = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+    const browserStartedAt = Date.now();
     yield* ingestBrowserEvents({
       version: 1,
+      resource: {
+        serviceName: config.identity.serviceName,
+        serviceVersion: config.identity.serviceVersion,
+        environment: config.identity.environment,
+      },
       events: [
         {
           id: `browser-${runId}`,
           name: "canary.browser",
           occurredAt: Date.now(),
+          trace: { traceId: browserTraceId, spanId: browserChildSpanId },
           fields: {
             "canary.run_id": runId,
             "safe.raw_header": sensitive.rawAuthorization,
             ...nestedAttributes,
           },
+        },
+      ],
+      spans: [
+        {
+          traceId: browserTraceId,
+          spanId: browserRootSpanId,
+          name: "canary.browser.operation",
+          startedAt: browserStartedAt,
+          endedAt: Date.now(),
+          fields: { "canary.run_id": runId },
+        },
+        {
+          traceId: browserTraceId,
+          spanId: browserChildSpanId,
+          parentSpanId: browserRootSpanId,
+          name: "canary.browser.child",
+          startedAt: browserStartedAt,
+          endedAt: Date.now(),
+          fields: { "canary.run_id": runId },
+        },
+      ],
+      metrics: [
+        {
+          name: "canary.operations",
+          value: 1,
+          occurredAt: Date.now(),
+          fields: { "canary.run_id": runId },
         },
       ],
     }).pipe(Effect.provide(layerWideEvent), Effect.orDie);
@@ -229,6 +266,6 @@ export const emitCanary = (
   }).pipe(
     Effect.scoped,
     Effect.withSpan("canary.operation", { attributes: sensitiveAttributes }),
-    Effect.provide(Telemetry.layer(config)),
+    Effect.provide(Telemetry.layer(config, { contract: canaryContract })),
   );
 };

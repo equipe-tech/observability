@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Effect, Schema } from "effect";
+import { Range, validRange } from "semver";
+import { compareParsedPeerRanges } from "./peer-range-coverage.ts";
 import { Contract } from "../packages/telemetry/src/index.ts";
 import { decodeCompatibilityJson } from "./compatibility-json.ts";
 import { generateCompatibilityCandidate } from "./generate-compatibility-candidate.ts";
@@ -125,8 +127,17 @@ export type PackageFinding = {
 };
 
 export type PackageSurface = typeof PackageSurfaceDocument.Type;
+export type PackageSurfaceInspection = {
+  readonly surface: PackageSurface;
+  readonly missingRuntimeEntrypoints: ReadonlyArray<string>;
+};
 export type ContractGateResult = Contract.CompatibilityReport;
 type ExportEntry = readonly [string, typeof ExportTarget.Type];
+type RuntimeEntrypoint = {
+  readonly name: string;
+  readonly target: string;
+  readonly executable: boolean;
+};
 
 const parseJson = (path: string) => JSON.parse(readFileSync(path, "utf8"));
 const pairs = (entries: { readonly [key: string]: string } | undefined): ReadonlyArray<string> =>
@@ -137,8 +148,10 @@ const exportEntries = (document: typeof PackageDocument.Type): ReadonlyArray<Exp
   Object.entries(document.exports ?? {}).sort((left, right) => left[0].localeCompare(right[0]));
 const exportTypesPath = (target: typeof ExportTarget.Type): string | undefined =>
   target instanceof Object && "types" in target ? target.types : undefined;
-const exportRuntimePath = (target: typeof ExportTarget.Type): string | undefined =>
-  target instanceof Object && "import" in target ? target.import : undefined;
+const exportRuntimePaths = (target: typeof ExportTarget.Type): ReadonlyArray<string> =>
+  target instanceof Object
+    ? Object.entries(target).flatMap(([condition, path]) => (condition === "types" ? [] : [path]))
+    : [target];
 const exportConditions = (document: typeof PackageDocument.Type): ReadonlyArray<string> =>
   exportEntries(document)
     .flatMap(([name, target]) =>
@@ -236,19 +249,52 @@ export const declarationErrorCodes = (declarationText: string): ReadonlyArray<st
     ),
   ].sort();
 
-export const currentPackageSurface = (packageRoot: string): PackageSurface => {
+const runtimeEntrypointDeclarations = (
+  document: typeof PackageDocument.Type,
+): ReadonlyArray<RuntimeEntrypoint> => [
+  ...exportEntries(document).flatMap(([name, target]) =>
+    exportRuntimePaths(target).map((path) => ({ name, target: path, executable: false })),
+  ),
+  ...Object.entries(document.bin ?? {}).map(([name, target]) => ({
+    name: `bin:${name}`,
+    target,
+    executable: true,
+  })),
+];
+
+const runtimeEntrypointDelivered = (
+  packageRoot: string,
+  entrypoint: RuntimeEntrypoint,
+): boolean => {
+  if (!entrypoint.target.startsWith("./")) return false;
+  const root = resolve(packageRoot);
+  const target = resolve(root, entrypoint.target);
+  const packageRelativeTarget = relative(root, target);
+  if (
+    packageRelativeTarget === "" ||
+    packageRelativeTarget === ".." ||
+    packageRelativeTarget.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+    isAbsolute(packageRelativeTarget)
+  )
+    return false;
+  try {
+    if (!statSync(target).isFile()) return false;
+    return !entrypoint.executable || readFileSync(target, "utf8").startsWith("#!");
+  } catch {
+    return false;
+  }
+};
+
+export const inspectPackageSurface = (packageRoot: string): PackageSurfaceInspection => {
   const document = decodePackage(parseJson(join(packageRoot, "package.json")));
   const exports = exportEntries(document).map((entry) => entry[0]);
+  const declarations = runtimeEntrypointDeclarations(document);
   const runtimeEntrypoints = [
-    ...exportEntries(document)
-      .filter((entry) => {
-        const path = exportRuntimePath(entry[1]);
-        return path !== undefined && existsSync(join(packageRoot, path));
-      })
-      .map((entry) => entry[0]),
-    ...Object.entries(document.bin ?? {})
-      .filter((entry) => existsSync(join(packageRoot, entry[1])))
-      .map((entry) => `bin:${entry[0]}`),
+    ...new Set(
+      declarations
+        .filter((entry) => runtimeEntrypointDelivered(packageRoot, entry))
+        .map((entry) => entry.name),
+    ),
   ].sort();
   const optionalPeers = Object.entries(document.peerDependenciesMeta ?? {})
     .filter((entry) => entry[1].optional === true)
@@ -258,19 +304,31 @@ export const currentPackageSurface = (packageRoot: string): PackageSurface => {
   const declarationText = exportedDeclarationText(packageRoot, document);
   const publicErrorCodes = declarationErrorCodes(declarationText);
   return {
-    name: document.name,
-    version: document.version,
-    type: document.type,
-    exports,
-    exportConditions: exportConditions(document),
-    runtimeEntrypoints,
-    declarationSymbols: symbols,
-    dependencies: pairs(document.dependencies),
-    peerDependencies: pairs(document.peerDependencies),
-    optionalPeers,
-    publicErrorCodes,
+    surface: {
+      name: document.name,
+      version: document.version,
+      type: document.type,
+      exports,
+      exportConditions: exportConditions(document),
+      runtimeEntrypoints,
+      declarationSymbols: symbols,
+      dependencies: pairs(document.dependencies),
+      peerDependencies: pairs(document.peerDependencies),
+      optionalPeers,
+      publicErrorCodes,
+    },
+    missingRuntimeEntrypoints: [
+      ...new Set(
+        declarations
+          .filter((entry) => !runtimeEntrypointDelivered(packageRoot, entry))
+          .map((entry) => entry.name),
+      ),
+    ].sort(),
   };
 };
+
+export const currentPackageSurface = (packageRoot: string): PackageSurface =>
+  inspectPackageSurface(packageRoot).surface;
 
 const semver = (version: string): readonly [number, number, number] | undefined => {
   const match = /^(0|[1-9]\d*)[.](0|[1-9]\d*)[.](0|[1-9]\d*)$/.exec(version);
@@ -311,23 +369,6 @@ const setChange = (
   path: string,
   severity: SetChange["severity"],
 ): SetChange => ({ code, path, severity });
-type SemanticVersion = {
-  readonly major: number;
-  readonly minor: number;
-  readonly patch: number;
-  readonly prerelease: ReadonlyArray<string>;
-};
-
-type SemanticRangeBoundary = {
-  readonly version: SemanticVersion;
-  readonly inclusive: boolean;
-};
-
-type SemanticRangeInterval = {
-  readonly lower?: SemanticRangeBoundary;
-  readonly upper?: SemanticRangeBoundary;
-};
-
 export type PeerRangeComparison = {
   readonly baseline: string;
   readonly candidate: string;
@@ -339,215 +380,14 @@ const dependencyEntry = (entry: string): { readonly name: string; readonly range
   return { name: entry.slice(0, separator), range: entry.slice(separator + 1) };
 };
 
-const parseSemanticVersion = (value: string): SemanticVersion | undefined => {
-  const match =
-    /^(0|[1-9]\d*)(?:[.](0|[1-9]\d*|x|X|[*]))?(?:[.](0|[1-9]\d*|x|X|[*]))?(?:-([0-9A-Za-z.-]+))?$/.exec(
-      value,
-    );
-  if (match === null) return undefined;
-  const minor = match[2] === undefined || /^[xX*]$/.test(match[2]) ? 0 : Number(match[2]);
-  const patch = match[3] === undefined || /^[xX*]$/.test(match[3]) ? 0 : Number(match[3]);
-  return {
-    major: Number(match[1]),
-    minor,
-    patch,
-    prerelease: match[4]?.split(".") ?? [],
-  };
-};
-
-const compareSemanticVersions = (left: SemanticVersion, right: SemanticVersion): number => {
-  if (left.major !== right.major) return left.major < right.major ? -1 : 1;
-  if (left.minor !== right.minor) return left.minor < right.minor ? -1 : 1;
-  if (left.patch !== right.patch) return left.patch < right.patch ? -1 : 1;
-  if (left.prerelease.length === 0 || right.prerelease.length === 0)
-    return left.prerelease.length === right.prerelease.length
-      ? 0
-      : left.prerelease.length === 0
-        ? 1
-        : -1;
-  const length = Math.max(left.prerelease.length, right.prerelease.length);
-  for (let index = 0; index < length; index += 1) {
-    const leftPart = left.prerelease[index];
-    const rightPart = right.prerelease[index];
-    if (leftPart === undefined || rightPart === undefined)
-      return leftPart === rightPart ? 0 : leftPart === undefined ? -1 : 1;
-    if (leftPart === rightPart) continue;
-    const leftNumeric = /^\d+$/.test(leftPart);
-    const rightNumeric = /^\d+$/.test(rightPart);
-    if (leftNumeric && rightNumeric) return Number(leftPart) < Number(rightPart) ? -1 : 1;
-    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
-    return leftPart < rightPart ? -1 : 1;
-  }
-  return 0;
-};
-
-const incrementVersion = (
-  version: SemanticVersion,
-  component: "major" | "minor" | "patch",
-): SemanticVersion =>
-  component === "major"
-    ? { major: version.major + 1, minor: 0, patch: 0, prerelease: [] }
-    : component === "minor"
-      ? { major: version.major, minor: version.minor + 1, patch: 0, prerelease: [] }
-      : { major: version.major, minor: version.minor, patch: version.patch + 1, prerelease: [] };
-
-const intersectIntervals = (
-  left: SemanticRangeInterval,
-  right: SemanticRangeInterval,
-): SemanticRangeInterval | undefined => {
-  const lower =
-    left.lower === undefined
-      ? right.lower
-      : right.lower === undefined
-        ? left.lower
-        : compareSemanticVersions(left.lower.version, right.lower.version) > 0
-          ? left.lower
-          : compareSemanticVersions(left.lower.version, right.lower.version) < 0
-            ? right.lower
-            : {
-                version: left.lower.version,
-                inclusive: left.lower.inclusive && right.lower.inclusive,
-              };
-  const upper =
-    left.upper === undefined
-      ? right.upper
-      : right.upper === undefined
-        ? left.upper
-        : compareSemanticVersions(left.upper.version, right.upper.version) < 0
-          ? left.upper
-          : compareSemanticVersions(left.upper.version, right.upper.version) > 0
-            ? right.upper
-            : {
-                version: left.upper.version,
-                inclusive: left.upper.inclusive && right.upper.inclusive,
-              };
-  if (lower !== undefined && upper !== undefined) {
-    const order = compareSemanticVersions(lower.version, upper.version);
-    if (order > 0 || (order === 0 && (!lower.inclusive || !upper.inclusive))) return undefined;
-  }
-  if (lower === undefined) return upper === undefined ? {} : { upper };
-  return upper === undefined ? { lower } : { lower, upper };
-};
-
-const tokenInterval = (token: string): SemanticRangeInterval | undefined => {
-  if (token === "" || token === "*" || /^[xX]$/.test(token)) return {};
-  const match = /^(\^|~|>=|<=|>|<|=)?(.+)$/.exec(token);
-  if (match === null || match[2] === undefined) return undefined;
-  const operator = match[1] ?? "";
-  const value = match[2];
-  const version = parseSemanticVersion(value);
-  if (version === undefined) return undefined;
-  const parts = value.replace(/-.+$/, "").split(".");
-  const wildcardMinor = parts[1] === undefined || /^[xX*]$/.test(parts[1]);
-  const wildcardPatch = parts[2] === undefined || /^[xX*]$/.test(parts[2]);
-  if (operator === "^") {
-    const component = version.major > 0 ? "major" : version.minor > 0 ? "minor" : "patch";
-    return {
-      lower: { version, inclusive: true },
-      upper: { version: incrementVersion(version, component), inclusive: false },
-    };
-  }
-  if (operator === "~")
-    return {
-      lower: { version, inclusive: true },
-      upper: {
-        version: incrementVersion(version, wildcardMinor ? "major" : "minor"),
-        inclusive: false,
-      },
-    };
-  if (operator === ">=" || operator === ">")
-    return { lower: { version, inclusive: operator === ">=" } };
-  if (operator === "<=" || operator === "<")
-    return { upper: { version, inclusive: operator === "<=" } };
-  if (wildcardMinor)
-    return {
-      lower: { version, inclusive: true },
-      upper: { version: incrementVersion(version, "major"), inclusive: false },
-    };
-  if (wildcardPatch)
-    return {
-      lower: { version, inclusive: true },
-      upper: { version: incrementVersion(version, "minor"), inclusive: false },
-    };
-  return {
-    lower: { version, inclusive: true },
-    upper: { version, inclusive: true },
-  };
-};
-
-const parseSemanticRange = (range: string): ReadonlyArray<SemanticRangeInterval> | undefined => {
-  const intervals: Array<SemanticRangeInterval> = [];
-  for (const alternative of range.split("||")) {
-    const trimmed = alternative.trim();
-    const hyphen = /^([^\s]+)\s+-\s+([^\s]+)$/.exec(trimmed);
-    const tokens =
-      hyphen === null ? trimmed.split(/\s+/) : [`>=${hyphen[1] ?? ""}`, `<=${hyphen[2] ?? ""}`];
-    let interval: SemanticRangeInterval = {};
-    for (const token of tokens) {
-      const parsed = tokenInterval(token);
-      if (parsed === undefined) return undefined;
-      const intersection = intersectIntervals(interval, parsed);
-      if (intersection === undefined) return undefined;
-      interval = intersection;
-    }
-    intervals.push(interval);
-  }
-  return intervals;
-};
-
-const lowerContains = (
-  container: SemanticRangeBoundary | undefined,
-  contained: SemanticRangeBoundary | undefined,
-): boolean => {
-  if (container === undefined) return true;
-  if (contained === undefined) return false;
-  const order = compareSemanticVersions(container.version, contained.version);
-  return order < 0 || (order === 0 && (container.inclusive || !contained.inclusive));
-};
-
-const upperContains = (
-  container: SemanticRangeBoundary | undefined,
-  contained: SemanticRangeBoundary | undefined,
-): boolean => {
-  if (container === undefined) return true;
-  if (contained === undefined) return false;
-  const order = compareSemanticVersions(container.version, contained.version);
-  return order > 0 || (order === 0 && (container.inclusive || !contained.inclusive));
-};
-
-const rangeContains = (
-  container: ReadonlyArray<SemanticRangeInterval>,
-  contained: ReadonlyArray<SemanticRangeInterval>,
-): boolean =>
-  contained.every((interval) =>
-    container.some(
-      (candidate) =>
-        lowerContains(candidate.lower, interval.lower) &&
-        upperContains(candidate.upper, interval.upper),
-    ),
-  );
-
 export const comparePeerRanges = (baseline: string, candidate: string): PeerRangeComparison => {
   if (baseline === candidate) return { baseline, candidate, classification: "equivalent" };
-  const previous = parseSemanticRange(baseline);
-  const next = parseSemanticRange(candidate);
-  if (
-    previous === undefined ||
-    next === undefined ||
-    (!baseline.includes("-") && candidate.includes("-"))
-  )
+  if (validRange(baseline) === null || validRange(candidate) === null)
     return { baseline, candidate, classification: "narrowed" };
-  const baselineInCandidate = rangeContains(next, previous);
-  const candidateInBaseline = rangeContains(previous, next);
   return {
     baseline,
     candidate,
-    classification:
-      baselineInCandidate && candidateInBaseline
-        ? "equivalent"
-        : baselineInCandidate
-          ? "widened"
-          : "narrowed",
+    classification: compareParsedPeerRanges(new Range(baseline), new Range(candidate)),
   };
 };
 
@@ -672,7 +512,7 @@ export const classifyPackageChange = (
       "OBS_PACKAGE_ERROR_CODE_REMOVED",
       "publicErrorCodes",
     ),
-    ...baseline.exports
+    ...baseline.runtimeEntrypoints
       .filter((entry) => !candidate.runtimeEntrypoints.includes(entry))
       .map((entry) =>
         setChange("OBS_PACKAGE_RUNTIME_ENTRYPOINT_MISSING", `runtime/${entry}`, "breaking"),
@@ -814,7 +654,8 @@ export const runCompatibilityGate = async (): Promise<boolean> => {
       (entry) => entry.isDirectory() && existsSync(join("packages", entry.name, "package.json")),
     )
     .map((entry) => join("packages", entry.name));
-  const currentPackages = packageRoots.map(currentPackageSurface);
+  const packageInspections = packageRoots.map(inspectPackageSurface);
+  const currentPackages = packageInspections.map((inspection) => inspection.surface);
   const packageReports = baseline.packages.flatMap((previous) => {
     const candidate = currentPackages.find((entry) => entry.name === previous.name);
     const declaredVersion = versions.packages.find(
@@ -839,12 +680,8 @@ export const runCompatibilityGate = async (): Promise<boolean> => {
       (candidate) => versions.packages.find((entry) => entry.name === candidate.name) === undefined,
     )
     .map((candidate) => candidate.name);
-  const missingRuntime = currentPackages.flatMap((candidate) =>
-    candidate.exports
-      .filter(
-        (entry) => !candidate.runtimeEntrypoints.includes(entry) && entry !== "./package.json",
-      )
-      .map((entry) => `${candidate.name}:${entry}`),
+  const missingRuntime = packageInspections.flatMap((inspection) =>
+    inspection.missingRuntimeEntrypoints.map((entry) => `${inspection.surface.name}:${entry}`),
   );
   const releaseIndex = process.argv.indexOf("--release");
   const release = releaseIndex < 0 ? undefined : process.argv[releaseIndex + 1];
