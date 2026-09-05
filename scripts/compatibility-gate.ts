@@ -146,8 +146,10 @@ const exportEntries = (document: typeof PackageDocument.Type): ReadonlyArray<Exp
   Object.entries(document.exports ?? {}).sort((left, right) => left[0].localeCompare(right[0]));
 const exportTypesPath = (target: typeof ExportTarget.Type): string | undefined =>
   target instanceof Object && "types" in target ? target.types : undefined;
-const exportRuntimePath = (target: typeof ExportTarget.Type): string | undefined =>
-  target instanceof Object && "import" in target ? target.import : undefined;
+const exportRuntimePaths = (target: typeof ExportTarget.Type): ReadonlyArray<string> =>
+  target instanceof Object
+    ? Object.entries(target).flatMap(([condition, path]) => (condition === "types" ? [] : [path]))
+    : [target];
 const exportConditions = (document: typeof PackageDocument.Type): ReadonlyArray<string> =>
   exportEntries(document)
     .flatMap(([name, target]) =>
@@ -248,10 +250,9 @@ export const declarationErrorCodes = (declarationText: string): ReadonlyArray<st
 const runtimeEntrypointDeclarations = (
   document: typeof PackageDocument.Type,
 ): ReadonlyArray<RuntimeEntrypoint> => [
-  ...exportEntries(document).flatMap(([name, target]) => {
-    const path = exportRuntimePath(target);
-    return path === undefined ? [] : [{ name, target: path, executable: false }];
-  }),
+  ...exportEntries(document).flatMap(([name, target]) =>
+    exportRuntimePaths(target).map((path) => ({ name, target: path, executable: false })),
+  ),
   ...Object.entries(document.bin ?? {}).map(([name, target]) => ({
     name: `bin:${name}`,
     target,
@@ -286,10 +287,13 @@ export const inspectPackageSurface = (packageRoot: string): PackageSurfaceInspec
   const document = decodePackage(parseJson(join(packageRoot, "package.json")));
   const exports = exportEntries(document).map((entry) => entry[0]);
   const declarations = runtimeEntrypointDeclarations(document);
-  const runtimeEntrypoints = declarations
-    .filter((entry) => runtimeEntrypointDelivered(packageRoot, entry))
-    .map((entry) => entry.name)
-    .sort();
+  const runtimeEntrypoints = [
+    ...new Set(
+      declarations
+        .filter((entry) => runtimeEntrypointDelivered(packageRoot, entry))
+        .map((entry) => entry.name),
+    ),
+  ].sort();
   const optionalPeers = Object.entries(document.peerDependenciesMeta ?? {})
     .filter((entry) => entry[1].optional === true)
     .map((entry) => entry[0])
@@ -311,10 +315,13 @@ export const inspectPackageSurface = (packageRoot: string): PackageSurfaceInspec
       optionalPeers,
       publicErrorCodes,
     },
-    missingRuntimeEntrypoints: declarations
-      .filter((entry) => !runtimeEntrypointDelivered(packageRoot, entry))
-      .map((entry) => entry.name)
-      .sort(),
+    missingRuntimeEntrypoints: [
+      ...new Set(
+        declarations
+          .filter((entry) => !runtimeEntrypointDelivered(packageRoot, entry))
+          .map((entry) => entry.name),
+      ),
+    ].sort(),
   };
 };
 
