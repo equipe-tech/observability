@@ -778,6 +778,110 @@ describe("Nest error boundary regressions", () => {
     assert.strictEqual(responseCalls, 1);
   });
 
+  for (const hostileCause of ["throwing-prototype", "revoked"] as const) {
+    const makeCause = (): Error => {
+      if (hostileCause === "revoked") {
+        const { proxy, revoke } = Proxy.revocable(new Error("private cause"), {});
+        revoke();
+        return proxy;
+      }
+      return new Proxy(new Error("private cause"), {
+        getPrototypeOf() {
+          throw new Error("hostile prototype inspection");
+        },
+      });
+    };
+
+    for (const status of [404, 503]) {
+      it(`classifies ${String(status)} with a ${hostileCause} cause without escaping`, () => {
+        const boundary = new NestErrorBoundary({
+          catalog: defineErrorCatalog("hostile_cause", {}),
+          recordDefect: () => undefined,
+        });
+        const error = new HttpException("expected missing item", status, { cause: makeCause() });
+        const classified = boundary.classify(error, new CorrelationContext({}));
+        assert.strictEqual(classified.error, error);
+        assert.strictEqual(classified.kind, status === 404 ? "http-outcome" : "unexpected");
+        if (classified.kind === "http-outcome") {
+          assert.strictEqual(classified.response.statusCode, status);
+          assert.strictEqual(classified.response.body, "expected missing item");
+        }
+      });
+    }
+
+    it(`preserves HTTP status policy for a ${hostileCause} cause over local Nest requests`, async () => {
+      const defects: Array<DefectEventInput> = [];
+      class ProbeController {
+        missing(): never {
+          throw new HttpException("expected missing item", 404, { cause: makeCause() });
+        }
+
+        failed(): never {
+          throw new HttpException("private server failure", 503, { cause: makeCause() });
+        }
+      }
+      Controller("hostile-causes")(ProbeController);
+      for (const method of ["missing", "failed"] as const) {
+        Get(method)(
+          ProbeController.prototype,
+          method,
+          methodDescriptor(ProbeController.prototype, method),
+        );
+      }
+      class AppModule {}
+      Module({
+        imports: [
+          NestErrorBoundaryModule.forRoot({
+            catalog: defineErrorCatalog("hostile_http", {}),
+            recordDefect: (event) => {
+              defects.push(event);
+            },
+          }),
+        ],
+        controllers: [ProbeController],
+      })(AppModule);
+      const app = await NestFactory.create(AppModule, { logger: false });
+      await app.listen(0, "127.0.0.1");
+      const baseUrl = applicationBaseUrl(app.getHttpServer().address());
+      try {
+        const missing = await fetch(`${baseUrl}/hostile-causes/missing`, {
+          signal: AbortSignal.timeout(2_000),
+        });
+        assert.strictEqual(missing.status, 404);
+        assert.strictEqual(await missing.text(), "expected missing item");
+        assert.lengthOf(defects, 0);
+        const failed = await fetch(`${baseUrl}/hostile-causes/failed`, {
+          signal: AbortSignal.timeout(2_000),
+        });
+        assert.strictEqual(failed.status, 500);
+        const body = await failed.text();
+        assert.include(body, "OBS_NESTJS_UNEXPECTED_DEFECT");
+        assert.notInclude(body, "private");
+        await waitFor(() => defects.length === 1);
+        assert.strictEqual(defects[0]?.error.message, "private server failure");
+      } finally {
+        await app.close();
+      }
+    }, 30_000);
+  }
+
+  it("does not read irrelevant client HTTP causes", () => {
+    let causeReads = 0;
+    const error = new HttpException("expected missing item", 404);
+    Object.defineProperty(error, "cause", {
+      get() {
+        causeReads += 1;
+        throw new Error("irrelevant cause getter");
+      },
+    });
+    const boundary = new NestErrorBoundary({
+      catalog: defineErrorCatalog("irrelevant_cause", {}),
+      recordDefect: () => undefined,
+    });
+    assert.strictEqual(boundary.classify(error, new CorrelationContext({})).kind, "http-outcome");
+    assert.strictEqual(causeReads, 0);
+  });
+
   it("preserves own retryability and defaults all other defects to false", async () => {
     const events: Array<DefectEventInput> = [];
     const boundary = new NestErrorBoundary({
