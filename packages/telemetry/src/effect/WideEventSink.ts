@@ -1,4 +1,4 @@
-import { Effect, Layer, Option } from "effect";
+import { Effect, Layer, Option, Tracer } from "effect";
 import { TelemetryEventSink } from "../contract/EventProducer.ts";
 import type {
   AttributeValue,
@@ -80,7 +80,17 @@ export const layerWideEvent: Layer.Layer<TelemetryEventSink> = Layer.succeed(
             fields["error.message"] = event.error.message;
             fields["error.retryable"] = event.error.retryable;
           }
-          return WideEvent.emit(event.name, fields);
+          const emission = WideEvent.emit(event.name, fields);
+          return event.trace === undefined
+            ? emission
+            : emission.pipe(
+                Effect.withParentSpan(
+                  Tracer.externalSpan({
+                    traceId: event.trace.traceId,
+                    spanId: event.trace.spanId,
+                  }),
+                ),
+              );
         },
         { discard: true },
       ),

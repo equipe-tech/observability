@@ -670,6 +670,8 @@ export const makeEvlogAdapter = (
                   projected,
                   event.admission.policyDroppedAttributes,
                 ),
+                event.trace?.traceId,
+                event.trace?.spanId,
               ),
             );
           });

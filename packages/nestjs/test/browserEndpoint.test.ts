@@ -233,6 +233,49 @@ describe("browser events endpoint", () => {
     assert.notInclude(JSON.stringify(telemetry), secret);
   }, 30_000);
 
+  it("exports browser traces, correlated logs, and selected metrics through the real route", async () => {
+    const harness = await startApp(false);
+    const client = createBrowserTelemetryClient({
+      endpoint: `${harness.baseUrl}/_telemetry/events`,
+      metrics: true,
+      resource: {
+        serviceName: "browser-consumer",
+        serviceVersion: "1.2.3",
+        environment: "test",
+      },
+      flushIntervalMs: 60_000,
+    });
+    const root = client.traces.startSpan("page.load", { "run.id": "browser-route-e2e" });
+    const child = client.traces.startSpan(
+      "react.render",
+      { "run.id": "browser-route-e2e" },
+      root.context,
+    );
+    client.emit("page.rendered", { "run.id": "browser-route-e2e" }, child.context);
+    client.metrics.counter("react.render.count").add(1, { "run.id": "browser-route-e2e" });
+    child.end();
+    root.end();
+    await client.flush();
+    await client.dispose();
+    const telemetry = await harness.close();
+    const rootSpan = telemetry.spans.find((span) => span.spanId === root.context.spanId);
+    const childSpan = telemetry.spans.find((span) => span.spanId === child.context.spanId);
+    const log = telemetry.logs.find(
+      (entry) => attributeOrUndefined(entry.attributes, "event.name") === "page.rendered",
+    );
+    const metric = telemetry.metrics.find((entry) => entry.name === "react.render.count");
+    assert.isDefined(rootSpan);
+    assert.isDefined(childSpan);
+    assert.deepStrictEqual(childSpan.parentSpanId, Option.some(root.context.spanId));
+    assert.deepStrictEqual(log?.traceId, Option.some(root.context.traceId));
+    assert.deepStrictEqual(log?.spanId, Option.some(child.context.spanId));
+    assert.strictEqual(Option.getOrUndefined(metric?.points[0]?.value ?? Option.none()), 1);
+    assert.strictEqual(
+      attributeOrUndefined(rootSpan.resourceAttributes, "service.name"),
+      "browser-consumer",
+    );
+  }, 30_000);
+
   it("accepts old and new envelopes and preserves defect failure fields", async () => {
     const harness = await startApp(false);
     const response = await postEvents(

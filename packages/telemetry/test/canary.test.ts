@@ -58,6 +58,7 @@ const SpanExport = Schema.Struct({
 
 const ExportedLogRecord = Schema.Struct({
   traceId: Schema.String.pipe(Schema.optionalKey),
+  spanId: Schema.String.pipe(Schema.optionalKey),
   body: Schema.Struct({ stringValue: Schema.String.pipe(Schema.optionalKey) }),
   attributes: Schema.Array(Attribute).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
@@ -229,6 +230,18 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
           Option.getOrUndefined(attributeValue(candidate.log.attributes, "event.name")) ===
             "canary.completed",
       );
+      const browserRoot = telemetryExport.spans.find(
+        (candidate) =>
+          candidate.span.name === "canary.browser.operation" &&
+          Option.getOrUndefined(attributeValue(candidate.span.attributes, "canary.run_id")) ===
+            runId,
+      );
+      const browserChild = telemetryExport.spans.find(
+        (candidate) =>
+          candidate.span.name === "canary.browser.child" &&
+          Option.getOrUndefined(attributeValue(candidate.span.attributes, "canary.run_id")) ===
+            runId,
+      );
       const browserLog = telemetryExport.logs.find(
         (candidate) =>
           Option.getOrUndefined(attributeValue(candidate.log.attributes, "canary.run_id")) ===
@@ -243,6 +256,12 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
           Option.getOrUndefined(attributeValue(candidate.log.attributes, "event.name")) ===
             "canary.redaction",
       );
+      const browserMetric = telemetryExport.metrics.find(
+        (candidate) =>
+          candidate.metric.name === "canary.browser.operations" &&
+          Option.getOrUndefined(attributeValue(candidate.dataPoint.attributes, "canary.run_id")) ===
+            runId,
+      );
       const metric = telemetryExport.metrics.find(
         (candidate) =>
           candidate.metric.name === "canary.operations" &&
@@ -252,6 +271,9 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
       if (
         redactionSpanEvent !== undefined &&
         child !== undefined &&
+        browserRoot !== undefined &&
+        browserChild !== undefined &&
+        browserMetric !== undefined &&
         log !== undefined &&
         browserLog !== undefined &&
         redactionLog !== undefined &&
@@ -262,6 +284,9 @@ const findRun = Effect.fn("findRun")(function* (runId: string) {
           root,
           redactionSpanEvent,
           child,
+          browserRoot,
+          browserChild,
+          browserMetric,
           log,
           browserLog,
           redactionLog,
@@ -325,6 +350,10 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
           Option.getOrUndefined(attributeValue(run.log.log.attributes, "event.name")),
           "canary.completed",
         );
+        assert.strictEqual(run.browserChild.span.traceId, run.browserRoot.span.traceId);
+        assert.strictEqual(run.browserChild.span.parentSpanId, run.browserRoot.span.spanId);
+        assert.strictEqual(run.browserLog.log.traceId, run.browserChild.span.traceId);
+        assert.strictEqual(run.browserLog.log.spanId, run.browserChild.span.spanId);
         assert.strictEqual(
           Option.getOrUndefined(attributeValue(run.browserLog.log.attributes, "event.source")),
           "browser",
@@ -333,6 +362,8 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
           Option.getOrUndefined(attributeValue(run.browserLog.log.attributes, "browser.event.id")),
           `browser-${runId}`,
         );
+        assert.strictEqual(run.browserMetric.metric.name, "canary.browser.operations");
+        assert.strictEqual(run.browserMetric.dataPoint.asDouble, 1);
         assert.strictEqual(run.metric.metric.name, "canary.operations");
         assert.strictEqual(run.metric.dataPoint.asDouble, 1);
         assert.isAtMost(runId.length, 128);

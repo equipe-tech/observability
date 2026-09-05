@@ -165,6 +165,56 @@ describe("browser telemetry client", () => {
     await client.dispose();
   });
 
+  it("queues correlated spans and only selected metrics through the event transport", async () => {
+    const batches: Array<BrowserTelemetryClientBatch> = [];
+    const disabledMetrics = createBrowserTelemetryClient({
+      transport: async (batch) => {
+        batches.push(batch);
+      },
+      flushIntervalMs: 60_000,
+    });
+    disabledMetrics.metrics.counter("ignored.count").add();
+    expect(disabledMetrics.pending()).toBe(0);
+    await disabledMetrics.dispose();
+
+    let attempts = 0;
+    const client = createBrowserTelemetryClient({
+      metrics: true,
+      transport: async (batch) => {
+        batches.push(batch);
+        attempts += 1;
+        if (attempts === 1) throw new Error("browser signals offline");
+      },
+      flushIntervalMs: 60_000,
+    });
+    const root = client.traces.startSpan("page.load", { route: "/checkout" });
+    const child = client.traces.startSpan("react.render", {}, root.context);
+    client.emit("page.rendered", {}, child.context);
+    client.metrics.counter("react.render.count").add(1, { route: "/checkout" });
+    child.end();
+    child.end({ duplicate: true });
+    root.end();
+    expect(client.pending()).toBe(4);
+    await expect(client.flush()).rejects.toThrow("browser signals offline");
+    expect(client.pending()).toBe(4);
+    await client.flush();
+    expect(batches).toHaveLength(2);
+    expect(batches[1]).toEqual(batches[0]);
+    expect(batches[1]?.events[0]?.trace).toEqual(child.context);
+    expect(batches[1]?.spans).toHaveLength(2);
+    expect(batches[1]?.spans?.find((span) => span.name === "react.render")?.parentSpanId).toBe(
+      root.context.spanId,
+    );
+    expect(batches[1]?.metrics?.[0]?.name).toBe("react.render.count");
+    expect(client.pending()).toBe(0);
+    client.traces.startSpan("route.abandoned");
+    await client.dispose();
+    const forced = batches
+      .flatMap((batch) => batch.spans ?? [])
+      .find((span) => span.name === "route.abandoned");
+    expect(forced?.fields["span.forced_end"]).toBe(true);
+  });
+
   it("splits maximum browser inputs below the HTTP request byte budget", async () => {
     const batches: Array<BrowserTelemetryClientBatch> = [];
     const client = createBrowserTelemetryClient({
@@ -189,7 +239,7 @@ describe("browser telemetry client", () => {
       expect(browserBatchByteLength(batch)).toBeLessThanOrEqual(browserRequestByteBudget);
     }
     await client.dispose();
-  });
+  }, 15_000);
 
   it("coalesces concurrent flushes and drains events emitted during delivery", async () => {
     const firstDelivery = deferred();

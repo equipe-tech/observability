@@ -8,7 +8,10 @@ import { instanceResourceAttributes } from "./ResourceIdentity.ts";
 import type { EnvironmentVariables, InvalidTelemetryEnvironment } from "./TelemetryConfig.ts";
 import { telemetryConfigFromEnv, type TelemetryConfig } from "./TelemetryConfig.ts";
 import { LayerMetricsRuntime, layerMetricsRuntime } from "./MetricsRuntime.ts";
-import { layerHttpServerOtlpTracer } from "./trace/HttpServerOtlpTracer.ts";
+import {
+  layerBrowserSignalExporter,
+  layerHttpServerOtlpTracer,
+} from "./trace/HttpServerOtlpTracer.ts";
 import { baseDataPolicy, CurrentDataPolicy, type DataPolicy } from "./policy/DataPolicy.ts";
 import type { InvalidDataPolicy } from "./policy/DataPolicyError.ts";
 import {
@@ -60,6 +63,13 @@ export const layerOtlp = (
           metrics,
           layerHttpServerOtlpTracer({
             url: url("/v1/traces"),
+            policy,
+            resource,
+            shutdownTimeout: options.shutdownTimeout,
+          }),
+          layerBrowserSignalExporter({
+            tracesUrl: url("/v1/traces"),
+            metricsUrl: url("/v1/metrics"),
             policy,
             resource,
             shutdownTimeout: options.shutdownTimeout,

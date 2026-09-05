@@ -873,7 +873,17 @@ try {
     "import { createBrowserObservability } from '@equipe-tech/observability-react';",
     "import { definePolicy } from '@equipe-tech/observability/policy';",
     "const policy = definePolicy({ attributes: { 'error.origin': { classification: 'internal', required: true, metricLabel: false } }, blockedKeys: [], blockedValuePatterns: [] });",
-    "const handle = createBrowserObservability({ service: { name: 'bundle-smoke', version: '0.3.0', environment: 'test' }, policy, sentry: { disabled: true } });",
+    "const batches = [];",
+    "const host = { addEventListener() {}, removeEventListener() {} };",
+    "const handle = createBrowserObservability({ service: { name: 'bundle-smoke', version: '0.3.0', environment: 'test' }, policy, host, metrics: true, sentry: { disabled: true }, events: { transport: async (batch) => batches.push(batch), flushIntervalMs: 60000 } });",
+    "const root = handle.traces.startSpan('page.load');",
+    "const child = handle.traces.startSpan('react.render', {}, root.context);",
+    "handle.events.emit('page.rendered', {}, child.context);",
+    "handle.metrics.counter('react.render.count').add();",
+    "child.end();",
+    "root.end();",
+    "await handle.flush();",
+    "if (batches[0]?.spans?.length !== 2 || batches[0]?.metrics?.length !== 1 || batches[0]?.events[0]?.trace?.spanId !== child.context.spanId || batches[0]?.resource?.serviceName !== 'bundle-smoke') throw new Error('Packed React signal delivery failed');",
     "await handle.dispose();",
   ].join("\n");
   const reactSmokeEntry = join(consumer, "react-smoke.ts");

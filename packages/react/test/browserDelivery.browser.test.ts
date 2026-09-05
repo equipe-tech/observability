@@ -9,6 +9,13 @@ import {
 const StringArray = Schema.Array(Schema.String);
 const EventBatch = Schema.Struct({
   version: Schema.Literal(1),
+  resource: Schema.optional(
+    Schema.Struct({
+      serviceName: Schema.String,
+      serviceVersion: Schema.String,
+      environment: Schema.String,
+    }),
+  ),
   events: Schema.Array(
     Schema.Struct({
       id: Schema.String,
@@ -17,6 +24,19 @@ const EventBatch = Schema.Struct({
         Schema.Struct({ type: Schema.String, message: Schema.String, retryable: Schema.Boolean }),
       ),
     }),
+  ),
+  spans: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        traceId: Schema.String,
+        spanId: Schema.String,
+        parentSpanId: Schema.optional(Schema.String),
+        name: Schema.String,
+      }),
+    ),
+  ),
+  metrics: Schema.optional(
+    Schema.Array(Schema.Struct({ name: Schema.String, value: Schema.Number })),
   ),
 });
 
@@ -45,9 +65,22 @@ test("delivers one canonical defect through production browser entrypoints", asy
       blockedValuePatterns: ["secret-[a-z]+"],
     }),
     host,
+    metrics: true,
     sentry: { dsn: `${origin.replace("://", "://public@")}/sentry/1` },
     events: { flushIntervalMs: 60_000 },
   });
+  const root = observability.traces.startSpan("page.load", { "run.id": "browser-e2e" });
+  const render = observability.traces.startSpan(
+    "react.render",
+    { "run.id": "browser-e2e" },
+    root.context,
+  );
+  observability.events.emit("page.rendered", { "run.id": "browser-e2e" }, render.context);
+  observability.metrics.counter("react.render.count").add(1, {
+    "run.id": "browser-e2e",
+  });
+  render.end();
+  root.end();
   const defect = new Error("render secret-token failed");
   const outcome = observability.defects.report({
     error: defect,
@@ -67,9 +100,23 @@ test("delivers one canonical defect through production browser entrypoints", asy
   expect(eventBodies).toHaveLength(1);
   expect(sentryBodies).toHaveLength(1);
   const batch = Schema.decodeUnknownSync(EventBatch)(JSON.parse(eventBodies[0] ?? ""));
-  expect(batch.events).toHaveLength(1);
-  expect(batch.events[0]?.id).toBe(outcome.eventId);
-  expect(batch.events[0]?.error?.message).not.toContain("secret-token");
+  expect(batch.resource).toEqual({
+    serviceName: "browser-app",
+    serviceVersion: "0.3.0",
+    environment: "test",
+  });
+  expect(batch.events).toHaveLength(2);
+  expect(batch.events.find((event) => event.id === outcome.eventId)?.error?.message).not.toContain(
+    "secret-token",
+  );
+  expect(batch.spans).toHaveLength(2);
+  const rootSpan = batch.spans?.find((span) => span.name === "page.load");
+  const renderSpan = batch.spans?.find((span) => span.name === "react.render");
+  expect(renderSpan?.traceId).toBe(rootSpan?.traceId);
+  expect(renderSpan?.parentSpanId).toBe(rootSpan?.spanId);
+  expect(batch.metrics).toHaveLength(1);
+  expect(batch.metrics?.[0]?.name).toBe("react.render.count");
+  expect(batch.metrics?.[0]?.value).toBe(1);
   expect(sentryBodies[0]).toContain(outcome.eventId);
   expect(sentryBodies[0]).toContain('"release":"0.3.0"');
   expect(sentryBodies[0]).not.toContain("secret-token");
