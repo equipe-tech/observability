@@ -66,7 +66,13 @@ export type SetupPlan = {
   readonly files: ReadonlyArray<SetupPlannedFile>;
 };
 export type SetupVerificationStep = {
-  readonly name: "contract" | "providers" | "conformance" | "browser-route" | "sentry";
+  readonly name:
+    | "contract"
+    | "dependencies"
+    | "providers"
+    | "conformance"
+    | "browser-route"
+    | "sentry";
   readonly status: "passed" | "failed" | "blocked" | "not-applicable";
   readonly detail: string;
   readonly exitCode?: number;
@@ -839,11 +845,30 @@ const runCommand = async (
   return { exitCode, output: commandOutput(stdout, stderr, exitCode) };
 };
 
+const installSetup = Effect.fn("installSetup")(function* (plan: SetupPlan) {
+  const result = yield* Effect.promise(() =>
+    runCommand(["bun", "add", "--exact", ...plan.packages], plan.directory),
+  );
+  if (result.exitCode !== 0)
+    return yield* fail(
+      "OBS_SETUP_RECONCILE_FAILED",
+      "The selected profile dependencies could not be installed. Restore the application package-manager files or resolve the package error before retrying.",
+      result.output,
+    );
+  return {
+    name: "dependencies",
+    status: "passed",
+    detail: `installed ${plan.packages.join(",")}`,
+    exitCode: result.exitCode,
+  } satisfies SetupVerificationStep;
+});
+
 const verifySetup = Effect.fn("verifySetup")(function* (
   directory: string,
   environment: string | undefined,
   reconcile: boolean,
   conform: boolean,
+  providerRead: boolean,
 ) {
   const root = resolve(directory);
   const record = yield* Effect.tryPromise(() => readRecord(root)).pipe(
@@ -885,12 +910,43 @@ const verifySetup = Effect.fn("verifySetup")(function* (
     });
   else if (selectedEnvironment === undefined)
     steps.push({ name: "providers", status: "blocked", detail: "no environment was declared" });
-  else
+  else if (!providerRead)
     steps.push({
       name: "providers",
       status: "blocked",
-      detail: `provider read-back was not run because this task has no provider credentials for ${selectedEnvironment}`,
+      detail: `provider read-back for ${selectedEnvironment} requires explicit --provider-read and application credentials`,
     });
+  else {
+    const executable = process.argv[1];
+    if (executable === undefined)
+      return yield* fail(
+        "OBS_SETUP_RECONCILE_FAILED",
+        "The installed observability CLI entrypoint is unavailable for provider read-back.",
+        "CLI entrypoint",
+      );
+    const result = yield* Effect.promise(() =>
+      runCommand(
+        [
+          process.execPath,
+          executable,
+          "ops",
+          "verify",
+          "--dir",
+          root,
+          "--environment",
+          selectedEnvironment,
+          "--json",
+        ],
+        root,
+      ),
+    );
+    steps.push({
+      name: "providers",
+      status: result.exitCode === 0 ? "passed" : "failed",
+      detail: result.output || "provider read-back completed",
+      exitCode: result.exitCode,
+    });
+  }
   if (conform) {
     const result = yield* Effect.promise(() =>
       runCommand([process.execPath, "observability/conformance.ts"], root),
@@ -947,16 +1003,23 @@ export class SetupGenerator extends Context.Service<
       input: SetupInputEncoded,
       force: boolean,
     ) => Effect.Effect<SetupPlan, SetupError>;
+    readonly install: (plan: SetupPlan) => Effect.Effect<SetupVerificationStep, SetupError>;
     readonly verify: (
       directory: string,
       environment: string | undefined,
       reconcile: boolean,
       conform: boolean,
+      providerRead: boolean,
     ) => Effect.Effect<SetupVerificationReport, SetupError>;
   }
 >()("@equipe-tech/observability-cli/SetupGenerator") {
   static readonly layer = Layer.succeed(
     SetupGenerator,
-    SetupGenerator.of({ plan: planSetup, write: writeSetup, verify: verifySetup }),
+    SetupGenerator.of({
+      plan: planSetup,
+      write: writeSetup,
+      install: installSetup,
+      verify: verifySetup,
+    }),
   );
 }

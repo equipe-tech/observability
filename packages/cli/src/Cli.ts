@@ -484,6 +484,10 @@ const setupBrowserIngest = Flag.boolean("with-browser-ingest").pipe(Flag.withDef
 const setupDefects = Flag.boolean("with-defects").pipe(Flag.withDefault(false));
 const setupMetrics = Flag.boolean("with-metrics").pipe(Flag.withDefault(false));
 const setupForce = Flag.boolean("force").pipe(Flag.withDefault(false));
+const setupInstall = Flag.boolean("install").pipe(
+  Flag.withDescription("Installs exactly the selected profile packages with Bun"),
+  Flag.withDefault(false),
+);
 
 const setupOptions = {
   dir: setupDirectory,
@@ -559,11 +563,19 @@ const setupPlan = Command.make(
 
 const setupWrite = Command.make(
   "write",
-  { ...setupOptions, force: setupForce },
+  { ...setupOptions, force: setupForce, install: setupInstall },
   Effect.fn(function* (options) {
     const generator = yield* SetupGenerator;
     const plan = yield* generator.write(options.dir, setupInput(options), options.force);
     yield* printSetupFiles(plan.files);
+    if (options.install) {
+      const installed = yield* generator.install(plan);
+      yield* Console.log(`step  ${installed.name}  ${installed.status}  ${installed.detail}`);
+    } else {
+      yield* Console.log(
+        "step  dependencies  blocked  package installation requires explicit --install",
+      );
+    }
     yield* Console.log("step  filesystem  application files written explicitly");
     yield* Console.log("step  providers  no reads or mutations");
   }),
@@ -573,6 +585,10 @@ const setupVerifyEnvironment = Flag.string("environment").pipe(Flag.optional);
 const setupReconcile = Flag.boolean("reconcile").pipe(Flag.withDefault(false));
 const setupConform = Flag.boolean("conform").pipe(Flag.withDefault(false));
 const setupJson = Flag.boolean("json").pipe(Flag.withDefault(false));
+const setupProviderRead = Flag.boolean("provider-read").pipe(
+  Flag.withDescription("Runs read-only provider reconciliation with application credentials"),
+  Flag.withDefault(false),
+);
 const setupVerify = Command.make(
   "verify",
   {
@@ -581,14 +597,16 @@ const setupVerify = Command.make(
     reconcile: setupReconcile,
     conform: setupConform,
     json: setupJson,
+    providerRead: setupProviderRead,
   },
-  Effect.fn(function* ({ conform, dir, environment, json, reconcile }) {
+  Effect.fn(function* ({ conform, dir, environment, json, providerRead, reconcile }) {
     const generator = yield* SetupGenerator;
     const report = yield* generator.verify(
       dir,
       Option.getOrUndefined(environment),
       reconcile,
       conform,
+      providerRead,
     );
     if (json) yield* Console.log(JSON.stringify(report));
     else
