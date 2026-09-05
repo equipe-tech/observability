@@ -98,6 +98,72 @@ test("admits complete browser batches before Collector side effects", async () =
   expect(content).not.toContain(`${marker}-unused`);
 });
 
+test("enforces transactional metric capacity at the Collector destination", async () => {
+  const metric = (
+    name: string,
+    fields: { readonly [name: string]: string | number | boolean } = {},
+  ) => ({ name, value: 1, occurredAt: Date.now(), fields });
+  const series = (index: number) =>
+    metric("capacity.series", {
+      "label.first": `f${Math.floor(index / 100)}`,
+      "label.second": `s${index % 100}`,
+    });
+
+  for (let index = 0; index < 999; index += 32) {
+    const response = await post({
+      version: 1,
+      events: [],
+      metrics: Array.from({ length: Math.min(32, 999 - index) }, (_, offset) =>
+        series(index + offset),
+      ),
+    });
+    expect(response.status).toBe(202);
+  }
+
+  const cumulativeOverflow = await post({
+    version: 1,
+    events: [],
+    metrics: [series(999), series(1_000)],
+  });
+  expect(cumulativeOverflow.status).toBe(400);
+
+  const repeatedSeries = await post({
+    version: 1,
+    events: [],
+    metrics: [series(999), series(999)],
+  });
+  expect(repeatedSeries.status).toBe(202);
+
+  const concurrentOverflow = await Promise.all(
+    [1_000, 1_001].map((index) => post({ version: 1, events: [], metrics: [series(index)] })),
+  );
+  expect(concurrentOverflow.map((response) => response.status)).toEqual([400, 400]);
+
+  const rejectedRegistrations = await Promise.all(
+    Array.from({ length: 100 }, (_, index) =>
+      post({
+        version: 1,
+        events: [],
+        metrics: [metric(`poison.counter_${index}`), metric("undeclared.counter")],
+      }),
+    ),
+  );
+  expect(rejectedRegistrations.every((response) => response.status === 400)).toBe(true);
+
+  const admittedAfterRejections = await post({
+    version: 1,
+    events: [],
+    metrics: [metric("poison.counter_100")],
+  });
+  expect(admittedAfterRejections.status).toBe(202);
+
+  const content = await readExport("poison.counter_100");
+  expect(content).toContain("capacity.series");
+  expect(content).toContain("poison.counter_100");
+  expect(content).not.toContain('poison.counter_0"');
+  expect(content).not.toContain('"stringValue":"f10"');
+});
+
 test("delivers a canonical near-budget event and unrelated work through Nest", async () => {
   const marker = crypto.randomUUID();
   const fields = Object.fromEntries(

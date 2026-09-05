@@ -34,6 +34,18 @@ const browserFields = Object.fromEntries(
     { classification: "public", required: false, metricLabel: false },
   ]),
 );
+const poisonMetrics = Object.fromEntries(
+  Array.from({ length: 101 }, (_, index): [string, Contract.CounterMetricDefinitionInput] => [
+    `PoisonCounter${index}`,
+    {
+      name: `poison.counter_${index}`,
+      description: `Poison counter ${index}`,
+      unit: "1",
+      kind: "counter",
+      attributes: {},
+    },
+  ]),
+);
 const contract = Effect.runSync(
   Contract.defineTelemetryContract(
     Contract.telemetryContractDefinition({
@@ -76,6 +88,17 @@ const contract = Effect.runSync(
             "proof.id": { classification: "public", maximumCardinality: 1 },
           },
         },
+        CapacitySeries: {
+          name: "capacity.series",
+          description: "Capacity series",
+          unit: "1",
+          kind: "counter",
+          attributes: {
+            "label.first": { classification: "public", maximumCardinality: 100 },
+            "label.second": { classification: "public", maximumCardinality: 100 },
+          },
+        },
+        ...poisonMetrics,
       },
       auditActions: {},
     }),
