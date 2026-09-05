@@ -10,11 +10,16 @@ import { publicErrorFromCause } from "./ErrorReporter.ts";
 import { ProvisionAssets } from "./ProvisionAssets.ts";
 import { AxiomApi, SentryApi } from "./ProviderApis.ts";
 import { Authentication, RemoteEnvironment } from "./RemoteEnvironment.ts";
+import { OperationsPlanner } from "./OperationsPlan.ts";
+import { OperationsState } from "./OperationsState.ts";
 import { StackAssets } from "./StackAssets.ts";
 
 const ProviderLayer = Layer.mergeAll(CredentialsStore.layer, AxiomApi.layer, SentryApi.layer);
 const RemoteLayer = Layer.mergeAll(Authentication.layer, RemoteEnvironment.layer).pipe(
   Layer.provide(ProviderLayer),
+);
+const OperationsLayer = OperationsPlanner.layer.pipe(
+  Layer.provide(Layer.mergeAll(ProviderLayer, OperationsState.layer)),
 );
 const MainLayer = Layer.mergeAll(
   DockerCompose.layer,
@@ -22,6 +27,7 @@ const MainLayer = Layer.mergeAll(
   ProvisionAssets.layer,
   ProviderLayer,
   RemoteLayer,
+  OperationsLayer,
 ).pipe(Layer.provideMerge(BunServices.layer));
 
 observability.pipe(
@@ -39,6 +45,14 @@ observability.pipe(
     RemoteApiError: (error) =>
       Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
     RemoteEnvironmentError: (error) =>
+      Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
+    OperationsManifestError: (error) =>
+      Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
+    ManagedQueryError: (error) =>
+      Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
+    OperationsError: (error) =>
+      Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
+    OperationsStateError: (error) =>
       Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
   }),
   Effect.catchCause((cause) =>

@@ -314,6 +314,11 @@ try {
         "package/dist/LICENSE",
         "package/dist/main.js",
         "package/dist/main.d.ts",
+        "package/dist/index.js",
+        "package/dist/index.d.ts",
+        "package/dist/query.js",
+        "package/dist/query.d.ts",
+        "package/package.json",
         "package/dist/assets/docker-compose.yml",
         "package/dist/assets/local.yaml",
         "package/dist/assets/production.yaml",
@@ -540,6 +545,18 @@ try {
     await run([join(nodeConsumer, "node_modules/.bin/observability"), "--help"], nodeConsumer),
     "Executing the npm-installed CLI",
   );
+  requireSuccess(
+    await run(
+      [
+        "node",
+        "--input-type=module",
+        "--eval",
+        "const [root, query, manifest, effect] = await Promise.all([import('@equipe-tech/observability-cli'), import('@equipe-tech/observability-cli/query'), import('@equipe-tech/observability-cli/package.json', { with: { type: 'json' } }), import('effect')]); const parsed = await effect.Effect.runPromise(root.parseManagedQuery('signal(logs) | where event.name == \"payment.attempt\" | summarize count()')); const compiled = await effect.Effect.runPromise(query.compileManagedQuery(parsed, { dataset: 'checkout-production-logs', language: 'apl', signals: ['payment.attempt'] })); if (root.compileManagedQuery !== query.compileManagedQuery || manifest.default.name !== '@equipe-tech/observability-cli' || !compiled.text.includes(`['checkout-production-logs']`) || !compiled.text.includes(`['event.name'] == 'payment.attempt'`)) process.exit(1);",
+      ],
+      nodeConsumer,
+    ),
+    "Executing the packed CLI root, query and package manifest entrypoints",
+  );
 
   const browserConsumer = join(temporaryDirectory, "browser consumer outside repository");
   await mkdir(browserConsumer, { recursive: true });
@@ -683,7 +700,10 @@ try {
       file: "browser-audit-invalid.ts",
       entrypoint: "@equipe-tech/observability/browser",
     },
-    { file: "react-audit-invalid.ts", entrypoint: "@equipe-tech/observability-react" },
+    {
+      file: "react-audit-invalid.ts",
+      entrypoint: "@equipe-tech/observability-react",
+    },
   ]) {
     await writeFile(
       join(consumer, candidate.file),
