@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseResourceIdentity, serviceNamespace } from "../src/ResourceIdentity.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
+import { assertCanaryMetricPolicy } from "./support/canaryAssessment.ts";
 import {
   canaryRunId,
   canarySensitiveValues,
@@ -654,20 +655,8 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
             assert.strictEqual(Option.getOrUndefined(attributeValue(attributes, key)), "****");
           }
         }
-        assert.strictEqual(
-          Option.getOrUndefined(attributeValue(run.metric.dataPoint.attributes, "canary.run_id")),
-          runId,
-        );
         const metricAttributes = JSON.stringify(run.metric.dataPoint.attributes);
-        for (const value of [
-          sensitive.authorization,
-          sensitive.password,
-          sensitive.accessToken,
-          sensitive.email,
-          sensitive.phoneNumber,
-        ]) {
-          assert.notInclude(metricAttributes, value);
-        }
+        assertCanaryMetricPolicy({ content: metricAttributes, runId }, sensitive);
         assert.include(redactedBody, "[REDACTED]");
         assert.include(run.redactionSpanEvent.name, "[REDACTED]");
 
