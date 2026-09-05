@@ -179,6 +179,7 @@ export const validateContractEvent = (
 export type TelemetryContract<Definition extends TelemetryContractInput> = {
   readonly version: number;
   readonly definition: Definition;
+  readonly provenance: string;
   readonly eventNames: ReadonlyArray<EventName>;
   readonly eventByAlias: ReadonlyMap<string, CompiledEventDefinition>;
   readonly eventByName: ReadonlyMap<EventName, CompiledEventDefinition>;
@@ -191,7 +192,109 @@ export type TelemetryContract<Definition extends TelemetryContractInput> = {
 
 export const telemetryContractProvenance = <Definition extends TelemetryContractInput>(
   contract: TelemetryContract<Definition>,
-): string => JSON.stringify(contract.definition);
+): string => contract.provenance;
+
+const canonicalTelemetryContractProvenance = (definition: TelemetryContractInput): string =>
+  JSON.stringify({
+    auditActions: Object.fromEntries(
+      Object.entries(definition.auditActions)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([alias, action]) => [
+          alias,
+          {
+            action: action.action,
+            allowedOutcomes: action.allowedOutcomes,
+            reasonCodes: action.reasonCodes,
+            resourceType: action.resourceType,
+          },
+        ]),
+    ),
+    events: Object.fromEntries(
+      Object.entries(definition.events)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([alias, event]) => [
+          alias,
+          {
+            attributes: Object.fromEntries(
+              Object.entries(event.attributes)
+                .sort(([left], [right]) => left.localeCompare(right))
+                .map(([name, attribute]) => [
+                  name,
+                  {
+                    classification: attribute.classification,
+                    metricLabel: attribute.metricLabel,
+                    required: attribute.required,
+                  },
+                ]),
+            ),
+            defaultSeverity: event.defaultSeverity,
+            kind: event.kind,
+            mandatory: event.mandatory,
+            name: event.name,
+            sampling:
+              event.sampling.kind === "rate"
+                ? { kind: event.sampling.kind, rate: event.sampling.rate }
+                : { kind: event.sampling.kind },
+          },
+        ]),
+    ),
+    metrics: Object.fromEntries(
+      Object.entries(definition.metrics)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([alias, metric]) => [
+          alias,
+          {
+            attributes: Object.fromEntries(
+              Object.entries(metric.attributes)
+                .sort(([left], [right]) => left.localeCompare(right))
+                .map(([name, attribute]) => [
+                  name,
+                  {
+                    allowedValues: attribute.allowedValues,
+                    classification: attribute.classification,
+                    maximumCardinality: attribute.maximumCardinality,
+                  },
+                ]),
+            ),
+            boundaries: metric.boundaries,
+            description: metric.description,
+            kind: metric.kind,
+            name: metric.name,
+            unit: metric.unit,
+          },
+        ]),
+    ),
+    version: definition.version,
+  });
+
+const freezeTelemetryContractDefinition = <Definition extends TelemetryContractInput>(
+  definition: Definition,
+): Definition => {
+  for (const event of Object.values(definition.events)) {
+    Object.freeze(event.sampling);
+    Object.values(event.attributes).forEach(Object.freeze);
+    Object.freeze(event.attributes);
+    Object.freeze(event);
+  }
+  for (const metric of Object.values(definition.metrics)) {
+    if (metric.boundaries !== undefined) Object.freeze(metric.boundaries);
+    for (const attribute of Object.values(metric.attributes)) {
+      if (attribute.allowedValues !== undefined) Object.freeze(attribute.allowedValues);
+      Object.freeze(attribute);
+    }
+    Object.freeze(metric.attributes);
+    Object.freeze(metric);
+  }
+  for (const action of Object.values(definition.auditActions)) {
+    Object.freeze(action.allowedOutcomes);
+    if (action.reasonCodes !== undefined) Object.freeze(action.reasonCodes);
+    Object.freeze(action);
+  }
+  Object.freeze(definition.events);
+  Object.freeze(definition.metrics);
+  Object.freeze(definition.auditActions);
+  return Object.freeze(definition);
+};
 
 const isAttributeClassification = Schema.is(AttributeClassification);
 const isEventKind = Schema.is(EventKind);
@@ -612,10 +715,12 @@ export const defineTelemetryContract = Effect.fn("defineTelemetryContract")(func
       issues,
     });
   }
+  const compiledDefinition = freezeTelemetryContractDefinition(structuredClone(definition));
+  const provenance = canonicalTelemetryContractProvenance(compiledDefinition);
   const eventNames: Array<EventName> = [];
   const eventByAlias = new Map<string, CompiledEventDefinition>();
   const eventByName = new Map<EventName, CompiledEventDefinition>();
-  for (const [alias, event] of Object.entries(definition.events)) {
+  for (const [alias, event] of Object.entries(compiledDefinition.events)) {
     const name = EventName.make(event.name);
     const attributes = new Map(Object.entries(event.attributes));
     const compiled = {
@@ -636,7 +741,7 @@ export const defineTelemetryContract = Effect.fn("defineTelemetryContract")(func
   }
   const auditActionByAlias = new Map<string, CompiledAuditActionDefinition>();
   const auditActionByName = new Map<string, CompiledAuditActionDefinition>();
-  for (const [alias, action] of Object.entries(definition.auditActions)) {
+  for (const [alias, action] of Object.entries(compiledDefinition.auditActions)) {
     const compiled: CompiledAuditActionDefinition = {
       alias,
       action: AuditAction.make(action.action),
@@ -649,7 +754,7 @@ export const defineTelemetryContract = Effect.fn("defineTelemetryContract")(func
   }
   const metricByAlias = new Map<string, CompiledMetricDefinition>();
   const metricByName = new Map<string, CompiledMetricDefinition>();
-  for (const [alias, metric] of Object.entries(definition.metrics)) {
+  for (const [alias, metric] of Object.entries(compiledDefinition.metrics)) {
     const compiled: CompiledMetricDefinition = {
       ...metric,
       alias,
@@ -658,16 +763,17 @@ export const defineTelemetryContract = Effect.fn("defineTelemetryContract")(func
     metricByAlias.set(alias, compiled);
     metricByName.set(metric.name, compiled);
   }
-  return {
-    version: definition.version,
-    definition,
-    eventNames,
+  return Object.freeze({
+    version: compiledDefinition.version,
+    definition: compiledDefinition,
+    provenance,
+    eventNames: Object.freeze(eventNames),
     eventByAlias,
     eventByName,
     auditActionByAlias,
     auditActionByName,
-    metrics: definition.metrics,
+    metrics: compiledDefinition.metrics,
     metricByAlias,
     metricByName,
-  };
+  });
 });

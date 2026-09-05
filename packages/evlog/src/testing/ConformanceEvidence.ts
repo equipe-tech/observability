@@ -5,6 +5,7 @@ import {
   ConformanceViolation,
   type ConformanceEvidenceProvider,
   telemetryDestinationMatches,
+  telemetryDestinationTelemetry,
   type TelemetryDestinationReceipt,
 } from "@equipe-tech/observability/testing";
 import { isEvlogDeliveryReceipt, type EvlogDeliveryReceipt } from "../DeliveryEvidence.ts";
@@ -70,7 +71,8 @@ export const evlogConformance = (input: {
             ),
           );
         }
-        const delivered = input.destination.telemetry.logs.some(
+        const telemetry = telemetryDestinationTelemetry(input.destination);
+        const delivered = telemetry?.logs.some(
           (log) =>
             log.attributes.get("run.id") === input.runId &&
             log.attributes.get("event.name") === input.eventName &&
@@ -81,7 +83,7 @@ export const evlogConformance = (input: {
               target.binding.identity.environment &&
             target.binding.contract.events.some((event) => event.name === input.eventName),
         );
-        if (!delivered) {
+        if (delivered !== true) {
           return yield* Effect.fail(
             violation(
               "The evlog adapter has no captured delivery for the current run, target identity, and contract event.",

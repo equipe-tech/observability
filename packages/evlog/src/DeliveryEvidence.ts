@@ -9,8 +9,9 @@ export type EvlogDeliveryReceipt = {
 const receipts = new WeakSet<EvlogDeliveryReceipt>();
 
 export const sealEvlogDeliveryReceipt = (receipt: EvlogDeliveryReceipt): EvlogDeliveryReceipt => {
-  receipts.add(receipt);
-  return receipt;
+  const sealed = Object.freeze({ ...receipt });
+  receipts.add(sealed);
+  return sealed;
 };
 
 export const isEvlogDeliveryReceipt = (receipt: EvlogDeliveryReceipt): boolean =>

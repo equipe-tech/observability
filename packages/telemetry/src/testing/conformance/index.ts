@@ -29,6 +29,7 @@ export type {
   SourceRuleReference,
 } from "./ConformanceModel.ts";
 export {
+  applicationDeployedTelemetryDestinationReceipt,
   auditCanaryConformance,
   auditConformance,
   contractConformance,
@@ -42,6 +43,6 @@ export {
   profileConformance,
   telemetryCanaryConformance,
   telemetryDestinationMatches,
-  telemetryDestinationReceipt,
+  telemetryDestinationTelemetry,
 } from "./TelemetryEvidence.ts";
 export type { TelemetryDestinationReceipt } from "./TelemetryEvidence.ts";

@@ -58,6 +58,7 @@ const ownership = defineOwnership([
   { kind: "exact", path: "packages/telemetry/src/PolicyOtlpLogger.ts", role: "adapter" },
   { kind: "exact", path: "packages/telemetry/src/Telemetry.ts", role: "adapter" },
   { kind: "exact", path: "packages/telemetry/src/node/AuditDigest.ts", role: "adapter" },
+  { kind: "exact", path: "packages/telemetry/src/node/LocalCollector.ts", role: "adapter" },
   { kind: "exact", path: "packages/telemetry/src/node/Observability.ts", role: "adapter" },
   {
     kind: "exact",

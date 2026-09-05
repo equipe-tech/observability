@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { Effect, Option } from "effect";
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
 import {
   defineTelemetryContract,
   makeEventProducer,
@@ -11,6 +13,7 @@ import { sentryUnexpectedDefectsConformance } from "@equipe-tech/observability-s
 import { evlogConformance } from "@equipe-tech/observability-evlog/testing";
 import { operationsManifestConformance } from "@equipe-tech/observability-cli/testing";
 import {
+  applicationDeployedTelemetryDestinationReceipt,
   auditConformance,
   contractConformance,
   identityConformance,
@@ -18,7 +21,6 @@ import {
   makeCollectingTelemetryEventSink,
   producersConformance,
   telemetryCanaryConformance,
-  telemetryDestinationReceipt,
   type ConformanceTargetContext,
   type TelemetryDestinationReceipt,
 } from "@equipe-tech/observability/testing";
@@ -28,12 +30,20 @@ import {
   buildWorkerTarget,
   workerContractInput,
 } from "../../observability/conformance/fixtures/positive/worker/kit.ts";
+import { startLocalCollector } from "../../observability/conformance/support/collector.ts";
 import { parseFixtureManifest } from "../../observability/conformance/support/manifest.ts";
 import { buildCliKit } from "../../observability/conformance/fixtures/positive/cli/kit.ts";
 import {
   buildNestjsKit,
   buildNestjsConformance,
 } from "../../observability/conformance/fixtures/positive/nestjs-api/kit.ts";
+
+const requiredDestinationReceipt = (receipt: TelemetryDestinationReceipt | undefined) => {
+  if (receipt === undefined) {
+    throw new Error("The owner Collector did not issue a destination assessment.");
+  }
+  return receipt;
+};
 
 const context: ConformanceTargetContext = {
   name: "fixture-worker",
@@ -140,6 +150,23 @@ test("durable owner receipts must match both requested action and record", async
     }).verify(context),
   );
   expect(result._tag).toBe("Success");
+});
+
+test("collector setup finalizes every acquired receiver after filesystem failure", async () => {
+  const original = process.env.TMPDIR;
+  const missing = join(process.cwd(), ".verification", `missing-${crypto.randomUUID()}`);
+  await rm(missing, { recursive: true, force: true });
+  process.env.TMPDIR = missing;
+  try {
+    const outcome = await startLocalCollector().then(
+      () => "started",
+      () => "failed",
+    );
+    expect(outcome).toBe("failed");
+  } finally {
+    if (original === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = original;
+  }
 });
 
 test("fixture builders finalize receivers when configuration fails", async () => {
@@ -269,18 +296,60 @@ test("contract, producer, manifest, and query evidence stay on the target bindin
       )
     )._tag,
   ).toBe("Failure");
+
+  const mutableInput = structuredClone(workerContractInput);
+  Object.defineProperty(mutableInput.events.SchedulerRun, "kind", {
+    configurable: true,
+    value: "domain",
+  });
+  const compiledBeforeMutation = await Effect.runPromise(defineTelemetryContract(mutableInput));
+  expect(Object.isFrozen(compiledBeforeMutation)).toBe(true);
+  expect(Object.isFrozen(compiledBeforeMutation.definition)).toBe(true);
+  expect(() =>
+    Object.defineProperty(compiledBeforeMutation, "provenance", { value: "retargeted" }),
+  ).toThrow(TypeError);
+  Object.defineProperty(mutableInput.events.SchedulerRun, "kind", { value: "operation" });
+  const mutableReceipt = await Effect.runPromise(
+    makeEventProducer(compiledBeforeMutation)
+      .emit("SchedulerRun", { outcome: "success", durationMs: 1, attributes: {} })
+      .pipe(Effect.provide(foreignSink.layer)),
+  );
+  expect(mutableReceipt.decision).toBe("recorded");
+  if (mutableReceipt.decision !== "recorded") {
+    throw new Error("The mandatory mutable-contract event was unexpectedly sampled out.");
+  }
+  expect(mutableReceipt.event.kind).toBe("domain");
+  expect(
+    (
+      await Effect.runPromiseExit(
+        producersConformance({ receipt: mutableReceipt }).verify(workerContext),
+      )
+    )._tag,
+  ).toBe("Failure");
+  const reordered = {
+    auditActions: workerContractInput.auditActions,
+    metrics: workerContractInput.metrics,
+    events: workerContractInput.events,
+    version: workerContractInput.version,
+  };
+  expect(
+    (
+      await Effect.runPromiseExit(
+        contractConformance({ contract: reordered }).verify(workerContext),
+      )
+    )._tag,
+  ).toBe("Success");
 });
 
 test("destination evidence requires provenance, current run, identity, selected metrics, and parentage", async () => {
-  const collector = await startOtlpCaptureServer();
-  const kit = await buildWorkerTarget(collector);
+  const kit = await buildWorkerTarget(await startLocalCollector());
   const workerContext = { ...context, binding: kit.binding };
   const unsealedExporterCapture: TelemetryDestinationReceipt = {
     topology: "local",
+    assessment: "owner-readback",
     runId: kit.runId,
     identity: kit.binding.identity,
     observationId: "pre-collector-exporter-capture",
-    telemetry: kit.telemetry,
   };
   expect(
     (
@@ -291,10 +360,7 @@ test("destination evidence requires provenance, current run, identity, selected 
       )
     )._tag,
   ).toBe("Failure");
-  const receipt = telemetryDestinationReceipt({
-    ...unsealedExporterCapture,
-    observationId: "destination-unit-readback",
-  });
+  const receipt = requiredDestinationReceipt(kit.destinationReceipt);
   expect(
     (
       await Effect.runPromiseExit(
@@ -306,54 +372,46 @@ test("destination evidence requires provenance, current run, identity, selected 
       )
     )._tag,
   ).toBe("Success");
-  const mutations: ReadonlyArray<TelemetryDestinationReceipt> = [
-    telemetryDestinationReceipt({ ...receipt, runId: "job-never-emitted" }),
-    telemetryDestinationReceipt({ ...receipt, telemetry: { ...kit.telemetry, metrics: [] } }),
-    telemetryDestinationReceipt({
-      ...receipt,
-      telemetry: {
-        ...kit.telemetry,
-        spans: kit.telemetry.spans.map((span) => ({ ...span, parentSpanId: Option.none() })),
-      },
-    }),
-    telemetryDestinationReceipt({
-      ...receipt,
-      telemetry: {
-        ...kit.telemetry,
-        logs: kit.telemetry.logs.map((log) => ({ ...log, resourceAttributes: new Map() })),
-      },
-    }),
-    telemetryDestinationReceipt({ ...receipt, topology: "deployed" }),
-  ];
-  for (const mutation of mutations) {
-    const result = await Effect.runPromiseExit(
-      telemetryCanaryConformance({
-        runId: kit.runId,
-        receipt: mutation,
-        metricRunIdAttribute: "fixture.run_id",
-      }).verify(workerContext),
-    );
-    expect(result._tag).toBe("Failure");
-  }
+  expect(receipt.assessment).toBe("owner-readback");
+  expect(Object.isFrozen(receipt)).toBe(true);
+  expect(Object.isFrozen(receipt.identity)).toBe(true);
+  expect(() => Object.defineProperty(receipt, "topology", { value: "deployed" })).toThrow(
+    TypeError,
+  );
+  const deployed = applicationDeployedTelemetryDestinationReceipt({
+    runId: kit.runId,
+    identity: kit.binding.identity,
+    observationId: "application-deployed-readback",
+    readback: () => kit.telemetry,
+  });
+  expect(deployed.assessment).toBe("application-supplied-readback");
+  expect(
+    (
+      await Effect.runPromiseExit(
+        telemetryCanaryConformance({
+          runId: kit.runId,
+          receipt: deployed,
+          metricRunIdAttribute: "fixture.run_id",
+        }).verify(workerContext),
+      )
+    )._tag,
+  ).toBe("Failure");
 });
 
 test("evlog evidence requires an actual current-run contract event capture", async () => {
-  const collector = await startOtlpCaptureServer();
-  const kit = await buildWorkerTarget(collector);
+  const kit = await buildWorkerTarget(await startLocalCollector());
   const workerContext = { ...context, binding: kit.binding };
   const evidence = {
     delivery: Option.getOrThrow(kit.evlog.delivery(kit.runId, "scheduler.run")),
     drops: kit.evlog.drops(),
-    destination: telemetryDestinationReceipt({
-      topology: "local",
-      runId: kit.runId,
-      identity: kit.binding.identity,
-      observationId: "evlog-unit-readback",
-      telemetry: kit.telemetry,
-    }),
+    destination: requiredDestinationReceipt(kit.destinationReceipt),
     runId: kit.runId,
     eventName: "scheduler.run",
   };
+  expect(Object.isFrozen(evidence.delivery)).toBe(true);
+  expect(() => Object.defineProperty(evidence.delivery, "runId", { value: "retargeted" })).toThrow(
+    TypeError,
+  );
   expect((await Effect.runPromiseExit(evlogConformance(evidence).verify(workerContext)))._tag).toBe(
     "Success",
   );
@@ -364,18 +422,14 @@ test("evlog evidence requires an actual current-run contract event capture", asy
       )
     )._tag,
   ).toBe("Failure");
-  const unrelated = await buildWorkerTarget(await startOtlpCaptureServer());
+  const unrelated = await buildWorkerTarget(await startLocalCollector());
   expect(
     (
       await Effect.runPromiseExit(
         evlogConformance({
           ...evidence,
           delivery: Option.getOrThrow(unrelated.evlog.delivery(unrelated.runId, "scheduler.run")),
-          destination: telemetryDestinationReceipt({
-            ...evidence.destination,
-            runId: unrelated.runId,
-            telemetry: unrelated.telemetry,
-          }),
+          destination: requiredDestinationReceipt(unrelated.destinationReceipt),
         }).verify(workerContext),
       )
     )._tag,

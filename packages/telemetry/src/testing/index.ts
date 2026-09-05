@@ -12,6 +12,7 @@ import { createServer, type Server } from "node:http";
 export * from "./contract.ts";
 export * from "./conformance/index.ts";
 export * from "./deployedCanary.ts";
+export * from "../node/LocalCollector.ts";
 export {
   registerTestingAdapter,
   type TestingAdapterRegistration,
@@ -472,7 +473,9 @@ const capturePayloadDecoders = new Map<string, (body: string) => Option.Option<O
   ],
 );
 
-export const startOtlpCaptureServer = async (): Promise<OtlpCaptureServer> => {
+export const startOtlpCaptureServer = async (options?: {
+  readonly host?: string;
+}): Promise<OtlpCaptureServer> => {
   const requests: Array<CapturedRequest> = [];
   const server: Server = createServer((request, response) => {
     const chunks: Array<Buffer> = [];
@@ -493,11 +496,12 @@ export const startOtlpCaptureServer = async (): Promise<OtlpCaptureServer> => {
       response.end("{}");
     });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const host = options?.host ?? "127.0.0.1";
+  await new Promise<void>((resolve) => server.listen(0, host, resolve));
   const address = decodeServerAddress(server.address());
   let stopPromise: Promise<void> | undefined;
   return {
-    endpoint: new URL(`http://127.0.0.1:${address.port}`),
+    endpoint: new URL(`http://${host}:${address.port}`),
     telemetry: () => Effect.runSync(decodeCapturedTelemetry(requests)),
     stop: () => {
       stopPromise ??= new Promise<void>((resolve, reject) => {

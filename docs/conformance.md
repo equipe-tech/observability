@@ -17,7 +17,7 @@ Os helpers ficam nos entrypoints `/testing`. Entry points de produção não car
 O alvo seleciona um perfil oficial, a topologia e as capacidades. Os providers entregam recibos seguros para os checks aplicáveis.
 
 ```ts
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import {
   conformanceTargetBinding,
   runConformance,
@@ -53,9 +53,9 @@ const target: ConformanceTarget = {
     ...operationsManifestConformance({ manifest, contract: contractIndex }),
     packageBoundaryConformance({ projectRoot, sourceRoots: ["src"] }),
     evlogConformance({
-      registration: evlog.registration,
+      delivery: Option.getOrThrow(evlog.delivery(runId, "billing.run")),
       drops: evlog.drops(),
-      telemetry: capturedTelemetry,
+      destination: destinationReceipt,
       runId,
       eventName: "billing.run",
     }),
@@ -66,7 +66,7 @@ const target: ConformanceTarget = {
 const report = await Effect.runPromise(runConformance(target));
 ```
 
-`compiledContract`, `capturedTelemetry`, `runId`, `evlog` e `telemetryProviders` são produzidos pelo kit da aplicação antes da execução. O exemplo completo executável está em `observability/conformance/fixtures/positive/worker/kit.ts`. `telemetryProviders` reúne os providers do contrato, identidade, correlação, política, ciclo de vida e canário exportados pelo mesmo entrypoint do runner. Um provider aplicável ausente encerra a construção da suíte com `InvalidConformanceSuite`.
+`compiledContract`, `runId`, `evlog`, `destinationReceipt` e `telemetryProviders` são produzidos pelo kit da aplicação antes da execução. `destinationReceipt` vem da avaliação que executa a leitura do destino depois do Collector. O exemplo completo executável está em `observability/conformance/fixtures/positive/worker/kit.ts`. `telemetryProviders` reúne os providers do contrato, identidade, correlação, política, ciclo de vida e canário exportados pelo mesmo entrypoint do runner. Um provider aplicável ausente encerra a construção da suíte com `InvalidConformanceSuite`.
 
 ## Resultado
 
@@ -123,7 +123,7 @@ Leia `failure.code`, `failure.offendingValue`, `rule.document` e `rule.heading` 
 
 Recibos podem conter IDs de execução, digests de manifesto, IDs de evento e resumos limitados. Não inclua credenciais, DSNs, payloads de provider, documentos de auditoria, stacks ou dados pessoais.
 
-Na topologia `local`, o recibo de telemetria deve vir da leitura do destino após um Collector real. Captura direta no endpoint do exporter não é evidência de destino. O recibo vincula a topologia, o run ID, a identidade de resource e a observação do destino. Na topologia `deployed`, a aplicação executa seus probes, lê o destino e entrega o recibo vinculado ao runner. A suíte não carrega credenciais, não consulta Axiom ou Sentry diretamente e não altera recursos de provider.
+Na topologia `local`, `startLocalCollectorDestination` inicia o Collector isolado, executa a leitura do destino e emite o recibo depois da observação. Captura direta no endpoint do exporter não pode emitir esse recibo. Na topologia `deployed`, a aplicação executa seus probes e passa a função de leitura para `applicationDeployedTelemetryDestinationReceipt`. O recibo identifica essa confiança como `application-supplied-readback`, em vez de representar a observação como verificação independente da suíte. Os dois caminhos copiam a observação e devolvem fatos imutáveis vinculados à topologia, ao run ID e à identidade de resource. A suíte não carrega credenciais, não consulta Axiom ou Sentry diretamente e não altera recursos de provider.
 
 O recibo de produtor carrega a proveniência da definição completa do contrato. Nome de evento, índice de consulta ou tipo de evento isolados não substituem essa proveniência.
 

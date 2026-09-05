@@ -408,19 +408,101 @@ export const auditConformance = (input: {
 
 export type TelemetryDestinationReceipt = {
   readonly topology: "local" | "deployed";
+  readonly assessment: "owner-readback" | "application-supplied-readback";
   readonly runId: string;
   readonly identity: ConformanceTargetBinding["identity"];
   readonly observationId: string;
-  readonly telemetry: CapturedTelemetry;
 };
 
-const destinationReceipts = new WeakSet<TelemetryDestinationReceipt>();
+type TelemetryDestinationAssessment = {
+  readonly topology: "local" | "deployed";
+  readonly runId: string;
+  readonly identity: ConformanceTargetBinding["identity"];
+  readonly observationId: string;
+  readonly readback: () => CapturedTelemetry;
+};
 
-export const telemetryDestinationReceipt = (
-  receipt: TelemetryDestinationReceipt,
+const cloneOption = <Value>(value: Option.Option<Value>): Option.Option<Value> =>
+  Option.isSome(value) ? Option.some(value.value) : Option.none();
+
+const cloneCapturedTelemetry = (telemetry: CapturedTelemetry): CapturedTelemetry => ({
+  spans: telemetry.spans.map((span) => ({
+    ...span,
+    parentSpanId: cloneOption(span.parentSpanId),
+    statusMessage: cloneOption(span.statusMessage),
+    attributes: new Map(span.attributes),
+    events: span.events.map((event) => ({ ...event, attributes: new Map(event.attributes) })),
+    links: span.links.map((link) => ({ ...link, attributes: new Map(link.attributes) })),
+    eventNames: [...span.eventNames],
+    linkedSpanIds: [...span.linkedSpanIds],
+    resourceAttributes: new Map(span.resourceAttributes),
+  })),
+  logs: telemetry.logs.map((log) => ({
+    ...log,
+    traceId: cloneOption(log.traceId),
+    spanId: cloneOption(log.spanId),
+    severityText: cloneOption(log.severityText),
+    body: cloneOption(log.body),
+    attributes: new Map(log.attributes),
+    resourceAttributes: new Map(log.resourceAttributes),
+  })),
+  metrics: telemetry.metrics.map((metric) => {
+    const common = {
+      ...metric,
+      points: metric.points.map((point) => ({
+        ...point,
+        value: cloneOption(point.value),
+        attributes: new Map(point.attributes),
+      })),
+      resourceAttributes: new Map(metric.resourceAttributes),
+    };
+    if (common.kind !== "histogram") return common;
+    return {
+      ...common,
+      histogramPoints: common.histogramPoints.map((point) => ({
+        ...point,
+        attributes: new Map(point.attributes),
+        explicitBounds: [...point.explicitBounds],
+        bucketCounts: [...point.bucketCounts],
+      })),
+    };
+  }),
+});
+
+const destinationReceipts = new WeakMap<TelemetryDestinationReceipt, CapturedTelemetry>();
+
+export const assessTelemetryDestination = (
+  assessment: TelemetryDestinationAssessment,
 ): TelemetryDestinationReceipt => {
-  destinationReceipts.add(receipt);
+  const receipt = Object.freeze({
+    topology: assessment.topology,
+    assessment:
+      assessment.topology === "local" ? "owner-readback" : "application-supplied-readback",
+    runId: assessment.runId,
+    identity: Object.freeze({
+      serviceName: assessment.identity.serviceName,
+      serviceVersion: assessment.identity.serviceVersion,
+      environment: assessment.identity.environment,
+    }),
+    observationId: assessment.observationId,
+  } as const);
+  destinationReceipts.set(receipt, cloneCapturedTelemetry(assessment.readback()));
   return receipt;
+};
+
+export const applicationDeployedTelemetryDestinationReceipt = (assessment: {
+  readonly runId: string;
+  readonly identity: ConformanceTargetBinding["identity"];
+  readonly observationId: string;
+  readonly readback: () => CapturedTelemetry;
+}): TelemetryDestinationReceipt =>
+  assessTelemetryDestination({ ...assessment, topology: "deployed" });
+
+export const telemetryDestinationTelemetry = (
+  receipt: TelemetryDestinationReceipt,
+): CapturedTelemetry | undefined => {
+  const telemetry = destinationReceipts.get(receipt);
+  return telemetry === undefined ? undefined : cloneCapturedTelemetry(telemetry);
 };
 
 export const telemetryDestinationMatches = (
@@ -435,6 +517,26 @@ export const telemetryDestinationMatches = (
   receipt.identity.serviceName === binding.identity.serviceName &&
   receipt.identity.serviceVersion === binding.identity.serviceVersion &&
   receipt.identity.environment === binding.identity.environment;
+
+const traceGraphIsAcyclic = (spans: CapturedTelemetry["spans"]): boolean => {
+  const spanById = new Map<string, CapturedTelemetry["spans"][number]>();
+  for (const span of spans) {
+    if (spanById.has(span.spanId)) return false;
+    spanById.set(span.spanId, span);
+  }
+  for (const span of spans) {
+    const visited = new Set<string>();
+    let current: CapturedTelemetry["spans"][number] | undefined = span;
+    while (current !== undefined) {
+      if (visited.has(current.spanId)) return false;
+      visited.add(current.spanId);
+      current = Option.isSome(current.parentSpanId)
+        ? spanById.get(current.parentSpanId.value)
+        : undefined;
+    }
+  }
+  return true;
+};
 
 const matchesIdentity = (
   attributes: CapturedTelemetry["logs"][number]["resourceAttributes"],
@@ -455,7 +557,11 @@ export const telemetryCanaryConformance = (input: {
     verify: (target) =>
       Effect.gen(function* () {
         const receipt = input.receipt;
-        if (!telemetryDestinationMatches(receipt, target.topology, input.runId, target.binding)) {
+        const telemetry = telemetryDestinationTelemetry(receipt);
+        if (
+          telemetry === undefined ||
+          !telemetryDestinationMatches(receipt, target.topology, input.runId, target.binding)
+        ) {
           return yield* Effect.fail(
             violation(
               "The telemetry canary lacks a Collector or destination read-back receipt bound to the current topology, run, and resource identity.",
@@ -463,7 +569,7 @@ export const telemetryCanaryConformance = (input: {
             ),
           );
         }
-        const logs = receipt.telemetry.logs.filter(
+        const logs = telemetry.logs.filter(
           (log) =>
             log.attributes.get("run.id") === receipt.runId &&
             matchesIdentity(log.resourceAttributes, target.binding) &&
@@ -474,13 +580,13 @@ export const telemetryCanaryConformance = (input: {
         const currentTraceIds = new Set(
           logs.flatMap((log) => (Option.isSome(log.traceId) ? [log.traceId.value] : [])),
         );
-        const spans = receipt.telemetry.spans.filter(
+        const spans = telemetry.spans.filter(
           (span) =>
             currentTraceIds.has(span.traceId) &&
             matchesIdentity(span.resourceAttributes, target.binding),
         );
         const metricRunIdAttribute = input.metricRunIdAttribute;
-        const metrics = receipt.telemetry.metrics.filter(
+        const metrics = telemetry.metrics.filter(
           (metric) =>
             matchesIdentity(metric.resourceAttributes, target.binding) &&
             target.binding.contract.metrics.some(
@@ -515,7 +621,8 @@ export const telemetryCanaryConformance = (input: {
         });
         if (
           logs.length === 0 ||
-          (target.capabilities.traces && (spans.length === 0 || !linked)) ||
+          (target.capabilities.traces &&
+            (spans.length === 0 || !linked || !traceGraphIsAcyclic(spans))) ||
           (target.capabilities.metrics && metrics.length === 0)
         ) {
           return yield* Effect.fail(
