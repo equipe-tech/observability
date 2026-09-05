@@ -71,6 +71,9 @@ const OperationsPlanEnvironment = Schema.Struct({
 });
 const operationsPlanEnvironment = Schema.decodeUnknownSync(OperationsPlanEnvironment)(process.env);
 
+const isDestructiveManualAction = (action: ManualAction): boolean =>
+  action.kind === "destructive" || (action.kind === undefined && action.capability === "retention");
+
 const mutationWithStatus = (
   mutation: MutationIntent,
   status: MutationIntent["status"],
@@ -537,7 +540,15 @@ export class OperationsPlanner extends Context.Service<
             cause: supplied.digest,
           });
         }
-        if (current.actions.some((action) => action.kind === "destructive") && !allowDestructive) {
+        const confirmsDestructiveManualAction = current.pendingManualActions.some(
+          (action) =>
+            confirmedManualActions.includes(action.id) && isDestructiveManualAction(action),
+        );
+        if (
+          (current.actions.some((action) => action.kind === "destructive") ||
+            confirmsDestructiveManualAction) &&
+          !allowDestructive
+        ) {
           return yield* new OperationsError({
             code: "OBS_CLI_PLAN_DESTRUCTIVE",
             message: `Plan ${current.digest} contains destructive changes. Rerun with --allow-destructive and this exact plan.`,
@@ -623,6 +634,9 @@ export class OperationsPlanner extends Context.Service<
                         capability: action.capability,
                         environment: action.environment,
                         desiredFingerprint: action.desiredFingerprint,
+                        kind:
+                          action.kind ??
+                          (action.capability === "retention" ? "destructive" : "manual"),
                         status: "operator-confirmed",
                       })
                     : action,
@@ -654,6 +668,7 @@ export class OperationsPlanner extends Context.Service<
                   capability: action.capability,
                   environment: action.environment,
                   desiredFingerprint: action.desiredFingerprint,
+                  kind: action.kind,
                   status: "operator-confirmed",
                 })
               : new ManualAction({
@@ -662,6 +677,7 @@ export class OperationsPlanner extends Context.Service<
                   capability: action.capability,
                   environment: action.environment,
                   desiredFingerprint: action.desiredFingerprint,
+                  kind: action.kind,
                   status: "pending",
                   expiresAt: new Date(
                     (yield* Clock.currentTimeMillis) + 30 * 24 * 60 * 60 * 1_000,
