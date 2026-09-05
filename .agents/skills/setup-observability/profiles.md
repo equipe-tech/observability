@@ -10,6 +10,6 @@ The generator derives capability validity from `observabilityProfiles`.
 | `cli`        | core and evlog              | traces, metrics, defects                   |
 | `library`    | core contract types only    | none                                       |
 
-Production profiles with `required-in-production` defects require `--with-defects`. React defects also require `--sentry-org` and `--sentry-project` for the owner-generated source-map plan.
+Production profiles with `required-in-production` defects require `--with-defects`. React defects also require `--sentry-org` and `--sentry-project` for the owner-planned source-map execution.
 
 The application supplies environment values at runtime. Setup records only variable names. Generated imports use public package entrypoints. Generated files never implement OTLP, Collector, framework, adapter, query, or canary internals.

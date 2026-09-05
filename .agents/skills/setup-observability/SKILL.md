@@ -47,24 +47,32 @@ bun "$OBSERVABILITY_CLI" setup write --dir <application> --profile <profile> <ap
 Verify local composition explicitly.
 
 ```bash
-bun "$OBSERVABILITY_CLI" setup verify --dir <application> --reconcile --conform --json
+bun "$OBSERVABILITY_CLI" setup verify --dir <application> --target local --reconcile --conform --json
 ```
 
-`--reconcile` regenerates `observability/contract.json`. `--provider-read` explicitly invokes the installed CLI's read-only `ops verify` path and requires application credentials. `--conform` executes the generated composition against the public `runConformance` API. Missing application owner evidence fails. Provider, published-route, and Sentry checks report `blocked` unless their application release transports run them.
+`--reconcile` regenerates `observability/contract.json`. `--conform` executes the generated composition against the public `runConformance` API. Missing application owner evidence fails.
+
+Run deployed provider verification only from the application release environment.
+
+```bash
+bun "$OBSERVABILITY_CLI" setup verify --dir <application> --target deployed --provider-read --json
+```
+
+The deployed command invokes the delivered CLI's read-only `ops verify` path and requires application credentials. The generated release job separately executes the production canary, published browser-route canary, owner-planned source-map upload, and identity-bound Sentry event read-back. A missing transport remains a failing prerequisite.
 
 ## Effects
 
-| Command                                 | Filesystem                                               | Provider reads | Provider mutations |
-| --------------------------------------- | -------------------------------------------------------- | -------------- | ------------------ |
-| `setup plan`                            | none                                                     | none           | none               |
-| `setup write`                           | application composition and `observability/setup.json`   | none           | none               |
-| `setup write --install`                 | composition, package manifest, lockfile and install tree | none           | none               |
-| `setup verify`                          | none                                                     | none           | none               |
-| `setup verify --reconcile`              | regenerates `observability/contract.json`                | none           | none               |
-| `setup verify --provider-read`          | none                                                     | explicit       | none               |
-| `observability ops verify`              | none                                                     | explicit       | none               |
-| `observability ops apply`               | writes local state                                       | explicit       | explicit           |
-| `observability provision --environment` | writes local state                                       | explicit       | explicit           |
+| Command                                          | Filesystem                                               | Provider reads | Provider mutations |
+| ------------------------------------------------ | -------------------------------------------------------- | -------------- | ------------------ |
+| `setup plan`                                     | none                                                     | none           | none               |
+| `setup write`                                    | application composition and `observability/setup.json`   | none           | none               |
+| `setup write --install`                          | composition, package manifest, lockfile and install tree | none           | none               |
+| `setup verify --target local`                    | none                                                     | none           | none               |
+| `setup verify --target local --reconcile`        | regenerates `observability/contract.json`                | none           | none               |
+| `setup verify --target deployed --provider-read` | none                                                     | explicit       | none               |
+| `observability ops verify`                       | none                                                     | explicit       | none               |
+| `observability ops apply`                        | writes local state                                       | explicit       | explicit           |
+| `observability provision --environment`          | writes local state                                       | explicit       | explicit           |
 
 Stop before the last two commands. Setup never runs them. Do not load provider credentials during setup.
 

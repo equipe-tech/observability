@@ -1,6 +1,7 @@
 import { Context, Effect, Layer, Schema } from "effect";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { observabilityProfiles, type ProfileName } from "@equipe-tech/observability";
 import { EnvironmentName, ServiceName } from "../ResourceNamePolicy.ts";
 
@@ -58,6 +59,7 @@ export type SetupPlannedFile = {
   readonly content: string;
   readonly ownership: SetupFileOwnership;
   readonly action: SetupFileAction;
+  readonly recorded: boolean;
 };
 export type SetupPlan = {
   readonly directory: string;
@@ -129,6 +131,8 @@ const digest = (content: string): string =>
   new Bun.CryptoHasher("sha256").update(content).digest("hex");
 const json = <Value>(value: Value): string => `${JSON.stringify(value, undefined, 2)}\n`;
 const optional = <Value>(value: Value | undefined): Value | null => value ?? null;
+const ForbiddenSecret =
+  /sntrys_|bearer\s+[a-z0-9._~+/-]+=*|https:\/\/[^\s"']+@|[?&#](?:api[_-]?key|token|secret|password)=/i;
 
 const packagesFor = (input: SetupInput): ReadonlyArray<string> => {
   const packages = new Set<string>([
@@ -140,6 +144,10 @@ const packagesFor = (input: SetupInput): ReadonlyArray<string> => {
     packages.add("@equipe-tech/observability-evlog");
   if (input.profile === "react-web" || input.browserIngest)
     packages.add("@equipe-tech/observability-react");
+  if (input.profile === "react-web") {
+    packages.add("@equipe-tech/observability-sentry");
+    packages.add("@sentry/browser");
+  }
   if (input.defects) {
     packages.add("@equipe-tech/observability-sentry");
     packages.add(input.profile === "react-web" ? "@sentry/browser" : "@sentry/node-core");
@@ -382,9 +390,9 @@ const exitCode = await child.exited;
 if (exitCode !== 0) process.exit(exitCode);
 `;
 
-const sourceMapSource = (
-  input: SetupInput,
-): string => `import { sentrySourceMapUpload } from "@equipe-tech/observability-sentry";
+const sourceMapSource = (input: SetupInput): string => `import { Effect } from "effect";
+import { sentrySourceMapUpload } from "@equipe-tech/observability-sentry";
+import { executeSentrySourceMapUpload, sentryCliSourceMapTransport } from "@equipe-tech/observability-sentry/release";
 
 const release = process.env[${JSON.stringify(input.releaseVariable)}];
 if (release === undefined) throw new Error(${JSON.stringify(`${input.releaseVariable} is required.`)});
@@ -394,15 +402,46 @@ const plan = sentrySourceMapUpload({
   release,
   includePaths: ["dist"],
 });
-process.stdout.write(JSON.stringify(plan) + "\\n");
+const receipt = await Effect.runPromise(executeSentrySourceMapUpload(plan, sentryCliSourceMapTransport()));
+process.stdout.write(JSON.stringify(receipt) + "\\n");
+`;
+
+const sentryTransportSource = (): string => `import { Effect } from "effect";
+import { SentryReleaseError, type SentryReleaseTransport } from "@equipe-tech/observability-sentry/release";
+
+export const applicationSentryReleaseTransport: SentryReleaseTransport = {
+  acquire: Effect.fail(new SentryReleaseError({
+    code: "OBS_SENTRY_RELEASE_VERIFICATION_FAILED",
+    message: "Bind the application Sentry verification event and read-back transport before release.",
+    cause: "application Sentry release transport is not bound",
+  })),
+  release: () => Effect.void,
+};
+`;
+
+const sentryCanarySource = (input: SetupInput): string => `import { Effect } from "effect";
+import { runSentryReleaseVerification } from "@equipe-tech/observability-sentry/release";
+import { applicationSentryReleaseTransport } from "./sentry.transport.ts";
+
+const serviceVersion = process.env[${JSON.stringify(input.releaseVariable)}];
+const environment = process.env.OTEL_DEPLOYMENT_ENVIRONMENT;
+if (serviceVersion === undefined) throw new Error(${JSON.stringify(`${input.releaseVariable} is required.`)});
+if (environment === undefined) throw new Error("OTEL_DEPLOYMENT_ENVIRONMENT is required.");
+const receipt = await Effect.runPromise(runSentryReleaseVerification({
+  serviceName: ${JSON.stringify(input.serviceName)},
+  serviceVersion,
+  environment,
+}, applicationSentryReleaseTransport));
+process.stdout.write(JSON.stringify(receipt) + "\\n");
 `;
 
 const workflowSource = (input: SetupInput): string => {
   const browser = input.browserIngest ? "      - run: bun observability/browser-canary.ts\n" : "";
-  const sentry =
+  const sourceMaps =
     input.profile === "react-web" && input.defects
       ? "      - run: bun observability/source-maps.ts\n"
       : "";
+  const sentry = input.defects ? "      - run: bun observability/sentry-canary.ts\n" : "";
   const browserEnvironment = input.browserIngest
     ? "      OBSERVABILITY_BROWSER_CANARY_ENDPOINT: ${{ secrets.OBSERVABILITY_BROWSER_CANARY_ENDPOINT }}\n"
     : "";
@@ -416,26 +455,30 @@ on:
     tags:
       - "v*"
 jobs:
-  verify:
+  verify-local:
     runs-on: ubuntu-latest
+    env:
+      ${input.releaseVariable}: \${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
-      - run: bun ./node_modules/@equipe-tech/observability-cli/dist/main.js setup verify --dir . --conform
+      - run: bun ./node_modules/@equipe-tech/observability-cli/dist/main.js setup verify --dir . --target local --reconcile --conform
   release-canary:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    needs: verify
+    needs: verify-local
     env:
       ${input.releaseVariable}: \${{ github.ref_name }}
+      OTEL_DEPLOYMENT_ENVIRONMENT: ${input.environments[0]}
       OBSERVABILITY_APPLICATION_CANARY_COMMAND: \${{ secrets.OBSERVABILITY_APPLICATION_CANARY_COMMAND }}
 ${browserEnvironment}${sentryEnvironment}    steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
+      - run: bun ./node_modules/@equipe-tech/observability-cli/dist/main.js setup verify --dir . --target deployed --environment ${input.environments[0]} --provider-read
       - run: bun observability/canary.ts
-${browser}${sentry}`;
+${browser}${sourceMaps}${sentry}`;
 };
 
 const operationsYaml = (input: SetupInput): string => `version: 1
@@ -451,12 +494,14 @@ sentry:
   enabled: ${input.defects}
 `;
 
+type RenderedSetupFile = Omit<SetupPlannedFile, "action" | "recorded">;
+
 const renderedFiles = (
   input: SetupInput,
   packages: ReadonlyArray<string>,
-): ReadonlyArray<Omit<SetupPlannedFile, "action">> => {
+): ReadonlyArray<RenderedSetupFile> => {
   const serviceName = input.serviceName ?? "library";
-  const files: Array<Omit<SetupPlannedFile, "action">> = [
+  const files: Array<RenderedSetupFile> = [
     {
       path: "observability/contract.ts",
       content: contractSource(serviceName),
@@ -507,6 +552,8 @@ const renderedFiles = (
         publicOrigin: optional(input.publicOrigin?.origin),
         proxyPolicy: input.proxyPolicy,
         ingestionPath: input.ingestPath,
+        platformRulesDeclaration: "observability/platform-rules.json",
+        networkPolicyDeclaration: "observability/network-policy.json",
       }),
       ownership: "user-preserved",
     },
@@ -521,6 +568,16 @@ const renderedFiles = (
           otlpEndpoint: "OTEL_EXPORTER_OTLP_ENDPOINT",
         },
       }),
+      ownership: "user-preserved",
+    },
+    {
+      path: "observability/platform-rules.json",
+      content: json({ version: 1, rules: [], extensions: [] }),
+      ownership: "user-preserved",
+    },
+    {
+      path: "observability/network-policy.json",
+      content: json({ version: 1, ingress: [], egress: [], extensions: [] }),
       ownership: "user-preserved",
     },
     {
@@ -550,6 +607,19 @@ const renderedFiles = (
       content: browserCanarySource(),
       ownership: "skill-owned",
     });
+  if (input.defects)
+    files.push(
+      {
+        path: "observability/sentry.transport.ts",
+        content: sentryTransportSource(),
+        ownership: "user-preserved",
+      },
+      {
+        path: "observability/sentry-canary.ts",
+        content: sentryCanarySource(input),
+        ownership: "skill-owned",
+      },
+    );
   if (input.profile === "react-web" && input.defects)
     files.push({
       path: "observability/source-maps.ts",
@@ -577,6 +647,12 @@ const readRecord = async (directory: string): Promise<DecisionRecord | undefined
 const officialProfiles = new Set<string>(Object.keys(observabilityProfiles));
 
 const validateInput = Effect.fn("validateSetupInput")(function* (encoded: SetupInputEncoded) {
+  if (ForbiddenSecret.test(JSON.stringify(encoded)))
+    return yield* fail(
+      "OBS_SETUP_INPUT_INVALID",
+      "Setup does not accept credential or token values. Supply variable names only.",
+      "credential-bearing input",
+    );
   if (!officialProfiles.has(encoded.profile)) {
     return yield* fail(
       "OBS_SETUP_PROFILE_INVALID",
@@ -650,11 +726,14 @@ const validateInput = Effect.fn("validateSetupInput")(function* (encoded: SetupI
     );
   if (
     input.otlpEndpoint !== undefined &&
-    (input.otlpEndpoint.username.length > 0 || input.otlpEndpoint.password.length > 0)
+    (input.otlpEndpoint.username.length > 0 ||
+      input.otlpEndpoint.password.length > 0 ||
+      input.otlpEndpoint.search.length > 0 ||
+      input.otlpEndpoint.hash.length > 0)
   )
     return yield* fail(
       "OBS_SETUP_INPUT_INVALID",
-      "The OTLP endpoint must not contain credentials.",
+      "The OTLP endpoint must not contain credentials, query parameters, or fragments.",
       "otlp-endpoint",
     );
   if (input.browserIngest && input.publicOrigin === undefined)
@@ -663,10 +742,17 @@ const validateInput = Effect.fn("validateSetupInput")(function* (encoded: SetupI
       "--public-origin is required when browser ingest is selected.",
       "public-origin",
     );
-  if (input.publicOrigin !== undefined && input.publicOrigin.protocol !== "https:")
+  if (
+    input.publicOrigin !== undefined &&
+    (input.publicOrigin.protocol !== "https:" ||
+      input.publicOrigin.username.length > 0 ||
+      input.publicOrigin.password.length > 0 ||
+      input.publicOrigin.search.length > 0 ||
+      input.publicOrigin.hash.length > 0)
+  )
     return yield* fail(
       "OBS_SETUP_INPUT_INVALID",
-      "The published browser origin must use HTTPS.",
+      "The published browser origin must use HTTPS without credentials, query parameters, or fragments.",
       "public-origin",
     );
   if (["SENTRY_RELEASE", "OTEL_SERVICE_RELEASE"].includes(input.releaseVariable))
@@ -690,23 +776,24 @@ const validateInput = Effect.fn("validateSetupInput")(function* (encoded: SetupI
 
 const classify = async (
   directory: string,
-  rendered: ReadonlyArray<Omit<SetupPlannedFile, "action">>,
+  rendered: ReadonlyArray<RenderedSetupFile>,
   record: DecisionRecord | undefined,
 ): Promise<ReadonlyArray<SetupPlannedFile>> => {
   const recorded = new Map(record?.files.map((file) => [file.path, file]));
   const files: Array<SetupPlannedFile> = [];
   for (const file of rendered) {
     const current = await readText(join(directory, file.path));
-    if (current === undefined) files.push({ ...file, action: "create" });
-    else if (current === file.content) files.push({ ...file, action: "unchanged" });
+    if (current === undefined) files.push({ ...file, action: "create", recorded: false });
+    else if (current === file.content)
+      files.push({ ...file, action: "unchanged", recorded: recorded.has(file.path) });
     else if (
       recorded.get(file.path)?.digest === digest(current) &&
       file.ownership === "skill-owned"
     )
-      files.push({ ...file, action: "updated" });
+      files.push({ ...file, action: "updated", recorded: true });
     else if (file.ownership === "user-preserved" && recorded.has(file.path))
-      files.push({ ...file, action: "preserved" });
-    else files.push({ ...file, action: "conflict" });
+      files.push({ ...file, action: "preserved", recorded: true });
+    else files.push({ ...file, action: "conflict", recorded: recorded.has(file.path) });
   }
   return files;
 };
@@ -735,6 +822,34 @@ const assertAllowed = (plan: SetupPlan): void => {
       `Generated file ${violation.path} crosses a platform-owner boundary.`,
       violation.path,
     );
+};
+
+const assertNoSymlinkTraversal = async (
+  root: string,
+  paths: ReadonlyArray<string>,
+): Promise<void> => {
+  const candidates = new Set<string>([root]);
+  for (const path of paths) {
+    let current = dirname(join(root, path));
+    while (current.startsWith(`${root}${sep}`)) {
+      candidates.add(current);
+      current = dirname(current);
+    }
+  }
+  for (const candidate of candidates) {
+    try {
+      if ((await lstat(candidate)).isSymbolicLink())
+        throw fail(
+          "OBS_SETUP_CONFLICT",
+          `Setup refuses symlink traversal at ${candidate}. No files were written.`,
+          candidate,
+        );
+    } catch (cause) {
+      if (cause instanceof SetupError) throw cause;
+      if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") continue;
+      throw cause;
+    }
+  }
 };
 
 const atomicWrite = async (path: string, content: string): Promise<void> => {
@@ -766,7 +881,8 @@ const writeSetup = Effect.fn("writeSetup")(function* (
           ),
   });
   const conflicts = plan.files.filter(
-    (file) => file.action === "conflict" && !(force && file.ownership === "skill-owned"),
+    (file) =>
+      file.action === "conflict" && !(force && file.ownership === "skill-owned" && file.recorded),
   );
   if (conflicts.length > 0)
     return yield* fail(
@@ -778,10 +894,15 @@ const writeSetup = Effect.fn("writeSetup")(function* (
     (file) =>
       file.action === "create" ||
       file.action === "updated" ||
-      (force && file.action === "conflict" && file.ownership === "skill-owned"),
+      (force && file.action === "conflict" && file.ownership === "skill-owned" && file.recorded),
   );
   yield* Effect.tryPromise(async () => {
-    for (const file of writable) await atomicWrite(join(plan.directory, file.path), file.content);
+    const outputPaths = [...plan.files.map((file) => file.path), "observability/setup.json"];
+    await assertNoSymlinkTraversal(plan.directory, outputPaths);
+    for (const file of writable) {
+      await assertNoSymlinkTraversal(plan.directory, [file.path]);
+      await atomicWrite(join(plan.directory, file.path), file.content);
+    }
     const finalFiles: Array<{
       readonly path: string;
       readonly ownership: SetupFileOwnership;
@@ -801,20 +922,34 @@ const writeSetup = Effect.fn("writeSetup")(function* (
       packages: [...plan.packages],
       files: finalFiles,
     });
+    if (ForbiddenSecret.test(record))
+      throw fail(
+        "OBS_SETUP_FORBIDDEN_OUTPUT",
+        "The setup decision record contains a credential-bearing value.",
+        "observability/setup.json",
+      );
+    await assertNoSymlinkTraversal(plan.directory, ["observability/setup.json"]);
     await atomicWrite(join(plan.directory, "observability/setup.json"), record);
   }).pipe(
     Effect.mapError((cause) =>
-      fail(
-        "OBS_SETUP_CONFLICT",
-        "Setup could not write the complete application composition. Review filesystem permissions and retry.",
-        cause,
-      ),
+      cause instanceof SetupError
+        ? cause
+        : fail(
+            "OBS_SETUP_CONFLICT",
+            "Setup could not write the complete application composition. Review filesystem permissions and retry.",
+            cause,
+          ),
     ),
   );
   return {
     ...plan,
     files: plan.files.map((file): SetupPlannedFile => {
-      if (force && file.action === "conflict" && file.ownership === "skill-owned") {
+      if (
+        force &&
+        file.action === "conflict" &&
+        file.ownership === "skill-owned" &&
+        file.recorded
+      ) {
         return { ...file, action: "updated" };
       }
       return file;
@@ -832,22 +967,59 @@ const commandOutput = (stdout: string, stderr: string, exitCode: number): string
     .join(" ");
 };
 
-const runCommand = async (
+const runCommand = (
   command: ReadonlyArray<string>,
   cwd: string,
-): Promise<{ readonly exitCode: number; readonly output: string }> => {
-  const child = Bun.spawn([...command], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  return { exitCode, output: commandOutput(stdout, stderr, exitCode) };
-};
+  code: SetupError["code"],
+  operation: string,
+): Effect.Effect<{ readonly exitCode: number; readonly output: string }, SetupError> =>
+  Effect.acquireUseRelease(
+    Effect.try({
+      try: () =>
+        Bun.spawn([...command], {
+          cwd,
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+          detached: process.platform !== "win32",
+        }),
+      catch: (cause) => fail(code, `${operation} could not start.`, cause),
+    }),
+    (child) =>
+      Effect.tryPromise({
+        try: async () => {
+          const [exitCode, stdout, stderr] = await Promise.all([
+            child.exited,
+            new Response(child.stdout).text(),
+            new Response(child.stderr).text(),
+          ]);
+          return { exitCode, output: commandOutput(stdout, stderr, exitCode) };
+        },
+        catch: (cause) => fail(code, `${operation} could not complete.`, cause),
+      }).pipe(
+        Effect.timeout("5 minutes"),
+        Effect.mapError((cause) =>
+          cause instanceof SetupError ? cause : fail(code, `${operation} timed out.`, cause),
+        ),
+      ),
+    (child) =>
+      Effect.sync(() => {
+        if (process.platform !== "win32") {
+          try {
+            process.kill(-child.pid, "SIGTERM");
+          } catch {
+            child.kill();
+          }
+        } else child.kill();
+      }),
+  );
 
 const installSetup = Effect.fn("installSetup")(function* (plan: SetupPlan) {
-  const result = yield* Effect.promise(() =>
-    runCommand(["bun", "add", "--exact", ...plan.packages], plan.directory),
+  const result = yield* runCommand(
+    ["bun", "add", "--exact", ...plan.packages],
+    plan.directory,
+    "OBS_SETUP_RECONCILE_FAILED",
+    "The selected profile dependency installation",
   );
   if (result.exitCode !== 0)
     return yield* fail(
@@ -869,6 +1041,7 @@ const verifySetup = Effect.fn("verifySetup")(function* (
   reconcile: boolean,
   conform: boolean,
   providerRead: boolean,
+  target: "local" | "deployed" = "local",
 ) {
   const root = resolve(directory);
   const record = yield* Effect.tryPromise(() => readRecord(root)).pipe(
@@ -884,9 +1057,19 @@ const verifySetup = Effect.fn("verifySetup")(function* (
     );
   const steps: Array<SetupVerificationStep> = [];
   const filesystemEffects: Array<string> = [];
-  if (reconcile) {
-    const result = yield* Effect.promise(() =>
-      runCommand([process.execPath, "observability/contract-index.ts"], root),
+  const providerReads: Array<string> = [];
+  if (target === "deployed")
+    steps.push({
+      name: "contract",
+      status: "not-applicable",
+      detail: "contract reconciliation belongs to the local verification gate",
+    });
+  else if (reconcile) {
+    const result = yield* runCommand(
+      [process.execPath, "observability/contract-index.ts"],
+      root,
+      "OBS_SETUP_RECONCILE_FAILED",
+      "Contract reconciliation",
     );
     filesystemEffects.push("observability/contract.json");
     steps.push({
@@ -902,7 +1085,13 @@ const verifySetup = Effect.fn("verifySetup")(function* (
       detail: "contract regeneration requires explicit --reconcile",
     });
   const selectedEnvironment = environment ?? record.input.environments[0];
-  if (record.profile === "library")
+  if (target === "local")
+    steps.push({
+      name: "providers",
+      status: "not-applicable",
+      detail: "provider read-back belongs to the deployed verification gate",
+    });
+  else if (record.profile === "library")
     steps.push({
       name: "providers",
       status: "not-applicable",
@@ -917,39 +1106,49 @@ const verifySetup = Effect.fn("verifySetup")(function* (
       detail: `provider read-back for ${selectedEnvironment} requires explicit --provider-read and application credentials`,
     });
   else {
-    const executable = process.argv[1];
-    if (executable === undefined)
-      return yield* fail(
-        "OBS_SETUP_RECONCILE_FAILED",
-        "The installed observability CLI entrypoint is unavailable for provider read-back.",
-        "CLI entrypoint",
-      );
-    const result = yield* Effect.promise(() =>
-      runCommand(
-        [
-          process.execPath,
-          executable,
-          "ops",
-          "verify",
-          "--dir",
-          root,
-          "--environment",
-          selectedEnvironment,
-          "--json",
-        ],
+    const executable = fileURLToPath(
+      new URL(import.meta.url.endsWith(".ts") ? "../main.ts" : "../main.js", import.meta.url),
+    );
+    const result = yield* runCommand(
+      [
+        process.execPath,
+        executable,
+        "ops",
+        "verify",
+        "--dir",
         root,
-      ),
+        "--environment",
+        selectedEnvironment,
+        "--json",
+      ],
+      root,
+      "OBS_SETUP_RECONCILE_FAILED",
+      "Provider read-back",
     );
     steps.push({
       name: "providers",
       status: result.exitCode === 0 ? "passed" : "failed",
-      detail: result.output || "provider read-back completed",
+      detail:
+        result.output ||
+        (result.exitCode === 0
+          ? "provider read-back completed"
+          : `provider read-back failed with exit code ${result.exitCode}`),
       exitCode: result.exitCode,
     });
+    if (result.exitCode === 0) providerReads.push(`ops verify:${selectedEnvironment}`);
   }
-  if (conform) {
-    const result = yield* Effect.promise(() =>
-      runCommand([process.execPath, "observability/conformance.ts"], root),
+  if (target === "deployed")
+    steps.push({
+      name: "conformance",
+      status: "not-applicable",
+      detail: "conformance belongs to the local verification gate",
+    });
+  else if (conform) {
+    const result = yield* runCommand(
+      [process.execPath, "observability/conformance.ts"],
+      root,
+      "OBS_SETUP_CONFORMANCE_FAILED",
+      "Application conformance",
     );
     steps.push({
       name: "conformance",
@@ -965,16 +1164,20 @@ const verifySetup = Effect.fn("verifySetup")(function* (
     });
   steps.push({
     name: "browser-route",
-    status: record.input.browserIngest ? "blocked" : "not-applicable",
+    status: "not-applicable",
     detail: record.input.browserIngest
-      ? "published browser-route verification requires the application release transport"
+      ? target === "deployed"
+        ? "the generated published browser canary owns this deployed release gate"
+        : "published browser verification belongs to the deployed release gate"
       : "browser ingest is not selected",
   });
   steps.push({
     name: "sentry",
-    status: record.input.defects ? "blocked" : "not-applicable",
+    status: "not-applicable",
     detail: record.input.defects
-      ? "Sentry verification requires the application release transport"
+      ? target === "deployed"
+        ? "the generated Sentry canary owns this deployed release gate"
+        : "Sentry verification belongs to the deployed release gate"
       : "defects are not selected",
   });
   const passed = steps.every(
@@ -984,7 +1187,7 @@ const verifySetup = Effect.fn("verifySetup")(function* (
     profile: record.profile,
     directory: root,
     filesystemEffects,
-    providerReads: [],
+    providerReads,
     providerMutations: [],
     steps,
     passed,
@@ -1010,6 +1213,7 @@ export class SetupGenerator extends Context.Service<
       reconcile: boolean,
       conform: boolean,
       providerRead: boolean,
+      target?: "local" | "deployed",
     ) => Effect.Effect<SetupVerificationReport, SetupError>;
   }
 >()("@equipe-tech/observability-cli/SetupGenerator") {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { Effect } from "effect";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { Effect, Fiber } from "effect";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -126,6 +126,137 @@ describe("setup generator", () => {
     expect(
       plan(target, { ...inputs("worker"), environments: ["production"] }),
     ).rejects.toMatchObject({ code: "OBS_SETUP_PROFILE_INVALID" });
+  });
+
+  it("never force-overwrites an unknown skill-owned destination", async () => {
+    const target = await directory();
+    await mkdir(join(target, "observability"), { recursive: true });
+    const contract = join(target, "observability/contract.json");
+    await writeFile(contract, "application-owned\n");
+    expect(write(target, inputs("library"), true)).rejects.toMatchObject({
+      code: "OBS_SETUP_CONFLICT",
+    });
+    expect(await readFile(contract, "utf8")).toBe("application-owned\n");
+  });
+
+  it("rejects symlinked generated ancestors before any write", async () => {
+    const target = await directory();
+    const outside = await directory();
+    await symlink(outside, join(target, "observability"));
+    expect(write(target, inputs("library"))).rejects.toMatchObject({
+      code: "OBS_SETUP_CONFLICT",
+    });
+    expect(await readdir(outside)).toEqual([]);
+  });
+
+  it("rejects credential-bearing URL components without persisting a decision record", async () => {
+    const target = await directory();
+    for (const otlpEndpoint of [
+      "https://user:password@collector.example/v1/traces",
+      "https://collector.example/v1/traces?api_key=value",
+      "https://collector.example/v1/traces#token",
+    ])
+      expect(plan(target, { ...inputs("worker"), otlpEndpoint })).rejects.toMatchObject({
+        code: "OBS_SETUP_INPUT_INVALID",
+      });
+    for (const publicOrigin of [
+      "https://user:password@telemetry.example.com",
+      "https://telemetry.example.com?token=value",
+      "https://telemetry.example.com#secret",
+    ])
+      expect(plan(target, { ...inputs("react-web"), publicOrigin })).rejects.toMatchObject({
+        code: "OBS_SETUP_INPUT_INVALID",
+      });
+    expect(await readdir(target)).toEqual([]);
+  });
+
+  it("generates independently executable local and deployed release gates", async () => {
+    const target = await directory();
+    const generated = await write(target, {
+      ...inputs("react-web"),
+      defects: true,
+      sentryOrganization: "owner",
+      sentryProject: "web",
+    });
+    const workflow = generated.files.find(
+      (file) => file.path === ".github/workflows/observability.yml",
+    )?.content;
+    expect(workflow).toContain("setup verify --dir . --target local --reconcile --conform");
+    expect(workflow).toContain(
+      "setup verify --dir . --target deployed --environment staging --provider-read",
+    );
+    expect(workflow).toContain("OTEL_SERVICE_VERSION: ${{ github.sha }}");
+    expect(workflow).toContain("bun observability/source-maps.ts");
+    expect(workflow).toContain("bun observability/sentry-canary.ts");
+    const sourceMaps = generated.files.find(
+      (file) => file.path === "observability/source-maps.ts",
+    )?.content;
+    expect(sourceMaps).toContain("executeSentrySourceMapUpload");
+    expect(sourceMaps).not.toContain("bash");
+    const topology = generated.files.find(
+      (file) => file.path === "observability/topology.json",
+    )?.content;
+    expect(topology).toContain("platformRulesDeclaration");
+    expect(topology).toContain("networkPolicyDeclaration");
+    expect(topology).not.toMatch(/vercel|kamal|kubernetes|aws/i);
+  });
+
+  it("uses the CLI owner executable for provider reads and reports typed acquisition failure", async () => {
+    const target = await directory();
+    await write(target, inputs("worker"));
+    const original = process.argv[1];
+    process.argv[1] = join(target, "caller.ts");
+    await writeFile(process.argv[1], "await Bun.write('caller-ran', 'yes');\n");
+    try {
+      const report = await run(
+        Effect.flatMap(SetupGenerator, (generator) =>
+          generator.verify(target, "test", false, false, true, "deployed"),
+        ),
+      );
+      expect(report.steps.find((step) => step.name === "providers")).toMatchObject({
+        status: "failed",
+        detail: "provider read-back failed with exit code 1",
+      });
+      expect(report.providerReads).toEqual([]);
+      expect(Bun.file(join(target, "caller-ran")).exists()).resolves.toBe(false);
+    } finally {
+      if (original === undefined) process.argv.splice(1, 1);
+      else process.argv[1] = original;
+    }
+    const missing = join(target, "missing", "app");
+    const proposed = await plan(missing, inputs("library"));
+    expect(
+      run(Effect.flatMap(SetupGenerator, (generator) => generator.install(proposed))),
+    ).rejects.toMatchObject({
+      _tag: "SetupError",
+      code: "OBS_SETUP_RECONCILE_FAILED",
+    });
+  });
+
+  it("terminates a verification subprocess when the public effect is cancelled", async () => {
+    const target = await directory();
+    const ready = join(target, "ready");
+    const stopped = join(target, "stopped");
+    await write(target, inputs("library"));
+    await writeFile(
+      join(target, "observability/conformance.ts"),
+      `process.on("SIGTERM", () => { Bun.write(${JSON.stringify(stopped)}, "stopped").then(() => process.exit(143)); });
+await Bun.write(${JSON.stringify(ready)}, "ready");
+await Bun.sleep(60_000);
+`,
+    );
+    const fiber = Effect.runFork(
+      Effect.flatMap(SetupGenerator, (generator) =>
+        generator.verify(target, undefined, false, true, false, "local"),
+      ).pipe(Effect.provide(SetupGenerator.layer)),
+    );
+    for (let attempt = 0; attempt < 100 && !(await Bun.file(ready).exists()); attempt += 1)
+      await Bun.sleep(10);
+    expect(Bun.file(ready).exists()).resolves.toBe(true);
+    await Effect.runPromise(Fiber.interrupt(fiber));
+    for (let attempt = 0; attempt < 100 && !(await Bun.file(stopped).exists()); attempt += 1)
+      await Bun.sleep(10);
+    expect(Bun.file(stopped).exists()).resolves.toBe(true);
   });
 
   it("emits only public composition without secret values or copied implementations", async () => {

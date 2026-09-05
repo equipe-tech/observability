@@ -43,6 +43,12 @@ Não sugira repetir quando a operação pode ter completado parcialmente, ou qua
 
 - `OBS_CONFORMANCE_LOCAL_COLLECTOR_FAILED` indica que o Collector isolado de teste não iniciou, não ficou pronto, não entregou o run esperado ou não concluiu uma aquisição local. Verifique o daemon Docker e a rota local antes de repetir a suíte.
 
+## Release Sentry
+
+- `OBS_SENTRY_RELEASE_INPUT_INVALID` indica identidade ou plano de release Sentry inválido. Corrija serviço, versão, ambiente e argumentos antes de executar a release.
+- `OBS_SENTRY_SOURCE_MAP_EXECUTION_FAILED` indica que o uploader de source maps não iniciou, expirou ou terminou com falha. Verifique o executável e a configuração da release antes de repetir.
+- `OBS_SENTRY_RELEASE_VERIFICATION_FAILED` indica transporte ausente, emissão malsucedida ou read-back que não corresponde ao evento e à identidade da release. Vincule o transporte da aplicação e confirme a evidência antes da release.
+
 ## Setup de aplicações
 
 - `OBS_SETUP_PROFILE_INVALID` indica uma seleção de capacidade incompatível com o perfil oficial. Escolha apenas capacidades permitidas pelo perfil.

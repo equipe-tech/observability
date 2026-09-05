@@ -589,6 +589,7 @@ const setupProviderRead = Flag.boolean("provider-read").pipe(
   Flag.withDescription("Runs read-only provider reconciliation with application credentials"),
   Flag.withDefault(false),
 );
+const setupVerifyTarget = Flag.string("target").pipe(Flag.withDefault("local"));
 const setupVerify = Command.make(
   "verify",
   {
@@ -598,8 +599,15 @@ const setupVerify = Command.make(
     conform: setupConform,
     json: setupJson,
     providerRead: setupProviderRead,
+    target: setupVerifyTarget,
   },
-  Effect.fn(function* ({ conform, dir, environment, json, providerRead, reconcile }) {
+  Effect.fn(function* ({ conform, dir, environment, json, providerRead, reconcile, target }) {
+    if (target !== "local" && target !== "deployed")
+      return yield* new SetupError({
+        code: "OBS_SETUP_INPUT_INVALID",
+        message: "Setup verification target must be local or deployed.",
+        cause: target,
+      });
     const generator = yield* SetupGenerator;
     const report = yield* generator.verify(
       dir,
@@ -607,6 +615,7 @@ const setupVerify = Command.make(
       reconcile,
       conform,
       providerRead,
+      target,
     );
     if (json) yield* Console.log(JSON.stringify(report));
     else
