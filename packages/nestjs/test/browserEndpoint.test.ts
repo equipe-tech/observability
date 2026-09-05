@@ -381,6 +381,79 @@ describe("browser events endpoint", () => {
     assert.strictEqual(telemetry.metrics[0]?.description, "Completed browser renders");
   }, 30_000);
 
+  it("rejects complete signal batches before committing metrics or cardinality", async () => {
+    const harness = await startApp(false);
+    const metric = (value: number, runId: string) => ({
+      name: "react.render_count",
+      value,
+      occurredAt: 1,
+      fields: { "run.id": runId },
+    });
+    const event = (name: string) => ({ id: crypto.randomUUID(), name, occurredAt: 1, fields: {} });
+
+    const invalidEventAndMetric = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({
+        version: 1,
+        events: [event("undeclared.event")],
+        metrics: [{ ...metric(1, "unused"), name: "undeclared.metric" }],
+      }),
+    );
+    assert.strictEqual(invalidEventAndMetric.status, 400);
+    assert.strictEqual(
+      (await Effect.runPromise(decodeRejection(await invalidEventAndMetric.json()))).code,
+      "OBS_EVENT_UNKNOWN_NAME",
+    );
+
+    const invalidEvent = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({
+        version: 1,
+        events: [event("undeclared.event")],
+        metrics: [metric(13, "rejected-event")],
+      }),
+    );
+    assert.strictEqual(invalidEvent.status, 400);
+    assert.strictEqual(
+      (await Effect.runPromise(decodeRejection(await invalidEvent.json()))).code,
+      "OBS_EVENT_UNKNOWN_NAME",
+    );
+
+    const invalidLaterMetric = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({
+        version: 1,
+        events: [],
+        metrics: [
+          metric(17, "rejected-metric"),
+          { ...metric(1, "unused"), name: "undeclared.metric" },
+        ],
+      }),
+    );
+    assert.strictEqual(invalidLaterMetric.status, 400);
+
+    const overCardinality = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({
+        version: 1,
+        events: [],
+        metrics: [metric(19, "first-value"), metric(23, "second-value")],
+      }),
+    );
+    assert.strictEqual(overCardinality.status, 400);
+
+    const accepted = await postEvents(
+      harness.baseUrl,
+      JSON.stringify({ version: 1, events: [], metrics: [metric(2, "second-value")] }),
+    );
+    assert.strictEqual(accepted.status, 202);
+
+    const telemetry = await harness.close();
+    const points = telemetry.metrics.flatMap((captured) => captured.points);
+    assert.lengthOf(points, 1);
+    assert.strictEqual(Option.getOrUndefined(points[0]?.value ?? Option.none()), 2);
+  }, 30_000);
+
   it("accepts old and new envelopes and preserves defect failure fields", async () => {
     const harness = await startApp(false);
     const response = await postEvents(

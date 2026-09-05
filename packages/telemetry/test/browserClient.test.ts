@@ -328,6 +328,35 @@ describe("browser telemetry client", () => {
     await client.dispose();
   }, 15_000);
 
+  it("serializes only populated signals at the request budget and drains unrelated work", async () => {
+    const batches: Array<BrowserTelemetryClientBatch> = [];
+    const fields = Object.fromEntries(
+      Array.from({ length: 14 }, (_, index) => [`field.f${index}`, "\u0001".repeat(1_024)]),
+    );
+    fields["field.last"] = "\u0001".repeat(602);
+    const client = createBrowserTelemetryClient({
+      transport: async (batch) => {
+        batches.push(batch);
+      },
+      flushIntervalMs: 60_000,
+    });
+    client.emit("unrelated.event", fields);
+    client.emit("after.large");
+
+    await client.flush();
+    await client.dispose();
+
+    expect(batches.flatMap((batch) => batch.events).map((event) => event.name)).toEqual([
+      "unrelated.event",
+      "after.large",
+    ]);
+    expect(
+      batches.every((batch) => browserBatchByteLength(batch) <= browserRequestByteBudget),
+    ).toBe(true);
+    expect(client.pending()).toBe(0);
+    expect(client.dropped()).toBe(0);
+  });
+
   it("coalesces concurrent flushes and drains events emitted during delivery", async () => {
     const firstDelivery = deferred();
     const batches: Array<BrowserTelemetryClientBatch> = [];
