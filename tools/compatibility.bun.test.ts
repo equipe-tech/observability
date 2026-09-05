@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
@@ -13,6 +13,7 @@ import {
   declarationErrorCodes,
   evaluateContractGate,
   packageSurfaceDigest,
+  inspectPackageSurface,
   PackageCompatibilityCode,
   publishedPackageSurface,
   releaseIntegrityIssue,
@@ -396,6 +397,71 @@ describe("compatibility gate", () => {
     expect(
       classifyPackageChange(baseline, removal, "0.2.1", []).some((entry) => !entry.satisfied),
     ).toBe(true);
+  });
+
+  test("classifies and validates published bin entrypoints", () => {
+    const directory = mkdtempSync(join(tmpdir(), "observability-compatibility-bin-"));
+    const packageRoot = join(directory, "package");
+    const outsideTarget = join(directory, "outside.js");
+    const writeManifest = (bin: { readonly [name: string]: string }): void =>
+      writeFileSync(
+        join(packageRoot, "package.json"),
+        JSON.stringify({
+          name: "@equipe-tech/example",
+          version: "0.2.1",
+          type: "module",
+          bin,
+        }),
+      );
+    try {
+      mkdirSync(join(packageRoot, "dist"), { recursive: true });
+      writeFileSync(join(packageRoot, "dist/main.js"), "#!/usr/bin/env bun\n");
+      writeFileSync(join(packageRoot, "dist/inspect.js"), "#!/usr/bin/env bun\n");
+      writeFileSync(outsideTarget, "#!/usr/bin/env bun\n");
+      writeManifest({ observability: "./dist/main.js" });
+      const delivered = inspectPackageSurface(packageRoot);
+      expect(delivered.missingRuntimeEntrypoints).toEqual([]);
+      expect(delivered.surface.runtimeEntrypoints).toEqual(["bin:observability"]);
+
+      writeManifest({ inspect: "./dist/inspect.js", observability: "./dist/main.js" });
+      const additive = inspectPackageSurface(packageRoot);
+      expect(additive.missingRuntimeEntrypoints).toEqual([]);
+      expect(classifyPackageChange(delivered.surface, additive.surface, "0.2.2", [])).toEqual([]);
+
+      writeManifest({});
+      const removed = inspectPackageSurface(packageRoot);
+      expect(classifyPackageChange(delivered.surface, removed.surface, "0.2.2", [])).toContainEqual(
+        expect.objectContaining({
+          code: "OBS_PACKAGE_RUNTIME_ENTRYPOINT_MISSING",
+          path: "runtime/bin:observability",
+          satisfied: false,
+        }),
+      );
+
+      writeManifest({ renamed: "./dist/main.js" });
+      const renamed = inspectPackageSurface(packageRoot);
+      expect(classifyPackageChange(delivered.surface, renamed.surface, "0.2.2", [])).toContainEqual(
+        expect.objectContaining({ path: "runtime/bin:observability", satisfied: false }),
+      );
+
+      writeManifest({ observability: "./dist/missing.js" });
+      expect(inspectPackageSurface(packageRoot).missingRuntimeEntrypoints).toEqual([
+        "bin:observability",
+      ]);
+
+      writeManifest({ observability: "../outside.js" });
+      expect(inspectPackageSurface(packageRoot).missingRuntimeEntrypoints).toEqual([
+        "bin:observability",
+      ]);
+
+      writeFileSync(join(packageRoot, "dist/main.js"), "not an executable\n");
+      writeManifest({ observability: "./dist/main.js" });
+      expect(inspectPackageSurface(packageRoot).missingRuntimeEntrypoints).toEqual([
+        "bin:observability",
+      ]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test("uses minor as the 0.x break lane and major after 1.0", () => {
