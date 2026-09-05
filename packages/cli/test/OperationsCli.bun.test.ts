@@ -328,7 +328,67 @@ describe("operations CLI", () => {
           status: "pending",
         }),
       );
+      const disabledReplayPath = join(root, "disabled-plan.json");
+      await writeFile(
+        disabledReplayPath,
+        await readFile(planPath(confirmationPlan.digest), "utf8"),
+      );
       const statePath = join(home, "operations", "checkout.json");
+      const stateBeforeDrift = await readFile(statePath, "utf8");
+      for (const dataset of datasets) {
+        dataset.retentionDays = 7;
+        dataset.useRetentionPeriod = true;
+      }
+      const finiteResult = await runCli(["ops", "plan", "--dir", project, "--json"], home, baseUrl);
+      expect(finiteResult.exitCode).toBe(0);
+      const finitePlan = JSON.parse(finiteResult.stdout);
+      expect(finitePlan.digest).not.toBe(confirmationPlan.digest);
+      expect(finitePlan.pendingManualActions).toContainEqual(
+        expect.objectContaining({ id: "axiom.retention.prod", kind: "manual" }),
+      );
+      const finiteReplayPath = join(root, "finite-plan.json");
+      await writeFile(finiteReplayPath, await readFile(planPath(finitePlan.digest), "utf8"));
+      const staleDisabled = await runCli(
+        [
+          "ops",
+          "apply",
+          "--dir",
+          project,
+          "--plan",
+          disabledReplayPath,
+          "--allow-destructive",
+          "--confirm-manual",
+          "axiom.retention.prod",
+        ],
+        home,
+        baseUrl,
+      );
+      expect(staleDisabled.exitCode).not.toBe(0);
+      expect(staleDisabled.stderr).toContain("OBS_CLI_PLAN_STALE");
+      expect(await readFile(statePath, "utf8")).toBe(stateBeforeDrift);
+      for (const dataset of datasets) {
+        dataset.retentionDays = 0;
+        dataset.useRetentionPeriod = false;
+      }
+      const disabledAgainResult = await runCli(
+        ["ops", "plan", "--dir", project, "--json"],
+        home,
+        baseUrl,
+      );
+      expect(disabledAgainResult.exitCode).toBe(0);
+      const disabledAgainPlan = JSON.parse(disabledAgainResult.stdout);
+      expect(disabledAgainPlan.pendingManualActions).toContainEqual(
+        expect.objectContaining({ id: "axiom.retention.prod", kind: "destructive" }),
+      );
+      const staleFinite = await runCli(
+        ["ops", "apply", "--dir", project, "--plan", finiteReplayPath],
+        home,
+        baseUrl,
+      );
+      expect(staleFinite.exitCode).not.toBe(0);
+      expect(staleFinite.stderr).toContain("OBS_CLI_PLAN_STALE");
+      expect(await readFile(statePath, "utf8")).toBe(stateBeforeDrift);
+      expect(writes).toBe(0);
       const stateBeforeRejectedConfirmation = await readFile(statePath, "utf8");
       const rejectedConfirmation = await runCli(
         [

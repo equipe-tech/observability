@@ -1,4 +1,5 @@
 import { Clock, Context, Effect, Layer, Option, Schema } from "effect";
+import { classifyAxiomRetentionChange } from "./AxiomDatasetRetention.ts";
 import { CredentialsStore, type CredentialsError } from "./CredentialsStore.ts";
 import {
   type AxiomDataset,
@@ -240,14 +241,7 @@ const makePlan = (
           capability: "retention",
           environment,
           desiredFingerprint: fingerprint(JSON.stringify({ days: retention.days })),
-          kind: matchingDatasets.some(
-            (dataset) =>
-              dataset.useRetentionPeriod &&
-              dataset.retentionDays !== undefined &&
-              dataset.retentionDays > retention.days,
-          )
-            ? "destructive"
-            : "manual",
+          kind: classifyAxiomRetentionChange(matchingDatasets, retention.days),
           publiclySatisfied:
             environmentNames.every(
               (name) => matchingDatasets.filter((dataset) => dataset.name === name).length === 1,
