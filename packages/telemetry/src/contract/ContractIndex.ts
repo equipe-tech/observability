@@ -33,6 +33,7 @@ export type ContractSignalReference = {
 export type ContractSignalAliasDefinition = {
   readonly source: ContractSignalReference;
   readonly target: ContractSignalReference;
+  readonly since: string;
 };
 
 export type ContractSignalAliasMetadata = {
@@ -78,6 +79,13 @@ const byName = <Entry extends { readonly name: string }>(left: Entry, right: Ent
   left.name.localeCompare(right.name);
 
 const signalNamePattern = /^[a-z][a-z0-9_]*(?:[.][a-z][a-z0-9_]*)+$/;
+const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/;
+
+const isIsoDate = (value: string): boolean => {
+  if (!isoDatePattern.test(value)) return false;
+  const timestamp = Date.parse(`${value}T00:00:00.000Z`);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value;
+};
 
 type AliasGraph = {
   expand(kind: ContractSignalAlias["kind"], source: string): ReadonlySet<string>;
@@ -184,6 +192,9 @@ const validatedAliases = <Definition extends TelemetryContractInput>(
     if (alias.source.name === alias.target.name) {
       throw new TypeError("Contract alias source and target must differ.");
     }
+    if (!isIsoDate(alias.since)) {
+      throw new TypeError("Contract alias since must be an ISO calendar date.");
+    }
     return {
       kind: alias.source.kind,
       from: alias.source.name,
@@ -238,9 +249,12 @@ const validatedAliases = <Definition extends TelemetryContractInput>(
         .map(([name, attribute]) => `${name}\u0000${attribute.classification}`)
         .sort()
         .join("\u0001");
-    if (first !== undefined && targets.some((target) => signature(target) !== signature(first))) {
+    if (
+      first !== undefined &&
+      targets.some((target) => target.kind !== first.kind || signature(target) !== signature(first))
+    ) {
       throw new TypeError(
-        `Contract event alias source ${source} targets incompatible attributes or classifications.`,
+        `Contract event alias source ${source} targets incompatible kind, attributes, or classifications.`,
       );
     }
   }
@@ -279,6 +293,3 @@ export const contractIndex = <Definition extends TelemetryContractInput>(
     .sort(byName),
   aliases: validatedAliases(contract, aliasMetadata),
 });
-
-export const encodeContractIndex = (index: ContractIndex): string =>
-  `${JSON.stringify(index, null, 2)}\n`;

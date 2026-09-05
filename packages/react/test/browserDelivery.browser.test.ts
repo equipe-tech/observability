@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { expect, test } from "vite-plus/test";
+import { browserEnvelopeVersion } from "@equipe-tech/observability/browser/client";
 import { definePolicy } from "@equipe-tech/observability/policy";
 import {
   createBrowserObservability,
@@ -8,7 +9,7 @@ import {
 
 const StringArray = Schema.Array(Schema.String);
 const EventBatch = Schema.Struct({
-  version: Schema.Literal(1),
+  version: Schema.Literal(browserEnvelopeVersion),
   resource: Schema.optional(
     Schema.Struct({
       serviceName: Schema.String,

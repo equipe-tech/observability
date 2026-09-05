@@ -1,3 +1,4 @@
+export { browserEnvelopeVersion } from "./BrowserEventLimits.ts";
 export {
   BrowserTelemetryClientDeliveryError,
   BrowserTelemetryClientShutdownError,

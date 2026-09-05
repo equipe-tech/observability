@@ -32,7 +32,7 @@ export class AdapterFailure extends Schema.TaggedError<AdapterFailure>()("Adapte
 }) {}
 
 export type ContractRegistry = {
-  readonly version: 1;
+  readonly version: number;
   readonly eventNames: ReadonlyArray<EventName>;
   readonly eventByAlias: ReadonlyMap<string, CompiledEventDefinition>;
   readonly eventByName: ReadonlyMap<EventName, CompiledEventDefinition>;

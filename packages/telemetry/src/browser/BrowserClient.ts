@@ -1,4 +1,5 @@
 import {
+  browserEnvelopeVersion,
   browserRequestByteBudget,
   maxEventIdLength,
   maxFieldValueLength,
@@ -67,7 +68,7 @@ export type BrowserTelemetryClientResource = {
 };
 
 export type BrowserTelemetryClientBatch = {
-  readonly version: 1;
+  readonly version: number;
   readonly resource?: BrowserTelemetryClientResource;
   readonly events: ReadonlyArray<BrowserTelemetryClientEvent>;
   readonly spans?: ReadonlyArray<BrowserTelemetryClientSpan>;
@@ -196,7 +197,8 @@ const fitEventToRequestBudget = (
     ),
   };
   if (
-    browserBatchByteLength({ version: 1, events: [byteBoundedEvent] }) <= browserRequestByteBudget
+    browserBatchByteLength({ version: browserEnvelopeVersion, events: [byteBoundedEvent] }) <=
+    browserRequestByteBudget
   ) {
     return byteBoundedEvent;
   }
@@ -205,7 +207,7 @@ const fitEventToRequestBudget = (
     const candidate = { ...fields, [key]: value };
     if (
       browserBatchByteLength({
-        version: 1,
+        version: browserEnvelopeVersion,
         events: [{ ...byteBoundedEvent, fields: candidate }],
       }) <= browserRequestByteBudget
     ) {
@@ -403,7 +405,7 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
     spans: ReadonlyArray<BrowserTelemetryClientSpan>,
     metrics: ReadonlyArray<BrowserTelemetryClientMetric>,
   ): BrowserTelemetryClientBatch {
-    let batch = this.batchWithResource({ version: 1, events });
+    let batch = this.batchWithResource({ version: browserEnvelopeVersion, events });
     if (spans.length > 0) batch = { ...batch, spans };
     if (metrics.length > 0) batch = { ...batch, metrics };
     return batch;
@@ -412,8 +414,9 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
   private enqueue(event: BrowserTelemetryClientEvent): void {
     const fitted = fitEventToRequestBudget(event);
     if (
-      browserBatchByteLength(this.batchWithResource({ version: 1, events: [fitted] })) >
-      browserRequestByteBudget
+      browserBatchByteLength(
+        this.batchWithResource({ version: browserEnvelopeVersion, events: [fitted] }),
+      ) > browserRequestByteBudget
     ) {
       this.droppedEvents += 1;
       return;
@@ -425,8 +428,9 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
   private enqueueSpan(span: BrowserTelemetryClientSpan): void {
     const fitted = { ...span, fields: this.sanitizeFields(span.fields) };
     if (
-      browserBatchByteLength(this.batchWithResource({ version: 1, events: [], spans: [fitted] })) >
-      browserRequestByteBudget
+      browserBatchByteLength(
+        this.batchWithResource({ version: browserEnvelopeVersion, events: [], spans: [fitted] }),
+      ) > browserRequestByteBudget
     ) {
       this.droppedEvents += 1;
       return;
@@ -439,7 +443,11 @@ export class BrowserClientEngine implements BrowserTelemetryClient {
     const fitted = { ...metric, fields: this.sanitizeFields(metric.fields) };
     if (
       browserBatchByteLength(
-        this.batchWithResource({ version: 1, events: [], metrics: [fitted] }),
+        this.batchWithResource({
+          version: browserEnvelopeVersion,
+          events: [],
+          metrics: [fitted],
+        }),
       ) > browserRequestByteBudget
     ) {
       this.droppedEvents += 1;

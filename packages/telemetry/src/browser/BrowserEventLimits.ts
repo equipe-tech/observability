@@ -1,3 +1,4 @@
+export const browserEnvelopeVersion = 2;
 export const browserRequestByteBudget = 90_000;
 export const maxEventsPerBatch = 64;
 export const maxFieldsPerEvent = 32;

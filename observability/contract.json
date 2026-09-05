@@ -11,11 +11,5 @@
     }
   ],
   "metrics": [],
-  "aliases": [
-    {
-      "kind": "event",
-      "from": "cli.command",
-      "to": "cli.operation"
-    }
-  ]
+  "aliases": [{ "kind": "event", "from": "cli.command", "to": "cli.operation" }]
 }

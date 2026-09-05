@@ -347,12 +347,16 @@ describe("ingestBrowserEvents", () => {
       );
       assert.strictEqual(failure._tag, "InvalidBrowserEventBatch");
       assert.strictEqual(failure.code, "OBS_BROWSER_EVENTS_INVALID_BATCH");
+      assert.strictEqual(
+        failure.message,
+        "The browser event batch is invalid. Send a batch with a positive safe integer version (version 1 or newer), bounded events, and scalar fields.",
+      );
     }),
   );
 
-  it.effect("rejects an unsupported contract version", () =>
+  it.effect("rejects an invalid envelope version", () =>
     Effect.gen(function* () {
-      const failure = yield* ingestBrowserEvents({ version: 2, events: [] }).pipe(
+      const failure = yield* ingestBrowserEvents({ version: 0, events: [] }).pipe(
         Effect.provide(layerWideEvent),
         Effect.flip,
       );

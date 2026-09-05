@@ -2,6 +2,7 @@ import { Cause, Context, Duration, Effect, Exit, Layer, Option, Schema } from "e
 import {
   BrowserEvent,
   BrowserEventBatch,
+  browserEnvelopeVersion,
   encodeBrowserEventBatch,
   maxEventsPerBatch,
 } from "../BrowserEvents.ts";
@@ -145,7 +146,7 @@ const makeBrowserTelemetry = Effect.fn("makeBrowserTelemetry")(function* (
         Effect.runCallback(
           transport.send(
             new BrowserEventBatch({
-              version: 1,
+              version: browserEnvelopeVersion,
               events: batch.events.map((event) => new BrowserEvent(event)),
             }),
           ),
