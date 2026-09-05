@@ -3,7 +3,7 @@ import { Effect, Option, Schema } from "effect";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
+import { parseResourceIdentity, serviceNamespace } from "../src/ResourceIdentity.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 import { canaryRunId, canarySensitiveValues, emitCanary } from "./support/canary.ts";
 
@@ -120,6 +120,12 @@ type CanaryMetricDataPoint = typeof MetricDataPoint.Type;
 
 type CanarySpanExport = { readonly span: CanarySpan; readonly resource: CanaryResource };
 
+type CanaryResourceIdentity = {
+  readonly serviceName: string;
+  readonly serviceVersion: string;
+  readonly environment: string;
+};
+
 type CanaryExport = {
   readonly content: string;
   readonly spans: ReadonlyArray<{ readonly span: CanarySpan; readonly resource: CanaryResource }>;
@@ -210,16 +216,31 @@ const readTelemetryExport = Effect.fn("readTelemetryExport")(function* (): Effec
 const selectCanaryRoot = (
   spans: ReadonlyArray<CanarySpanExport>,
   runId: string,
+  identity: CanaryResourceIdentity,
 ): CanarySpanExport | undefined =>
   spans.find(
     (candidate) =>
-      Option.getOrUndefined(attributeValue(candidate.span.attributes, "canary.run_id")) === runId,
+      candidate.span.name === "canary.operation" &&
+      candidate.span.parentSpanId === undefined &&
+      Option.getOrUndefined(attributeValue(candidate.span.attributes, "canary.run_id")) === runId &&
+      Option.getOrUndefined(attributeValue(candidate.resource.attributes, "service.namespace")) ===
+        serviceNamespace &&
+      Option.getOrUndefined(attributeValue(candidate.resource.attributes, "service.name")) ===
+        identity.serviceName &&
+      Option.getOrUndefined(attributeValue(candidate.resource.attributes, "service.version")) ===
+        identity.serviceVersion &&
+      Option.getOrUndefined(
+        attributeValue(candidate.resource.attributes, "deployment.environment.name"),
+      ) === identity.environment &&
+      Option.getOrUndefined(
+        attributeValue(candidate.resource.attributes, "deployment.environment"),
+      ) === identity.environment,
   );
 
-const findRun = Effect.fn("findRun")(function* (runId: string) {
+const findRun = Effect.fn("findRun")(function* (runId: string, identity: CanaryResourceIdentity) {
   for (let attempt = 0; attempt < 40; attempt++) {
     const telemetryExport = yield* readTelemetryExport();
-    const root = selectCanaryRoot(telemetryExport.spans, runId);
+    const root = selectCanaryRoot(telemetryExport.spans, runId, identity);
     if (root !== undefined) {
       const redactionSpanEvent = root.span.events.find(
         (event) =>
@@ -338,6 +359,11 @@ const testRoot = (
   resource: testResource(serviceName),
 });
 
+const expectedIdentity: CanaryResourceIdentity = {
+  serviceName: "observability-canary",
+  serviceVersion: "0.1.0",
+  environment: "test",
+};
 const expectedRoot = testRoot("canary.operation", "test-run", "server-root");
 const browserRoot = testRoot("canary.browser.operation", "test-run", "browser-root");
 
@@ -346,10 +372,10 @@ describe("local canary root selection", () => {
     [browserRoot, expectedRoot],
     [expectedRoot, browserRoot],
   ])("selects the server root independently of export order", (...spans) => {
-    assert.strictEqual(selectCanaryRoot(spans, "test-run"), expectedRoot);
+    assert.strictEqual(selectCanaryRoot(spans, "test-run", expectedIdentity), expectedRoot);
   });
 
-  it("rejects roots with the wrong signal or identity", () => {
+  it("rejects roots with the wrong signal, identity, or topology", () => {
     const wrongRun = testRoot("canary.operation", "other-run", "wrong-run");
     const wrongSignal = testRoot("unrelated.operation", "test-run", "wrong-signal");
     const wrongIdentity = testRoot(
@@ -358,8 +384,18 @@ describe("local canary root selection", () => {
       "wrong-identity",
       "other-service",
     );
+    const wrongTopology: CanarySpanExport = {
+      span: { ...expectedRoot.span, spanId: "wrong-topology", parentSpanId: "other-span" },
+      resource: expectedRoot.resource,
+    };
 
-    assert.isUndefined(selectCanaryRoot([wrongRun, wrongSignal, wrongIdentity], "test-run"));
+    assert.isUndefined(
+      selectCanaryRoot(
+        [wrongRun, wrongSignal, wrongIdentity, wrongTopology],
+        "test-run",
+        expectedIdentity,
+      ),
+    );
   });
 });
 
@@ -383,7 +419,7 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
 
         yield* emitCanary(config, runId);
 
-        const run = yield* findRun(runId);
+        const run = yield* findRun(runId, identity);
 
         assert.strictEqual(run.root.span.name, "canary.operation");
         assert.strictEqual(run.child.span.name, "canary.child");
