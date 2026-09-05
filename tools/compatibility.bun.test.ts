@@ -579,6 +579,7 @@ describe("compatibility gate", () => {
       [">=1", ">=10"],
       ["^1.0.0", "^1.0.0-beta"],
       ["^18 || ^19", "^19"],
+      ["^0.0", "^0.0.0"],
     ];
     for (const [baseline, candidate] of narrowingCases) {
       expect(comparePeerRanges(baseline, candidate)).toEqual({
@@ -597,6 +598,44 @@ describe("compatibility gate", () => {
       );
     }
     expect(comparePeerRanges("^19", "^18 || ^19").classification).toBe("widened");
+  });
+
+  test("matches Bun semver across partial zero-major caret ranges", () => {
+    const versions = Array.from({ length: 3 }, (_, major) =>
+      Array.from({ length: 5 }, (_, minor) =>
+        Array.from({ length: 5 }, (_, patch) => `${major}.${minor}.${patch}`),
+      ).flat(),
+    ).flat();
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      ["^0", "^0.0"],
+      ["^0.0", "^0.0.0"],
+      ["^0.0.x", "^0.0.0"],
+      ["^0.0.0", "^0.0.x"],
+      ["^0.0", "^0.0.x"],
+      ["^0.1", "^0.1.0"],
+      ["^0.1.x", "^0.1.0"],
+      ["^1.0", "^1.0.0"],
+      ["0.x", "0.0.x"],
+      ["0.0.x", "0.x"],
+      ["^0.0 || ^0.1", "^0.1"],
+      ["^0.0", "^0.0 || ^0.1"],
+    ];
+    for (const [baseline, candidate] of cases) {
+      const baselineOnly = versions.some(
+        (version) =>
+          Bun.semver.satisfies(version, baseline) && !Bun.semver.satisfies(version, candidate),
+      );
+      const candidateOnly = versions.some(
+        (version) =>
+          !Bun.semver.satisfies(version, baseline) && Bun.semver.satisfies(version, candidate),
+      );
+      const classification = baselineOnly ? "narrowed" : candidateOnly ? "widened" : "equivalent";
+      expect(comparePeerRanges(baseline, candidate).classification).toBe(classification);
+    }
+    expect(Bun.semver.satisfies("0.0.5", "^0.0")).toBe(true);
+    expect(Bun.semver.satisfies("0.0.5", "^0.0.0")).toBe(false);
+    expect(comparePeerRanges("workspace:*", "*").classification).toBe("narrowed");
+    expect(comparePeerRanges("^0.0", "workspace:*").classification).toBe("narrowed");
   });
 
   test("rejects dependency range, peer range, category and metadata changes", () => {
