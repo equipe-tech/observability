@@ -89,18 +89,29 @@ jobs:
           AXIOM_DATASET_LOGS: ${{ vars.AXIOM_DATASET_LOGS }}
           AXIOM_DATASET_METRICS: ${{ vars.AXIOM_DATASET_METRICS }}
         run: |
+          set -euo pipefail
           bun scripts/release-canary.ts --require-credential AXIOM_INGEST_TOKEN
+          trap 'status=$?; if [[ "$status" != 0 ]]; then docker inspect --format "{{json .State}}" otel-production || true; docker logs --tail 100 otel-production || true; fi' EXIT
+          queue_directory="${RUNNER_TEMP:?}/release-canary-queue"
+          sudo install -d -m 0700 -o 10001 -g 10001 "$queue_directory"
           export AXIOM_TOKEN="$AXIOM_INGEST_TOKEN"
           docker run -d --name otel-production \
-            -p 127.0.0.1:24318:4318 \
+            -p 127.0.0.1:24318:4318 -p 127.0.0.1:24319:13133 \
+            -v "$queue_directory:/var/lib/otelcol/queue" \
             -e AXIOM_TOKEN \
             -e AXIOM_DATASET_TRACES -e AXIOM_DATASET_LOGS -e AXIOM_DATASET_METRICS \
             -v "$PWD/packages/cli/src/assets/production.yaml:/etc/otelcol/config.yaml:ro" \
             otel/opentelemetry-collector-contrib:0.159.0 --config=/etc/otelcol/config.yaml
           for _ in $(seq 1 30); do
-            if curl -s -o /dev/null http://127.0.0.1:24318; then break; fi
+            if [[ "$(docker inspect --format '{{.State.Running}}' otel-production)" != "true" ]]; then
+              echo "The production Collector exited before becoming healthy. Review the startup diagnostics."
+              exit 1
+            fi
+            if curl --fail --silent --show-error --connect-timeout 1 --max-time 2 -o /dev/null http://127.0.0.1:24319/health; then exit 0; fi
             sleep 1
           done
+          echo "The production Collector did not become healthy after 30 attempts. Review the startup diagnostics."
+          exit 1
       - name: Run the deployed release canary
         env:
           OBSERVABILITY_E2E_DEPLOYED: "1"
@@ -114,8 +125,14 @@ jobs:
         run: |
           bun scripts/release-canary.ts --require-credential AXIOM_READ_TOKEN
           bun run test:canary:deployed
-      - if: always()
-        run: docker rm -f otel-production 2>/dev/null || true
+      - name: Report failed canary Collector logs
+        if: failure()
+        run: docker logs --tail 100 otel-production 2>&1 || true
+      - name: Clean the production collector
+        if: always()
+        run: |
+          docker rm -f otel-production 2>/dev/null || true
+          sudo rm -rf -- "${RUNNER_TEMP:?}/release-canary-queue"
 
   canary-gate:
     if: ${{ !cancelled() }}

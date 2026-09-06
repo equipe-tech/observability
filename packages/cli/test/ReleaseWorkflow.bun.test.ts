@@ -332,6 +332,113 @@ describe("release workflow publication gate", () => {
     expect(Object.keys(parsedCiWorkflow.jobs)).toEqual(["verify"]);
   });
 
+  test("mounts a private writable queue without running the Collector as root", () => {
+    const start = parsedReleaseWorkflow.jobs["deployed-canary"].steps?.find(
+      (step) => step.name === "Start the production collector",
+    )?.run;
+    expect(start).toContain('queue_directory="${RUNNER_TEMP:?}/release-canary-queue"');
+    expect(start).toContain('sudo install -d -m 0700 -o 10001 -g 10001 "$queue_directory"');
+    expect(start).toContain('-v "$queue_directory:/var/lib/otelcol/queue"');
+    expect(start).toContain("-p 127.0.0.1:24319:13133");
+    expect(start).not.toContain("--user");
+    expect(start).not.toContain("sudo docker");
+    expect(start).not.toContain("--privileged");
+  });
+
+  test("requires health success and diagnoses exited or unready Collectors", async () => {
+    const start = parsedReleaseWorkflow.jobs["deployed-canary"].steps?.find(
+      (step) => step.name === "Start the production collector",
+    )?.run;
+    if (start === undefined) throw new Error("The Collector startup script is missing.");
+    const commands = `
+      bun() { return 0; }
+      sudo() { printf '%s\\n' "sudo $*" >&2; }
+      sleep() { return 0; }
+      docker() {
+        printf '%s\\n' "docker $*" >&2
+        case "$1" in
+          run) [[ "$STARTUP_CASE" != "run-failed" ]] ;;
+          inspect)
+            if [[ "$3" == '{{.State.Running}}' ]]; then
+              [[ "$STARTUP_CASE" != "exited" ]] && echo true || echo false
+            else
+              echo 'startup state'
+            fi ;;
+          logs) echo 'startup logs' ;;
+        esac
+      }
+      curl() {
+        printf '%s\\n' "curl $*" >&2
+        [[ "$*" == '--fail --silent --show-error --connect-timeout 1 --max-time 2 -o /dev/null http://127.0.0.1:24319/health' ]] || return 2
+        [[ "$STARTUP_CASE" == "healthy" ]]
+      }
+    `;
+    for (const scenario of ["healthy", "exited", "timeout", "run-failed"]) {
+      const result = await executeShell(`${commands}\n${start}`, {
+        STARTUP_CASE: scenario,
+        RUNNER_TEMP: "/runner temp",
+        AXIOM_INGEST_TOKEN: "ingest-test",
+      });
+      expect(result.exitCode).toBe(scenario === "healthy" ? 0 : 1);
+      expect(result.stderr).toContain(
+        "sudo install -d -m 0700 -o 10001 -g 10001 /runner temp/release-canary-queue",
+      );
+      expect(result.stderr).toContain(
+        "-v /runner temp/release-canary-queue:/var/lib/otelcol/queue",
+      );
+      const attempts = result.stderr.match(/curl --fail/g) ?? [];
+      expect(attempts).toHaveLength(scenario === "healthy" ? 1 : scenario === "timeout" ? 30 : 0);
+      if (scenario === "healthy") {
+        expect(result.stderr).not.toContain("docker logs");
+      } else {
+        expect(result.stderr).toContain("docker inspect --format {{json .State}} otel-production");
+        expect(result.stderr).toContain("docker logs --tail 100 otel-production");
+        expect(result.stdout).toContain("startup logs");
+      }
+      if (scenario === "exited") expect(result.stdout).toContain("exited before becoming healthy");
+      if (scenario === "timeout") expect(result.stdout).toContain("after 30 attempts");
+      expect(result.stderr).not.toContain("ingest-test");
+    }
+  });
+
+  test("preserves Collector diagnostics before cleaning a failed canary", () => {
+    const steps = parsedReleaseWorkflow.jobs["deployed-canary"].steps ?? [];
+    const canaryIndex = steps.findIndex((step) => step.name === "Run the deployed release canary");
+    const logsIndex = steps.findIndex(
+      (step) => step.name === "Report failed canary Collector logs",
+    );
+    const cleanupIndex = steps.findIndex((step) => step.name === "Clean the production collector");
+    expect(logsIndex).toBeGreaterThan(canaryIndex);
+    expect(cleanupIndex).toBeGreaterThan(logsIndex);
+    expect(steps[logsIndex]?.if).toBe("failure()");
+    expect(steps[logsIndex]?.run).toBe("docker logs --tail 100 otel-production 2>&1 || true");
+    expect(steps[logsIndex]?.env).toBeUndefined();
+  });
+
+  test("always cleans only its Collector and queue even if container removal fails", async () => {
+    const cleanup = parsedReleaseWorkflow.jobs["deployed-canary"].steps?.find(
+      (step) => step.name === "Clean the production collector",
+    );
+    expect(cleanup?.if).toBe("always()");
+    if (cleanup?.run === undefined) throw new Error("The Collector cleanup script is missing.");
+    const commands = `
+      docker() { printf '%s\\n' "docker $*"; return 1; }
+      sudo() { printf '%s\\n' "sudo $*"; }
+    `;
+    const result = await executeShell(`${commands}\n${cleanup.run}`, {
+      RUNNER_TEMP: "/runner temp",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      "docker rm -f otel-production\nsudo rm -rf -- /runner temp/release-canary-queue\n",
+    );
+    const missingTemp = await executeShell(`${commands}\n${cleanup.run}`, {
+      RUNNER_TEMP: undefined,
+    });
+    expect(missingTemp.exitCode).not.toBe(0);
+    expect(missingTemp.stdout).not.toContain("sudo rm");
+  });
+
   test("keeps the ingest token out of the docker command arguments", () => {
     expect(workflow).toContain('export AXIOM_TOKEN="$AXIOM_INGEST_TOKEN"');
     expect(workflow).toContain("-e AXIOM_TOKEN \\");
