@@ -2,15 +2,20 @@ import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import evlogManifest from "../packages/evlog/package.json" with { type: "json" };
 import nestjsManifest from "../packages/nestjs/package.json" with { type: "json" };
+import sentryManifest from "../packages/sentry/package.json" with { type: "json" };
 import telemetryManifest from "../packages/telemetry/package.json" with { type: "json" };
 import tsconfig from "../tsconfig.json" with { type: "json" };
 import viteConfig from "../vite.config.ts";
 
 const expected = new Map([
+  ["@equipe-tech/observability-sentry/browser", "packages/sentry/src/browser/index.ts"],
+  ["@equipe-tech/observability-sentry/node", "packages/sentry/src/node/index.ts"],
+  ["@equipe-tech/observability-sentry", "packages/sentry/src/index.ts"],
   ["@equipe-tech/observability/browser/client", "packages/telemetry/src/browser/client.ts"],
   ["@equipe-tech/observability/browser", "packages/telemetry/src/browser/index.ts"],
   ["@equipe-tech/observability/effect", "packages/telemetry/src/effect/index.ts"],
   ["@equipe-tech/observability/metrics", "packages/telemetry/src/Metrics.ts"],
+  ["@equipe-tech/observability/policy", "packages/telemetry/src/policy/entrypoint.ts"],
   ["@equipe-tech/observability/testing", "packages/telemetry/src/testing/index.ts"],
   ["@equipe-tech/observability/node", "packages/telemetry/src/node/index.ts"],
   ["@equipe-tech/observability-nestjs", "packages/nestjs/src/index.ts"],
@@ -49,6 +54,10 @@ describe("development entrypoint mappings", () => {
         Object.keys(nestjsManifest.exports),
       ),
       ...packageEntrypoints("@equipe-tech/observability-evlog", Object.keys(evlogManifest.exports)),
+      ...packageEntrypoints(
+        "@equipe-tech/observability-sentry",
+        Object.keys(sentryManifest.exports),
+      ),
     ];
     expect(entrypoints.toSorted()).toEqual([...expected.keys()].toSorted());
     for (const [specifier, source] of expected) {

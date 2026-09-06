@@ -6,6 +6,7 @@ import { describe, it } from "bun:test";
 import {
   checkPackageBoundaries,
   decodePackageManifest,
+  defineOwnership,
   sourceRole,
 } from "../../scripts/package-boundaries.ts";
 
@@ -17,6 +18,7 @@ const ruleNames = (
 
 const adapterPaths = [
   "packages/nestjs/src/TelemetryModule.ts",
+  "packages/sentry/src/node/SentryDefectAdapter.ts",
   "packages/telemetry/src/MetricsRuntime.ts",
   "packages/telemetry/src/PolicyOtlpLogger.ts",
   "packages/telemetry/src/Telemetry.ts",
@@ -318,7 +320,49 @@ describe("package boundaries", () => {
     });
   }
 
+  it("rejects provider and OTLP imports from Sentry policy", async () => {
+    const temporary = await mkdtemp(join(tmpdir(), "boundaries-sentry-policy-"));
+    try {
+      await cp(join(projects, "allowed"), temporary, { recursive: true });
+      const directory = join(temporary, "packages", "sentry", "src", "policy");
+      await mkdir(directory, { recursive: true });
+      await writeFile(
+        join(temporary, "packages", "sentry", "package.json"),
+        JSON.stringify({
+          name: "sentry",
+          dependencies: {
+            "@opentelemetry/exporter-trace-otlp-http": "1",
+            "@sentry/browser": "1",
+          },
+        }),
+      );
+      await writeFile(
+        join(directory, "invalid.ts"),
+        'import "@opentelemetry/exporter-trace-otlp-http";\nimport "@sentry/browser";\n',
+      );
+      assert.deepEqual(ruleNames(await checkPackageBoundaries(temporary)), [
+        "boundary/domain-forbidden-otlp",
+        "boundary/domain-forbidden-provider",
+      ]);
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects duplicate ownership selectors", () => {
+    assert.throws(
+      () =>
+        defineOwnership([
+          { kind: "prefix", path: "packages/sentry/src/", role: "adapter" },
+          { kind: "prefix", path: "packages/sentry/src/", role: "adapter" },
+        ]),
+      /Duplicate package ownership selector "prefix:packages\/sentry\/src\/"/,
+    );
+  });
+
   it("classifies every production role by repository-relative ownership", () => {
+    assert.equal(sourceRole("packages/sentry/src/policy/DefectProjection.ts"), "domain");
+    assert.equal(sourceRole("packages/sentry/src/node/SentryDefectAdapter.ts"), "adapter");
     assert.equal(sourceRole("packages/telemetry/src/index.ts"), "core");
     assert.equal(sourceRole("packages/telemetry/src/contract/EventName.ts"), "domain");
     assert.equal(sourceRole("packages/telemetry/src/trace/HttpServerOtlpTracer.ts"), "adapter");

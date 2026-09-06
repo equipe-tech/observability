@@ -1,0 +1,8 @@
+{
+  "name": "@equipe-tech/observability-sentry",
+  "dependencies": {
+    "@equipe-tech/observability": "0.3.0",
+    "@sentry/node": "10.72.0",
+    "@sentry/node-core": "10.72.0"
+  }
+}

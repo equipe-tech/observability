@@ -1,0 +1,1246 @@
+import {
+  CorrelationContext,
+  definePolicy,
+  parseDataPolicy,
+  parseRequestId,
+  parseRunId,
+  parseSpanId,
+  parseTraceId,
+  unexpectedDefect,
+  type DefectEnvelope,
+} from "@equipe-tech/observability/policy";
+import { defineTelemetryContract } from "@equipe-tech/observability";
+import { createNodeObservability } from "@equipe-tech/observability/node";
+import { evlogAdapter } from "@equipe-tech/observability-evlog";
+import { Effect, Option, Schema } from "effect";
+import { execFile } from "node:child_process";
+import { createServer } from "node:http";
+import { promisify } from "node:util";
+import { describe, expect, it } from "vite-plus/test";
+import { parseSentryDsn, sentrySourceMapUpload } from "../src/index.ts";
+import { createBrowserSentryDefectReporter } from "../src/browser/index.ts";
+import { SentryDefects, sentryDefectAdapter } from "../src/node/index.ts";
+import { defectDeduplicator } from "../src/policy/Deduplication.ts";
+import { eventSettlements } from "../src/policy/EventSettlement.ts";
+import { projectDefect, projectFinalEvent } from "../src/policy/DefectProjection.ts";
+import { malformedCaptureErrors } from "./malformed-capture.js";
+import { malformedSourceMapErrors } from "./malformed-source-map.js";
+
+const execFileAsync = promisify(execFile);
+const WireEventDocument = Schema.Struct({
+  event_id: Schema.String,
+  contexts: Schema.Struct({ obs: Schema.Any }),
+});
+const WireEnvelopeHeader = Schema.Struct({ event_id: Schema.String, sent_at: Schema.String });
+const decodeJsonDocument = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Json));
+const policy = { attributes: {}, blockedKeys: [], blockedValuePatterns: [] };
+const sensitivePolicy = definePolicy({
+  attributes: {
+    "request.body": { classification: "sensitive", required: false, metricLabel: false },
+    "auth.token": { classification: "sensitive", required: false, metricLabel: false },
+    "http.cookie": { classification: "sensitive", required: false, metricLabel: false },
+    "ai.prompt": { classification: "sensitive", required: false, metricLabel: false },
+    "llm.response": { classification: "sensitive", required: false, metricLabel: false },
+    "payment.card": { classification: "sensitive", required: false, metricLabel: false },
+    "user.email": { classification: "sensitive", required: false, metricLabel: false },
+    "sentry.contexts": { classification: "sensitive", required: false, metricLabel: false },
+    "sentry.attachments": { classification: "sensitive", required: false, metricLabel: false },
+    "sentry.breadcrumbs": { classification: "sensitive", required: false, metricLabel: false },
+    "unknown.extra": { classification: "sensitive", required: false, metricLabel: false },
+    "provider.hint": { classification: "sensitive", required: false, metricLabel: false },
+    "assignment.secret": { classification: "sensitive", required: false, metricLabel: false },
+    "safe.value": { classification: "public", required: false, metricLabel: false },
+  },
+  blockedKeys: ["password"],
+  blockedValuePatterns: ["sk-[a-z]+"],
+});
+
+const envelope = (fingerprint = "stable"): DefectEnvelope => ({
+  errorType: "UnexpectedDefect",
+  errorMessage: "safe failure",
+  stack: Option.some("at run (/srv/app.js:10:2)"),
+  fingerprint: ["OBS_TEST_UNEXPECTED", fingerprint],
+  tags: new Map([["error.code", "OBS_TEST_UNEXPECTED"]]),
+  context: new Map([["operation.name", "verification"]]),
+  correlation: new CorrelationContext({}),
+});
+
+describe("Sentry adapter policy", () => {
+  it("builds canonical unexpected defect envelopes through the public policy API", () => {
+    const defect = unexpectedDefect({
+      error: new Error("public builder"),
+      code: "OBS_PUBLIC_BUILDER",
+    });
+    expect(defect).toMatchObject({
+      errorType: "UnexpectedDefect",
+      errorMessage: "public builder",
+      fingerprint: ["OBS_PUBLIC_BUILDER", "Error"],
+    });
+    expect(Option.isSome(defect.stack)).toBe(true);
+  });
+
+  it("validates DSNs without exposing credentials", async () => {
+    const valid = await Effect.runPromise(parseSentryDsn(new URL("https://public@sentry.io/42")));
+    expect(valid.projectId).toBe("42");
+    await expect(
+      Effect.runPromise(parseSentryDsn(new URL("https://sentry.io"))),
+    ).rejects.toMatchObject({ code: "OBS_SENTRY_DSN_INVALID" });
+    await expect(
+      Effect.runPromise(parseSentryDsn(new URL("https://public:secret@sentry.io/42"))),
+    ).rejects.toMatchObject({ code: "OBS_SENTRY_DSN_INVALID" });
+  });
+
+  it("builds exact credential-free source map arguments", () => {
+    const plan = sentrySourceMapUpload({
+      organization: "equipe-tech",
+      project: "web",
+      release: "1.4.0",
+      includePaths: ["dist/assets"],
+      urlPrefix: "~/assets",
+      deleteAfterUpload: true,
+    });
+    expect(plan).toEqual({
+      command: "sentry-cli",
+      args: [
+        "sourcemaps",
+        "upload",
+        "--org",
+        "equipe-tech",
+        "--project",
+        "web",
+        "--release",
+        "1.4.0",
+        "--url-prefix",
+        "~/assets",
+        "--delete-after-upload",
+        "--",
+        "dist/assets",
+      ],
+      environment: { authTokenVariable: "SENTRY_AUTH_TOKEN" },
+    });
+    expect(JSON.stringify(plan)).not.toContain("AUTH_TOKEN=");
+    for (const unsafe of [
+      "--auth-token=secret",
+      "dist\n--org",
+      "dist\u0000map",
+      "dist\u0085map",
+      "dist\u202Emap",
+      "dist\u2066map",
+      "dist\u2028map",
+      "dist\u2029map",
+    ]) {
+      expect(() =>
+        sentrySourceMapUpload({
+          organization: "equipe-tech",
+          project: "web",
+          release: "1.4.0",
+          includePaths: [unsafe],
+        }),
+      ).toThrowError(expect.objectContaining({ code: "OBS_SENTRY_SOURCE_MAP_INVALID" }));
+    }
+    expect(() =>
+      sentrySourceMapUpload({
+        organization: "equipe-tech",
+        project: "web",
+        release: "1.4.0",
+        includePaths: ["dist"],
+        urlPrefix: "--auth-token=secret",
+      }),
+    ).toThrowError(expect.objectContaining({ code: "OBS_SENTRY_SOURCE_MAP_INVALID" }));
+    const unsafeNames = ["--org", "bad\nname", "bad\u0000name"];
+    for (const unsafe of unsafeNames) {
+      for (const input of [
+        {
+          organization: unsafe,
+          project: "web",
+          release: "1.4.0",
+          includePaths: ["dist"],
+        },
+        {
+          organization: "equipe-tech",
+          project: unsafe,
+          release: "1.4.0",
+          includePaths: ["dist"],
+        },
+        {
+          organization: "equipe-tech",
+          project: "web",
+          release: unsafe,
+          includePaths: ["dist"],
+        },
+        {
+          organization: "equipe-tech",
+          project: "web",
+          release: "1.4.0",
+          includePaths: ["dist"],
+          urlPrefix: unsafe,
+        },
+      ]) {
+        expect(() => sentrySourceMapUpload(input)).toThrowError(
+          expect.objectContaining({ code: "OBS_SENTRY_SOURCE_MAP_INVALID" }),
+        );
+      }
+    }
+  });
+
+  it("deduplicates identity, encoded fingerprint, window, capacity, and reservation owner", () => {
+    const collisionDedupe = defectDeduplicator(100, 4);
+    const delimited = { ...envelope("collision"), fingerprint: ["a|b", "c"] };
+    const separated = { ...envelope("collision"), fingerprint: ["a", "b|c"] };
+    expect(collisionDedupe.admit("delimited", delimited, 0).kind).toBe("admitted");
+    expect(collisionDedupe.admit("separated", separated, 1).kind).toBe("admitted");
+    const owned = envelope("owned");
+    expect(collisionDedupe.admit("older", owned, 2).kind).toBe("admitted");
+    expect(collisionDedupe.admit("newer", envelope("owned"), 103).kind).toBe("admitted");
+    collisionDedupe.rollback("older");
+    expect(collisionDedupe.admit("blocked", envelope("owned"), 104)).toEqual({
+      kind: "deduplicated",
+      reason: "fingerprint",
+    });
+
+    const dedupe = defectDeduplicator(100, 2);
+    const first = envelope("first");
+    expect(dedupe.admit("a", first, 0).kind).toBe("admitted");
+    expect(dedupe.admit("b", first, 1)).toEqual({ kind: "deduplicated", reason: "identity" });
+    expect(dedupe.admit("c", envelope("first"), 2)).toEqual({
+      kind: "deduplicated",
+      reason: "fingerprint",
+    });
+    expect(dedupe.admit("d", envelope("first"), 101).kind).toBe("admitted");
+    expect(dedupe.admit("e", envelope("second"), 102).kind).toBe("admitted");
+    expect(dedupe.admit("f", envelope("third"), 103).kind).toBe("admitted");
+    expect(dedupe.admit("g", envelope("second"), 104)).toEqual({
+      kind: "deduplicated",
+      reason: "fingerprint",
+    });
+  });
+
+  it("bounds pending settlement state and removes every terminal entry", async () => {
+    const dedupe = defectDeduplicator(100, 4);
+    const settlements = eventSettlements<{ readonly envelope: DefectEnvelope }>(1, 20, dedupe);
+    const first = envelope("settlement-first");
+    expect(dedupe.admit("first", first, 0).kind).toBe("admitted");
+    const accepted = settlements.reserve("first", { envelope: first });
+    expect(accepted).toBeDefined();
+    const pressured = envelope("settlement-pressure");
+    expect(dedupe.admit("pressured", pressured, 0).kind).toBe("admitted");
+    expect(settlements.reserve("pressured", { envelope: pressured })).toBeUndefined();
+    dedupe.rollback("pressured");
+    settlements.settle("first", true);
+    expect(await accepted).toBe(true);
+    expect(settlements.size()).toBe(0);
+    const rejected = envelope("settlement-rejected");
+    expect(dedupe.admit("rejected", rejected, 1).kind).toBe("admitted");
+    const rejection = settlements.reserve("rejected", { envelope: rejected });
+    settlements.reject("rejected");
+    expect(await rejection).toBe(false);
+    expect(settlements.size()).toBe(0);
+    const closed = envelope("settlement-closed");
+    expect(dedupe.admit("closed", closed, 2).kind).toBe("admitted");
+    const closure = settlements.reserve("closed", { envelope: closed });
+    settlements.clear();
+    expect(await closure).toBe(false);
+    expect(settlements.size()).toBe(0);
+    const expired = envelope("settlement-expired");
+    expect(dedupe.admit("expired", expired, 3).kind).toBe("admitted");
+    const expiration = settlements.reserve("expired", { envelope: expired });
+    expect(await expiration).toBe(false);
+    expect(settlements.size()).toBe(0);
+    expect(dedupe.admit("retry", expired, 24).kind).toBe("admitted");
+  });
+
+  it("projects only allowlisted stack frame keys", () => {
+    const parsedFrame = {
+      filename: "/srv/app.js",
+      abs_path: "/spoofed.js",
+      function: "run",
+      module: "app",
+      lineno: 10,
+      colno: 2,
+      in_app: true,
+      secret: "frame-secret",
+    };
+    const projected = projectDefect(
+      Effect.runSync(parseDataPolicy(sensitivePolicy)),
+      { serviceName: "web", serviceVersion: "1.4.0", environment: "test" },
+      envelope("frame-allowlist"),
+      "1".repeat(32),
+      () => [parsedFrame],
+    );
+    if (Option.isNone(projected)) throw new Error("Expected a projected Sentry event.");
+    const frame = projectFinalEvent(projected.value).exception.values[0]?.stacktrace?.frames[0];
+    expect(frame).toEqual({
+      filename: "/srv/app.js",
+      abs_path: "/srv/app.js",
+      function: "run",
+      module: "app",
+      lineno: 10,
+      colno: 2,
+      in_app: true,
+    });
+  });
+
+  it("sends one allowlisted browser error envelope through the wire transport", async () => {
+    const bodies: Array<string> = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        bodies.push(body);
+        response.writeHead(200);
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    const reporter = createBrowserSentryDefectReporter({
+      dsn: `http://public@127.0.0.1:${address.port}/1`,
+      service: { name: "web", version: "1.4.0", environment: "test" },
+      policy,
+    });
+    const original = envelope();
+    const outcome = reporter.capture({ envelope: original });
+    expect(outcome.kind).toBe("queued");
+    expect(await reporter.flush()).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(reporter.capture({ envelope: original })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    const plain = envelope("plain-equivalent");
+    expect(reporter.capture({ envelope: plain }).kind).toBe("queued");
+    expect(reporter.capture({ envelope: { ...plain } })).toEqual({
+      kind: "deduplicated",
+      reason: "fingerprint",
+    });
+    expect(await reporter.flush()).toBe(true);
+    expect(await reporter.dispose()).toBe(true);
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+    expect(bodies).toHaveLength(2);
+    const wire = bodies[0] ?? "";
+    const wireLines = wire.trim().split("\n");
+    expect(wireLines).toHaveLength(3);
+    const header = decodeJsonDocument(wireLines[0] ?? "");
+    if (!Schema.is(WireEnvelopeHeader)(header)) throw new Error("Expected an envelope header.");
+    expect(Object.keys(header).sort()).toEqual(["event_id", "sent_at"]);
+    expect(decodeJsonDocument(wireLines.at(-2) ?? "")).toEqual({ type: "event" });
+    const event = decodeJsonDocument(wireLines.at(-1) ?? "");
+    if (!Schema.is(WireEventDocument)(event)) throw new Error("Expected a Sentry error event.");
+    expect(Object.keys(event).sort()).toEqual([
+      "contexts",
+      "environment",
+      "event_id",
+      "exception",
+      "fingerprint",
+      "level",
+      "release",
+      "tags",
+      "timestamp",
+    ]);
+    expect(Object.keys(event.contexts)).toEqual(["obs"]);
+    expect(wire).toContain('"release":"1.4.0"');
+    expect(wire).toContain('"environment":"test"');
+    expect(wire).toContain('"service.name":"web"');
+    expect(wire).toContain('"error.code":"OBS_TEST_UNEXPECTED"');
+    expect(wire).toContain('"filename":"/srv/app.js"');
+    expect(wire).toContain('"abs_path":"/srv/app.js"');
+    expect(wire).toContain('"lineno":10');
+    expect(wire).toContain('"colno":2');
+    expect(wire).not.toContain('"request"');
+    expect(wire).not.toContain('"user"');
+    expect(wire).not.toContain('"breadcrumbs"');
+    expect(wire).not.toContain('"transaction"');
+    expect(wire).not.toContain('"replay"');
+    expect(wire).not.toContain('"session"');
+    expect(wire).not.toContain('"server_name"');
+    expect(wire).not.toContain('"runtime"');
+    expect(wire).not.toContain('"sdk"');
+    expect(wire).not.toContain('"modules"');
+    expect(wire).not.toContain('"platform"');
+    expect(reporter.reports().reasons).toMatchObject({ identity: 1, fingerprint: 1 });
+  });
+
+  it("registers the Node adapter and flushes one defect through lifecycle", async () => {
+    const bodies: Array<string> = [];
+    let status = 200;
+    let delay = 0;
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        bodies.push(body);
+        setTimeout(() => {
+          response.writeHead(status);
+          response.end();
+        }, delay);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    const contract = await Effect.runPromise(
+      defineTelemetryContract({ version: 1, events: {}, metrics: {}, auditActions: {} }),
+    );
+    const sentry = sentryDefectAdapter();
+    const events = evlogAdapter({ installGlobalLogger: false, stdout: { write: () => true } });
+    const runtime = await createNodeObservability({
+      profile: "worker",
+      env: {
+        OTEL_SERVICE_NAME: "worker",
+        OTEL_SERVICE_VERSION: "1.4.0",
+        OTEL_DEPLOYMENT_ENVIRONMENT: "test",
+        OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${address.port}`,
+        SENTRY_DSN: `http://public@127.0.0.1:${address.port}/1`,
+      },
+      contract,
+      policy: sensitivePolicy,
+      adapters: [events.registration, sentry.registration],
+    });
+    const capture = await sentry.captureAsync({ envelope: envelope("node") });
+    expect(capture.kind).toBe("queued");
+    const receipt = await sentry.sendVerificationDefect({ envelope: envelope("verification") });
+    expect(receipt).toMatchObject({ flushed: true });
+    const serviceOutcome = await Effect.runPromise(
+      Effect.gen(function* () {
+        const defects = yield* SentryDefects;
+        return yield* defects.capture({ envelope: envelope("service") });
+      }).pipe(Effect.provide(sentry.layer)),
+    );
+    expect(serviceOutcome.kind).toBe("queued");
+    const nodeSensitive = {
+      ...envelope("node-sensitive"),
+      context: new Map([
+        ["request.body", '{"nested":{"password":"node-body-secret"}}'],
+        ["auth.token", "node-auth-secret"],
+        ["http.cookie", "node-cookie-secret"],
+        ["ai.prompt", "node-prompt-secret"],
+        ["llm.response", "node-response-secret"],
+        ["payment.card", "5555555555554444"],
+        ["user.email", "node@example.com"],
+        ["sentry.contexts", "node-context-secret"],
+        ["sentry.attachments", "node-attachment-secret"],
+        ["sentry.breadcrumbs", "node-breadcrumb-secret"],
+        ["unknown.extra", "node-extra-secret"],
+        ["provider.hint", "node-hint-secret"],
+        ["assignment.secret", "node-assignment-secret"],
+      ]),
+    } satisfies DefectEnvelope;
+    expect(await sentry.sendVerificationDefect({ envelope: nodeSensitive })).toMatchObject({
+      flushed: true,
+    });
+    delay = 40;
+    const concurrentFirst = envelope("node-concurrent-first");
+    const concurrentSecond = envelope("node-concurrent-second");
+    const concurrentReceipts = await Promise.all([
+      sentry.sendVerificationDefect({ envelope: concurrentFirst }),
+      sentry.sendVerificationDefect({ envelope: concurrentSecond }),
+    ]);
+    expect(concurrentReceipts).toEqual([
+      { eventId: expect.any(String), flushed: true },
+      { eventId: expect.any(String), flushed: true },
+    ]);
+    expect(await sentry.sendVerificationDefect({ envelope: concurrentSecond })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    delay = 0;
+    const retry = envelope("node-retry");
+    status = 500;
+    expect(await sentry.sendVerificationDefect({ envelope: retry })).toEqual({
+      kind: "failed",
+      reason: "transport",
+    });
+    status = 200;
+    expect(await sentry.sendVerificationDefect({ envelope: retry })).toMatchObject({
+      flushed: true,
+    });
+    expect((await runtime.close()).degraded).toBe(true);
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+    expect(bodies.some((body) => body.includes('"service.name":"worker"'))).toBe(true);
+    if (capture.kind === "queued") {
+      const wire = bodies.find((body) => body.includes(capture.eventId));
+      expect(wire).toBeDefined();
+      const event = decodeJsonDocument(wire?.trim().split("\n").at(-1) ?? "");
+      if (!Schema.is(WireEventDocument)(event)) throw new Error("Expected a Sentry error event.");
+      expect(Object.keys(event).sort()).toEqual([
+        "contexts",
+        "environment",
+        "event_id",
+        "exception",
+        "fingerprint",
+        "level",
+        "release",
+        "tags",
+        "timestamp",
+      ]);
+      expect(Object.keys(event.contexts)).toEqual(["obs"]);
+      for (const forbidden of [
+        '"server_name"',
+        '"runtime"',
+        '"sdk"',
+        '"modules"',
+        '"platform"',
+        '"replay"',
+        '"session"',
+        '"transaction"',
+      ]) {
+        expect(wire).not.toContain(forbidden);
+      }
+    }
+    if ("eventId" in receipt) {
+      expect(bodies.some((body) => body.includes(receipt.eventId))).toBe(true);
+    }
+    for (const secret of [
+      "node-body-secret",
+      "node-auth-secret",
+      "node-cookie-secret",
+      "node-prompt-secret",
+      "node-response-secret",
+      "5555555555554444",
+      "node@example.com",
+      "node-context-secret",
+      "node-attachment-secret",
+      "node-breadcrumb-secret",
+      "node-extra-secret",
+      "node-hint-secret",
+      "node-assignment-secret",
+    ]) {
+      expect(bodies.join("\n")).not.toContain(secret);
+    }
+    expect(sentry.reports().reasons).toMatchObject({
+      captured: 7,
+      identity: 1,
+      transport: 1,
+    });
+  });
+
+  it("keeps slow Node transport terminal state after the verification deadline", async () => {
+    let status = 200;
+    let delay = 100;
+    let bodies = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      request.on("end", () => {
+        bodies += 1;
+        setTimeout(() => {
+          response.writeHead(status);
+          response.end();
+        }, delay);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    const contract = await Effect.runPromise(
+      defineTelemetryContract({ version: 1, events: {}, metrics: {}, auditActions: {} }),
+    );
+    const sentry = sentryDefectAdapter({
+      flushDeadlineMillis: 20,
+      terminalSettlementDeadlineMillis: 500,
+    });
+    const events = evlogAdapter({ installGlobalLogger: false, stdout: { write: () => true } });
+    const runtime = await createNodeObservability({
+      profile: "worker",
+      env: {
+        OTEL_SERVICE_NAME: "worker",
+        OTEL_SERVICE_VERSION: "1.4.0",
+        OTEL_DEPLOYMENT_ENVIRONMENT: "test",
+        OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${address.port}`,
+        SENTRY_DSN: `http://public@127.0.0.1:${address.port}/1`,
+      },
+      contract,
+      policy,
+      adapters: [events.registration, sentry.registration],
+    });
+    const slowAccepted = envelope("node-slow-accepted");
+    expect(await sentry.sendVerificationDefect({ envelope: slowAccepted })).toEqual({
+      kind: "failed",
+      reason: "transport",
+    });
+    expect(await sentry.captureAsync({ envelope: slowAccepted })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    expect(sentry.reports().reasons).toMatchObject({ captured: 1, transport: 0 });
+    expect(await sentry.captureAsync({ envelope: slowAccepted })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    const slowRejected = envelope("node-slow-rejected");
+    status = 500;
+    expect(await sentry.sendVerificationDefect({ envelope: slowRejected })).toEqual({
+      kind: "failed",
+      reason: "transport",
+    });
+    expect(await sentry.captureAsync({ envelope: slowRejected })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    expect(sentry.reports().reasons.transport).toBe(1);
+    status = 200;
+    delay = 0;
+    expect(await sentry.sendVerificationDefect({ envelope: slowRejected })).toMatchObject({
+      flushed: true,
+    });
+    expect(bodies).toBe(3);
+    await runtime.close();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+  });
+
+  it("preserves an active Node generation and permits reuse only after close", async () => {
+    const bodies: Array<string> = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        bodies.push(body);
+        response.writeHead(200);
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    const contract = await Effect.runPromise(
+      defineTelemetryContract({ version: 1, events: {}, metrics: {}, auditActions: {} }),
+    );
+    const sentry = sentryDefectAdapter();
+    const env = {
+      OTEL_SERVICE_VERSION: "1.4.0",
+      OTEL_DEPLOYMENT_ENVIRONMENT: "test",
+      OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${address.port}`,
+      SENTRY_DSN: `http://public@127.0.0.1:${address.port}/1`,
+    };
+    const firstEvents = evlogAdapter({ installGlobalLogger: false, stdout: { write: () => true } });
+    const firstRuntime = await createNodeObservability({
+      profile: "worker",
+      env: { ...env, OTEL_SERVICE_NAME: "first-runtime" },
+      contract,
+      policy,
+      adapters: [firstEvents.registration, sentry.registration],
+    });
+    const secondEvents = evlogAdapter({
+      installGlobalLogger: false,
+      stdout: { write: () => true },
+    });
+    await expect(
+      createNodeObservability({
+        profile: "worker",
+        env: { ...env, OTEL_SERVICE_NAME: "rejected-runtime" },
+        contract,
+        policy,
+        adapters: [secondEvents.registration, sentry.registration],
+      }),
+    ).rejects.toMatchObject({ cause: { cause: { code: "OBS_SENTRY_CONFIG_INVALID" } } });
+    expect(await sentry.sendVerificationDefect({ envelope: envelope("first-runtime") })).toEqual({
+      eventId: expect.any(String),
+      flushed: true,
+    });
+    expect((await firstRuntime.close()).degraded).toBe(false);
+    const thirdEvents = evlogAdapter({ installGlobalLogger: false, stdout: { write: () => true } });
+    const thirdRuntime = await createNodeObservability({
+      profile: "worker",
+      env: { ...env, OTEL_SERVICE_NAME: "third-runtime" },
+      contract,
+      policy,
+      adapters: [thirdEvents.registration, sentry.registration],
+    });
+    expect(await sentry.sendVerificationDefect({ envelope: envelope("third-runtime") })).toEqual({
+      eventId: expect.any(String),
+      flushed: true,
+    });
+    expect((await thirdRuntime.close()).degraded).toBe(false);
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+    expect(bodies.some((body) => body.includes('"service.name":"first-runtime"'))).toBe(true);
+    expect(bodies.some((body) => body.includes('"service.name":"third-runtime"'))).toBe(true);
+    expect(bodies.some((body) => body.includes('"service.name":"rejected-runtime"'))).toBe(false);
+  });
+
+  it("reports degraded Node lifecycle and suppresses capture after close timeout", async () => {
+    const server = createServer(() => {});
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    const contract = await Effect.runPromise(
+      defineTelemetryContract({ version: 1, events: {}, metrics: {}, auditActions: {} }),
+    );
+    const sentry = sentryDefectAdapter({ closeDeadlineMillis: 20 });
+    const events = evlogAdapter({ installGlobalLogger: false, stdout: { write: () => true } });
+    const runtime = await createNodeObservability({
+      profile: "worker",
+      env: {
+        OTEL_SERVICE_NAME: "worker",
+        OTEL_SERVICE_VERSION: "1.4.0",
+        OTEL_DEPLOYMENT_ENVIRONMENT: "test",
+        OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${address.port}`,
+        SENTRY_DSN: `http://public@127.0.0.1:${address.port}/1`,
+      },
+      contract,
+      policy,
+      adapters: [events.registration, sentry.registration],
+    });
+    expect((await sentry.captureAsync({ envelope: envelope("node-hang") })).kind).toBe("queued");
+    const report = await runtime.close();
+    expect(report.operation).toBe("close");
+    expect(report.degraded).toBe(true);
+    expect(sentry.reports().reasons).toMatchObject({ transport: 1, flushIncomplete: 1 });
+    expect(await sentry.captureAsync({ envelope: envelope("node-closed") })).toEqual({
+      kind: "suppressed",
+      reason: "closed",
+    });
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+  });
+
+  it.each([
+    { options: { flushDeadlineMillis: 0 }, code: "OBS_SENTRY_CONFIG_INVALID", dsn: true },
+    { options: {}, code: "OBS_SENTRY_DISABLED", dsn: false },
+  ])("reports Node adapter error $code", async ({ options, code, dsn }) => {
+    const contract = await Effect.runPromise(
+      defineTelemetryContract({ version: 1, events: {}, metrics: {}, auditActions: {} }),
+    );
+    const sentry = sentryDefectAdapter(options);
+    const events = evlogAdapter({ installGlobalLogger: false, stdout: { write: () => true } });
+    const env = {
+      OTEL_SERVICE_NAME: "worker",
+      OTEL_SERVICE_VERSION: "1.4.0",
+      OTEL_DEPLOYMENT_ENVIRONMENT: "test",
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:1",
+    };
+    if (dsn) Object.assign(env, { SENTRY_DSN: "http://public@127.0.0.1:1/1" });
+    await expect(
+      createNodeObservability({
+        profile: "worker",
+        env,
+        contract,
+        policy,
+        adapters: [events.registration, sentry.registration],
+      }),
+    ).rejects.toMatchObject({ cause: { cause: { code } } });
+  });
+
+  it("redacts every sensitive category and preserves valid correlation tags", async () => {
+    const bodies: Array<string> = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        bodies.push(body);
+        response.writeHead(200);
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    const [traceId, spanId, requestId, runId] = await Effect.runPromise(
+      Effect.all([
+        parseTraceId("1".repeat(32)),
+        parseSpanId("2".repeat(16)),
+        parseRequestId("request-1"),
+        parseRunId("run-1"),
+      ]),
+    );
+    const sensitive = {
+      ...envelope("sensitive"),
+      errorMessage: "failure sk-providersecret",
+      tags: new Map([
+        ["safe.value", "visible"],
+        ["bad key", "hidden"],
+        ["service.name", "spoofed-service"],
+        ["service.version", "spoofed-version"],
+        ["deployment.environment.name", "spoofed-environment"],
+        ["error.code", "spoofed-code"],
+        ["trace.id", "spoofed-trace"],
+        ["span.id", "spoofed-span"],
+        ["request.id", "spoofed-request"],
+        ["run.id", "spoofed-run"],
+      ]),
+      context: new Map([
+        ["request.body", '{"nested":{"password":"body-secret"}}'],
+        ["auth.token", "Bearer auth-secret"],
+        ["http.cookie", "session=cookie-secret"],
+        ["ai.prompt", "prompt-secret"],
+        ["llm.response", "response-secret"],
+        ["payment.card", "4111111111111111"],
+        ["user.email", "person@example.com"],
+        ["sentry.contexts", '{"secret":"context-secret"}'],
+        ["sentry.attachments", "attachment-secret"],
+        ["sentry.breadcrumbs", "breadcrumb-secret"],
+        ["unknown.extra", "extra-secret"],
+        ["provider.hint", "hint-secret"],
+        ["assignment.secret", "API_KEY=assignment-secret"],
+        ["safe.value", "visible"],
+      ]),
+      correlation: new CorrelationContext({
+        trace: { _tag: "Traced", traceId, spanId },
+        requestId: Option.some(requestId),
+        runId: Option.some(runId),
+      }),
+    } satisfies DefectEnvelope;
+    const reporter = createBrowserSentryDefectReporter({
+      dsn: `http://public@127.0.0.1:${address.port}/1`,
+      service: { name: "web", version: "1.4.0", environment: "test" },
+      policy: sensitivePolicy,
+    });
+    expect(await reporter.sendVerificationDefect({ envelope: sensitive })).toMatchObject({
+      flushed: true,
+    });
+    const wire = bodies.join("\n");
+    for (const secret of [
+      "body-secret",
+      "auth-secret",
+      "cookie-secret",
+      "prompt-secret",
+      "response-secret",
+      "4111111111111111",
+      "person@example.com",
+      "context-secret",
+      "attachment-secret",
+      "breadcrumb-secret",
+      "extra-secret",
+      "hint-secret",
+      "assignment-secret",
+      "providersecret",
+      "hidden",
+    ]) {
+      expect(wire).not.toContain(secret);
+    }
+    expect(wire).toContain('"safe.value":"visible"');
+    expect(wire).toContain('"service.name":"web"');
+    expect(wire).toContain('"service.version":"1.4.0"');
+    expect(wire).toContain('"deployment.environment.name":"test"');
+    expect(wire).toContain('"error.code":"OBS_TEST_UNEXPECTED"');
+    expect(wire).not.toContain("spoofed-");
+    expect(wire).toContain('"trace.id":"11111111111111111111111111111111"');
+    expect(wire).toContain('"span.id":"2222222222222222"');
+    expect(wire).toContain('"request.id":"request-1"');
+    expect(wire).toContain('"run.id":"run-1"');
+    await reporter.dispose();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+  });
+
+  it("rejects malformed correlation identifiers", async () => {
+    for (const invalid of [
+      parseTraceId("0".repeat(32)).pipe(Effect.asVoid),
+      parseTraceId("ABC").pipe(Effect.asVoid),
+      parseSpanId("0".repeat(16)).pipe(Effect.asVoid),
+      parseSpanId("xyz").pipe(Effect.asVoid),
+      parseRequestId("bad\nrequest").pipe(Effect.asVoid),
+      parseRunId("").pipe(Effect.asVoid),
+    ]) {
+      await expect(Effect.runPromise(invalid)).rejects.toMatchObject({
+        code: "OBS_CORRELATION_INVALID",
+      });
+    }
+  });
+
+  it.each([200, 400, 429, 500])(
+    "requires HTTP acceptance for verification status %i",
+    async (status) => {
+      const bodies: Array<string> = [];
+      const server = createServer((request, response) => {
+        let body = "";
+        request.setEncoding("utf8");
+        request.on("data", (chunk: string) => {
+          body += chunk;
+        });
+        request.on("end", () => {
+          bodies.push(body);
+          setTimeout(() => {
+            response.writeHead(status);
+            response.end();
+          }, 40);
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(
+        server.address(),
+      );
+      const reporter = createBrowserSentryDefectReporter({
+        dsn: `http://public@127.0.0.1:${address.port}/1`,
+        service: { name: "web", version: "1.4.0", environment: "test" },
+        policy,
+      });
+      const first = envelope(`status-${status}-first`);
+      const second = envelope(`status-${status}-second`);
+      const receipts = await Promise.all([
+        reporter.sendVerificationDefect({ envelope: first }),
+        reporter.sendVerificationDefect({ envelope: second }),
+      ]);
+      if (status === 200) {
+        expect(receipts).toEqual([
+          { eventId: expect.any(String), flushed: true },
+          { eventId: expect.any(String), flushed: true },
+        ]);
+        expect(await reporter.sendVerificationDefect({ envelope: second })).toEqual({
+          kind: "deduplicated",
+          reason: "identity",
+        });
+        expect(reporter.reports().reasons).toMatchObject({ captured: 2, identity: 1 });
+      } else {
+        expect(receipts).toEqual([
+          { kind: "failed", reason: "transport" },
+          { kind: "failed", reason: "transport" },
+        ]);
+        expect(reporter.reports().reasons.transport).toBe(2);
+      }
+      expect(bodies).toHaveLength(status === 429 ? 1 : 2);
+      await reporter.dispose();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error === undefined ? resolve() : reject(error))),
+      );
+    },
+  );
+
+  it("keeps slow browser transport terminal state after the verification deadline", async () => {
+    let status = 200;
+    let delay = 100;
+    let bodies = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      request.on("end", () => {
+        bodies += 1;
+        setTimeout(() => {
+          response.writeHead(status);
+          response.end();
+        }, delay);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    const reporter = createBrowserSentryDefectReporter({
+      dsn: `http://public@127.0.0.1:${address.port}/1`,
+      service: { name: "web", version: "1.4.0", environment: "test" },
+      policy,
+      flushDeadlineMillis: 20,
+      terminalSettlementDeadlineMillis: 500,
+    });
+    const slowAccepted = envelope("slow-accepted");
+    expect(await reporter.sendVerificationDefect({ envelope: slowAccepted })).toEqual({
+      kind: "failed",
+      reason: "transport",
+    });
+    expect(reporter.capture({ envelope: slowAccepted })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    expect(reporter.reports().reasons).toMatchObject({ captured: 1, transport: 0 });
+    expect(reporter.capture({ envelope: slowAccepted })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    const slowRejected = envelope("slow-rejected");
+    status = 500;
+    expect(await reporter.sendVerificationDefect({ envelope: slowRejected })).toEqual({
+      kind: "failed",
+      reason: "transport",
+    });
+    expect(reporter.capture({ envelope: slowRejected })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    expect(reporter.reports().reasons.transport).toBe(1);
+    status = 200;
+    delay = 0;
+    expect(await reporter.sendVerificationDefect({ envelope: slowRejected })).toMatchObject({
+      flushed: true,
+    });
+    expect(bodies).toBe(3);
+    await reporter.dispose();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+  });
+
+  it("rolls back dedupe after transport rejection", async () => {
+    let status = 500;
+    const server = createServer((_request, response) => {
+      response.writeHead(status);
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    const reporter = createBrowserSentryDefectReporter({
+      dsn: `http://public@127.0.0.1:${address.port}/1`,
+      service: { name: "web", version: "1.4.0", environment: "test" },
+      policy,
+    });
+    const defect = envelope("retry");
+    expect(await reporter.sendVerificationDefect({ envelope: defect })).toEqual({
+      kind: "failed",
+      reason: "transport",
+    });
+    status = 200;
+    expect(await reporter.sendVerificationDefect({ envelope: defect })).toMatchObject({
+      flushed: true,
+    });
+    await reporter.dispose();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+  });
+
+  it("rejects network failure and rolls back its reservation", async () => {
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+    const reporter = createBrowserSentryDefectReporter({
+      dsn: `http://public@127.0.0.1:${address.port}/1`,
+      service: { name: "web", version: "1.4.0", environment: "test" },
+      policy,
+      flushDeadlineMillis: 100,
+    });
+    const first = envelope("network-first");
+    const second = envelope("network-second");
+    expect(
+      await Promise.all([
+        reporter.sendVerificationDefect({ envelope: first }),
+        reporter.sendVerificationDefect({ envelope: second }),
+      ]),
+    ).toEqual([
+      { kind: "failed", reason: "transport" },
+      { kind: "failed", reason: "transport" },
+    ]);
+    expect(reporter.capture({ envelope: first }).kind).toBe("queued");
+    expect(reporter.capture({ envelope: second }).kind).toBe("queued");
+    await reporter.dispose();
+  });
+
+  it("counts one incomplete flush per operation and closes truthfully after timeout", async () => {
+    const server = createServer(() => {});
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    const reporter = createBrowserSentryDefectReporter({
+      dsn: `http://public@127.0.0.1:${address.port}/1`,
+      service: { name: "web", version: "1.4.0", environment: "test" },
+      policy,
+      flushDeadlineMillis: 20,
+      closeDeadlineMillis: 20,
+      terminalSettlementDeadlineMillis: 100,
+    });
+    const hanging = envelope("hang");
+    expect(reporter.capture({ envelope: hanging }).kind).toBe("queued");
+    expect(await Promise.all([reporter.flush(), reporter.flush()])).toEqual([false, false]);
+    expect(reporter.reports().reasons).toMatchObject({
+      captured: 0,
+      transport: 0,
+      flushIncomplete: 1,
+    });
+    expect(reporter.capture({ envelope: hanging })).toEqual({
+      kind: "deduplicated",
+      reason: "identity",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 110));
+    expect(reporter.reports().reasons.transport).toBe(1);
+    expect(reporter.capture({ envelope: hanging }).kind).toBe("queued");
+    const disposing = reporter.dispose();
+    const concurrentDispose = reporter.dispose();
+    expect(concurrentDispose).toBe(disposing);
+    expect(reporter.capture({ envelope: envelope("during-close") })).toEqual({
+      kind: "suppressed",
+      reason: "closed",
+    });
+    expect(await Promise.all([disposing, concurrentDispose])).toEqual([false, false]);
+    expect(reporter.dispose()).toBe(disposing);
+    expect(await reporter.dispose()).toBe(false);
+    expect(reporter.reports().reasons.transport).toBe(2);
+    expect(reporter.capture({ envelope: envelope("after-close") })).toEqual({
+      kind: "suppressed",
+      reason: "closed",
+    });
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+  });
+
+  it("generates browser event IDs without randomUUID and contains missing crypto failures", async () => {
+    const reporter = createBrowserSentryDefectReporter({
+      dsn: "http://public@127.0.0.1:1/1",
+      service: { name: "web", version: "1.4.0", environment: "test" },
+      policy,
+      flushDeadlineMillis: 20,
+      closeDeadlineMillis: 20,
+      terminalSettlementDeadlineMillis: 50,
+    });
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+    try {
+      Object.defineProperty(globalThis, "crypto", {
+        configurable: true,
+        value: {
+          getRandomValues: (bytes: Uint8Array) => bytes.fill(7),
+        },
+      });
+      expect(reporter.capture({ envelope: envelope("secure-id") })).toMatchObject({
+        kind: "queued",
+        eventId: "07".repeat(16),
+      });
+      Object.defineProperty(globalThis, "crypto", { configurable: true, value: undefined });
+      expect(reporter.capture({ envelope: envelope("missing-crypto") })).toEqual({
+        kind: "failed",
+        reason: "transport",
+      });
+    } finally {
+      if (descriptor === undefined) {
+        Object.defineProperty(globalThis, "crypto", { configurable: true, value: undefined });
+      } else Object.defineProperty(globalThis, "crypto", descriptor);
+      await reporter.dispose();
+    }
+  });
+
+  it("rejects invalid browser options, unknown keys, and invalid policies", () => {
+    expect(() =>
+      createBrowserSentryDefectReporter({
+        service: { name: "web", version: "1.4.0", environment: "test" },
+        policy,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "OBS_SENTRY_DSN_INVALID" }));
+    expect(() =>
+      createBrowserSentryDefectReporter({
+        disabled: true,
+        service: { name: "web", version: "1.4.0", environment: "test" },
+        policy,
+        flushDeadlineMillis: 0,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "OBS_SENTRY_CONFIG_INVALID" }));
+    const unknown = {
+      disabled: true,
+      service: { name: "web", version: "1.4.0", environment: "test" },
+      policy,
+      flushDeadlineMs: 10,
+    };
+    expect(() => createBrowserSentryDefectReporter(unknown)).toThrowError(
+      expect.objectContaining({ code: "OBS_SENTRY_CONFIG_INVALID" }),
+    );
+    expect(() =>
+      createBrowserSentryDefectReporter({
+        disabled: true,
+        service: { name: "web", version: "1.4.0", environment: "test" },
+        policy: { attributes: {}, blockedKeys: ["("], blockedValuePatterns: [] },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "OBS_SENTRY_CONFIG_INVALID" }));
+  });
+
+  it("suppresses policy defects and permits an immediate corrected retry", async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200);
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Int }))(server.address());
+    const reporter = createBrowserSentryDefectReporter({
+      dsn: `http://public@127.0.0.1:${address.port}/1`,
+      service: { name: "web", version: "1.4.0", environment: "test" },
+      policy: {
+        attributes: {
+          "secret.value": { classification: "forbidden", required: false, metricLabel: false },
+        },
+        blockedKeys: [],
+        blockedValuePatterns: [],
+      },
+    });
+    const defect = { ...envelope("policy"), context: new Map([["secret.value", "value"]]) };
+    expect(reporter.capture({ envelope: defect })).toEqual({
+      kind: "suppressed",
+      reason: "policy",
+    });
+    const corrected = { ...defect, context: new Map<string, string>() };
+    expect(await reporter.sendVerificationDefect({ envelope: corrected })).toMatchObject({
+      flushed: true,
+    });
+    await reporter.dispose();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+  });
+
+  it("covers source-map invalid configuration", () => {
+    expect(malformedSourceMapErrors(sentrySourceMapUpload)).toEqual(
+      Array.from({ length: 7 }, () => "OBS_SENTRY_SOURCE_MAP_INVALID"),
+    );
+    expect(() =>
+      sentrySourceMapUpload({
+        organization: "",
+        project: "web",
+        release: "1.4.0",
+        includePaths: [],
+      }),
+    ).toThrowError(expect.objectContaining({ code: "OBS_SENTRY_SOURCE_MAP_INVALID" }));
+  });
+
+  it("settles global processor null drops and restores capacity on Node and browser", async () => {
+    await Promise.all(
+      [
+        "global-drop-node.ts",
+        "global-drop-browser.ts",
+        "attachments-node.ts",
+        "attachments-browser.ts",
+      ].map(async (file) => {
+        const result = await execFileAsync("bun", [new URL(file, import.meta.url).pathname], {
+          timeout: 5_000,
+        });
+        expect(result.stderr).toBe("");
+      }),
+    );
+  });
+
+  it("returns typed failures for malformed public capture inputs", async () => {
+    const reporter = createBrowserSentryDefectReporter({
+      disabled: true,
+      service: { name: "web", version: "1.4.0", environment: "test" },
+      policy,
+    });
+    expect(malformedCaptureErrors(reporter)).toEqual(
+      Array.from({ length: 6 }, () => "OBS_SENTRY_CAPTURE_INVALID"),
+    );
+    await reporter.dispose();
+  });
+
+  it("keeps disabled and closed outcomes explicit", async () => {
+    const reporter = createBrowserSentryDefectReporter({
+      disabled: true,
+      service: { name: "web", version: "1.4.0", environment: "test" },
+      policy,
+    });
+    expect(reporter.capture({ envelope: envelope() })).toEqual({
+      kind: "suppressed",
+      reason: "disabled",
+    });
+    const disposing = reporter.dispose();
+    expect(reporter.dispose()).toBe(disposing);
+    expect(await disposing).toBe(true);
+    expect(reporter.dispose()).toBe(disposing);
+    expect(reporter.capture({ envelope: envelope("closed") })).toEqual({
+      kind: "suppressed",
+      reason: "closed",
+    });
+    expect(reporter.reports().reasons).toMatchObject({ disabled: 1, closed: 1 });
+  });
+});

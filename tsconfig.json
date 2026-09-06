@@ -19,11 +19,15 @@
       "@equipe-tech/observability/browser": ["./packages/telemetry/src/browser/index.ts"],
       "@equipe-tech/observability/browser/client": ["./packages/telemetry/src/browser/client.ts"],
       "@equipe-tech/observability/effect": ["./packages/telemetry/src/effect/index.ts"],
+      "@equipe-tech/observability/policy": ["./packages/telemetry/src/policy/entrypoint.ts"],
       "@equipe-tech/observability/metrics": ["./packages/telemetry/src/Metrics.ts"],
       "@equipe-tech/observability/node": ["./packages/telemetry/src/node/index.ts"],
       "@equipe-tech/observability/testing": ["./packages/telemetry/src/testing/index.ts"],
       "@equipe-tech/observability-nestjs": ["./packages/nestjs/src/index.ts"],
-      "@equipe-tech/observability-evlog": ["./packages/evlog/src/index.ts"]
+      "@equipe-tech/observability-evlog": ["./packages/evlog/src/index.ts"],
+      "@equipe-tech/observability-sentry": ["./packages/sentry/src/index.ts"],
+      "@equipe-tech/observability-sentry/node": ["./packages/sentry/src/node/index.ts"],
+      "@equipe-tech/observability-sentry/browser": ["./packages/sentry/src/browser/index.ts"]
     }
   },
   "include": ["vite.config.ts", "tools/**/*.ts", "scripts/**/*.ts", "packages/**/*.ts"],

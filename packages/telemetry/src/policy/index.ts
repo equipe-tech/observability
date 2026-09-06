@@ -2,8 +2,8 @@ export { baseDataPolicy, CurrentDataPolicy, definePolicy, parseDataPolicy } from
 export type { DataPolicy, DataPolicyInput, PolicySurface } from "./DataPolicy.ts";
 export { InvalidDataPolicy, PolicyIssueCode } from "./DataPolicyError.ts";
 export type { PolicyIssue } from "./DataPolicyError.ts";
-export { sanitizeDefectEnvelope } from "./DefectEnvelope.ts";
-export type { DefectEnvelope } from "./DefectEnvelope.ts";
+export { DefectEnvelope, sanitizeDefectEnvelope, unexpectedDefect } from "./DefectEnvelope.ts";
+export type { UnexpectedDefectInput } from "./DefectEnvelope.ts";
 export { metricLabelRejection } from "./MetricLabelPolicy.ts";
 export type { MetricLabelRejection } from "./MetricLabelPolicy.ts";
 export { sanitizeText, transformSignalFields } from "./PolicyTransform.ts";
