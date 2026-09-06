@@ -1,5 +1,6 @@
 import { Cause, Context, Duration, Effect, Layer, ManagedRuntime, Option } from "effect";
 import { OtlpExporter } from "effect/unstable/observability";
+import { AuditPublisher, unboundAuditPublisher } from "../audit/AuditPublisher.ts";
 import { TelemetryEventSink } from "../contract/EventProducer.ts";
 import * as Telemetry from "../Telemetry.ts";
 import type { Metrics } from "../Metrics.ts";
@@ -34,6 +35,7 @@ import { profileCapabilityRank } from "../profile/ObservabilityProfile.ts";
 export type NodeObservabilityDisabled = {
   readonly enabled: false;
   readonly eventLayer: Layer.Layer<TelemetryEventSink>;
+  readonly auditLayer: Layer.Layer<AuditPublisher>;
   readonly metrics: Metrics;
   readonly flush: () => Promise<LifecycleReport>;
   readonly close: () => Promise<LifecycleReport>;
@@ -46,6 +48,7 @@ export type NodeObservabilityEnabled = {
   readonly config: NodeObservabilityConfigEnabled;
   readonly runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, InvalidObservabilityConfig>;
   readonly eventLayer: Layer.Layer<TelemetryEventSink>;
+  readonly auditLayer: Layer.Layer<AuditPublisher>;
   readonly metrics: Metrics;
   readonly flush: () => Promise<LifecycleReport>;
   readonly close: () => Promise<LifecycleReport>;
@@ -80,6 +83,9 @@ const noopEventLayer = Layer.succeed(
   }),
 );
 
+const noopAuditLayer = (): Layer.Layer<AuditPublisher> =>
+  Layer.succeed(AuditPublisher, unboundAuditPublisher());
+
 const disabledHandle = (): NodeObservabilityDisabled => {
   const report = emptyReport("close");
   const metrics = createDisabledMetrics();
@@ -94,6 +100,7 @@ const disabledHandle = (): NodeObservabilityDisabled => {
   return {
     enabled: false,
     eventLayer: noopEventLayer,
+    auditLayer: noopAuditLayer(),
     metrics,
     flush: () => (closed ? closedFlush() : Promise.resolve(emptyReport("flush"))),
     close,
@@ -117,6 +124,7 @@ class LiveNodeObservability implements NodeObservabilityEnabled {
       InvalidObservabilityConfig
     >,
     readonly eventLayer: Layer.Layer<TelemetryEventSink>,
+    readonly auditLayer: Layer.Layer<AuditPublisher>,
     readonly metrics: Metrics,
     private readonly runLifecycle: (operation: "flush" | "close") => Effect.Effect<LifecycleReport>,
   ) {}
@@ -256,6 +264,7 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
     (entry) => entry.registration.adapter.capability === "events",
   )?.handle;
   const eventLayer = eventHandle?.eventLayer ?? Option.none();
+  const auditLayer = Option.getOrElse(eventHandle?.auditLayer ?? Option.none(), noopAuditLayer);
   if (Option.isNone(eventLayer)) {
     yield* rollbackStartedAdapters(started);
     yield* Effect.promise(() => releaseMetricsLease(metrics));
@@ -272,7 +281,14 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
     });
   }
   const registry = createLifecycleRegistry(config.profile, started, flusher, runtime.disposeEffect);
-  return new LiveNodeObservability(config, runtime, eventLayer.value, metrics, registry.run);
+  return new LiveNodeObservability(
+    config,
+    runtime,
+    eventLayer.value,
+    auditLayer,
+    metrics,
+    registry.run,
+  );
 });
 
 export const makeNodeObservability = (

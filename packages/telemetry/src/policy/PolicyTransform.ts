@@ -44,6 +44,7 @@ type SignalBounds = {
 const serverBounds: {
   readonly [surface in Exclude<PolicySurface, "browser-ingest" | "metric">]: SignalBounds;
 } = {
+  audit: { maximumFields: 64, maximumTextLength: 4_096 },
   event: { maximumFields: 128, maximumTextLength: 16_384 },
   log: { maximumFields: 128, maximumTextLength: 32_768 },
   span: { maximumFields: 128, maximumTextLength: 32_768 },

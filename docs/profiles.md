@@ -20,7 +20,9 @@ OTLP, traces e métricas pertencem ao núcleo. Aplicações registram adapters o
 
 `parseNodeObservabilityConfig` analisa valores explícitos. `nodeObservabilityConfigFromEnv` analisa ambiente. As duas entradas permanecem separadas e não aplicam precedência entre fontes.
 
-`createNodeObservability` é a entrada assíncrona para aplicações Node. Ela analisa o ambiente, inicia o runtime e devolve um handle que a aplicação deve fechar. `makeNodeObservability` recebe uma configuração já analisada e devolve um `Effect`, para composição em programas Effect. `layerNodeObservability` fornece `NodeObservabilityService` em uma `Layer` com escopo e fecha o handle uma vez quando o escopo termina.
+`createNodeObservability` é a entrada assíncrona para aplicações Node. O handle fornece `eventLayer` e `auditLayer`. O adapter de eventos selecionado fornece as duas layers. Um runtime sem auditoria usa o publicador `unbound`, que mantém a escrita durável e registra o descarte da cópia operacional.
+
+A factory analisa o ambiente, inicia o runtime e devolve um handle que a aplicação deve fechar. `makeNodeObservability` recebe uma configuração já analisada e devolve um `Effect`, para composição em programas Effect. `layerNodeObservability` fornece `NodeObservabilityService` em uma `Layer` com escopo e fecha o handle uma vez quando o escopo termina.
 
 Um endpoint em `localhost`, `localhost.`, `127.0.0.0/8`, `::1` ou no equivalente IPv4-mapped de `127.0.0.0/8` define escopo local. Somente essa classificação permite que o parser use `0.0.0` e `development`. Um sidecar de produção acessado por loopback deve definir `OTEL_SERVICE_VERSION` e `OTEL_DEPLOYMENT_ENVIRONMENT` explicitamente. Qualquer endpoint não loopback exige as duas variáveis.
 
@@ -40,7 +42,7 @@ O descarte do runtime é o último resultado explícito do relatório. Quando n�
 
 Chamadas concorrentes da mesma operação compartilham o relatório. `close` espera um `flush` já iniciado terminar antes de começar. `close` e `dispose` devolvem o mesmo relatório final depois da primeira chamada.
 
-`DataPolicy` declara atributos e bloqueios. A aplicação pode acrescentar regras, mas não remove a base. Eventos, logs, spans, defeitos, recursos, métricas e browser ingest aplicam a política compilada antes de exportar ou armazenar dados.
+`DataPolicy` declara atributos e bloqueios. A aplicação pode acrescentar regras, mas não remove a base. Eventos, cópias operacionais de auditoria, logs, spans, defeitos, recursos, métricas e browser ingest aplicam a política compilada antes de exportar ou armazenar dados.
 
 Identidade, endpoint, ambiente, topologia, rota, proxy, secrets e valores de deploy continuam sob responsabilidade da aplicação.
 

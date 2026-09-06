@@ -78,7 +78,7 @@ O núcleo `@equipe-tech/observability` publica entrypoints explícitos:
 | ------------------ | ------------------------------------------------------------------------------------------------- |
 | `./effect`         | `WideEvent` e `layerWideEvent` para aplicações Effect                                             |
 | `./metrics`        | Facade sem dependência de framework para counters, histogramas, gauges observáveis, flush e close |
-| `./node`           | `runMain`, composição Node, lifecycle e ingestão de eventos do browser                            |
+| `./node`           | `runMain`, composição Node, digest SHA-256 de auditoria, lifecycle e ingestão do browser          |
 | `./browser`        | `BrowserTelemetry` compatível com Effect, com fila limitada, batch e transporte injetável         |
 | `./browser/client` | Cliente imperativo do browser sem tipos Effect na API pública                                     |
 | `./testing`        | Captura em memória dos exports OTLP reais para asserts de spans, logs e métricas                  |
@@ -90,6 +90,8 @@ Os [adaptadores Sentry](docs/sentry-adapters.md) publicam entrypoints separados 
 O [cliente imperativo do browser](docs/browser-client.md) publica `emit`, `flush`, `pending` e `dispose` sem tipos Effect e documenta o ciclo de vida React suportado. O contrato do endpoint `/_telemetry/events` vive em `BrowserEvents` no entrypoint raiz. O servidor faz o parse com `parseBrowserEventBatch` e re-emite os eventos como wide events com atributos de servidor (`event.source`, `browser.event.id`). O cliente sanitiza nomes e campos antes da fila conforme a [política de dados da telemetria do browser](docs/browser-telemetry-data-policy.md).
 
 O pacote `@equipe-tech/observability-nestjs` publica o endpoint pronto. Registre `createBrowserEventsController(observability.runtime, { eventLayer: observability.eventLayer })` nos controllers do módulo. Assim, o endpoint usa o mesmo adapter de eventos do servidor. O controller responde `202 { accepted }` e rejeita batches inválidos com `400 { code, message, correlationId }`. O valor `correlationId` é um identificador seguro para suporte. O limite de corpo bruto pertence ao transporte HTTP; o Express responde `413` acima do limite configurado.
+
+Consulte [Auditoria no servidor](docs/audit.md) para contratos, ordem durável, outbox, privacidade e mapeamento evlog.
 
 Consulte [Métricas sem dependência de framework](docs/metrics.md) para lifecycle, limites de cardinalidade, atributos e erros.
 

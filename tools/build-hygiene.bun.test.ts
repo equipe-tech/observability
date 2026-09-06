@@ -10,6 +10,18 @@ const BuildConfig = Schema.Struct({
   compilerOptions: Schema.Struct({ noEmitOnError: Schema.Literal(true) }),
 });
 const decodeBuildConfig = Schema.decodeUnknownSync(BuildConfig);
+const RootManifest = Schema.Struct({
+  scripts: Schema.Struct({ "test:bun": Schema.String }),
+});
+const decodeRootManifest = Schema.decodeUnknownSync(RootManifest);
+
+test("the Bun suite discovers nested package and tool tests", async () => {
+  const value: unknown = JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8"));
+  assert.equal(
+    decodeRootManifest(value).scripts["test:bun"],
+    "bun test $(find packages tools -name '*.bun.test.ts' -print) --timeout 30000",
+  );
+});
 
 test("package builds disable emit after type errors", async () => {
   for (const packageName of ["telemetry", "nestjs", "evlog", "sentry", "react", "cli"]) {

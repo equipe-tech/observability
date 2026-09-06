@@ -1,5 +1,7 @@
 import { DateTime, Option, Schema } from "effect";
+import { AuditContext, AuditOutcome } from "../audit/AuditRecord.ts";
 import type { CorrelationContext } from "../Correlation.ts";
+
 import type { EventName } from "./EventName.ts";
 
 export const EventSeverity = Schema.Literals(["debug", "info", "warn", "error", "fatal"]);
@@ -34,21 +36,6 @@ export const ErrorContext = Schema.Struct({
   retryable: Schema.Boolean,
 });
 export type ErrorContext = typeof ErrorContext.Type;
-
-export const AuditActor = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("user"), id: Schema.NonEmptyString }),
-  Schema.Struct({ kind: Schema.Literal("service"), id: Schema.NonEmptyString }),
-  Schema.Struct({ kind: Schema.Literal("system") }),
-]);
-export type AuditActor = typeof AuditActor.Type;
-
-export const AuditContext = Schema.Struct({
-  action: Schema.NonEmptyString,
-  actor: AuditActor,
-  resourceType: Schema.NonEmptyString,
-  resourceId: Schema.NonEmptyString,
-});
-export type AuditContext = typeof AuditContext.Type;
 
 export const maxOtlpUnixTimestampMillis = 18_446_744_073_709;
 
@@ -132,6 +119,6 @@ export type TelemetryEvent =
     })
   | (EventBase & {
       readonly kind: "audit";
-      readonly outcome: EventOutcome;
+      readonly outcome: AuditOutcome;
       readonly audit: AuditContext;
     });

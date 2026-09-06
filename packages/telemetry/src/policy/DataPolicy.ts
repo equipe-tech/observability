@@ -13,6 +13,7 @@ import {
 import { InvalidDataPolicy, type PolicyIssue, type PolicyIssueCode } from "./DataPolicyError.ts";
 
 export type PolicySurface =
+  | "audit"
   | "event"
   | "log"
   | "span"

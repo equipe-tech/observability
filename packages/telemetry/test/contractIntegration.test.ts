@@ -58,7 +58,8 @@ const contractInput = telemetryContractDefinition({
     AccessReviewed: {
       action: "access.reviewed",
       resourceType: "account",
-      allowedOutcomes: ["success"],
+      allowedOutcomes: ["success", "failure", "cancelled", "denied"],
+      reasonCodes: ["approval.missing"],
     },
   },
 });
@@ -119,7 +120,28 @@ describe("contract OTLP integration", () => {
               action: "access.reviewed",
               actor: { kind: "user", id: "user-1" },
               resourceType: "account",
-              resourceId: "account-1",
+              resourceId: "account-success",
+            },
+            attributes: {},
+          }),
+          producer.emit("Audit", {
+            outcome: "denied",
+            audit: {
+              action: "access.reviewed",
+              actor: { kind: "system" },
+              resourceType: "account",
+              resourceId: "account-denied",
+              reasonCode: "approval.missing",
+            },
+            attributes: {},
+          }),
+          producer.emit("Audit", {
+            outcome: "cancelled",
+            audit: {
+              action: "access.reviewed",
+              actor: { kind: "system" },
+              resourceType: "account",
+              resourceId: "account-cancelled",
             },
             attributes: {},
           }),
@@ -143,15 +165,40 @@ describe("contract OTLP integration", () => {
       assert.strictEqual(attributeValue(defect.attributes, "error.type"), "TypeError");
       assert.strictEqual(attributeValue(defect.attributes, "error.message"), "failed");
       assert.strictEqual(attributeValue(defect.attributes, "error.retryable"), false);
-      const audit = run.telemetry.logs.find(
+      const audits = run.telemetry.logs.filter(
         (candidate) => attributeValue(candidate.attributes, "event.name") === "access.reviewed",
       );
-      assert.isDefined(audit);
-      assert.strictEqual(attributeValue(audit.attributes, "audit.action"), "access.reviewed");
-      assert.strictEqual(attributeValue(audit.attributes, "audit.actor.kind"), "user");
-      assert.strictEqual(attributeValue(audit.attributes, "audit.actor.id"), "user-1");
-      assert.strictEqual(attributeValue(audit.attributes, "audit.resource.type"), "account");
-      assert.strictEqual(attributeValue(audit.attributes, "audit.resource.id"), "account-1");
+      assert.lengthOf(audits, 3);
+      const success = audits.find(
+        (candidate) =>
+          attributeValue(candidate.attributes, "audit.resource.id") === "account-success",
+      );
+      assert.isDefined(success);
+      assert.strictEqual(attributeValue(success.attributes, "event.outcome"), "success");
+      assert.strictEqual(attributeValue(success.attributes, "audit.outcome"), "success");
+      assert.strictEqual(attributeValue(success.attributes, "audit.actor.kind"), "user");
+      assert.strictEqual(attributeValue(success.attributes, "audit.actor.id"), "user-1");
+      const denied = audits.find(
+        (candidate) =>
+          attributeValue(candidate.attributes, "audit.resource.id") === "account-denied",
+      );
+      assert.isDefined(denied);
+      assert.strictEqual(attributeValue(denied.attributes, "event.outcome"), "failure");
+      assert.strictEqual(attributeValue(denied.attributes, "audit.outcome"), "denied");
+      assert.strictEqual(
+        attributeValue(denied.attributes, "audit.reason_code"),
+        "approval.missing",
+      );
+      assert.strictEqual(attributeValue(denied.attributes, "audit.actor.kind"), "system");
+      assert.strictEqual(attributeValue(denied.attributes, "audit.actor.id"), "system");
+      const cancelled = audits.find(
+        (candidate) =>
+          attributeValue(candidate.attributes, "audit.resource.id") === "account-cancelled",
+      );
+      assert.isDefined(cancelled);
+      assert.strictEqual(attributeValue(cancelled.attributes, "event.outcome"), "failure");
+      assert.strictEqual(attributeValue(cancelled.attributes, "audit.outcome"), "cancelled");
+      assert.strictEqual(attributeValue(cancelled.attributes, "audit.actor.id"), "system");
     }),
   );
 

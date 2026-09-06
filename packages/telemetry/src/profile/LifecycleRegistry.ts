@@ -307,6 +307,7 @@ const coreRegistration = (
     flush: effect,
     close: effect,
     eventLayer: Option.none(),
+    auditLayer: Option.none(),
     degraded: () => false,
   },
 });

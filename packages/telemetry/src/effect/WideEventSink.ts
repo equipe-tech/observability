@@ -43,13 +43,16 @@ const fieldsForEvent = (event: TelemetryEvent): EventAttributes => {
       fields["error.retryable"] = event.error.retryable;
       break;
     case "audit":
+      fields["event.outcome"] = event.outcome === "success" ? "success" : "failure";
+      fields["audit.outcome"] = event.outcome;
       fields["audit.action"] = event.audit.action;
       fields["audit.actor.kind"] = event.audit.actor.kind;
-      if (event.audit.actor.kind !== "system") {
-        fields["audit.actor.id"] = event.audit.actor.id;
-      }
+      fields["audit.actor.id"] =
+        event.audit.actor.kind === "system" ? "system" : event.audit.actor.id;
       fields["audit.resource.type"] = event.audit.resourceType;
       fields["audit.resource.id"] = event.audit.resourceId;
+      if (event.audit.reasonCode !== undefined)
+        fields["audit.reason_code"] = event.audit.reasonCode;
       break;
   }
   return fields;

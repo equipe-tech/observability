@@ -1,4 +1,5 @@
 import { Effect, Layer, Random, Ref } from "effect";
+import { AuditRecordErrorCode } from "../audit/InvalidAuditRecord.ts";
 import {
   TelemetryEventSink,
   type BrowserTelemetryEvent,
@@ -25,6 +26,8 @@ export const organizationEventFixtures: ReadonlyArray<OrganizationEventFixture> 
 export const contractIssueFixtures = ContractIssueCode.literals;
 
 export const telemetryEventErrorFixtures = TelemetryEventErrorCode.literals;
+
+export const auditRecordErrorFixtures = AuditRecordErrorCode.literals;
 
 export const metricDefinitionFixtures = {
   Counter: {

@@ -315,6 +315,7 @@ export const sentryDefectAdapter = (
           flush: Effect.promise(flush).pipe(Effect.asVoid),
           close: Effect.promise(close).pipe(Effect.asVoid),
           eventLayer: Option.none(),
+          auditLayer: Option.none(),
           degraded: () => {
             const reasons = reportState.report().reasons;
             return reasons.transport > 0 || reasons.flushIncomplete > 0;
