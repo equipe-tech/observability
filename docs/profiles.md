@@ -40,6 +40,6 @@ O descarte do runtime é o último resultado explícito do relatório. Quando n�
 
 Chamadas concorrentes da mesma operação compartilham o relatório. `close` espera um `flush` já iniciado terminar antes de começar. `close` e `dispose` devolvem o mesmo relatório final depois da primeira chamada.
 
-`DataPolicy` declara atributos e bloqueios. A aplicação pode acrescentar regras, mas não remove a base. A aplicação da política aos sinais pertence ao OBS-47.
+`DataPolicy` declara atributos e bloqueios. A aplicação pode acrescentar regras, mas não remove a base. Eventos, logs, spans, defeitos, recursos, métricas e browser ingest aplicam a política compilada antes de exportar ou armazenar dados.
 
 Identidade, endpoint, ambiente, topologia, rota, proxy, secrets e valores de deploy continuam sob responsabilidade da aplicação.

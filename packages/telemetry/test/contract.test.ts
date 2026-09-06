@@ -9,6 +9,7 @@ import {
   organizationContractVersion,
   organizationEvents,
   telemetryContractDefinition,
+  type AttributeDefinitionsInput,
   type TelemetryContract,
   type TelemetryContractInput,
 } from "../src/contract/index.ts";
@@ -635,6 +636,7 @@ describe("contract event producer", () => {
       "OBS_EVENT_INVALID_FIELD",
       "OBS_EVENT_INVALID_OUTCOME",
       "OBS_EVENT_RESTRICTED_ATTRIBUTE",
+      "OBS_EVENT_SENSITIVE_METRIC_LABEL",
       "OBS_EVENT_UNKNOWN_AUDIT_ACTION",
       "OBS_EVENT_INVALID_AUDIT_RESOURCE",
       "OBS_EVENT_INVALID_AUDIT_OUTCOME",
@@ -947,7 +949,7 @@ describe("contract event producer", () => {
             mandatory: true,
             sampling: { kind: "always" },
             attributes: {
-              "profile.secret": {
+              "patient.diagnosis": {
                 classification: "sensitive",
                 required: false,
                 metricLabel: false,
@@ -964,23 +966,79 @@ describe("contract event producer", () => {
         auditActions: {},
       });
       const sink = yield* makeCollectingTelemetryEventSink();
-      const restrictedNames = ["profile.secret", "profile.password"] satisfies ReadonlyArray<
-        "profile.secret" | "profile.password"
-      >;
-      for (const attributeName of restrictedNames) {
-        const error = yield* makeEventProducer(contract)
-          .emit("Unsafe", {
-            outcome: "success",
-            attributes: { [attributeName]: "secret" },
-          })
-          .pipe(Effect.provide(sink.layer), Effect.flip);
-        assert.include(telemetryEventErrorFixtures, "OBS_EVENT_RESTRICTED_ATTRIBUTE");
-        assert.strictEqual(error.code, "OBS_EVENT_RESTRICTED_ATTRIBUTE");
-        assert.strictEqual(error.eventName, "profile.updated");
-        assert.strictEqual(error.attributeName, attributeName);
-        assert.include(error.message, "cannot emit");
+      const producer = makeEventProducer(contract);
+      const sensitive = yield* producer
+        .emit("Unsafe", {
+          outcome: "success",
+          attributes: { "patient.diagnosis": "private" },
+        })
+        .pipe(Effect.provide(sink.layer));
+      assert.strictEqual(sensitive.decision, "recorded");
+      if (sensitive.decision === "recorded") {
+        assert.strictEqual(sensitive.event.attributes["patient.diagnosis"], "****");
+        assert.deepStrictEqual(sensitive.redactions, [
+          { rule: "classification", action: "masked", surface: "event" },
+        ]);
       }
-      assert.lengthOf(yield* sink.events, 0);
+      const error = yield* producer
+        .emit("Unsafe", {
+          outcome: "success",
+          attributes: { "profile.password": "secret" },
+        })
+        .pipe(Effect.provide(sink.layer), Effect.flip);
+      assert.include(telemetryEventErrorFixtures, "OBS_EVENT_RESTRICTED_ATTRIBUTE");
+      assert.strictEqual(error.code, "OBS_EVENT_RESTRICTED_ATTRIBUTE");
+      assert.strictEqual(error.eventName, "profile.updated");
+      assert.strictEqual(error.attributeName, "profile.password");
+      assert.include(error.message, "cannot emit");
+      assert.lengthOf(yield* sink.events, 1);
+    }),
+  );
+
+  it.effect("bounds the whole server event to 128 attributes", () =>
+    Effect.gen(function* () {
+      const attributes: AttributeDefinitionsInput = Object.fromEntries(
+        Array.from({ length: 200 }, (_, index) => [
+          `field.value${index}`,
+          { classification: "public", required: false, metricLabel: false },
+        ]),
+      );
+      const events = defineEventDefinitions({
+        Bounded: {
+          name: "contract.bounded",
+          kind: "domain",
+          defaultSeverity: "info",
+          mandatory: true,
+          sampling: { kind: "always" },
+          attributes,
+        },
+      });
+      const contract = yield* defineTelemetryContract({
+        version: 1,
+        events,
+        metrics: {},
+        auditActions: {},
+      });
+      const sink = yield* makeCollectingTelemetryEventSink();
+      const producer = makeEventProducer(contract);
+      const receipt = yield* producer
+        .emit("Bounded", {
+          outcome: "success",
+          attributes: Object.fromEntries(
+            Array.from({ length: 200 }, (_, index) => [`field.value${index}`, index]),
+          ),
+        })
+        .pipe(Effect.provide(sink.layer));
+      assert.strictEqual(receipt.decision, "recorded");
+      if (receipt.decision === "recorded") {
+        assert.strictEqual(Object.keys(receipt.event.attributes).length, 128);
+        assert.strictEqual(
+          receipt.redactions.filter(
+            (redaction) => redaction.rule === "bounds" && redaction.action === "dropped",
+          ).length,
+          72,
+        );
+      }
     }),
   );
 

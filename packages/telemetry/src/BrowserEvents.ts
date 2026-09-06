@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 
+export const browserRequestByteBudget = 90_000;
 export const maxEventsPerBatch = 64;
 export const maxFieldsPerEvent = 32;
 export const maxFieldKeyLength = 128;

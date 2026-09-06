@@ -36,6 +36,35 @@ O valor `latest` era válido em 0.2.1 e agora é rejeitado. Troque-o pela versã
 
 A mesma regra vale para `OTEL_SERVICE_VERSION` quando a configuração vem de `telemetryConfigFromEnv`.
 
+## Usar nomes pontuados em atributos
+
+A versão 0.3 exige nomes minúsculos e pontuados em logs, spans, eventos de contrato, eventos de span, defeitos, resources e métricas. Cada nome precisa de pelo menos dois segmentos. O runtime descarta chaves incompatíveis. Ele não converte chaves da aplicação porque uma conversão silenciosa poderia criar colisões.
+
+| Chave antiga       | Chave 0.3                  |
+| ------------------ | -------------------------- |
+| `requestId`        | `request.id`               |
+| `userId`           | `user.id`                  |
+| `component`        | `service.component`        |
+| `region`           | `deployment.region`        |
+| `fiberId`          | `effect.fiber.id`          |
+| `logSpan.database` | `effect.log_span.database` |
+
+A versão 0.3 exige nomes estáveis e pontuados para atributos de métricas. Troque chaves de segmento único, como `region`, por nomes de domínio, como `deployment.region`. Remova os identificadores reservados `unit`, `time_unit`, `service.instance.id`, `trace.id`, `span.id`, `user.id` e `session.id`. Strings de rótulo agora aceitam no máximo 64 caracteres e não aceitam formatos de identificador. A API rejeita essas violações com `MetricsError` e código `POLICY_BLOCKED`.
+
+Cada instrumento aceita no máximo 100 valores distintos por rótulo durante a vida do runtime. Reduza a cardinalidade antes da atualização. O valor 101 produz `MetricsError` com código `LIMIT_EXCEEDED`.
+
+## Atualizar atributos sensíveis do contrato
+
+A versão 0.3 mascara atributos classificados como `sensitive` com `****`, registra a transformação em `EmitReceipt.redactions` e grava o evento. Esse caso não retorna mais `OBS_EVENT_RESTRICTED_ATTRIBUTE`. Atributos `forbidden` continuam rejeitados antes do sink.
+
+## Atualizar recibos de eventos
+
+O variante `recorded` de `EmitReceipt` agora exige `redactions`. O campo contém todos os registros de máscara, truncamento e descarte aplicados ao evento. Consumidores que constroem recibos manualmente precisam fornecer `redactions: []` quando nenhuma regra alterou o evento. Código que verifica ou serializa o recibo deve aceitar o novo campo obrigatório.
+
+## Tratar falhas de política no runtime Node
+
+O canal de erro de `node/Runtime.layer` e `Telemetry.layerFromEnv` agora inclui `InvalidDataPolicy`. Código que fornece essas Layers deve tratar essa falha tipada junto com as falhas de identidade, ambiente e release que já existiam. Uma política de atributos de resource inválida usa o código `OBS_POLICY_DUPLICATE_RESOURCE_ATTRIBUTE` e não inicia o runtime.
+
 ## Renomear projetos incompatíveis com a CLI
 
 A CLI 0.2 aceitava hífens consecutivos em `provision --name` e nos nomes de projeto dos comandos `env`. A CLI 0.3 aplica a mesma gramática de `serviceName` nesses argumentos. Renomeie `checkout--api` para `checkout-api` antes de atualizar. Um nome incompatível retorna `OBS_CLI_PROVISION_INVALID_NAME` em `provision` ou `OBS_CLI_REMOTE_INVALID_PROJECT` em comandos `env`.

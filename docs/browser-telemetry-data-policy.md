@@ -22,12 +22,15 @@ The original complete key is inspected before bounding. A scalar value under a s
 
 The following content becomes `[REDACTED]` within safe string values and event names:
 
+- HTTP and HTTPS URL userinfo, including the complete username and password before `@`
 - Bearer authorization values
 - `sk_`, `sk-`, `rk_`, and `rk-` credentials
 - JSON Web Tokens
 - Email addresses
 - RSA, EC, OpenSSH, and generic private-key blocks
-- Sensitive `key=value` and `key:value` assignments, including quoted values
+- Sensitive `key=value`, `key:value`, and Ruby `key => value` assignments anywhere in the text, including query strings, Python and Ruby dictionary representations, indexed keys such as `password[0]`, bracketed keys such as `data[password]`, `data['password']`, `data["password"]`, and ``data[`password`]``, escaped JSON assignments, Basic and Digest credentials, cookies, and values containing spaces
+
+The scanner searches for sensitive assignments instead of consuming each outer assignment as a unit. An ampersand or URL fragment marker ends a redacted value only when the following text begins another quoted or unquoted key assignment. A matching value quote also ends the browser redaction. Otherwise sanitization replaces the rest of the bounded string. This intentional loss prevents an ampersand or fragment marker inside a credential, a credential with spaces, a Digest field, or a cookie field from escaping through an uncertain boundary. The Collector preserves unambiguous ampersand and fragment assignment tails, but its general OTTL fallback may also remove a closing quote or other suffix after the sensitive value. JavaScript and Collector patterns treat ASCII whitespace and the Unicode spaces U+00A0, U+1680, U+2000 through U+200A, U+2028, U+2029, U+202F, U+205F, U+3000, and U+FEFF as whitespace.
 
 Valid serialized JSON beginning with an object or array is parsed and sanitized iteratively. Values under sensitive property keys become `[REDACTED]`, credential-bearing keys disappear, credential patterns and structured sensitive assignments are replaced in string leaves, array order is retained, and compact valid JSON is emitted. Traversal is limited to 32 levels and 1,024 values. Inputs beyond either limit become `[REDACTED]`.
 
@@ -35,7 +38,7 @@ Malformed JSON-like text containing a sensitive term becomes `[REDACTED]`. Brows
 
 ## Bounds and collisions
 
-Sanitization inspects complete original input before applying output bounds.
+Browser producers enforce the original inspection bound before any scanner runs. Inputs beyond that bound become `[REDACTED]`. The bounded prefix never shares a buffer with removed text.
 
 | Data               | Original inspection bound |            Output bound |
 | ------------------ | ------------------------: | ----------------------: |
@@ -46,8 +49,12 @@ Sanitization inspects complete original input before applying output bounds.
 | Events per batch   |            Not applicable |                      64 |
 | Event identifier   |            Not applicable |    64 UTF-16 code units |
 
+The fetch transport serializes batches as UTF-8 JSON and limits each request to 90,000 bytes. It splits queued events by both event count and serialized byte size before sending. This budget stays below Express's default 100 KB request limit. The 64-event, 32-field, 128-character key, and 1,024-character value limits remain per-request schema safety bounds. String fields keep the 1,024-code-unit schema maximum and use an additional 2,048-byte UTF-8 transport bound. If one event would still exceed 90,000 bytes, the client retains the event and admits its fields in iteration order until the request fits.
+
+The NestJS endpoint returns HTTP 202 for an accepted version 1 batch. Express returns HTTP 413 before schema decoding when the raw JSON body exceeds 100 KB. Malformed JSON and schema-invalid batches return HTTP 400.
+
 Oversized original keys are dropped. Oversized original string values and event names become `[REDACTED]`. If different original keys produce the same bounded key, the first accepted field in JavaScript iteration order wins. Later fields do not replace or merge with it.
 
 ## Collector parity
 
-The telemetry package owns the semantic key vocabulary and the five core credential patterns. A repository parity test checks both Collector assets against that vocabulary, processor coverage, and processor order. Browser JSON traversal is intentionally outside exact Collector parity because Collector OTTL does not expose the same recursive contract.
+The telemetry package owns the semantic key vocabulary and the six core credential patterns. Behavioral suites independently execute the SDK sanitizer and a real Collector for the structured-assignment grammar. A repository parity test also checks both Collector assets against the vocabulary, processor coverage, and processor order. `redaction/sensitive` runs before `transform/redact` for traces, logs, and metrics. Scalar credential patterns run before assignment transforms to preserve credential shape. Metric resource attributes and datapoint attributes therefore receive the same structured-assignment redaction as log and trace attributes. Browser JSON traversal is intentionally outside exact Collector parity because Collector OTTL does not expose the same recursive contract.

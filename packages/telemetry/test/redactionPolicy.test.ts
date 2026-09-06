@@ -2,7 +2,7 @@ import { assert, describe, it } from "vite-plus/test";
 import { Schema } from "effect";
 import {
   isSensitiveFieldKey,
-  sanitizeBrowserEventName,
+  sanitizeEventName,
   sanitizeBrowserFields,
   sensitiveFieldReplacement,
   sensitiveTextReplacement,
@@ -170,6 +170,92 @@ describe("browser telemetry redaction policy", () => {
     assert.include(String(fields.escaped), sensitiveTextReplacement);
   });
 
+  it("removes repeated raw Bearer assignments from browser fields and JSON strings", () => {
+    const secret = marker();
+    const source = `authorization: Bearer ${secret} authorization: Bearer ${secret}`;
+    const fields = sanitizeBrowserFields({
+      "request.detail": source,
+      json: JSON.stringify({ note: source }),
+    });
+    assert.notInclude(JSON.stringify(fields), secret);
+    assert.strictEqual(fields["request.detail"], "authorization: [REDACTED]");
+    assert.include(String(fields.json), "authorization: [REDACTED]");
+  });
+
+  it("finds nested sensitive assignments without consuming safe outer assignments", () => {
+    const secret = marker();
+    const cases = [
+      [`https://api.x/login?password=${secret}`, "https://api.x/login?password=[REDACTED]"],
+      [`url=https://api.x/cb?token=${secret}`, "url=https://api.x/cb?token=[REDACTED]"],
+      [`a=1&password=${secret}&b=2`, "a=1&password=[REDACTED]&b=2"],
+      [`note="token=${secret}" safe=1`, 'note="token=[REDACTED]" safe=1'],
+      [`data[password]=${secret}`, "data[password]=[REDACTED]"],
+      [`data['password']='${secret}'`, "data['password']='[REDACTED]'"],
+      [`data["password"]="${secret}"`, 'data["password"]="[REDACTED]"'],
+      ["data[`password`]=`" + secret + "`", "data[`password`]=`[REDACTED]`"],
+      [`password[0]=${secret}`, "password[0]=[REDACTED]"],
+      [`{\\"password\\":\\"${secret}\\"}`, sensitiveTextReplacement],
+      [`token =${secret}`, "token =[REDACTED]"],
+    ] satisfies ReadonlyArray<readonly [string, string]>;
+    for (const [source, expected] of cases) {
+      assert.strictEqual(sanitizeEventName(source), expected);
+      assert.notInclude(sanitizeEventName(source), secret);
+    }
+  });
+
+  it("redacts quoted assignment keys and preserves only assignment tails", () => {
+    const secret = marker();
+    const cases = [
+      [`'password': '${secret}'`, `'password': '[REDACTED]'`],
+      [`"password" = '${secret}'`, `"password" = '[REDACTED]'`],
+      [`"password" => '${secret}'`, `"password" => '[REDACTED]'`],
+      ["`password`: `" + secret + "`", "`password`: `[REDACTED]`"],
+      [`error sending 'token': "${secret}"`, `error sending 'token': "[REDACTED]"`],
+      [`{'password': '${secret}'}`, "[REDACTED]"],
+      [`password=${secret}&more`, "password=[REDACTED]"],
+      [`password=${secret}#fragment`, "password=[REDACTED]"],
+      [`password=${secret}&safe=1`, "password=[REDACTED]&safe=1"],
+      [`password=${secret}#safe:1`, "password=[REDACTED]#safe:1"],
+      [`password=${secret}&token=${secret}`, "password=[REDACTED]&token=[REDACTED]"],
+    ] satisfies ReadonlyArray<readonly [string, string]>;
+    for (const [source, expected] of cases) {
+      assert.strictEqual(sanitizeEventName(source), expected);
+    }
+  });
+
+  it("redacts assignment suffixes for every sensitive credential form", () => {
+    const secret = marker();
+    const cases = [
+      `authorization: Basic ${secret} ${secret}`,
+      `authorization: Digest username=${secret}, response=${secret}`,
+      `password: my ${secret} pass phrase`,
+      `x-api-key: ${secret} ${secret}`,
+      `cookie: sid=${secret}; csrf=${secret}; theme=dark`,
+      `client-secret: ${secret}, access-token=${secret}`,
+      `document: ${secret}; password=${secret}`,
+    ];
+    const fields = sanitizeBrowserFields(
+      Object.fromEntries(cases.map((value, index) => [`case${index}`, value])),
+    );
+    assert.notInclude(JSON.stringify(fields), secret);
+    for (const value of Object.values(fields)) {
+      assert.match(String(value), /^[A-Za-z-]+: \[REDACTED\]$/);
+    }
+  });
+
+  it("supports quoted JSON keys and values before buffering", () => {
+    const secret = marker();
+    const fields = sanitizeBrowserFields({
+      json: `{"authorization":"Basic ${secret} ${secret}","password":"${secret} phrase","safe":"kept"}`,
+    });
+    assert.notInclude(String(fields.json), secret);
+    assert.deepStrictEqual(JSON.parse(String(fields.json)), {
+      authorization: sensitiveTextReplacement,
+      password: sensitiveTextReplacement,
+      safe: "kept",
+    });
+  });
+
   it("fails closed for excessive JSON depth, value count, and original string size", () => {
     let deep = '"safe"';
     for (let index = 0; index < 34; index += 1) {
@@ -255,9 +341,9 @@ describe("browser telemetry redaction policy", () => {
 
   it("sanitizes event names before truncation", () => {
     const secret = marker();
-    const eventName = sanitizeBrowserEventName(`checkout token=${secret} Bearer ${secret}`);
+    const eventName = sanitizeEventName(`checkout token=${secret} Bearer ${secret}`);
     assert.notInclude(eventName, secret);
     assert.include(eventName, sensitiveTextReplacement);
-    assert.strictEqual(sanitizeBrowserEventName("x".repeat(16_385)), sensitiveTextReplacement);
+    assert.strictEqual(sanitizeEventName("x".repeat(16_385)), sensitiveTextReplacement);
   });
 });

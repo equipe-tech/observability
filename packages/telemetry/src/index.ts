@@ -25,6 +25,7 @@ export type { TelemetryContract, TelemetryContractInput } from "./contract/Telem
 export type { TelemetryEvent } from "./contract/TelemetryEvent.ts";
 export * as Telemetry from "./Telemetry.ts";
 export * from "./profile/index.ts";
+export * from "./policy/index.ts";
 export {
   EnvironmentAliasPolicy,
   EnvironmentName,

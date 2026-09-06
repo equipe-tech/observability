@@ -1,4 +1,3 @@
-export { parseDataPolicy, type DataPolicy, type DataPolicyInput } from "./DataPolicy.ts";
 export {
   AdapterFailure,
   AdapterName,

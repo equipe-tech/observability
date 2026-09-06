@@ -20,10 +20,8 @@ import {
   validateAdapterRegistrationKinds,
   validateAdapterRegistrations,
 } from "../profile/LifecycleRegistry.ts";
-import type {
-  DuplicateReleaseVariable,
-  InvalidObservabilityConfig,
-} from "../profile/ObservabilityConfigError.ts";
+import type { DuplicateReleaseVariable } from "../profile/ObservabilityConfigError.ts";
+import { InvalidObservabilityConfig } from "../profile/ObservabilityConfigError.ts";
 import { profileCapabilityRank } from "../profile/ObservabilityProfile.ts";
 
 export type NodeObservabilityDisabled = {
@@ -37,7 +35,7 @@ export type NodeObservabilityDisabled = {
 export type NodeObservabilityEnabled = {
   readonly enabled: true;
   readonly config: NodeObservabilityConfigEnabled;
-  readonly runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, never>;
+  readonly runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, InvalidObservabilityConfig>;
   readonly flush: () => Promise<LifecycleReport>;
   readonly close: () => Promise<LifecycleReport>;
   readonly dispose: () => Promise<LifecycleReport>;
@@ -90,7 +88,10 @@ class LiveNodeObservability implements NodeObservabilityEnabled {
 
   constructor(
     readonly config: NodeObservabilityConfigEnabled,
-    readonly runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, never>,
+    readonly runtime: ManagedRuntime.ManagedRuntime<
+      OtlpExporter.Flusher,
+      InvalidObservabilityConfig
+    >,
     private readonly runLifecycle: (operation: "flush" | "close") => Effect.Effect<LifecycleReport>,
   ) {}
 
@@ -135,33 +136,24 @@ class LiveNodeObservability implements NodeObservabilityEnabled {
 type NodeObservabilityFactoryOptions = { readonly allowTesting: boolean };
 
 export const acquireRuntimeFlusher = Effect.fn("acquireRuntimeFlusher")(function* (
-  runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, never>,
-): Effect.fn.Return<OtlpExporter.Flusher["Service"], ObservabilityLifecycleError> {
-  const acquisition = yield* Effect.tryPromise({
-    try: () => runtime.runPromise(OtlpExporter.Flusher),
-    catch: (cause) =>
-      new ObservabilityLifecycleError({
-        code: "OBS_OBSERVABILITY_STARTUP_FAILED",
-        message:
-          "The built-in OpenTelemetry runtime failed to start. Verify the endpoint configuration.",
-        adapter: Option.none(),
-        cause,
-      }),
-  }).pipe(Effect.exit);
+  runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, InvalidObservabilityConfig>,
+): Effect.fn.Return<
+  OtlpExporter.Flusher["Service"],
+  InvalidObservabilityConfig | ObservabilityLifecycleError
+> {
+  const acquisition = yield* Effect.promise(() => runtime.runPromiseExit(OtlpExporter.Flusher));
   if (acquisition._tag === "Failure") {
     yield* runtime.disposeEffect.pipe(Effect.catchCause(() => Effect.void));
-    return yield* Effect.fail(
-      Option.getOrElse(
-        Cause.findErrorOption(acquisition.cause),
-        () =>
-          new ObservabilityLifecycleError({
-            code: "OBS_OBSERVABILITY_STARTUP_FAILED",
-            message:
-              "The built-in OpenTelemetry runtime failed to start. Verify the endpoint configuration.",
-            adapter: Option.none(),
-            cause: acquisition.cause,
-          }),
-      ),
+    return yield* Option.getOrElse(
+      Cause.findErrorOption(acquisition.cause),
+      () =>
+        new ObservabilityLifecycleError({
+          code: "OBS_OBSERVABILITY_STARTUP_FAILED",
+          message:
+            "The built-in OpenTelemetry runtime failed to start. Verify the endpoint configuration.",
+          adapter: Option.none(),
+          cause: acquisition.cause,
+        }),
     );
   }
   return acquisition.value;
@@ -183,7 +175,10 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
     options,
   );
   const runtime = ManagedRuntime.make(
-    Telemetry.layer(config.telemetry, { shutdownTimeout: Duration.millis(400) }),
+    Telemetry.layer(config.telemetry, {
+      shutdownTimeout: Duration.millis(400),
+      policy: config.evlog.policy,
+    }),
   );
   const flusher = yield* acquireRuntimeFlusher(runtime);
   const context = {

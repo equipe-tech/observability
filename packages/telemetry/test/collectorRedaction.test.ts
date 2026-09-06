@@ -1,0 +1,183 @@
+import { assert, describe, it } from "vite-plus/test";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { Schema } from "effect";
+import { baseDataPolicy } from "../src/policy/DataPolicy.ts";
+import { sanitizeText } from "../src/policy/PolicyTransform.ts";
+
+const cliManifest: unknown = JSON.parse(
+  await readFile(new URL("../../cli/package.json", import.meta.url).pathname, "utf8"),
+);
+const cliVersion = Schema.decodeUnknownSync(Schema.Struct({ version: Schema.NonEmptyString }))(
+  cliManifest,
+).version;
+const observabilityHome =
+  process.env["OBSERVABILITY_HOME"] ?? join(homedir(), ".local", "state", "observability");
+const exportPath =
+  process.env["OBSERVABILITY_EXPORT_PATH"] ??
+  join(observabilityHome, cliVersion, "data", "otlp.jsonl");
+const collectorEnabled = process.env["OBSERVABILITY_E2E"] === "1";
+
+const waitForExport = async (runId: string): Promise<string> => {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const content = await readFile(exportPath, "utf8").catch(() => "");
+    const runContent = content
+      .split("\n")
+      .filter((line) => line.includes(runId))
+      .join("\n");
+    if (
+      runContent.includes('"resourceMetrics"') &&
+      runContent.includes('"resourceLogs"') &&
+      runContent.includes('"resourceSpans"')
+    ) {
+      return runContent;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Collector redaction fixtures were not exported within 10 seconds.");
+};
+
+const send = async <Payload>(
+  signal: "metrics" | "logs" | "traces",
+  payload: Payload,
+): Promise<void> => {
+  const response = await fetch(`http://127.0.0.1:4318/v1/${signal}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  assert.strictEqual(response.status, 200);
+};
+
+describe.runIf(collectorEnabled)("Collector redaction", () => {
+  it("redacts nested assignments on every raw OTLP signal", async () => {
+    const runId = `collector-${crypto.randomUUID()}`;
+    const marker = `COLLECTORSECRET${crypto.randomUUID().replaceAll("-", "")}`;
+    const fixtures = [
+      `https://user${marker}:pass${marker}@api.x/private`,
+      `Bearer ${marker}`,
+      `sk_${marker}`,
+      `eyJ${marker}.eyJ${marker}.${marker}`,
+      `${marker}@example.com`,
+      `-----BEGIN PRIVATE KEY-----${marker}-----END PRIVATE KEY-----`,
+      `https://api.x/login?password=${marker}`,
+      `url=https://api.x/cb?token=${marker}`,
+      `a=1&password=${marker}&b=2`,
+      `note="token=${marker}" safe=1`,
+      `data[password]=${marker}`,
+      `data['password']='${marker}'`,
+      `data["password"]="${marker}"`,
+      "data[`password`]=`" + marker + "`",
+      `password[0]=${marker}`,
+      `{\\"password\\":\\"${marker}\\"}`,
+      `{'password': '${marker}'}`,
+      `{"password" => "${marker}"}`,
+      `authorization: Basic ${marker} ${marker}`,
+      `authorization: Digest username=${marker}, response=${marker}`,
+      `cookie: sid=${marker}; csrf=${marker}; theme=dark`,
+      `password: my ${marker} pass phrase`,
+      `token =${marker}`,
+      `token =${marker}`,
+      `token =${marker}`,
+      `token﻿=${marker}`,
+      `'password': '${marker}'`,
+      `"password" = '${marker}'`,
+      "`password`: `" + marker + "`",
+      `error sending 'token': "${marker}"`,
+      `{'password': '${marker}'}`,
+      `password=${marker}&more`,
+      `password=${marker}#fragment`,
+      `password=${marker}&safe=1`,
+      `password=${marker}#safe:1`,
+      `password=${marker}&token=${marker}`,
+    ];
+    const combinedFixtures = fixtures.map((value) => sanitizeText(baseDataPolicy, value));
+    const attributes = (prefix: string) => [
+      { key: "test.run_id", value: { stringValue: runId } },
+      ...fixtures.map((value, index) => ({
+        key: `${prefix}.${index}`,
+        value: { stringValue: value },
+      })),
+      ...combinedFixtures.map((value, index) => ({
+        key: `${prefix}.combined.${index}`,
+        value: { stringValue: value },
+      })),
+    ];
+    const resource = { attributes: attributes("resource.case") };
+    const timeUnixNano = String(Date.now() * 1_000_000);
+    const traceId = crypto.randomUUID().replaceAll("-", "");
+
+    await send("metrics", {
+      resourceMetrics: [
+        {
+          resource,
+          scopeMetrics: [
+            {
+              scope: { name: "obs47" },
+              metrics: [
+                {
+                  name: "obs47.collector.redaction",
+                  gauge: {
+                    dataPoints: [
+                      { timeUnixNano, asDouble: 1, attributes: attributes("point.case") },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    await send("logs", {
+      resourceLogs: [
+        {
+          resource,
+          scopeLogs: [
+            {
+              scope: { name: "obs47" },
+              logRecords: fixtures.map((value) => ({
+                timeUnixNano,
+                body: { stringValue: value },
+                attributes: attributes("log.case"),
+              })),
+            },
+          ],
+        },
+      ],
+    });
+    await send("traces", {
+      resourceSpans: [
+        {
+          resource,
+          scopeSpans: [
+            {
+              scope: { name: "obs47" },
+              spans: fixtures.map((value) => ({
+                traceId,
+                spanId: crypto.randomUUID().replaceAll("-", "").slice(0, 16),
+                name: value,
+                startTimeUnixNano: timeUnixNano,
+                endTimeUnixNano: String(Number(timeUnixNano) + 1),
+                attributes: attributes("span.case"),
+                events: [
+                  {
+                    timeUnixNano,
+                    name: value,
+                    attributes: attributes("event.case"),
+                  },
+                ],
+              })),
+            },
+          ],
+        },
+      ],
+    });
+
+    const content = await waitForExport(runId);
+    assert.notInclude(content, marker);
+    assert.include(content, "[REDACTED]");
+  });
+});

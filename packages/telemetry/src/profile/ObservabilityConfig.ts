@@ -101,7 +101,8 @@ const invalid = (
     | "OTEL_SERVICE_INSTANCE_ID"
     | "OTEL_DEPLOYMENT_ENVIRONMENT"
     | "OTEL_EXPORTER_OTLP_ENDPOINT"
-    | "SENTRY_DSN",
+    | "SENTRY_DSN"
+    | "policy",
   message: string,
   rule: string,
   cause?: unknown,
@@ -197,7 +198,16 @@ export const parseNodeObservabilityConfig = Effect.fn("parseNodeObservabilityCon
     ),
   );
   const deployment = deploymentScopeFromEndpoint(telemetry.otlpEndpoint);
-  const policy = yield* parseDataPolicy(input.evlog.policy);
+  const policy = yield* parseDataPolicy(input.evlog.policy).pipe(
+    Effect.mapError((cause) =>
+      invalid(
+        "policy",
+        "The data policy is invalid. Fix every reported policy issue before starting observability.",
+        "a compiled additive data policy",
+        cause,
+      ),
+    ),
+  );
   const sentry = yield* sentryFor(
     profile,
     input.service.environment,
@@ -328,7 +338,16 @@ export const nodeObservabilityConfigFromEnv = Effect.fn("nodeObservabilityConfig
         ),
       ),
     );
-    const policy = yield* parseDataPolicy(input.policy);
+    const policy = yield* parseDataPolicy(input.policy).pipe(
+      Effect.mapError((cause) =>
+        invalid(
+          "policy",
+          "The data policy is invalid. Fix every reported policy issue before starting observability.",
+          "a compiled additive data policy",
+          cause,
+        ),
+      ),
+    );
     const sentry = yield* sentryFor(profile, resolution.environment, dsn);
     return {
       enabled: true,

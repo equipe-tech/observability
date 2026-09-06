@@ -14,7 +14,7 @@
     "build": "bun scripts/build-packages.ts",
     "test": "vp test run && bun run test:bun",
     "test:bun": "bun test packages/cli/test --timeout 30000",
-    "test:canary": "vp test run packages/telemetry/test/canary.test.ts",
+    "test:canary": "vp test run packages/telemetry/test/canary.test.ts packages/telemetry/test/collectorRedaction.test.ts",
     "test:canary:deployed": "vp test run packages/telemetry/test/canary.deployed.test.ts",
     "test:package": "bun scripts/package-smoke.ts",
     "lint": "vp lint .",

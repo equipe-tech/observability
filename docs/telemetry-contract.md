@@ -1,5 +1,7 @@
 # Contrato de telemetria
 
+Consulte a [política de dados](data-policy.md) para as classificações e os recibos de mascaramento aplicados pelo produtor.
+
 `defineTelemetryContract` compila a fonte tipada de eventos, métricas e ações de auditoria de uma aplicação. O contrato usa aliases estáveis para chamadas do produtor e mantém o nome canônico dentro de cada definição.
 
 ```ts
@@ -46,7 +48,7 @@ Nomes de atributos usam pelo menos duas partes minúsculas separadas por pontos 
 
 O contrato reserva os campos canônicos exatos `event.name`, `event.kind`, `event.type`, `event.severity`, `event.outcome`, `event.timestamp`, `event.duration_ms`, `http.request.method`, `http.route`, `http.response.status_code`, `error.type`, `error.message`, `error.retryable`, `audit.action`, `audit.actor.kind`, `audit.actor.id`, `audit.resource.type`, `audit.resource.id`, `request.id` e `run.id`. Outros campos nesses namespaces continuam disponíveis para atributos da aplicação.
 
-A classificação não escolhe destino ou provedor. O produtor rejeita valores fornecidos para atributos `sensitive` e `forbidden` antes do sink. O OBS-47 adicionará transformações de política. Até essa entrega, o contrato nunca encaminha esses valores sem transformação.
+A classificação não escolhe destino ou provedor. O produtor mascara atributos `sensitive` com `****` e rejeita atributos `forbidden` antes do sink. A política compilada também remove chaves proibidas, mascara valores bloqueados e aplica os limites de cada sinal antes da exportação.
 
 O registro `metrics` permanece opaco nesta fundação. O OBS-52 define e valida cada definição de métrica.
 
@@ -93,6 +95,10 @@ Canários usam `mandatory: true` na definição. Um resultado `cancelled` contin
 
 `BrowserError` mantém tipo, mensagem e possibilidade de repetição em `ErrorContext`. O atributo `error.origin` identifica a origem do erro no navegador sem duplicar esses campos.
 
+## Recibo de emissão
+
+`EventProducer.emit` retorna `EmitReceipt`. O variante `recorded` contém `decision`, `event` e o campo obrigatório `redactions`. Cada item de `redactions` informa a superfície, a regra e a ação de política aplicada. O array fica vazio quando a política não altera o evento. O variante `sampled_out` continua contendo `decision` e `name`.
+
 ## Saída WideEvent
 
 `layerWideEvent` conecta o produtor ao `WideEvent.emit` existente. O marcador `event.kind` continua com o valor `wide`. O tipo canônico usa `event.type`.
@@ -134,7 +140,8 @@ Falhas de emissão retornam `InvalidTelemetryEvent`. O produtor executa todas as
 | `OBS_EVENT_MISSING_ATTRIBUTE`      | Um atributo obrigatório não foi fornecido.      |
 | `OBS_EVENT_INVALID_FIELD`          | Um campo tem valor ou estrutura inválida.       |
 | `OBS_EVENT_INVALID_OUTCOME`        | O resultado não é válido para o tipo de evento. |
-| `OBS_EVENT_RESTRICTED_ATTRIBUTE`   | Um atributo restrito recebeu um valor bruto.    |
+| `OBS_EVENT_RESTRICTED_ATTRIBUTE`   | Um atributo proibido recebeu um valor.          |
+| `OBS_EVENT_SENSITIVE_METRIC_LABEL` | Um atributo sensível foi declarado como rótulo. |
 | `OBS_EVENT_UNKNOWN_AUDIT_ACTION`   | A ação de auditoria não existe no contrato.     |
 | `OBS_EVENT_INVALID_AUDIT_RESOURCE` | O tipo de recurso difere da ação declarada.     |
 | `OBS_EVENT_INVALID_AUDIT_OUTCOME`  | A ação de auditoria não permite o resultado.    |

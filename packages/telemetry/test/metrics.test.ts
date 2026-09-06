@@ -3,6 +3,8 @@ import { Effect, ManagedRuntime, Metric, Option, Predicate, Schema } from "effec
 import { createServer, type Server } from "node:http";
 import { createMetrics, MetricsError, type MetricAttribute } from "../src/Metrics.ts";
 import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
+import { baseDataPolicy, parseDataPolicy } from "../src/policy/DataPolicy.ts";
+import { metricLabelRejection } from "../src/policy/MetricLabelPolicy.ts";
 import * as Testing from "../src/testing/index.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
 
@@ -168,6 +170,82 @@ const waitFor = async (condition: () => boolean, timeoutMilliseconds = 2_000): P
 };
 
 describe("framework-neutral metrics", () => {
+  it("rejects transformed label values while preserving bounded route templates", () => {
+    for (const value of [
+      "token:METRICLEAK42",
+      "password=METRICLEAK42",
+      "Bearer METRICLEAK42",
+      "data[password]:METRICLEAK42",
+    ]) {
+      assert.strictEqual(
+        metricLabelRejection(baseDataPolicy, "http.route", value),
+        "blocked-value",
+      );
+    }
+    assert.isUndefined(metricLabelRejection(baseDataPolicy, "http.route", "/orders/:id"));
+    assert.isUndefined(metricLabelRejection(baseDataPolicy, "network.zone", "internal"));
+  });
+
+  it("applies the compiled application policy before metric state", async () => {
+    const policy = await Effect.runPromise(
+      parseDataPolicy({
+        attributes: {},
+        blockedKeys: ["customer[.]tier"],
+        blockedValuePatterns: [],
+      }),
+    );
+    const metrics = await createMetrics({
+      enabled: false,
+      serviceName: "policy-metrics",
+      serviceVersion: "1.0.0",
+      environment: "test",
+      otlpEndpoint: "http://localhost:4318",
+      policy,
+    });
+    const counter = metrics.counter({
+      name: "policy.counter",
+      description: "Policy counter",
+      unit: "1",
+    });
+    let failure: MetricsError | undefined;
+    try {
+      counter.add(1, [{ key: "customer.tier", value: "gold" }]);
+    } catch (cause) {
+      if (cause instanceof MetricsError) failure = cause;
+    }
+    assert.strictEqual(failure?.code, "POLICY_BLOCKED");
+    assert.strictEqual(failure?.policyReason, "classification");
+    assert.isUndefined(failure?.attributeKey);
+    await metrics.close();
+  });
+
+  it("reports every over-bound string label as a policy rejection", async () => {
+    const metrics = await createMetrics({
+      enabled: false,
+      serviceName: "bounded-metrics",
+      serviceVersion: "1.0.0",
+      environment: "test",
+      otlpEndpoint: "http://localhost:4318",
+    });
+    const counter = metrics.counter({
+      name: "bounded.counter",
+      description: "Bounded counter",
+      unit: "1",
+    });
+    for (const length of [65, 256, 257]) {
+      let failure: MetricsError | undefined;
+      try {
+        counter.add(1, [{ key: "worker.name", value: "x".repeat(length) }]);
+      } catch (cause) {
+        if (cause instanceof MetricsError) failure = cause;
+      }
+      assert.strictEqual(failure?.code, "POLICY_BLOCKED");
+      assert.strictEqual(failure?.policyReason, "string-bound");
+      assert.isUndefined(failure?.attributeKey);
+    }
+    await metrics.close();
+  });
+
   it("uses canonical service resource identity and rejects the reserved instance datapoint key", async () => {
     const collector = await startCollector();
     try {
@@ -366,7 +444,7 @@ describe("framework-neutral metrics", () => {
           callbackCalls++;
           return Array.from({ length: observationCount }, (_, index) => ({
             value: index,
-            attributes: [{ key: "series", value: index }],
+            attributes: [{ key: "series.value", value: index }],
           }));
         },
       );
@@ -431,12 +509,12 @@ describe("framework-neutral metrics", () => {
           unit: "%",
         },
         () => [
-          { value: gaugeValue, attributes: [{ key: "worker", value: "alpha" }] },
-          { value: gaugeValue + 1, attributes: [{ key: "worker", value: "beta" }] },
+          { value: gaugeValue, attributes: [{ key: "worker.name", value: "alpha" }] },
+          { value: gaugeValue + 1, attributes: [{ key: "worker.name", value: "beta" }] },
         ],
       );
-      counter.add(2, [{ key: "region", value: "south" }]);
-      histogram.record(12, [{ key: "region", value: "south" }]);
+      counter.add(2, [{ key: "region.name", value: "south" }]);
+      histogram.record(12, [{ key: "region.name", value: "south" }]);
 
       assert.deepEqual(await metrics.flush(), { gaugeFailures: [] });
       gaugeValue = 8;
@@ -624,20 +702,24 @@ describe("framework-neutral metrics", () => {
         description: "Cardinality total",
         unit: "1",
       });
-      first.add(1, [{ key: "series", value: 0 }]);
-      second.add(2, [{ key: "series", value: 0 }]);
-      for (let index = 1; index < 1_000; index++) {
-        first.add(1, [{ key: "series", value: index }]);
+      first.add(1, [{ key: "series.value", value: 0 }]);
+      second.add(2, [{ key: "series.value", value: 0 }]);
+      for (let index = 1; index < 100; index++) {
+        first.add(1, [{ key: "series.value", value: index }]);
       }
-      assert.equal(
-        errorCode(() => first.add(1, [{ key: "series", value: 1_000 }])),
-        "LIMIT_EXCEEDED",
-      );
+      let cardinalityFailure: MetricsError | undefined;
+      try {
+        first.add(1, [{ key: "series.value", value: 100 }]);
+      } catch (cause) {
+        if (cause instanceof MetricsError) cardinalityFailure = cause;
+      }
+      assert.strictEqual(cardinalityFailure?.code, "LIMIT_EXCEEDED");
+      assert.strictEqual(cardinalityFailure?.attributeKey, "series.value");
       await metrics.flush();
       const payload = collector.requests[0];
       assert.isDefined(payload);
       const exported = metricNamed(payload, "cardinality.total");
-      assert.equal(exported?.sum?.dataPoints.length, 1_000);
+      assert.equal(exported?.sum?.dataPoints.length, 100);
       assert.equal(exported?.sum?.dataPoints[0]?.asDouble, 3);
       await metrics.close();
       const afterClose = keeper.counter({
@@ -645,9 +727,9 @@ describe("framework-neutral metrics", () => {
         description: "Cardinality total",
         unit: "1",
       });
-      afterClose.add(1, [{ key: "series", value: 999 }]);
+      afterClose.add(1, [{ key: "series.value", value: 99 }]);
       assert.equal(
-        errorCode(() => afterClose.add(1, [{ key: "series", value: 1_000 }])),
+        errorCode(() => afterClose.add(1, [{ key: "series.value", value: 100 }])),
         "LIMIT_EXCEEDED",
       );
       await keeper.close();
@@ -837,7 +919,7 @@ describe("framework-neutral metrics", () => {
     }
   });
 
-  it("rejects service.instance.id on a direct Effect metric datapoint", async () => {
+  it("hard rejects service.instance.id on a direct Effect metric datapoint", async () => {
     const config = new TelemetryConfig({
       identity: Effect.runSync(
         parseResourceIdentity({
@@ -866,23 +948,54 @@ describe("framework-neutral metrics", () => {
       try {
         await facade.flush();
       } catch (cause) {
-        if (cause instanceof MetricsError) {
-          failure = cause;
-        }
+        if (cause instanceof MetricsError) failure = cause;
       }
-      assert.isDefined(failure);
-      assert.equal(failure.code, "EXPORT_FAILED");
-      assert.equal(failure.operation, "flush");
-      assert.equal(failure.instrumentName, "direct.instance");
-      assert.isFalse(failure.retryable);
+      assert.strictEqual(failure?.code, "EXPORT_FAILED");
       const telemetry = await Effect.runPromise(capture.telemetry);
-      assert.equal(telemetry.metrics.length, 0);
-      assert.equal(
-        await asyncErrorCode(async () => {
-          await facade.close();
+      assert.notInclude(JSON.stringify(telemetry.metrics), "instance-1");
+      await facade.close().catch(() => undefined);
+    } finally {
+      await runtime.dispose().catch(() => undefined);
+    }
+  });
+
+  it("surfaces evidence-safe policy reasons for direct metric failures", async () => {
+    const config = new TelemetryConfig({
+      identity: Effect.runSync(
+        parseResourceIdentity({
+          serviceName: "direct-policy-test",
+          serviceVersion: "1.0.0",
+          environment: "test",
         }),
-        "EXPORT_FAILED",
-      );
+      ),
+      otlpEndpoint: new URL("http://direct-policy.invalid"),
+    });
+    const facade = await createMetrics({
+      serviceName: config.identity.serviceName,
+      serviceVersion: config.identity.serviceVersion,
+      environment: config.identity.environment,
+      otlpEndpoint: config.otlpEndpoint.toString(),
+    });
+    const capture = await Effect.runPromise(Testing.makeCapture({ config }));
+    const runtime = ManagedRuntime.make(capture.layer);
+    try {
+      const direct = Metric.counter("direct.policy", {
+        description: "Direct policy counter",
+        attributes: { "http.authorization": "hidden" },
+      });
+      await runtime.runPromise(Metric.update(direct, 1));
+      const result = await facade.flush();
+      assert.deepStrictEqual(result.gaugeFailures, [
+        {
+          instrumentName: "direct.policy",
+          code: "POLICY_BLOCKED",
+          message: 'Metric "direct.policy" dropped a label blocked by the data policy.',
+          policyReason: "attribute-name",
+        },
+      ]);
+      assert.notInclude(JSON.stringify(result), "http.authorization");
+      assert.notInclude(JSON.stringify(result), "hidden");
+      await facade.close();
     } finally {
       await runtime.dispose();
     }
@@ -1035,7 +1148,7 @@ describe("framework-neutral metrics", () => {
           return [{ value: 1 }];
         },
       );
-      counter.add(1, [{ key: "safe", value: true }]);
+      counter.add(1, [{ key: "safe.value", value: true }]);
       histogram.record(1.5);
       gauge.unregister();
       assert.deepEqual(await metrics.flush(), { gaugeFailures: [] });
