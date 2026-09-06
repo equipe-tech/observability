@@ -1,4 +1,10 @@
 export * as BrowserEvents from "./BrowserEvents.ts";
+export * as Contract from "./contract/index.ts";
+export { defineTelemetryContract } from "./contract/TelemetryContract.ts";
+export type { EventPayloadOf, EventProducer, EmitReceipt } from "./contract/EventProducer.ts";
+export { makeEventProducer, TelemetryEventSink } from "./contract/EventProducer.ts";
+export type { TelemetryContract, TelemetryContractInput } from "./contract/TelemetryContract.ts";
+export type { TelemetryEvent } from "./contract/TelemetryEvent.ts";
 export * as Telemetry from "./Telemetry.ts";
 export {
   InvalidTelemetryEnvironment,
@@ -6,3 +12,4 @@ export {
   telemetryConfigFromEnv,
 } from "./TelemetryConfig.ts";
 export * as WideEvent from "./WideEvent.ts";
+export { layerWideEvent } from "./WideEventSink.ts";

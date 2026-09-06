@@ -4,6 +4,8 @@ import { OtlpExporter } from "effect/unstable/observability";
 import { layerOtlp } from "../Telemetry.ts";
 import { TelemetryConfig } from "../TelemetryConfig.ts";
 
+export * from "./contract.ts";
+
 export type CapturedAttributeValue = string | number | boolean;
 
 export type CapturedAttributes = ReadonlyMap<string, CapturedAttributeValue>;
