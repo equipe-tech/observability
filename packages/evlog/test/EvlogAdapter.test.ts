@@ -2148,9 +2148,9 @@ monitors: []
     await receiver.close();
   });
 
-  it("uses retry delays, maximum attempts, and transport deadlines", async () => {
+  it("uses retry delays and maximum attempts for rejected requests", async () => {
     const runRetryScenario = async (maximumAttempts: number) => {
-      const receiver = await startReceiver(50, () => 503);
+      const receiver = await startReceiver(0, () => 503);
       const { contract, config } = await makeConfig(receiver.endpoint);
       const lines: Array<string> = [];
       const adapter = evlogAdapter({
@@ -2159,7 +2159,6 @@ monitors: []
         maximumAttempts,
         initialRetryDelayMillis: 10,
         maximumRetryDelayMillis: 15,
-        transportTimeoutMillis: 5,
         transportRetries: 0,
         stdout: { write: (line) => lines.push(line) > 0 },
       });
@@ -2198,7 +2197,44 @@ monitors: []
 
     const twoAttempts = await runRetryScenario(2);
     expect(twoAttempts.markedLogRequests).toHaveLength(2);
+    expect(twoAttempts.adapter.drops().reasons.transport).toBe(1);
+    expect(twoAttempts.lines).toHaveLength(1);
+    expect(twoAttempts.adapter.pending()).toEqual({ count: 0, serializedBytes: 0 });
   }, 10_000);
+
+  it("drops a request at the transport deadline before a delayed successful response", async () => {
+    const receiver = await startReceiver(50);
+    const { contract, config } = await makeConfig(receiver.endpoint);
+    const lines: Array<string> = [];
+    const adapter = evlogAdapter({
+      installGlobalLogger: false,
+      batchSize: 1,
+      maximumAttempts: 1,
+      transportTimeoutMillis: 5,
+      transportRetries: 0,
+      stdout: { write: (line) => lines.push(line) > 0 },
+    });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    try {
+      await observability.runtime.runPromise(
+        makeEventProducer(contract)
+          .emit("completed", {
+            outcome: "success",
+            durationMs: 1,
+            attributes: { "job.name": "transport-deadline" },
+          })
+          .pipe(Effect.provide(observability.eventLayer)),
+      );
+      await expect.poll(() => adapter.drops().reasons.transport).toBe(1);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("transport-deadline");
+      expect(adapter.pending()).toEqual({ count: 0, serializedBytes: 0 });
+    } finally {
+      await observability.close();
+      await receiver.close();
+    }
+  });
 
   it("counts post-close admission without requeueing", async () => {
     const receiver = await startReceiver();
