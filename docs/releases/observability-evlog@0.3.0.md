@@ -37,7 +37,7 @@
 
 ### Correções
 
-- fix(deps): isolate fixture manifests and patch YAML parsing
+- fix(release): resolve protected secrets in native jobs
 - fix: resolve stack review findings (#78)
 - fix(cli): accept Axiom default retention payloads (#24)
 - fix(cli): create MetricsDB datasets and correlation gates (#22)
@@ -53,6 +53,7 @@
 
 ### Outras mudanças
 
+- chore: prepare independent 0.3.0 releases (#81)
 - ci(release): restore the scoped provider canary (#74)
 - chore(release): prepare v0.2.0 packages (#18)
 - chore: update pstack model routing
