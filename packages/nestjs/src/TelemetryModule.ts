@@ -20,14 +20,15 @@ import type { Observable } from "rxjs";
 import {
   EnvironmentAliasPolicy,
   EnvironmentName,
+  OtlpEndpoint,
   parseResourceIdentity,
   ServiceInstanceId,
   ServiceName,
   ServiceVersion,
-} from "../ResourceIdentity.ts";
-import { layer } from "../Telemetry.ts";
-import type { InvalidDataPolicy } from "../policy/DataPolicyError.ts";
-import { OtlpEndpoint, TelemetryConfig } from "../TelemetryConfig.ts";
+  Telemetry,
+  TelemetryConfig,
+  type InvalidDataPolicy,
+} from "@equipe-tech/observability";
 import { telemetryRoutePolicy, type ProxyPolicy } from "./HttpRoutePolicy.ts";
 import { RequestWideEventTraceCorrelation } from "./RequestWideEventTraceCorrelation.ts";
 import { TelemetryInterceptor, TelemetryRequestTracker } from "./TelemetryInterceptor.ts";
@@ -458,7 +459,7 @@ const createSharedRuntime = async (
 ): Promise<SharedRuntime> => {
   let runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, InvalidDataPolicy> | undefined;
   try {
-    let runtimeLayer = layer(options.config, {
+    let runtimeLayer = Telemetry.layer(options.config, {
       shutdownTimeout: Duration.millis(options.shutdownTimeoutMilliseconds),
     });
     if (overrides.scopedResource !== undefined) {

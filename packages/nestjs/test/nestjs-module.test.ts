@@ -12,8 +12,8 @@ import {
   TelemetryShutdownError,
   TelemetryStartupError,
   type TelemetryModuleOptions,
-} from "../src/nestjs/index.ts";
-import { telemetryModuleForTesting } from "../src/nestjs/TelemetryModule.ts";
+} from "../src/index.ts";
+import { telemetryModuleForTesting } from "../src/TelemetryModule.ts";
 
 const AddressBoundary = Schema.Struct({ port: Schema.Number });
 const decodeAddress = Schema.decodeUnknownSync(AddressBoundary);

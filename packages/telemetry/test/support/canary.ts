@@ -3,7 +3,7 @@ import { generateRunId, type RunId, Telemetry } from "../../src/index.ts";
 import { ingestBrowserEvents } from "../../src/node/index.ts";
 import type { TelemetryConfig } from "../../src/TelemetryConfig.ts";
 import type { InvalidDataPolicy } from "../../src/policy/DataPolicyError.ts";
-import * as WideEvent from "../../src/WideEvent.ts";
+import * as WideEvent from "../../src/effect/WideEvent.ts";
 
 export const canaryRunId = (): Effect.Effect<RunId> =>
   generateRunId("canary", process.env["USER"] ?? "ci");

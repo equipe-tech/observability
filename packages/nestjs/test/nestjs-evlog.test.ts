@@ -13,7 +13,7 @@ import {
   TelemetryModule,
   type RequestWideEventLoggerResolver,
   type TelemetryModuleOptions,
-} from "../src/nestjs/index.ts";
+} from "../src/index.ts";
 
 const AddressBoundary = Schema.Struct({ port: Schema.Number });
 const decodeAddress = Schema.decodeUnknownSync(AddressBoundary);

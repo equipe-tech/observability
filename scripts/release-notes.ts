@@ -17,12 +17,13 @@ const run = async (command: Array<string>): Promise<string> => {
 
 const tagIndex = process.argv.indexOf("--tag");
 const tag = tagIndex === -1 ? undefined : process.argv[tagIndex + 1];
-if (tag === undefined) {
-  console.error("Usage: bun scripts/release-notes.ts --tag vX.Y.Z");
+if (tag === undefined || !tag.includes("@")) {
+  console.error("Usage: bun scripts/release-notes.ts --tag <slug>@<semver>");
   process.exit(1);
 }
 
-const knownTags = (await run(["git", "tag", "--list", "v*", "--sort=-v:refname"]))
+const slug = tag.slice(0, tag.indexOf("@"));
+const knownTags = (await run(["git", "tag", "--list", `${slug}@*`, "--sort=-v:refname"]))
   .split("\n")
   .map((line) => line.trim())
   .filter((line) => line !== "");

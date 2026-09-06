@@ -13,8 +13,14 @@ const CleanupReady = Schema.Struct({
   commandPid: Schema.Int.pipe(Schema.optionalKey),
   descendantPid: Schema.Int.pipe(Schema.optionalKey),
 });
+const SignalConfirmation = Schema.Struct({
+  count: Schema.Int,
+  signal: Schema.Literals(["SIGINT", "SIGTERM"]),
+});
 
 const decodeCleanupReady = Schema.decodeUnknownSync(CleanupReady);
+const decodeSignalConfirmation = Schema.decodeUnknownSync(SignalConfirmation);
+type CleanupSignal = "SIGINT" | "SIGTERM";
 
 const pathExists = async (path: string): Promise<boolean> => {
   try {
@@ -47,6 +53,30 @@ const waitForAbsence = async (path: string): Promise<void> => {
   throw new Error(`The cleanup harness left ${path}.`);
 };
 
+const waitForSignalConfirmation = async (
+  path: string,
+  count: number,
+  signal: CleanupSignal,
+): Promise<void> => {
+  const deadline = Date.now() + 10_000;
+  let latest = "";
+  while (Date.now() < deadline) {
+    try {
+      latest = await Bun.file(path).text();
+      const confirmation = decodeSignalConfirmation(JSON.parse(latest));
+      if (confirmation.count === count && confirmation.signal === signal) {
+        return;
+      }
+    } catch {
+      latest = "";
+    }
+    await Bun.sleep(10);
+  }
+  throw new Error(
+    `The cleanup harness did not confirm ${signal} as signal ${count}: ${latest.trim()}`,
+  );
+};
+
 const pidExists = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
@@ -72,13 +102,14 @@ const packageTemporaryDirectories = async (): Promise<ReadonlyArray<string>> =>
 
 interface SignalScenario {
   readonly scenario: string;
-  readonly signals: ReadonlyArray<NodeJS.Signals>;
+  readonly signals: ReadonlyArray<CleanupSignal>;
   readonly cleanupDeadlineMilliseconds?: number;
 }
 
 const runSignalScenario = async (options: SignalScenario): Promise<number> => {
   const controlRoot = await mkdtemp(join(tmpdir(), "package-smoke-cleanup-test-"));
   const readyFile = join(controlRoot, "ready.json");
+  const confirmationFile = join(controlRoot, "signal.json");
   const before = await packageTemporaryDirectories();
   const cleanupDeadline = options.cleanupDeadlineMilliseconds ?? 3_000;
   const child = Bun.spawn(
@@ -89,6 +120,7 @@ const runSignalScenario = async (options: SignalScenario): Promise<number> => {
       readyFile,
       options.scenario,
       String(cleanupDeadline),
+      confirmationFile,
     ],
     {
       cwd: projectRoot,
@@ -111,8 +143,9 @@ const runSignalScenario = async (options: SignalScenario): Promise<number> => {
       expect(await pathExists(temporaryDirectory)).toBe(true);
     }
     const startedAt = Date.now();
-    for (const signal of options.signals) {
+    for (const [index, signal] of options.signals.entries()) {
       child.kill(signal);
+      await waitForSignalConfirmation(confirmationFile, index + 1, signal);
     }
     const exitCode = await child.exited;
     exited = true;

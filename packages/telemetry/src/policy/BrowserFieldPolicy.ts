@@ -6,7 +6,7 @@ import {
   maxFieldValueLength,
   type BrowserEventFields,
 } from "../BrowserEvents.ts";
-import type { WideEventFields } from "../WideEvent.ts";
+import type { EventAttributes } from "../contract/TelemetryEvent.ts";
 import {
   baseBlockedKeys,
   baseBlockedValuePatterns,
@@ -326,7 +326,7 @@ const shouldDropKey = (key: string): boolean =>
   containsCoreValue(key) ||
   containsStructuredAssignment(key);
 
-export const sanitizeBrowserFields = (fields: WideEventFields): BrowserEventFields => {
+export const sanitizeBrowserFields = (fields: EventAttributes): BrowserEventFields => {
   const sanitized: Array<SanitizedFieldEntry> = [];
   const boundedKeys = new Set<string>();
   for (const [key, runtimeValue] of Object.entries(fields)) {

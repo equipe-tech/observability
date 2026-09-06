@@ -22,7 +22,7 @@ export { defineTelemetryContract } from "./contract/TelemetryContract.ts";
 export type { EventPayloadOf, EventProducer, EmitReceipt } from "./contract/EventProducer.ts";
 export { makeEventProducer, TelemetryEventSink } from "./contract/EventProducer.ts";
 export type { TelemetryContract, TelemetryContractInput } from "./contract/TelemetryContract.ts";
-export type { TelemetryEvent } from "./contract/TelemetryEvent.ts";
+export type { EventAttributes, TelemetryEvent } from "./contract/TelemetryEvent.ts";
 export * as Telemetry from "./Telemetry.ts";
 export * from "./profile/index.ts";
 export * from "./policy/index.ts";
@@ -43,8 +43,7 @@ export {
 export type { ResourceAttributes, ResourceIdentityInput } from "./ResourceIdentity.ts";
 export {
   InvalidTelemetryEnvironment,
+  OtlpEndpoint,
   TelemetryConfig,
   telemetryConfigFromEnv,
 } from "./TelemetryConfig.ts";
-export * as WideEvent from "./WideEvent.ts";
-export { layerWideEvent } from "./WideEventSink.ts";

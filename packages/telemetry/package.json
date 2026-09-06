@@ -1,7 +1,7 @@
 {
   "name": "@equipe-tech/observability",
-  "version": "0.2.1",
-  "description": "Contrato OpenTelemetry da Equipe Tech: configuracao, layer OTLP e wide events sobre Effect",
+  "version": "0.3.0",
+  "description": "Nucleo neutro de observabilidade da Equipe Tech para OpenTelemetry, contratos, politicas e ciclo de vida",
   "homepage": "https://github.com/equipe-tech/observability#readme",
   "bugs": {
     "url": "https://github.com/equipe-tech/observability/issues"
@@ -21,6 +21,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./effect": {
+      "types": "./dist/effect/index.d.ts",
+      "import": "./dist/effect/index.js"
+    },
     "./metrics": {
       "types": "./dist/Metrics.d.ts",
       "import": "./dist/Metrics.js"
@@ -28,10 +32,6 @@
     "./node": {
       "types": "./dist/node/index.d.ts",
       "import": "./dist/node/index.js"
-    },
-    "./nestjs": {
-      "types": "./dist/nestjs/index.d.ts",
-      "import": "./dist/nestjs/index.js"
     },
     "./browser": {
       "types": "./dist/browser/index.d.ts",
@@ -50,31 +50,10 @@
     "build": "bun ../../scripts/build-packages.ts",
     "prepack": "bun run build"
   },
-  "dependencies": {
+  "devDependencies": {
     "effect": "4.0.0-rc.111"
   },
-  "devDependencies": {
-    "@nestjs/common": "^11.2.1",
-    "@nestjs/core": "^11.2.1",
-    "@nestjs/platform-express": "^11.2.1",
-    "evlog": "2.27.1",
-    "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.2"
-  },
   "peerDependencies": {
-    "@nestjs/common": "^10.0.0 || ^11.0.0",
-    "@nestjs/core": "^10.0.0 || ^11.0.0",
-    "rxjs": "^7.2.0"
-  },
-  "peerDependenciesMeta": {
-    "@nestjs/common": {
-      "optional": true
-    },
-    "@nestjs/core": {
-      "optional": true
-    },
-    "rxjs": {
-      "optional": true
-    }
+    "effect": "4.0.0-rc.111"
   }
 }

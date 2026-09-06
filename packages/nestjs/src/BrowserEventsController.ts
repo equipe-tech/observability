@@ -5,7 +5,7 @@ import {
   ingestBrowserEvents,
   InvalidBrowserEventBatch,
   type BrowserEventIngestReceipt,
-} from "../node/BrowserEventIngest.ts";
+} from "@equipe-tech/observability/node";
 import type { RequestReference } from "./RequestWideEventTraceCorrelation.ts";
 import { requestSpan, withRequestSpan } from "./TelemetryInterceptor.ts";
 

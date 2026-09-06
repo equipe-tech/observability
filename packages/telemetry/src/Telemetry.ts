@@ -8,7 +8,7 @@ import { instanceResourceAttributes } from "./ResourceIdentity.ts";
 import type { EnvironmentVariables, InvalidTelemetryEnvironment } from "./TelemetryConfig.ts";
 import { telemetryConfigFromEnv, type TelemetryConfig } from "./TelemetryConfig.ts";
 import { layerMetricsRuntime } from "./MetricsRuntime.ts";
-import { layerHttpServerOtlpTracer } from "./nestjs/HttpServerOtlpTracer.ts";
+import { layerHttpServerOtlpTracer } from "./trace/HttpServerOtlpTracer.ts";
 import { baseDataPolicy, CurrentDataPolicy, type DataPolicy } from "./policy/DataPolicy.ts";
 import type { InvalidDataPolicy } from "./policy/DataPolicyError.ts";
 import {

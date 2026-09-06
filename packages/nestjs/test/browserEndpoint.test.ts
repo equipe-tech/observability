@@ -11,9 +11,9 @@ import {
   maxFieldKeyLength,
   maxFieldsPerEvent,
   maxFieldValueLength,
-} from "../src/browser/index.ts";
-import { createBrowserEventsController, TelemetryInterceptor } from "../src/nestjs/index.ts";
-import * as Testing from "../src/testing/index.ts";
+} from "@equipe-tech/observability/browser";
+import * as Testing from "@equipe-tech/observability/testing";
+import { createBrowserEventsController, TelemetryInterceptor } from "../src/index.ts";
 
 const AddressInfo = Schema.Struct({ port: Schema.Number });
 const decodeAddressInfo = Schema.decodeUnknownOption(AddressInfo);
