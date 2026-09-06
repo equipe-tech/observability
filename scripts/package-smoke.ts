@@ -188,9 +188,9 @@ const allocateTemporaryDirectory = async (): Promise<string> => {
   return mkdtemp(join(tmpdir(), "observability-package-"));
 };
 
-allocationPromise = allocateTemporaryDirectory();
 process.on("SIGINT", onSigint);
 process.on("SIGTERM", onSigterm);
+allocationPromise = allocateTemporaryDirectory();
 
 try {
   temporaryDirectory = await allocationPromise;
