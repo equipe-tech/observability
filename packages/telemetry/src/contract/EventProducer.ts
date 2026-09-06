@@ -1,4 +1,5 @@
-import { Clock, Context, DateTime, Effect, Option, Predicate, Random, Schema } from "effect";
+import { Clock, Context, DateTime, Effect, Predicate, Random, Schema } from "effect";
+import { CorrelationContext, CurrentCorrelation } from "../Correlation.ts";
 import {
   type AttributeDefinitionsInput,
   type AuditActionDefinitionInput,
@@ -10,7 +11,6 @@ import {
   AuditContext,
   type AuditActor,
   type AttributeValue,
-  type CorrelationContext,
   ErrorContext,
   EventDuration,
   type EventAttributes,
@@ -40,7 +40,7 @@ type EventAttributesOf<Attributes extends AttributeDefinitionsInput> = {
 type EventPayloadBase<Attributes extends AttributeDefinitionsInput> = {
   readonly timestamp?: string;
   readonly severity?: EventSeverity;
-  readonly correlation?: Option.Option<CorrelationContext>;
+  readonly correlation?: CorrelationContext;
   readonly attributes: EventAttributesOf<Attributes>;
 };
 
@@ -195,6 +195,7 @@ const decodeDuration = Schema.decodeUnknownEffect(EventDuration);
 const decodeHttp = Schema.decodeUnknownEffect(HttpContext);
 const decodeError = Schema.decodeUnknownEffect(ErrorContext);
 const decodeAudit = Schema.decodeUnknownEffect(AuditContext);
+const decodeCorrelation = Schema.decodeUnknownEffect(CorrelationContext);
 
 const parseTimestamp = (eventName: string, timestamp: string) =>
   decodeTimestamp(timestamp).pipe(
@@ -253,35 +254,20 @@ const parseAudit = (eventName: string, audit: AuditContext) =>
 
 const parseCorrelation = (
   eventName: string,
-  correlation: Option.Option<CorrelationContext> | undefined,
-): Effect.Effect<Option.Option<CorrelationContext>, InvalidTelemetryEvent> => {
+  correlation: CorrelationContext | undefined,
+): Effect.Effect<CorrelationContext, InvalidTelemetryEvent> => {
   if (correlation === undefined) {
-    return Effect.succeed(Option.none());
+    return CurrentCorrelation;
   }
-  const value =
-    Option.isOption(correlation) && Option.isSome(correlation) ? correlation.value : null;
-  const requestId = Predicate.isObject(value) ? value.requestId : undefined;
-  const runId = Predicate.isObject(value) ? value.runId : undefined;
-  const requestIdIsValid =
-    Option.isOption(requestId) &&
-    (Option.isNone(requestId) ||
-      (Predicate.isString(requestId.value) && requestId.value.length > 0));
-  const runIdIsValid =
-    Option.isOption(runId) &&
-    (Option.isNone(runId) || (Predicate.isString(runId.value) && runId.value.length > 0));
-  if (
-    !Option.isOption(correlation) ||
-    (Option.isSome(correlation) && (!requestIdIsValid || !runIdIsValid))
-  ) {
-    return Effect.fail(
+  return decodeCorrelation(correlation).pipe(
+    Effect.mapError(() =>
       eventError(
         "OBS_EVENT_INVALID_FIELD",
-        `Event "${eventName}" has invalid correlation context. Use non-empty optional request and run identifiers.`,
+        `Event "${eventName}" has invalid correlation context. Use traced or untraced linkage with bounded request and run identifiers.`,
         { eventName, attributeName: "correlation" },
       ),
-    );
-  }
-  return Effect.succeed(correlation);
+    ),
+  );
 };
 
 const parseOutcome = (definition: CompiledEventDefinition, outcome: EventOutcome) =>

@@ -1,7 +1,16 @@
 import type { CallHandler, ExecutionContext, NestInterceptor } from "@nestjs/common";
 import { Context, Effect, Exit, Option, Predicate, Schema, Tracer } from "effect";
 import type { Clock, ManagedRuntime } from "effect";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import {
+  CorrelationContext,
+  parseRequestId,
+  parseSpanId,
+  parseTraceId,
+  type RequestId,
+  withCorrelation,
+} from "../Correlation.ts";
 import { Observable } from "rxjs";
 import {
   telemetryRoutePolicy,
@@ -48,6 +57,7 @@ const decodeHeadersSent = Schema.decodeUnknownOption(Schema.Boolean);
 const decodeResponseEmitter = Schema.decodeUnknownOption(Schema.instanceOf(EventEmitter));
 
 const requestSpans = new WeakMap<RequestReference, Tracer.Span>();
+const requestCorrelations = new WeakMap<RequestReference, CorrelationContext>();
 
 export const requestSpan = (request: RequestReference): Option.Option<Tracer.Span> =>
   Option.fromNullishOr(requestSpans.get(request));
@@ -58,6 +68,17 @@ export const withRequestSpan =
     Option.match(requestSpan(request), {
       onNone: () => effect,
       onSome: (span) => Effect.withParentSpan(effect, span),
+    });
+
+export const requestCorrelation = (request: RequestReference): Option.Option<CorrelationContext> =>
+  Option.fromNullishOr(requestCorrelations.get(request));
+
+export const withRequestCorrelation =
+  (request: RequestReference) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+    Option.match(requestCorrelation(request), {
+      onNone: () => withRequestSpan(request)(effect),
+      onSome: (correlation) => withRequestSpan(request)(withCorrelation(correlation)(effect)),
     });
 
 type ActiveRequest = {
@@ -208,13 +229,37 @@ export class TelemetryInterceptor<RuntimeError> implements NestInterceptor {
     if (Option.isSome(details.serverAddress)) {
       span.attribute("server.address", details.serverAddress.value);
     }
+    const requestId: RequestId = this.#runtime.runSync(parseRequestId(randomUUID()));
+    const traceId = this.#runtime.runSync(parseTraceId(span.traceId));
+    const spanId = this.#runtime.runSync(parseSpanId(span.spanId));
     requestSpans.set(request, span);
+    requestCorrelations.set(
+      request,
+      new CorrelationContext({
+        trace: { _tag: "Traced", traceId, spanId },
+        requestId: Option.some(requestId),
+      }),
+    );
     this.#requestWideEventTraceCorrelation?.correlate(request, {
       traceId: span.traceId,
       spanId: span.spanId,
     });
     const response = httpContext.getResponse<RequestReference>();
     const responseEmitter = decodeResponseEmitter(response);
+    const setSpanAttribute = (key: string, value: string | number): void => {
+      try {
+        span.attribute(key, value);
+      } catch {
+        return;
+      }
+    };
+    const endSpan = (exit: Exit.Exit<unknown, unknown>): void => {
+      try {
+        span.end(clock.currentTimeNanosUnsafe(), exit);
+      } catch {
+        return;
+      }
+    };
 
     return new Observable((subscriber) => {
       let ended = false;
@@ -256,7 +301,7 @@ export class TelemetryInterceptor<RuntimeError> implements NestInterceptor {
         ended = true;
         removeResponseListeners();
         if (Option.isSome(status)) {
-          span.attribute("http.response.status_code", status.value);
+          setSpanAttribute("http.response.status_code", status.value);
         }
         const finalErrorType = Option.contains(errorType, "connection_closed")
           ? errorType
@@ -273,11 +318,12 @@ export class TelemetryInterceptor<RuntimeError> implements NestInterceptor {
               },
             });
         if (Option.isSome(finalErrorType)) {
-          span.attribute("error.type", finalErrorType.value);
+          setSpanAttribute("error.type", finalErrorType.value);
         }
         requestSpans.delete(request);
+        requestCorrelations.delete(request);
         release();
-        span.end(clock.currentTimeNanosUnsafe(), exit);
+        endSpan(exit);
       };
 
       const onResponseFinish = (): void => {
@@ -296,7 +342,8 @@ export class TelemetryInterceptor<RuntimeError> implements NestInterceptor {
       });
       if (Option.isNone(registered)) {
         requestSpans.delete(request);
-        span.end(clock.currentTimeNanosUnsafe(), Exit.interrupt());
+        requestCorrelations.delete(request);
+        endSpan(Exit.interrupt());
         return next.handle().subscribe(subscriber);
       }
       release = registered.value;

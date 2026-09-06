@@ -13,10 +13,18 @@ import type {
 } from "@nestjs/common";
 import { Module } from "@nestjs/common";
 import { APP_INTERCEPTOR, HttpAdapterHost } from "@nestjs/core";
-import { Duration, Effect, Layer, ManagedRuntime, Option, Schema } from "effect";
+import { Duration, Effect, Layer, ManagedRuntime, Option, Result, Schema } from "effect";
 import type { OtlpExporter } from "effect/unstable/observability";
 import { OtlpExporter as Otlp } from "effect/unstable/observability";
 import type { Observable } from "rxjs";
+import {
+  EnvironmentAliasPolicy,
+  EnvironmentName,
+  parseResourceIdentity,
+  ServiceInstanceId,
+  ServiceName,
+  ServiceVersion,
+} from "../ResourceIdentity.ts";
 import { layer } from "../Telemetry.ts";
 import { OtlpEndpoint, TelemetryConfig } from "../TelemetryConfig.ts";
 import { telemetryRoutePolicy, type ProxyPolicy } from "./HttpRoutePolicy.ts";
@@ -30,6 +38,8 @@ export type TelemetryModuleOptions =
       readonly serviceName: string;
       readonly serviceVersion: string;
       readonly environment: string;
+      readonly serviceInstanceId?: string | undefined;
+      readonly deploymentEnvironmentAlias?: EnvironmentAliasPolicy | undefined;
       readonly otlpEndpoint: string;
       readonly healthRouteTemplates?: ReadonlyArray<string> | undefined;
       readonly proxyPolicy?: ProxyPolicy | undefined;
@@ -90,9 +100,6 @@ export class TelemetryShutdownError extends Error {
   }
 }
 
-const Identity = Schema.NonEmptyString.check(
-  Schema.makeFilter((value) => value.trim() === value, { expected: "a nonempty trimmed string" }),
-);
 const ShutdownTimeout = Schema.Number.check(
   Schema.isInt(),
   Schema.makeFilter((value) => Number.isSafeInteger(value) && value > 0, {
@@ -101,9 +108,13 @@ const ShutdownTimeout = Schema.Number.check(
 );
 const EnabledOptions = Schema.Struct({
   enabled: Schema.Literal(true),
-  serviceName: Identity,
-  serviceVersion: Identity,
-  environment: Identity,
+  serviceName: ServiceName,
+  serviceVersion: ServiceVersion,
+  environment: EnvironmentName,
+  serviceInstanceId: Schema.Union([ServiceInstanceId, Schema.Undefined]).pipe(Schema.optionalKey),
+  deploymentEnvironmentAlias: Schema.Union([EnvironmentAliasPolicy, Schema.Undefined]).pipe(
+    Schema.optionalKey,
+  ),
   otlpEndpoint: OtlpEndpoint,
   healthRouteTemplates: Schema.Union([Schema.Array(Schema.String), Schema.Undefined]).pipe(
     Schema.optionalKey,
@@ -148,12 +159,24 @@ const parseModuleOptions = (input: TelemetryModuleOptions): NormalizedOptions =>
       healthRouteTemplates: options.healthRouteTemplates,
       proxyPolicy: options.proxyPolicy,
     });
+    const parsedIdentity = Effect.runSync(
+      Effect.result(
+        parseResourceIdentity({
+          serviceName: options.serviceName,
+          serviceVersion: options.serviceVersion,
+          environment: options.environment,
+          instance: Option.fromNullishOr(options.serviceInstanceId),
+        }),
+      ),
+    );
+    if (Result.isFailure(parsedIdentity)) {
+      throw parsedIdentity.failure;
+    }
     return {
       enabled: true,
       config: new TelemetryConfig({
-        serviceName: options.serviceName,
-        serviceVersion: options.serviceVersion,
-        environment: options.environment,
+        identity: parsedIdentity.success,
+        environmentAlias: options.deploymentEnvironmentAlias ?? "omitted",
         otlpEndpoint: options.otlpEndpoint,
       }),
       healthRouteTemplates: options.healthRouteTemplates,
@@ -420,9 +443,11 @@ const applicationRuntimes = new WeakMap<WeakKey, ApplicationRuntimeState>();
 const runtimeKey = (options: EnabledNormalizedOptions): string =>
   JSON.stringify([
     options.config.otlpEndpoint.toString(),
-    options.config.serviceName,
-    options.config.serviceVersion,
-    options.config.environment,
+    options.config.identity.serviceName,
+    options.config.identity.serviceVersion,
+    options.config.identity.environment,
+    Option.getOrUndefined(options.config.identity.instance),
+    options.config.environmentAlias,
     options.shutdownTimeoutMilliseconds,
   ]);
 

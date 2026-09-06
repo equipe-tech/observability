@@ -5,9 +5,11 @@ export {
   type BrowserEventsControllerOptions,
 } from "./BrowserEventsController.ts";
 export {
+  requestCorrelation,
   requestSpan,
   TelemetryInterceptor,
   TelemetryRequestTracker,
+  withRequestCorrelation,
   withRequestSpan,
   type TelemetryInterceptorOptions,
 } from "./TelemetryInterceptor.ts";

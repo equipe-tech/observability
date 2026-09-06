@@ -153,6 +153,15 @@ describe("project names", () => {
     expect(error.message).toContain("--name");
   });
 
+  test("accepts a canonical explicit name", async () => {
+    expect(await Effect.runPromise(parseProjectName("checkout-api"))).toBe("checkout-api");
+  });
+
+  test("rejects explicit names with consecutive hyphens", async () => {
+    const error = await Effect.runPromise(Effect.flip(parseProjectName("checkout--api")));
+    expect(error.code).toBe("OBS_CLI_PROVISION_INVALID_NAME");
+  });
+
   test("rejects an explicit invalid name", async () => {
     const error = await Effect.runPromise(Effect.flip(parseProjectName("Bad Name")));
     expect(error.code).toBe("OBS_CLI_PROVISION_INVALID_NAME");

@@ -121,8 +121,10 @@ const AxiomSpanRow = Schema.Struct({
   span_id: Schema.NonEmptyString,
   parent_span_id: OptionalString,
   name: Schema.NonEmptyString,
+  service_namespace: OptionalString,
   service_name: OptionalString,
   service_version: OptionalString,
+  service_instance_id: OptionalString,
   environment_name: OptionalString,
   environment_alias: OptionalString,
   events: OptionalString,
@@ -136,8 +138,10 @@ export type AxiomSpan = {
   readonly spanId: string;
   readonly parentSpanId: Option.Option<string>;
   readonly name: string;
+  readonly serviceNamespace: Option.Option<string>;
   readonly serviceName: Option.Option<string>;
   readonly serviceVersion: Option.Option<string>;
+  readonly serviceInstanceId: Option.Option<string>;
   readonly environmentName: Option.Option<string>;
   readonly environmentAlias: Option.Option<string>;
   readonly events: Option.Option<string>;
@@ -151,15 +155,17 @@ const toAxiomSpan = (row: typeof AxiomSpanRow.Type): AxiomSpan => ({
     Option.filter((value) => value !== ""),
   ),
   name: row.name,
+  serviceNamespace: Option.fromNullishOr(row.service_namespace),
   serviceName: Option.fromNullishOr(row.service_name),
   serviceVersion: Option.fromNullishOr(row.service_version),
+  serviceInstanceId: Option.fromNullishOr(row.service_instance_id),
   environmentName: Option.fromNullishOr(row.environment_name),
   environmentAlias: Option.fromNullishOr(row.environment_alias),
   events: Option.fromNullishOr(row.events),
   redaction: toAxiomRedactionAttributes(row),
 });
 
-const spanProjection = `project trace_id, span_id, parent_span_id, name, service_name = ['service.name'], service_version = ['service.version'], environment_name = tostring(['resource.custom']['deployment.environment.name']), environment_alias = tostring(['resource.custom']['deployment.environment']), events = tostring(events), ${redactionProjection}`;
+const spanProjection = `project trace_id, span_id, parent_span_id, name, service_namespace = tostring(['resource.custom']['service.namespace']), service_name = ['service.name'], service_version = ['service.version'], service_instance_id = tostring(['resource.custom']['service.instance.id']), environment_name = tostring(['resource.custom']['deployment.environment.name']), environment_alias = tostring(['resource.custom']['deployment.environment']), events = tostring(events), ${redactionProjection}`;
 
 export const findRootSpan = (
   env: AxiomEnvironment,
@@ -198,7 +204,9 @@ const AxiomLogRow = Schema.Struct({
   event_name: Schema.NonEmptyString,
   event_kind: OptionalString,
   event_source: OptionalString,
+  service_namespace: OptionalString,
   service_name: OptionalString,
+  service_instance_id: OptionalString,
   environment_name: OptionalString,
   environment_alias: OptionalString,
   body: OptionalString,
@@ -212,7 +220,9 @@ export type AxiomLog = {
   readonly eventName: string;
   readonly eventKind: Option.Option<string>;
   readonly eventSource: Option.Option<string>;
+  readonly serviceNamespace: Option.Option<string>;
   readonly serviceName: Option.Option<string>;
+  readonly serviceInstanceId: Option.Option<string>;
   readonly environmentName: Option.Option<string>;
   readonly environmentAlias: Option.Option<string>;
   readonly body: Option.Option<string>;
@@ -224,7 +234,9 @@ const toAxiomLog = (row: typeof AxiomLogRow.Type): AxiomLog => ({
   eventName: row.event_name,
   eventKind: Option.fromNullishOr(row.event_kind),
   eventSource: Option.fromNullishOr(row.event_source),
+  serviceNamespace: Option.fromNullishOr(row.service_namespace),
   serviceName: Option.fromNullishOr(row.service_name),
+  serviceInstanceId: Option.fromNullishOr(row.service_instance_id),
   environmentName: Option.fromNullishOr(row.environment_name),
   environmentAlias: Option.fromNullishOr(row.environment_alias),
   body: Option.fromNullishOr(row.body),
@@ -237,7 +249,7 @@ export const findLogs = (
 ): Effect.Effect<ReadonlyArray<AxiomLog>> =>
   runQuery(
     env,
-    `['${env.AXIOM_DATASET_LOGS}'] | where ['attributes.custom']['canary.run_id'] == '${runId}' | project trace_id, event_name = tostring(['attributes.custom']['event.name']), event_kind = tostring(['attributes.custom']['event.kind']), event_source = tostring(['attributes.custom']['event.source']), service_name = ['service.name'], environment_name = tostring(['resource.custom']['deployment.environment.name']), environment_alias = tostring(['resource.custom']['deployment.environment']), body = tostring(body), ${redactionProjection}`,
+    `['${env.AXIOM_DATASET_LOGS}'] | where ['attributes.custom']['canary.run_id'] == '${runId}' | project trace_id, event_name = tostring(['attributes.custom']['event.name']), event_kind = tostring(['attributes.custom']['event.kind']), event_source = tostring(['attributes.custom']['event.source']), service_namespace = tostring(['resource.custom']['service.namespace']), service_name = ['service.name'], service_instance_id = tostring(['resource.custom']['service.instance.id']), environment_name = tostring(['resource.custom']['deployment.environment.name']), environment_alias = tostring(['resource.custom']['deployment.environment']), body = tostring(body), ${redactionProjection}`,
   ).pipe(
     Effect.map((rows) =>
       rows.flatMap((row) =>
@@ -257,10 +269,12 @@ export const findMetric = (
   env: AxiomEnvironment,
   runId: string,
   environment: string,
+  serviceName: string,
+  serviceVersion: string,
 ): Effect.Effect<Option.Option<AxiomMetric>> =>
   runMetricsQuery(
     env,
-    `\`${env.AXIOM_DATASET_METRICS}\`:\`canary.operations\` | where \`canary.run_id\` == "${runId}" and \`deployment.environment.name\` == "${environment}" and \`deployment.environment\` == "${environment}"`,
+    `\`${env.AXIOM_DATASET_METRICS}\`:\`canary.operations\` | where \`canary.run_id\` == "${runId}" and \`service.namespace\` == "equipe-tech" and \`service.name\` == "${serviceName}" and \`service.version\` == "${serviceVersion}" and \`deployment.environment.name\` == "${environment}" and \`deployment.environment\` == "${environment}"`,
   ).pipe(
     Effect.map((content) =>
       content.includes(runId) ? Option.some({ content }) : Option.none<AxiomMetric>(),

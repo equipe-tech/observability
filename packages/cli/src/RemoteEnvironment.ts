@@ -13,6 +13,7 @@ import {
   VerifiedAxiomDataset,
   SentryEnvironment,
 } from "./CredentialsStore.ts";
+import { EnvironmentName, ServiceName } from "./ResourceNamePolicy.ts";
 import {
   AxiomApi,
   AxiomDataset,
@@ -22,14 +23,9 @@ import {
   SentryApi,
 } from "./ProviderApis.ts";
 
-const EnvironmentName = Schema.NonEmptyString.check(
-  Schema.isMaxLength(32),
-  Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/, {
-    expected: "a lowercase environment name with letters, digits and single dashes",
-  }),
-);
 const DatasetName = Schema.NonEmptyString.check(Schema.isMaxLength(128));
 const ProviderName = Schema.Literals(["axiom", "sentry"]);
+const decodeServiceName = Schema.decodeUnknownEffect(ServiceName);
 const decodeEnvironmentName = Schema.decodeUnknownEffect(EnvironmentName);
 const decodeDatasetName = Schema.decodeUnknownEffect(DatasetName);
 const decodeProviderName = Schema.decodeUnknownEffect(ProviderName);
@@ -43,6 +39,7 @@ export class RemoteEnvironmentError extends Schema.TaggedError<RemoteEnvironment
       "OBS_CLI_REMOTE_CREDENTIALS_MISSING",
       "OBS_CLI_REMOTE_PROVIDER_CREDENTIALS_MISSING",
       "OBS_CLI_REMOTE_INVALID_PROVIDER",
+      "OBS_CLI_REMOTE_INVALID_PROJECT",
       "OBS_CLI_REMOTE_INVALID_ENVIRONMENT",
       "OBS_CLI_REMOTE_ROTATION_NOT_SELECTED",
       "OBS_CLI_REMOTE_TOKEN_UNAVAILABLE",
@@ -72,6 +69,22 @@ export type EnvironmentDatasets = {
   readonly metrics: string;
 };
 
+const parseServiceName = Effect.fn("parseServiceName")(function* (
+  service: string,
+): Effect.fn.Return<string, RemoteEnvironmentError> {
+  return yield* decodeServiceName(service).pipe(
+    Effect.mapError(
+      (cause) =>
+        new RemoteEnvironmentError({
+          code: "OBS_CLI_REMOTE_INVALID_PROJECT",
+          message:
+            "The project name is invalid. Use lowercase letters, digits and single hyphens between segments, with at most 63 characters.",
+          cause,
+        }),
+    ),
+  );
+});
+
 export const parseEnvironmentName = Effect.fn("parseEnvironmentName")(function* (
   environment: string,
 ): Effect.fn.Return<string, RemoteEnvironmentError> {
@@ -81,7 +94,7 @@ export const parseEnvironmentName = Effect.fn("parseEnvironmentName")(function* 
         new RemoteEnvironmentError({
           code: "OBS_CLI_REMOTE_INVALID_ENVIRONMENT",
           message:
-            "The environment name is invalid. Use lowercase letters, digits and single dashes, with at most 32 characters.",
+            "The environment name is invalid. Use lowercase letters, digits and single hyphens between segments, with at most 32 characters.",
           cause,
         }),
     ),
@@ -577,7 +590,7 @@ export class RemoteEnvironment extends Context.Service<
     >;
     list(
       project: Option.Option<string>,
-    ): Effect.Effect<ReadonlyArray<ManagedEnvironment>, CredentialsError>;
+    ): Effect.Effect<ReadonlyArray<ManagedEnvironment>, CredentialsError | RemoteEnvironmentError>;
     export(
       project: string,
       environment: string,
@@ -592,11 +605,15 @@ export class RemoteEnvironment extends Context.Service<
       const sentryApi = yield* SentryApi;
 
       const list = Effect.fn("RemoteEnvironment.list")(function* (project: Option.Option<string>) {
+        const name = yield* Option.match(project, {
+          onNone: () => Effect.succeed(Option.none<string>()),
+          onSome: (rawName) => parseServiceName(rawName).pipe(Effect.map(Option.some)),
+        });
         const credentials = Option.getOrElse(yield* store.load(), emptyCredentials);
-        return Option.match(project, {
+        return Option.match(name, {
           onNone: () => credentials.environments,
-          onSome: (name) =>
-            credentials.environments.filter((environment) => environment.project === name),
+          onSome: (validatedName) =>
+            credentials.environments.filter((environment) => environment.project === validatedName),
         });
       });
 
@@ -1128,7 +1145,8 @@ export class RemoteEnvironment extends Context.Service<
           );
         }),
         list,
-        export: Effect.fn("RemoteEnvironment.export")(function* (project, rawEnvironment) {
+        export: Effect.fn("RemoteEnvironment.export")(function* (rawProject, rawEnvironment) {
+          const project = yield* parseServiceName(rawProject);
           const environment = yield* parseEnvironmentName(rawEnvironment);
           const credentials = Option.getOrElse(yield* store.load(), emptyCredentials);
           const managed = credentials.environments.find(

@@ -6,7 +6,11 @@ A aplicação envia os três sinais para um Collector. Ela não contém credenci
 
 ## O atributo canônico preserva consultas durante a transição
 
-O atributo canônico de resource para logs, traces e métricas é `deployment.environment.name`.
+O atributo canônico de resource para logs, traces e métricas é `deployment.environment.name`. A identidade inclui `service.namespace=equipe-tech`, `service.name`, `service.version` e, para logs e traces, o `service.instance.id` opcional. Métricas não recebem o identificador de instância.
+
+Nomes de serviço usam segmentos de letras minúsculas e números, separados por um único hífen, com até 63 caracteres. Nomes de ambiente seguem a mesma gramática, com até 32 caracteres. A versão aceita SemVer 2.0.0 ou um identificador imutável hexadecimal minúsculo de 7 a 64 caracteres.
+
+`OTEL_SERVICE_INSTANCE_ID` define `service.instance.id` para logs e traces. Um valor ausente, `undefined` ou vazio omite o atributo. Um valor não vazio aceita no máximo 128 caracteres. Métricas sempre omitem o identificador de instância.
 
 O Collector também exporta `deployment.environment` como alias de transição.
 
@@ -33,6 +37,16 @@ A remoção do alias requer duas condições:
 
 - Todos os produtores suportados enviam o atributo canônico.
 - Nenhuma consulta, painel ou alerta usa o alias durante um período completo de retenção dos datasets.
+
+## A compatibilidade no SDK tem prazo
+
+`EnvironmentAliasPolicy` controla a emissão do alias pelo SDK. O padrão `omitted` emite somente `deployment.environment.name`. Use `emitted` apenas enquanto um destino antigo ainda depende de `deployment.environment`. Essa compatibilidade é somente programática até o OBS-51 assumir a configuração por ambiente e perfil.
+
+Os exporters do pacote ignoram `OTEL_RESOURCE_ATTRIBUTES`. Assim, valores ambientes não podem inserir ou substituir `service.namespace`, `service.name`, `service.version`, `deployment.environment.name`, `deployment.environment` ou `service.instance.id`. A identidade canônica, o alias e a instância vêm somente das projeções de `ResourceIdentity`. Atributos ambientes não reservados também são suprimidos.
+
+Até o OBS-50 criar um pacote compartilhado neutro, a CLI mantém sua própria cópia da gramática de nomes. O teste `IdentityPolicyDrift.bun.test.ts` compara a fonte da expressão regular, os limites e os fixtures de fronteira com a política de telemetria. Qualquer alteração em uma das cópias exige atualizar e revisar as duas.
+
+O SDK remove essa opção na primeira versão minor depois que as duas condições acima permanecerem verdadeiras por um período completo de retenção, e no máximo na linha `0.4.0`. A revisão da remoção ocorre antes da publicação de cada versão minor até esse limite.
 
 ## O ambiente local não usa contas externas
 

@@ -1,4 +1,5 @@
 import { DateTime, Option, Schema } from "effect";
+import type { CorrelationContext } from "../Correlation.ts";
 import type { EventName } from "./EventName.ts";
 
 export const EventSeverity = Schema.Literals(["debug", "info", "warn", "error", "fatal"]);
@@ -14,11 +15,6 @@ export type AttributeValue = string | number | boolean;
 
 export type EventAttributes = {
   readonly [attributeName: string]: AttributeValue;
-};
-
-export type CorrelationContext = {
-  readonly requestId: Option.Option<string>;
-  readonly runId: Option.Option<string>;
 };
 
 export const HttpContext = Schema.Struct({
@@ -105,7 +101,7 @@ export type EventBase = {
   readonly timestamp: EventTimestamp;
   readonly name: EventName;
   readonly severity: EventSeverity;
-  readonly correlation: Option.Option<CorrelationContext>;
+  readonly correlation: CorrelationContext;
   readonly attributes: EventAttributes;
 };
 

@@ -131,6 +131,7 @@ Consulte estes documentos:
 - [Ambientes isolam dados sem acoplar a aplicação](docs/environment-management.md)
 - [Configurar um projeto com ambientes remotos](docs/setup-project-environments.md)
 - [Referência da CLI](docs/cli-reference.md)
+- [Migrar o SDK e a CLI para 0.3](docs/migration-0.3.md)
 
 Com a stack no ar, o canário valida traces, logs e métricas no pipeline completo:
 

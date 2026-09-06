@@ -144,6 +144,7 @@ O nome do token Axiom segue este formato:
 | `OBS_CLI_REMOTE_UNAUTHORIZED`                  | O provider recusa a credencial ou o acesso à organização.                   |
 | `OBS_CLI_REMOTE_FAILED`                        | A requisição falha ou o provider retorna um status inesperado.              |
 | `OBS_CLI_REMOTE_INVALID_RESPONSE`              | A resposta do provider não passa no parse.                                  |
+| `OBS_CLI_REMOTE_INVALID_PROJECT`               | O nome do projeto é inválido.                                               |
 | `OBS_CLI_REMOTE_INVALID_ENVIRONMENT`           | O ambiente ou o nome derivado de um dataset é inválido.                     |
 | `OBS_CLI_REMOTE_ROTATION_NOT_SELECTED`         | Uma rotação inclui um ambiente sem Axiom.                                   |
 | `OBS_CLI_REMOTE_TOKEN_UNAVAILABLE`             | O token existe no Axiom, mas a CLI não possui o valor secreto.              |
