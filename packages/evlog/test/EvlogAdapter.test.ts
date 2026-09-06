@@ -1616,9 +1616,20 @@ monitors: []
       boundary,
     ];
     for (const [index, timestamp] of safeTimestamps.entries()) {
-      log.info({ "event.name": "job.completed", "job.name": `safe-${index}`, timestamp });
+      log.info({
+        outcome: "success",
+        durationMs: 1,
+        "event.name": "job.completed",
+        "job.name": `safe-${index}`,
+        timestamp,
+      });
     }
-    log.info({ "event.name": "job.completed", "job.name": "generated" });
+    log.info({
+      outcome: "success",
+      durationMs: 1,
+      "event.name": "job.completed",
+      "job.name": "generated",
+    });
     for (const timestamp of [
       "not-a-date",
       Number.NaN,
@@ -1628,7 +1639,13 @@ monitors: []
       "9999-12-31T23:59:59.000Z",
       boundary + 1,
     ]) {
-      log.info({ "event.name": "job.completed", "job.name": "poison", timestamp });
+      log.info({
+        outcome: "success",
+        durationMs: 1,
+        "event.name": "job.completed",
+        "job.name": "poison",
+        timestamp,
+      });
     }
     await observability.close();
     await receiver.close();
@@ -1649,14 +1666,25 @@ monitors: []
     const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
     const traceId = "1".repeat(32);
     const spanId = "2".repeat(16);
-    log.info({ "event.name": "job.completed", "job.name": "valid", traceId, spanId });
     log.info({
+      outcome: "success",
+      durationMs: 1,
+      "event.name": "job.completed",
+      "job.name": "valid",
+      traceId,
+      spanId,
+    });
+    log.info({
+      outcome: "success",
+      durationMs: 1,
       "event.name": "job.completed",
       "job.name": "bad-trace",
       traceId: "A".repeat(32),
       spanId,
     });
     log.info({
+      outcome: "success",
+      durationMs: 1,
       "event.name": "job.completed",
       "job.name": "bad-span",
       traceId,
@@ -1861,13 +1889,15 @@ monitors: []
           environment: "test",
           "event.name": "canonicalsecret.request",
           "case.name": "global-request",
+          status: 200,
+          durationMs: 1,
           traceId: "1".repeat(32),
           spanId: "2".repeat(16),
         },
         request: {
           method: secretText,
           path: `/global?token=${secretText}`,
-          requestId: secretText,
+          requestId: "canonicalsecret-request",
         },
       });
       await observability.close();
@@ -2283,15 +2313,30 @@ monitors: []
         foreignEvents.push(JSON.stringify(context.event));
       },
     });
-    log.info({ "event.name": "job.completed", "job.name": "before-adapter" });
+    log.info({
+      outcome: "success",
+      durationMs: 1,
+      "event.name": "job.completed",
+      "job.name": "before-adapter",
+    });
     expect(foreignEvents).toHaveLength(1);
 
     const adapter = evlogAdapter({ batchSize: 1, transportRetries: 0 });
     const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
-    log.info({ "event.name": "job.completed", "job.name": "adapter-owned" });
+    log.info({
+      outcome: "success",
+      durationMs: 1,
+      "event.name": "job.completed",
+      "job.name": "adapter-owned",
+    });
     await observability.close();
     expect(isEnabled()).toBe(false);
-    log.info({ "event.name": "job.completed", "job.name": "after-close" });
+    log.info({
+      outcome: "success",
+      durationMs: 1,
+      "event.name": "job.completed",
+      "job.name": "after-close",
+    });
     await receiver.close();
     expect(foreignEvents).toHaveLength(1);
     expect(receiver.bodies.some((body) => body.includes("adapter-owned"))).toBe(true);
@@ -2319,7 +2364,12 @@ monitors: []
     for (const name of ["first-generation", "second-generation"]) {
       const adapter = evlogAdapter({ batchSize: 1, transportRetries: 0 });
       const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
-      log.info({ "event.name": "job.completed", "job.name": name });
+      log.info({
+        outcome: "success",
+        durationMs: 1,
+        "event.name": "job.completed",
+        "job.name": name,
+      });
       const report = await observability.close();
       expect(report.degraded).toBe(false);
     }
@@ -2477,12 +2527,21 @@ monitors: []
     const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
     log.info({ "job.name": "missing name" });
     log.info({ "event.name": "job.unknown", "job.name": "unknown name" });
-    log.info({ "event.name": "job.completed", "job.detail": "missing required" });
     log.info({
+      outcome: "success",
+      durationMs: 1,
+      "event.name": "job.completed",
+      "job.detail": "missing required",
+    });
+    log.info({
+      outcome: "success",
+      durationMs: 1,
       "event.name": "job.completed",
       "job.name": { invalid: true },
     });
     log.info({
+      outcome: "success",
+      durationMs: 1,
       "event.name": "job.completed",
       "job.name": "billing",
       "job.unknown": "undeclared",
@@ -2543,7 +2602,12 @@ monitors: []
         .pipe(Effect.provide(observability.eventLayer)),
     );
     const report = await observability.close();
-    log.info({ "event.name": "job.completed", "job.name": "foreign-after-close" });
+    log.info({
+      outcome: "success",
+      durationMs: 1,
+      "event.name": "job.completed",
+      "job.name": "foreign-after-close",
+    });
     await receiver.close();
     expect(report.degraded).toBe(true);
     expect(adapter.drops().total).toBe(0);
