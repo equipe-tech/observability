@@ -654,6 +654,10 @@ describe.runIf(canaryEnabled)("pipeline canary", () => {
           for (const key of redactedAttributeKeys) {
             assert.strictEqual(Option.getOrUndefined(attributeValue(attributes, key)), "****");
           }
+          assert.strictEqual(
+            Option.getOrUndefined(attributeValue(attributes, "safe.message")),
+            'token="[REDACTED]"',
+          );
         }
         const metricAttributes = JSON.stringify(run.metric.dataPoint.attributes);
         assertCanaryMetricPolicy({ content: metricAttributes, runId }, sensitive);

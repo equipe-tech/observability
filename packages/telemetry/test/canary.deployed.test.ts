@@ -173,7 +173,7 @@ const assertRedactionAttributes = (
   }
   assert.deepStrictEqual(attributes.tokenizer, Option.some(sensitive.tokenizerValue));
   assert.deepStrictEqual(attributes.documentation, Option.some(sensitive.documentationValue));
-  assert.include(Option.getOrThrow(attributes.safeMessage), "****");
+  assert.strictEqual(Option.getOrThrow(attributes.safeMessage), 'token="[REDACTED]"');
 };
 
 describe.runIf(deployedEnabled)("deployed pipeline canary", () => {
