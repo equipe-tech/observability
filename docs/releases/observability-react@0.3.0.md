@@ -37,7 +37,8 @@
 
 ### Correções
 
-- fix(release): resolve protected secrets in native jobs
+- fix(release): provision Collector storage and enforce readiness
+- fix(release): restore protected canary secret access (#82)
 - fix: resolve stack review findings (#78)
 - fix(cli): accept Axiom default retention payloads (#24)
 - fix(cli): create MetricsDB datasets and correlation gates (#22)
