@@ -20,7 +20,9 @@ export const publicErrorFromCause = (cause: Cause.Cause<unknown>): Option.Option
           value._tag === "OperationsManifestError" ||
           value._tag === "ManagedQueryError" ||
           value._tag === "OperationsError" ||
-          value._tag === "OperationsStateError"))
+          value._tag === "OperationsStateError" ||
+          value._tag === "SetupError" ||
+          value._tag === "AuthenticationInputError"))
     ) {
       return Option.none();
     }

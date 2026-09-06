@@ -58,6 +58,10 @@ observability.pipe(
       Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
     SetupError: (error) =>
       Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
+    AuthenticationInputError: (error) =>
+      Console.error(`${error.code}: ${error.message} trace_id=${error.traceId}`).pipe(
+        Effect.andThen(Effect.fail(error)),
+      ),
   }),
   Effect.catchCause((cause) =>
     Option.match(publicErrorFromCause(cause), {

@@ -1,5 +1,6 @@
 import { Console, Effect, Option, Path, Redacted } from "effect";
 import { Command, Flag, Prompt } from "effect/unstable/cli";
+import { authenticationTokenFromEnvironment } from "./AuthenticationInput.ts";
 import { DockerCompose } from "./DockerCompose.ts";
 import {
   loadOperationsManifest,
@@ -73,12 +74,25 @@ const dev = Command.make("dev").pipe(
 const axiomOrganization = Flag.string("organization-id").pipe(
   Flag.withDescription("Identificador da organização Axiom"),
 );
+const authenticationTokenEnvironment = Flag.string("token-env").pipe(
+  Flag.withDescription("Environment variable containing the provider token"),
+  Flag.optional,
+);
+
+const authenticationToken = Effect.fn("authenticationToken")(function* (
+  environment: Option.Option<string>,
+  prompt: string,
+) {
+  if (Option.isSome(environment))
+    return yield* authenticationTokenFromEnvironment(environment.value);
+  return yield* Prompt.run(Prompt.password({ message: prompt }));
+});
 
 const authLoginAxiom = Command.make(
   "axiom",
-  { organizationId: axiomOrganization },
-  Effect.fn(function* ({ organizationId }) {
-    const token = yield* Prompt.run(Prompt.password({ message: "Axiom personal access token" }));
+  { organizationId: axiomOrganization, tokenEnvironment: authenticationTokenEnvironment },
+  Effect.fn(function* ({ organizationId, tokenEnvironment }) {
+    const token = yield* authenticationToken(tokenEnvironment, "Axiom personal access token");
     const authentication = yield* Authentication;
     const identity = yield* authentication.loginAxiom(Redacted.value(token), organizationId);
     yield* Console.log(`Authenticated with Axiom as ${identity}.`);
@@ -100,9 +114,14 @@ const sentryUrl = Flag.string("url").pipe(
 
 const authLoginSentry = Command.make(
   "sentry",
-  { organization: sentryOrganization, team: sentryTeam, url: sentryUrl },
-  Effect.fn(function* ({ organization, team, url }) {
-    const token = yield* Prompt.run(Prompt.password({ message: "Sentry organization auth token" }));
+  {
+    organization: sentryOrganization,
+    team: sentryTeam,
+    url: sentryUrl,
+    tokenEnvironment: authenticationTokenEnvironment,
+  },
+  Effect.fn(function* ({ organization, team, tokenEnvironment, url }) {
+    const token = yield* authenticationToken(tokenEnvironment, "Sentry organization auth token");
     const authentication = yield* Authentication;
     const identity = yield* authentication.loginSentry(
       Redacted.value(token),
@@ -477,9 +496,12 @@ const setupSentryDsnVariable = Flag.string("sentry-dsn-variable").pipe(
 const setupReleaseVariable = Flag.string("release-variable").pipe(
   Flag.withDefault("OTEL_SERVICE_VERSION"),
 );
+const setupAxiomOrganization = Flag.string("axiom-organization-id").pipe(Flag.optional);
 const setupSentryOrganization = Flag.string("sentry-org").pipe(Flag.optional);
+const setupSentryTeam = Flag.string("sentry-team").pipe(Flag.optional);
 const setupSentryProject = Flag.string("sentry-project").pipe(Flag.optional);
-const setupPipeline = Flag.string("pipeline").pipe(Flag.withDefault("github-actions"));
+const setupSourceMapBuildScript = Flag.string("source-map-build-script").pipe(Flag.optional);
+const setupSourceMapPaths = Flag.string("source-map-path").pipe(Flag.atMost(20));
 const setupBrowserIngest = Flag.boolean("with-browser-ingest").pipe(Flag.withDefault(false));
 const setupDefects = Flag.boolean("with-defects").pipe(Flag.withDefault(false));
 const setupMetrics = Flag.boolean("with-metrics").pipe(Flag.withDefault(false));
@@ -500,9 +522,12 @@ const setupOptions = {
   proxyPolicy: setupProxyPolicy,
   sentryDsnVariable: setupSentryDsnVariable,
   releaseVariable: setupReleaseVariable,
+  axiomOrganizationId: setupAxiomOrganization,
   sentryOrganization: setupSentryOrganization,
+  sentryTeam: setupSentryTeam,
   sentryProject: setupSentryProject,
-  pipeline: setupPipeline,
+  sourceMapBuildScript: setupSourceMapBuildScript,
+  sourceMapPaths: setupSourceMapPaths,
   browserIngest: setupBrowserIngest,
   defects: setupDefects,
   metrics: setupMetrics,
@@ -518,9 +543,12 @@ const setupInput = (options: {
   readonly proxyPolicy: string;
   readonly sentryDsnVariable: string;
   readonly releaseVariable: string;
+  readonly axiomOrganizationId: Option.Option<string>;
   readonly sentryOrganization: Option.Option<string>;
+  readonly sentryTeam: Option.Option<string>;
   readonly sentryProject: Option.Option<string>;
-  readonly pipeline: string;
+  readonly sourceMapBuildScript: Option.Option<string>;
+  readonly sourceMapPaths: ReadonlyArray<string>;
   readonly browserIngest: boolean;
   readonly defects: boolean;
   readonly metrics: boolean;
@@ -534,9 +562,12 @@ const setupInput = (options: {
   proxyPolicy: options.proxyPolicy,
   sentryDsnVariable: options.sentryDsnVariable,
   releaseVariable: options.releaseVariable,
+  axiomOrganizationId: Option.getOrUndefined(options.axiomOrganizationId),
   sentryOrganization: Option.getOrUndefined(options.sentryOrganization),
+  sentryTeam: Option.getOrUndefined(options.sentryTeam),
   sentryProject: Option.getOrUndefined(options.sentryProject),
-  pipeline: options.pipeline,
+  sourceMapBuildScript: Option.getOrUndefined(options.sourceMapBuildScript),
+  sourceMapPaths: [...options.sourceMapPaths],
   browserIngest: options.browserIngest || options.profile === "react-web",
   defects: options.defects,
   metrics: options.metrics || options.profile === "nestjs-api" || options.profile === "worker",
@@ -564,7 +595,9 @@ const setupPlan = Command.make(
     const plan = yield* generator.plan(options.dir, setupInput(options));
     yield* printSetupTarget(plan);
     yield* printSetupFiles(plan.files);
-    yield* Console.log(`packages  ${plan.packages.join(",")}`);
+    yield* Console.log(
+      `packages  ${plan.dependencies.map((dependency) => dependency.installSpec).join(",")}`,
+    );
     yield* Console.log("step  filesystem  no writes");
     yield* Console.log("step  providers  no reads or mutations");
   }),
@@ -595,6 +628,28 @@ const setupWrite = Command.make(
     yield* Console.log("step  providers  no reads or mutations");
   }),
 ).pipe(Command.withDescription("Writes application composition after atomic conflict checks"));
+
+const setupVerifyRelease = Command.make(
+  "verify-release",
+  { dir: setupDirectory, json: Flag.boolean("json").pipe(Flag.withDefault(false)) },
+  Effect.fn(function* ({ dir, json }) {
+    const generator = yield* SetupGenerator;
+    const report = yield* generator.verifyRelease(dir);
+    if (json) yield* Console.log(JSON.stringify(report));
+    else {
+      yield* printSetupTarget(report);
+      for (const step of report.steps)
+        yield* Console.log(`step  ${step.name}  ${step.status}  ${step.detail}`);
+    }
+    if (!report.passed)
+      return yield* new SetupError({
+        code: "OBS_SETUP_RELEASE_PREREQUISITE_MISSING",
+        message:
+          "Release prerequisites are blocked. Correct the installed uploader and declared source-map artifacts before retrying.",
+        cause: report,
+      });
+  }),
+).pipe(Command.withDescription("Verifies local release uploader and source-map artifacts"));
 
 const setupVerifyEnvironment = Flag.string("environment").pipe(Flag.optional);
 const setupReconcile = Flag.boolean("reconcile").pipe(Flag.withDefault(false));
@@ -650,7 +705,7 @@ const setupVerify = Command.make(
 ).pipe(Command.withDescription("Verifies generated files and explicit application conformance"));
 
 const setup = Command.make("setup").pipe(
-  Command.withSubcommands([setupPlan, setupWrite, setupVerify]),
+  Command.withSubcommands([setupPlan, setupWrite, setupVerify, setupVerifyRelease]),
   Command.withDescription("Assembles applications from official observability profiles"),
 );
 

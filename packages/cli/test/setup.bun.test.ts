@@ -48,9 +48,12 @@ const inputs = (profile: string): SetupInputEncoded => ({
   proxyPolicy: "direct",
   sentryDsnVariable: "SENTRY_DSN",
   releaseVariable: "OTEL_SERVICE_VERSION",
+  axiomOrganizationId: profile === "library" ? undefined : "fixture-org",
   sentryOrganization: undefined,
+  sentryTeam: undefined,
   sentryProject: undefined,
-  pipeline: "github-actions",
+  sourceMapBuildScript: undefined,
+  sourceMapPaths: [],
   browserIngest: profile === "react-web",
   defects: false,
   metrics: profile === "nestjs-api" || profile === "worker" || profile === "react-web",
@@ -71,6 +74,9 @@ const verify = (target: string) =>
       generator.verify(target, undefined, true, true, false),
     ),
   );
+
+const verifyRelease = (target: string) =>
+  run(Effect.flatMap(SetupGenerator, (generator) => generator.verifyRelease(target)));
 
 const install = (proposed: SetupPlan) =>
   run(Effect.flatMap(SetupGenerator, (generator) => generator.install(proposed)));
@@ -449,13 +455,189 @@ describe("setup generator", () => {
     expect(await readdir(target)).toEqual([]);
   });
 
+  it("requires safe application-owned source-map build declarations", async () => {
+    const target = await directory();
+    await writeFile(
+      join(target, "package.json"),
+      JSON.stringify({ private: true, scripts: { build: "build-application" } }),
+    );
+    const required = {
+      ...inputs("react-web"),
+      defects: true,
+      sentryOrganization: "owner",
+      sentryTeam: "frontend",
+      sentryProject: "web",
+    };
+    expect(plan(target, required)).rejects.toMatchObject({ code: "OBS_SETUP_INPUT_MISSING" });
+    expect(
+      plan(target, {
+        ...required,
+        sourceMapBuildScript: "missing",
+        sourceMapPaths: ["dist"],
+      }),
+    ).rejects.toMatchObject({ code: "OBS_SETUP_INPUT_MISSING" });
+    for (const path of ["../dist", "/tmp/dist", "-dist", "dist output", "dist/./maps"])
+      expect(
+        plan(target, { ...required, sourceMapBuildScript: "build", sourceMapPaths: [path] }),
+      ).rejects.toMatchObject({ code: "OBS_SETUP_INPUT_INVALID" });
+    expect(await readdir(target)).toEqual(["package.json"]);
+  });
+
+  it("verifies the exact local uploader and real declared source-map artifacts", async () => {
+    const target = await directory();
+    await writeFile(
+      join(target, "package.json"),
+      JSON.stringify({ private: true, scripts: { build: "build-application" } }),
+    );
+    const input = {
+      ...inputs("react-web"),
+      defects: true,
+      sentryOrganization: "owner",
+      sentryTeam: "frontend",
+      sentryProject: "web",
+      sourceMapBuildScript: "build",
+      sourceMapPaths: ["dist"],
+    };
+    const generated = await write(target, input);
+    expect(generated.dependencies).toContainEqual({
+      name: "@sentry/cli",
+      installSpec: "@sentry/cli@3.7.0",
+    });
+    expect((await verifyRelease(target)).passed).toBe(false);
+    await mkdir(join(target, "node_modules/@sentry"), { recursive: true });
+    await mkdir(join(target, "node_modules/.bin"), { recursive: true });
+    await symlink(resolve("node_modules/@sentry/cli"), join(target, "node_modules/@sentry/cli"));
+    await symlink("../@sentry/cli/bin/sentry-cli", join(target, "node_modules/.bin/sentry-cli"));
+    await mkdir(join(target, "dist"));
+    await writeFile(join(target, "dist/app.js"), "console.log('built');\n");
+    await writeFile(
+      join(target, "dist/app.js.map"),
+      JSON.stringify({ version: 3, sources: ["src/app.ts"], mappings: "AAAA" }),
+    );
+    expect(await verifyRelease(target)).toMatchObject({
+      passed: true,
+      steps: [
+        { name: "declaration", status: "passed" },
+        { name: "uploader", status: "passed" },
+        { name: "artifacts", status: "passed" },
+      ],
+    });
+    await writeFile(join(target, "dist/app.js.map"), "{}");
+    expect(await verifyRelease(target)).toMatchObject({
+      passed: false,
+      steps: expect.arrayContaining([
+        { name: "artifacts", status: "blocked", detail: expect.any(String) },
+      ]),
+    });
+  });
+
+  it("blocks legacy React releases without rewriting their v1 decision", async () => {
+    const target = await directory();
+    await mkdir(join(target, "observability"));
+    const legacy = `${JSON.stringify(
+      {
+        version: 1,
+        profile: "react-web",
+        input: {
+          profile: "react-web",
+          serviceName: "legacy-web",
+          environments: ["production"],
+          publicOrigin: "https://legacy.example.com",
+          ingestPath: "_telemetry/events",
+          proxyPolicy: "direct",
+          sentryDsnVariable: "SENTRY_DSN",
+          releaseVariable: "OTEL_SERVICE_VERSION",
+          sentryOrganization: "owner",
+          sentryProject: "web",
+          pipeline: "github-actions",
+          browserIngest: true,
+          defects: true,
+          metrics: true,
+        },
+        packages: [],
+        files: [],
+      },
+      undefined,
+      2,
+    )}\n`;
+    const recordPath = join(target, "observability/setup.json");
+    await writeFile(recordPath, legacy);
+    expect(await verifyRelease(target)).toMatchObject({
+      passed: false,
+      steps: expect.arrayContaining([
+        { name: "declaration", status: "blocked", detail: expect.any(String) },
+      ]),
+    });
+    expect(await readFile(recordPath, "utf8")).toBe(legacy);
+    await writeFile(recordPath, legacy.replace("github-actions", "other"));
+    expect(verifyRelease(target)).rejects.toMatchObject({ code: "OBS_SETUP_INPUT_INVALID" });
+  });
+
+  it("reads legacy decisions without writing and preserves modified legacy canaries", async () => {
+    const target = await directory();
+    await write(target, inputs("worker"));
+    const recordPath = join(target, "observability/setup.json");
+    const current = JSON.parse(await readFile(recordPath, "utf8"));
+    const legacy = {
+      version: 1,
+      target: current.target,
+      profile: current.profile,
+      input: {
+        profile: current.input.profile,
+        serviceName: current.input.serviceName,
+        environments: current.input.environments,
+        otlpEndpoint: current.input.otlpEndpoint,
+        publicOrigin: current.input.publicOrigin,
+        ingestPath: current.input.ingestPath,
+        proxyPolicy: current.input.proxyPolicy,
+        sentryDsnVariable: current.input.sentryDsnVariable,
+        releaseVariable: current.input.releaseVariable,
+        sentryOrganization: current.input.sentryOrganization,
+        sentryProject: current.input.sentryProject,
+        pipeline: "github-actions",
+        browserIngest: current.input.browserIngest,
+        defects: current.input.defects,
+        metrics: current.input.metrics,
+      },
+      packages: current.packages,
+      files: current.files,
+    };
+    const legacyContent = `${JSON.stringify(legacy, undefined, 2)}\n`;
+    await writeFile(recordPath, legacyContent);
+    const canaryPath = join(target, "observability/canary.ts");
+    await writeFile(canaryPath, "export const applicationCanary = true;\n");
+    await run(
+      Effect.flatMap(SetupGenerator, (generator) =>
+        generator.verify(target, undefined, false, false, false),
+      ),
+    );
+    expect(await readFile(recordPath, "utf8")).toBe(legacyContent);
+    const migrated = await write(target, inputs("worker"));
+    expect(migrated.files.find((file) => file.path === "observability/canary.ts")).toMatchObject({
+      action: "preserved",
+      ownership: "user-preserved",
+    });
+    expect(await readFile(canaryPath, "utf8")).toBe("export const applicationCanary = true;\n");
+    expect(JSON.parse(await readFile(recordPath, "utf8"))).toMatchObject({ version: 2 });
+    const migratedRecord = await readFile(recordPath, "utf8");
+    await write(target, inputs("worker"));
+    expect(await readFile(recordPath, "utf8")).toBe(migratedRecord);
+  });
+
   it("generates independently executable local and deployed release gates", async () => {
     const target = await directory();
+    await writeFile(
+      join(target, "package.json"),
+      JSON.stringify({ private: true, scripts: { build: "build-application" } }),
+    );
     const generated = await write(target, {
       ...inputs("react-web"),
       defects: true,
       sentryOrganization: "owner",
+      sentryTeam: "frontend",
       sentryProject: "web",
+      sourceMapBuildScript: "build",
+      sourceMapPaths: ["dist"],
     });
     const workflow = generated.files.find(
       (file) => file.path === ".github/workflows/observability.yml",
@@ -464,6 +646,23 @@ describe("setup generator", () => {
     expect(workflow).toContain(
       "setup verify --dir . --target deployed --environment staging --provider-read",
     );
+    expect(workflow).toContain("verify-providers:");
+    expect(workflow).toContain(
+      "OBSERVABILITY_HOME: ${{ runner.temp }}/observability-provider-state",
+    );
+    expect(workflow).toContain("--token-env OBSERVABILITY_AXIOM_AUTH_TOKEN");
+    expect(workflow).toContain("--token-env SENTRY_AUTH_TOKEN");
+    expect(workflow).toContain('if: always()\n        run: rm -rf -- "$OBSERVABILITY_HOME"');
+    expect(workflow).toContain("needs: [verify-local, verify-providers]");
+    expect(workflow).toContain("bun run build");
+    expect(workflow).toContain("setup verify-release --dir .");
+    const workflowContent = workflow ?? "";
+    expect(workflowContent.indexOf("bun run build")).toBeLessThan(
+      workflowContent.indexOf("setup verify-release --dir ."),
+    );
+    expect(workflowContent.indexOf("setup verify-release --dir .")).toBeLessThan(
+      workflowContent.indexOf("bun observability/source-maps.ts"),
+    );
     expect(workflow).toContain("OTEL_SERVICE_VERSION: ${{ github.sha }}");
     expect(workflow).toContain("bun observability/source-maps.ts");
     expect(workflow).toContain("bun observability/sentry-canary.ts");
@@ -471,7 +670,14 @@ describe("setup generator", () => {
       (file) => file.path === "observability/source-maps.ts",
     )?.content;
     expect(sourceMaps).toContain("executeSentrySourceMapUpload");
+    expect(sourceMaps).toContain(
+      'sentryCliSourceMapTransport({ executable: "./node_modules/.bin/sentry-cli" })',
+    );
     expect(sourceMaps).not.toContain("bash");
+    const canary = generated.files.find((file) => file.path === "observability/canary.ts")?.content;
+    expect(canary).toContain("ApplicationCanary");
+    expect(canary).not.toContain("Bun.spawn");
+    expect(canary).not.toContain("bash -lc");
     const topology = generated.files.find(
       (file) => file.path === "observability/topology.json",
     )?.content;

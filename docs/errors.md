@@ -43,6 +43,10 @@ Não sugira repetir quando a operação pode ter completado parcialmente, ou qua
 
 - `OBS_CONFORMANCE_LOCAL_COLLECTOR_FAILED` indica que o Collector isolado de teste não iniciou, não ficou pronto, não entregou o run esperado ou não concluiu uma aquisição local. Verifique o daemon Docker e a rota local antes de repetir a suíte.
 
+## Autenticação de providers
+
+- `OBS_CLI_AUTH_TOKEN_INPUT_INVALID` indica que `--token-env` não nomeia uma variável segura ou que a variável selecionada está ausente, vazia ou contém caracteres de controle. Corrija a variável e tente novamente. A falha ocorre antes de acesso ao provider ou gravação de credenciais e inclui `trace_id`.
+
 ## Release Sentry
 
 - `OBS_SENTRY_RELEASE_INPUT_INVALID` indica identidade ou plano de release Sentry inválido. Corrija serviço, versão, ambiente e argumentos antes de executar a release.
@@ -53,11 +57,12 @@ Não sugira repetir quando a operação pode ter completado parcialmente, ou qua
 
 - `OBS_SETUP_PROFILE_INVALID` indica uma seleção de capacidade incompatível com o perfil oficial. Escolha apenas capacidades permitidas pelo perfil.
 - `OBS_SETUP_INPUT_MISSING` indica que uma declaração obrigatória da aplicação não foi fornecida. Passe a flag nomeada pela mensagem e tente novamente.
-- `OBS_SETUP_INPUT_INVALID` indica que identidade, topologia, nome de variável ou configuração de pipeline não passou pelo schema público. Corrija o valor indicado sem fornecer credenciais.
+- `OBS_SETUP_INPUT_INVALID` indica que identidade, topologia, nome de variável ou declaração de build não passou pelo schema público. Corrija o valor indicado sem fornecer credenciais.
 - `OBS_SETUP_CONFLICT` indica arquivo desconhecido, mudança em arquivo gerenciado ou destino incompatível com a [política de caminhos do setup](setup-target-paths.md). A política rejeita links, ancestrais que não são diretórios e saídas que não são arquivos regulares. Revise todos os conflitos antes de repetir. Conflitos detectados na validação inicial não escrevem arquivos. Falhas ou mudanças concorrentes após o início da escrita podem deixar arquivos anteriores no destino.
 - `OBS_SETUP_RECONCILE_FAILED` indica falha ao regenerar o contrato ou ler a declaração de operações. Corrija a declaração local antes de repetir.
 - `OBS_SETUP_CONFORMANCE_FAILED` indica falha ou pré-requisito bloqueado na suíte pública de conformidade. Forneça evidência produzida pelos donos e execute todos os canários aplicáveis antes da release.
 - `OBS_SETUP_FORBIDDEN_OUTPUT` indica que uma saída gerada tentou incorporar implementação pertencente à plataforma ou um valor semelhante a segredo. Use somente composição por entrypoints públicos.
+- `OBS_SETUP_RELEASE_PREREQUISITE_MISSING` indica que o uploader exato, o executável local, os artefatos de source map ou o comando de canário declarado não estão prontos. Corrija o pré-requisito local antes de repetir. A verificação local não lê variáveis de provider nem inicia requisições.
 
 ## Contratos públicos
 

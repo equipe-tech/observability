@@ -38,6 +38,9 @@ export type SentrySourceMapTransport = {
   readonly acquire: Effect.Effect<SentrySourceMapSession, SentryReleaseError>;
   readonly release: (session: SentrySourceMapSession) => Effect.Effect<void>;
 };
+export type SentryCliSourceMapTransportOptions = {
+  readonly executable: string;
+};
 export type SentryReleaseSession = {
   readonly emit: (
     identity: SentryReleaseIdentity,
@@ -139,13 +142,15 @@ export const runSentryReleaseVerification = Effect.fn("runSentryReleaseVerificat
   );
 });
 
-export const sentryCliSourceMapTransport = (): SentrySourceMapTransport => ({
+export const sentryCliSourceMapTransport = (
+  options: SentryCliSourceMapTransportOptions = { executable: "sentry-cli" },
+): SentrySourceMapTransport => ({
   acquire: Effect.succeed({
     execute: (plan) =>
       Effect.acquireUseRelease(
         Effect.try({
           try: () =>
-            Bun.spawn([plan.command, ...plan.args], {
+            Bun.spawn([options.executable, ...plan.args], {
               stdin: "ignore",
               stdout: "inherit",
               stderr: "inherit",
