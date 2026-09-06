@@ -47,6 +47,14 @@ Não sugira repetir quando a operação pode ter completado parcialmente, ou qua
 
 - `OBS_CLI_AUTH_TOKEN_INPUT_INVALID` indica que `--token-env` não nomeia uma variável segura ou que a variável selecionada está ausente, vazia ou contém caracteres de controle. Corrija a variável e tente novamente. A falha ocorre antes de acesso ao provider ou gravação de credenciais e inclui `request_id` e `retryable: true`.
 
+## Diagnóstico de schema Axiom
+
+- `OBS_AXIOM_SCHEMA_INPUT_INVALID` indica ambiente de leitura ausente ou URL inválida. Corrija a configuração antes de repetir.
+- `OBS_AXIOM_SCHEMA_REQUEST_FAILED` indica falha de transporte, timeout ou resposta HTTP malsucedida. Verifique conectividade, permissões de leitura e datasets antes de repetir.
+- `OBS_AXIOM_SCHEMA_RESPONSE_INVALID` indica JSON inválido ou metadados incompatíveis com o contrato de schema. Verifique a compatibilidade do provedor antes de repetir.
+
+O diagnóstico inclui um identificador de correlação local. A saída não expõe causas internas, credenciais ou corpos de resposta.
+
 ## Release Sentry
 
 - `OBS_SENTRY_RELEASE_INPUT_INVALID` indica identidade ou plano de release Sentry inválido. Corrija serviço, versão, ambiente e argumentos antes de executar a release.

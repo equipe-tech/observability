@@ -113,6 +113,7 @@ jobs:
           echo "The production Collector did not become healthy after 30 attempts. Review the startup diagnostics."
           exit 1
       - name: Run the deployed release canary
+        id: canary
         env:
           OBSERVABILITY_E2E_DEPLOYED: "1"
           OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:24318
@@ -125,6 +126,17 @@ jobs:
         run: |
           bun scripts/release-canary.ts --require-credential AXIOM_READ_TOKEN
           bun run test:canary:deployed
+      - name: Report failed canary dataset schemas
+        if: failure() && steps.canary.outcome == 'failure'
+        timeout-minutes: 2
+        env:
+          AXIOM_READ_TOKEN: ${{ secrets.AXIOM_READ_TOKEN }}
+          AXIOM_ORGANIZATION_ID: ${{ vars.AXIOM_ORGANIZATION_ID }}
+          AXIOM_URL: ${{ vars.AXIOM_URL }}
+          AXIOM_DATASET_TRACES: ${{ vars.AXIOM_DATASET_TRACES }}
+          AXIOM_DATASET_LOGS: ${{ vars.AXIOM_DATASET_LOGS }}
+          AXIOM_DATASET_METRICS: ${{ vars.AXIOM_DATASET_METRICS }}
+        run: bun scripts/axiom-schema.ts
       - name: Report failed canary Collector logs
         if: failure()
         run: docker logs --tail 100 otel-production 2>&1 || true
