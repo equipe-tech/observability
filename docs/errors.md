@@ -31,7 +31,7 @@ Não sugira repetir quando a operação pode ter completado parcialmente, ou qua
 - Modele erros como tipos com tag no canal de erro do Effect. Cada erro carrega um código estável, a mensagem pública e os campos de contexto seguros.
 - Separe a mensagem pública do diagnóstico interno. O diagnóstico completo vai para a telemetria; a resposta pública carrega o código, a mensagem e o identificador de correlação.
 - Preserve a causa original em um campo `cause`. O campo `cause` é a única exceção permitida para `unknown`.
-- Todo erro público inclui o identificador de correlação (`trace_id` ou id da requisição) para permitir a busca nos traces.
+- Todo erro público inclui um identificador de correlação. Use `trace_id` somente para buscar um trace real. Use o id da requisição para diagnóstico local.
 
 ## Códigos do limite NestJS
 
@@ -42,6 +42,29 @@ Não sugira repetir quando a operação pode ter completado parcialmente, ou qua
 ## Suíte de conformidade
 
 - `OBS_CONFORMANCE_LOCAL_COLLECTOR_FAILED` indica que o Collector isolado de teste não iniciou, não ficou pronto, não entregou o run esperado ou não concluiu uma aquisição local. Verifique o daemon Docker e a rota local antes de repetir a suíte.
+
+## Autenticação de providers
+
+- `OBS_CLI_AUTH_TOKEN_INPUT_INVALID` indica que `--token-env` não nomeia uma variável segura ou que a variável selecionada está ausente, vazia ou contém caracteres de controle. Corrija a variável e tente novamente. A falha ocorre antes de acesso ao provider ou gravação de credenciais e inclui `request_id` e `retryable: true`.
+
+## Release Sentry
+
+- `OBS_SENTRY_RELEASE_INPUT_INVALID` indica identidade ou plano de release Sentry inválido. Corrija serviço, versão, ambiente e argumentos antes de executar a release.
+- `OBS_SENTRY_SOURCE_MAP_EXECUTION_FAILED` indica que o uploader de source maps não iniciou, expirou ou terminou com falha. Verifique o executável e a configuração da release antes de repetir.
+- `OBS_SENTRY_RELEASE_VERIFICATION_FAILED` indica transporte ausente, emissão malsucedida ou read-back que não corresponde ao evento e à identidade da release. Vincule o transporte da aplicação e confirme a evidência antes da release.
+
+## Setup de aplicações
+
+- `OBS_SETUP_PROFILE_INVALID` indica uma seleção de capacidade incompatível com o perfil oficial. Escolha apenas capacidades permitidas pelo perfil.
+- `OBS_SETUP_INPUT_MISSING` indica que uma declaração obrigatória da aplicação não foi fornecida. Passe a flag nomeada pela mensagem e tente novamente.
+- `OBS_SETUP_INPUT_INVALID` indica que identidade, topologia, nome de variável ou declaração de build não passou pelo schema público. Corrija o valor indicado sem fornecer credenciais.
+- `OBS_SETUP_CONFLICT` indica arquivo desconhecido, mudança em arquivo gerenciado ou destino incompatível com a [política de caminhos do setup](setup-target-paths.md). A política rejeita links, ancestrais que não são diretórios e saídas que não são arquivos regulares. Revise todos os conflitos antes de repetir. Conflitos detectados na validação inicial não escrevem arquivos. Falhas ou mudanças concorrentes após o início da escrita podem deixar arquivos anteriores no destino.
+- `OBS_SETUP_RECONCILE_FAILED` indica falha ao regenerar o contrato ou ler a declaração de operações. Corrija a declaração local antes de repetir.
+- `OBS_SETUP_CONFORMANCE_FAILED` indica falha ou pré-requisito bloqueado na suíte pública de conformidade. Forneça evidência produzida pelos donos e execute todos os canários aplicáveis antes da release.
+- `OBS_SETUP_FORBIDDEN_OUTPUT` indica que uma saída gerada tentou incorporar implementação pertencente à plataforma ou um valor semelhante a segredo. Use somente composição por entrypoints públicos.
+- `OBS_SETUP_RELEASE_PREREQUISITE_MISSING` indica que o uploader exato, o executável local, os artefatos de source map ou o comando de canário declarado não estão prontos. Corrija o pré-requisito local antes de repetir. A verificação local não lê variáveis de provider nem inicia requisições. A falha inclui `request_id` e `retryable`. Pré-requisitos locais bloqueados e entradas ausentes ou inválidas do canário permitem repetir após correção. Falhas após iniciar o comando do canário usam `retryable: false`, pois podem seguir efeitos parciais da aplicação.
+
+Os erros de autenticação de entrada e de setup usam `request_id` para identificar a ocorrência no diagnóstico local. Esse identificador não é um trace OpenTelemetry e não promete um trace exportado. `trace_id` é reservado a um contexto real de tracing. Erros de setup sem garantia de idempotência usam `retryable: false`.
 
 ## Contratos públicos
 

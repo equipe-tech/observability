@@ -20,6 +20,13 @@ import { describe, expect, it } from "vite-plus/test";
 import { parseSentryDsn, sentrySourceMapUpload } from "../src/index.ts";
 import { createBrowserSentryDefectReporter } from "../src/browser/index.ts";
 import { SentryDefects, sentryDefectAdapter } from "../src/node/index.ts";
+import {
+  executeSentrySourceMapUpload,
+  runSentryReleaseVerification,
+  SentryReleaseError,
+  type SentryReleaseTransport,
+  type SentrySourceMapTransport,
+} from "../src/release/index.ts";
 import { defectDeduplicator } from "../src/policy/Deduplication.ts";
 import { eventSettlements } from "../src/policy/EventSettlement.ts";
 import { projectDefect, projectFinalEvent } from "../src/policy/DefectProjection.ts";
@@ -181,6 +188,89 @@ describe("Sentry adapter policy", () => {
         );
       }
     }
+  });
+
+  it("executes the owner-planned source map upload and propagates transport failure", async () => {
+    const plan = sentrySourceMapUpload({
+      organization: "equipe-tech",
+      project: "web",
+      release: "1.4.0",
+      includePaths: ["dist"],
+    });
+    const calls: Array<ReadonlyArray<string>> = [];
+    let releases = 0;
+    const transport: SentrySourceMapTransport = {
+      acquire: Effect.succeed({
+        execute: (received) => {
+          calls.push(received.args);
+          return Effect.succeed({ command: "sentry-cli", exitCode: 0 });
+        },
+      }),
+      release: () =>
+        Effect.sync(() => {
+          releases += 1;
+        }),
+    };
+    await expect(Effect.runPromise(executeSentrySourceMapUpload(plan, transport))).resolves.toEqual(
+      { command: "sentry-cli", exitCode: 0 },
+    );
+    expect(calls).toEqual([plan.args]);
+    expect(releases).toBe(1);
+    const failed: SentrySourceMapTransport = {
+      acquire: Effect.succeed({
+        execute: () =>
+          Effect.fail(
+            new SentryReleaseError({
+              code: "OBS_SENTRY_SOURCE_MAP_EXECUTION_FAILED",
+              message: "recorded upload failure",
+              cause: "exit 23",
+            }),
+          ),
+      }),
+      release: () =>
+        Effect.sync(() => {
+          releases += 1;
+        }),
+    };
+    await expect(
+      Effect.runPromise(executeSentrySourceMapUpload(plan, failed)),
+    ).rejects.toMatchObject({ code: "OBS_SENTRY_SOURCE_MAP_EXECUTION_FAILED" });
+    expect(releases).toBe(2);
+  });
+
+  it("binds Sentry verification read-back to release identity and always cleans up", async () => {
+    const identity = {
+      serviceName: "web",
+      serviceVersion: "1.4.0",
+      environment: "production",
+    };
+    let releases = 0;
+    const transport = (serviceVersion: string): SentryReleaseTransport => ({
+      acquire: Effect.succeed({
+        emit: () => Effect.succeed({ observationId: "event-1" }),
+        readBack: ({ observationId }) =>
+          Effect.succeed({
+            observationId,
+            identity: { ...identity, serviceVersion },
+          }),
+      }),
+      release: () =>
+        Effect.sync(() => {
+          releases += 1;
+        }),
+    });
+    await expect(
+      Effect.runPromise(runSentryReleaseVerification(identity, transport("1.4.0"))),
+    ).resolves.toMatchObject({ observationId: "event-1", identity });
+    await expect(
+      Effect.runPromise(runSentryReleaseVerification(identity, transport("other"))),
+    ).rejects.toMatchObject({ code: "OBS_SENTRY_RELEASE_VERIFICATION_FAILED" });
+    await expect(
+      Effect.runPromise(
+        runSentryReleaseVerification({ ...identity, serviceVersion: "" }, transport("1.4.0")),
+      ),
+    ).rejects.toMatchObject({ code: "OBS_SENTRY_RELEASE_INPUT_INVALID" });
+    expect(releases).toBe(2);
   });
 
   it("deduplicates identity, encoded fingerprint, window, capacity, and reservation owner", () => {

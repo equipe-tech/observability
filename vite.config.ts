@@ -30,6 +30,10 @@ export default defineConfig({
         replacement: `${root}packages/react/src/index.ts`,
       },
       {
+        find: "@equipe-tech/observability-sentry/release",
+        replacement: `${root}packages/sentry/src/release/index.ts`,
+      },
+      {
         find: "@equipe-tech/observability-sentry/browser",
         replacement: `${root}packages/sentry/src/browser/index.ts`,
       },

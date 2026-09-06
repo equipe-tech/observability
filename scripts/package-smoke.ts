@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import { writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,6 +42,10 @@ const PackedManifest = Schema.Struct({
   peerDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 const decodePackedManifest = Schema.decodeUnknownSync(PackedManifest);
+const SetupDependencyDecision = Schema.Struct({
+  dependencies: Schema.Array(Schema.Struct({ name: Schema.String, installSpec: Schema.String })),
+});
+const decodeSetupDependencyDecision = Schema.decodeUnknownSync(SetupDependencyDecision);
 
 const run = (command: Array<string>, cwd: string, env = process.env): Promise<CommandResult> => {
   const child = Bun.spawn(command, {
@@ -328,6 +332,8 @@ try {
         "package/dist/query.d.ts",
         "package/dist/testing/index.js",
         "package/dist/testing/index.d.ts",
+        "package/dist/setup/SetupGenerator.js",
+        "package/dist/setup/SetupGenerator.d.ts",
         "package/package.json",
         "package/dist/assets/docker-compose.yml",
         "package/dist/assets/local.yaml",
@@ -490,6 +496,185 @@ try {
     "Installing the packed NestJS package in the evlog boundary consumer",
   );
 
+  const minimalProfiles = [
+    {
+      name: "nestjs-api",
+      packages: [
+        "@equipe-tech/observability",
+        "@equipe-tech/observability-cli",
+        "@equipe-tech/observability-evlog",
+        "@equipe-tech/observability-nestjs",
+        "effect",
+      ],
+      flags: [
+        "--service-name",
+        "minimal-nest",
+        "--environment",
+        "test",
+        "--otlp-endpoint",
+        "http://127.0.0.1:4318",
+        "--axiom-organization-id",
+        "packed-org",
+      ],
+    },
+    {
+      name: "worker",
+      packages: [
+        "@equipe-tech/observability",
+        "@equipe-tech/observability-cli",
+        "@equipe-tech/observability-evlog",
+        "effect",
+      ],
+      flags: [
+        "--service-name",
+        "minimal-worker",
+        "--environment",
+        "test",
+        "--otlp-endpoint",
+        "http://127.0.0.1:4318",
+        "--axiom-organization-id",
+        "packed-org",
+      ],
+    },
+    {
+      name: "react-web",
+      packages: [
+        "@equipe-tech/observability",
+        "@equipe-tech/observability-cli",
+        "@equipe-tech/observability-react",
+        "@equipe-tech/observability-sentry",
+        "@sentry/browser",
+        "effect",
+      ],
+      flags: [
+        "--service-name",
+        "minimal-react",
+        "--environment",
+        "test",
+        "--public-origin",
+        "https://telemetry.example.com",
+        "--axiom-organization-id",
+        "packed-org",
+      ],
+    },
+    {
+      name: "cli",
+      packages: [
+        "@equipe-tech/observability",
+        "@equipe-tech/observability-cli",
+        "@equipe-tech/observability-evlog",
+        "effect",
+      ],
+      flags: [
+        "--service-name",
+        "minimal-cli",
+        "--environment",
+        "test",
+        "--otlp-endpoint",
+        "http://127.0.0.1:4318",
+        "--axiom-organization-id",
+        "packed-org",
+      ],
+    },
+    {
+      name: "library",
+      packages: ["@equipe-tech/observability", "@equipe-tech/observability-cli"],
+      flags: [],
+    },
+  ];
+  const packageLocations = new Map([
+    ["@equipe-tech/observability", `file:${join(temporaryDirectory, "telemetry.tgz")}`],
+    ["@equipe-tech/observability-cli", `file:${join(temporaryDirectory, "cli.tgz")}`],
+    ["@equipe-tech/observability-evlog", `file:${join(temporaryDirectory, "evlog.tgz")}`],
+    ["@equipe-tech/observability-nestjs", `file:${join(temporaryDirectory, "nestjs.tgz")}`],
+    ["@equipe-tech/observability-react", `file:${join(temporaryDirectory, "react.tgz")}`],
+    ["@equipe-tech/observability-sentry", `file:${join(temporaryDirectory, "sentry.tgz")}`],
+    ["@sentry/browser", "10.72.0"],
+    ["effect", "4.0.0-rc.111"],
+  ]);
+  for (const profile of minimalProfiles) {
+    const profileRoot = join(temporaryDirectory, `minimal-${profile.name}`);
+    await mkdir(profileRoot, { recursive: true });
+    const dependencies = Object.fromEntries(
+      profile.packages.map((name) => [name, packageLocations.get(name)]),
+    );
+    const overrides = Object.fromEntries(
+      profile.packages
+        .filter((name) => name.startsWith("@equipe-tech/"))
+        .map((name) => [name, packageLocations.get(name)]),
+    );
+    await writeFile(
+      join(profileRoot, "package.json"),
+      JSON.stringify({ private: true, type: "module", dependencies, overrides }),
+    );
+    requireSuccess(
+      await run(["bun", "install"], profileRoot),
+      `Installing only the ${profile.name} profile dependencies`,
+    );
+    const profileCli = join(
+      profileRoot,
+      "node_modules/@equipe-tech/observability-cli/dist/main.js",
+    );
+    requireSuccess(
+      await run(
+        [
+          "bun",
+          profileCli,
+          "setup",
+          "write",
+          "--dir",
+          profileRoot,
+          "--profile",
+          profile.name,
+          ...profile.flags,
+        ],
+        profileRoot,
+      ),
+      `Generating the minimal ${profile.name} profile consumer`,
+    );
+    const decisions = JSON.parse(
+      await readFile(join(profileRoot, "observability/dependencies.json"), "utf8"),
+    );
+    if (JSON.stringify(decisions.packages) !== JSON.stringify(profile.packages.toSorted())) {
+      throw new Error(`The ${profile.name} profile installed a non-minimal package set.`);
+    }
+    requireSuccess(
+      await run(
+        [
+          "bun",
+          "build",
+          join(profileRoot, "observability/conformance.ts"),
+          "--target=bun",
+          `--outdir=${join(profileRoot, "compiled")}`,
+        ],
+        profileRoot,
+      ),
+      `Compiling the minimal ${profile.name} generated consumer`,
+    );
+    const localVerification = await run(
+      [
+        "bun",
+        profileCli,
+        "setup",
+        "verify",
+        "--dir",
+        profileRoot,
+        "--target",
+        "local",
+        "--reconcile",
+        "--conform",
+      ],
+      profileRoot,
+      { ...process.env, OTEL_SERVICE_VERSION: "1.0.0" },
+    );
+    if (profile.name === "library") requireSuccess(localVerification, "Executing the library job");
+    else if (
+      localVerification.exitCode === 0 ||
+      !localVerification.stderr.includes("OBS_SETUP_CONFORMANCE_FAILED")
+    )
+      throw new Error(`The ${profile.name} local job did not expose its owner evidence gate.`);
+  }
+
   const consumer = join(temporaryDirectory, "consumer outside repository");
   await mkdir(consumer, { recursive: true });
   await writeFile(
@@ -505,8 +690,15 @@ try {
         "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
         "@equipe-tech/observability-react": `file:${join(temporaryDirectory, "react.tgz")}`,
         "@sentry/browser": "10.72.0",
+        "@sentry/cli": "3.7.0",
         "@sentry/node-core": "10.72.0",
+        "@types/bun": "1.4.0",
+        "@nestjs/common": "^11.0.0",
+        "@nestjs/core": "^11.0.0",
+        "@nestjs/platform-express": "^11.0.0",
         effect: "4.0.0-rc.111",
+        "reflect-metadata": "^0.2.2",
+        rxjs: "^7.8.2",
       },
       overrides: {
         "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
@@ -514,6 +706,333 @@ try {
     }),
   );
   requireSuccess(await run(["bun", "install"], consumer), "Installing packed packages");
+
+  const setupCli = join(consumer, "node_modules/@equipe-tech/observability-cli/dist/main.js");
+  const generatedNest = join(consumer, "generated-nest");
+  requireSuccess(
+    await run(
+      [
+        "bun",
+        setupCli,
+        "setup",
+        "write",
+        "--dir",
+        generatedNest,
+        "--profile",
+        "nestjs-api",
+        "--service-name",
+        "packed-nest",
+        "--environment",
+        "test",
+        "--otlp-endpoint",
+        "http://127.0.0.1:4318",
+        "--with-browser-ingest",
+        "--public-origin",
+        "https://telemetry.example.com",
+        "--axiom-organization-id",
+        "packed-org",
+      ],
+      consumer,
+    ),
+    "Generating the fresh packed Nest setup consumer",
+  );
+  const generatedReact = join(consumer, "generated-react");
+  await mkdir(generatedReact, { recursive: true });
+  await writeFile(
+    join(generatedReact, "package.json"),
+    JSON.stringify({
+      private: true,
+      type: "module",
+      scripts: { build: "mkdir -p dist && printf 'console.log(1);' > dist/app.js" },
+      dependencies: {
+        "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
+        "@equipe-tech/observability-cli": `file:${join(temporaryDirectory, "cli.tgz")}`,
+        "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
+        "@sentry/cli": "3.7.0",
+        effect: "4.0.0-rc.111",
+      },
+      overrides: {
+        "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
+      },
+    }),
+  );
+  requireSuccess(
+    await run(["bun", "install"], generatedReact),
+    "Installing packed React release dependencies",
+  );
+  requireSuccess(
+    await run(
+      [
+        "bun",
+        setupCli,
+        "setup",
+        "write",
+        "--dir",
+        generatedReact,
+        "--profile",
+        "react-web",
+        "--service-name",
+        "packed-react",
+        "--environment",
+        "test",
+        "--public-origin",
+        "https://telemetry.example.com",
+        "--with-metrics",
+        "--with-defects",
+        "--axiom-organization-id",
+        "packed-org",
+        "--sentry-org",
+        "packed-org",
+        "--sentry-team",
+        "frontend",
+        "--sentry-project",
+        "packed-project",
+        "--source-map-build-script",
+        "build",
+        "--source-map-path",
+        "dist",
+      ],
+      consumer,
+    ),
+    "Generating the fresh packed React setup consumer",
+  );
+  for (const profile of ["worker", "cli"]) {
+    requireSuccess(
+      await run(
+        [
+          "bun",
+          setupCli,
+          "setup",
+          "write",
+          "--dir",
+          join(consumer, `generated-${profile}`),
+          "--profile",
+          profile,
+          "--service-name",
+          `packed-${profile}`,
+          "--environment",
+          "test",
+          "--otlp-endpoint",
+          "http://127.0.0.1:4318",
+          "--axiom-organization-id",
+          "packed-org",
+        ],
+        consumer,
+      ),
+      `Generating the fresh packed ${profile} setup consumer`,
+    );
+  }
+  const generatedLibrary = join(consumer, "generated-library");
+  requireSuccess(
+    await run(
+      ["bun", setupCli, "setup", "write", "--dir", generatedLibrary, "--profile", "library"],
+      consumer,
+    ),
+    "Generating the fresh packed library setup consumer",
+  );
+  requireSuccess(
+    await run(
+      [
+        "bun",
+        setupCli,
+        "setup",
+        "verify",
+        "--dir",
+        generatedLibrary,
+        "--reconcile",
+        "--conform",
+        "--json",
+      ],
+      consumer,
+      { ...process.env, OTEL_SERVICE_VERSION: "1.0.0" },
+    ),
+    "Executing generated conformance through the packed OBS-60 API",
+  );
+  const failingProductionCanary = await run(
+    ["bun", join(generatedNest, "observability/canary.ts")],
+    consumer,
+    { ...process.env, OBSERVABILITY_APPLICATION_CANARY_COMMAND: "exit 23" },
+  );
+  if (
+    failingProductionCanary.exitCode === 0 ||
+    !failingProductionCanary.stderr.includes("OBS_SETUP_RELEASE_PREREQUISITE_MISSING")
+  ) {
+    throw new Error("The generated production canary did not propagate its typed owner failure.");
+  }
+  const failingBrowserCanary = await run(
+    ["bun", join(generatedReact, "observability/browser-canary.ts")],
+    consumer,
+    { ...process.env, OBSERVABILITY_BROWSER_CANARY_ENDPOINT: "http://127.0.0.1:1" },
+  );
+  if (failingBrowserCanary.exitCode === 0) {
+    throw new Error("The generated published browser-route canary accepted an invalid transport.");
+  }
+  const reactDependencyDecision = decodeSetupDependencyDecision(
+    JSON.parse(await readFile(join(generatedReact, "observability/dependencies.json"), "utf8")),
+  );
+  if (
+    !reactDependencyDecision.dependencies.some(
+      (dependency) =>
+        dependency.name === "@sentry/cli" && dependency.installSpec === "@sentry/cli@3.7.0",
+    )
+  ) {
+    throw new Error("The packed React release decision did not pin @sentry/cli@3.7.0.");
+  }
+  const failingSentryPlan = await run(
+    ["bun", join(generatedReact, "observability/source-maps.ts")],
+    generatedReact,
+  );
+  if (failingSentryPlan.exitCode === 0) {
+    throw new Error("The generated Sentry release step accepted a missing release identity.");
+  }
+  requireSuccess(await run(["bun", "run", "build"], generatedReact), "Building packed source maps");
+  await writeFile(
+    join(generatedReact, "dist/app.js.map"),
+    JSON.stringify({ version: 3, sources: ["src/app.ts"], mappings: "AAAA" }),
+  );
+  requireSuccess(
+    await run(
+      ["bun", setupCli, "setup", "verify-release", "--dir", generatedReact],
+      generatedReact,
+    ),
+    "Verifying packed release prerequisites without provider credentials",
+  );
+  const sentryRecord = join(consumer, "sentry-cli-record.json");
+  const sentryExecutable = join(generatedReact, "node_modules/.bin/sentry-cli");
+  await rm(sentryExecutable, { force: true });
+  await writeFile(
+    sentryExecutable,
+    '#!/usr/bin/env bun\nawait Bun.write(process.env.SENTRY_RECORD, JSON.stringify(process.argv.slice(2)));\nprocess.exit(Number(process.env.SENTRY_EXIT ?? "0"));\n',
+  );
+  await chmod(sentryExecutable, 0o755);
+  requireSuccess(
+    await run(["bun", join(generatedReact, "observability/source-maps.ts")], generatedReact, {
+      ...process.env,
+      OTEL_SERVICE_VERSION: "1.0.0",
+      SENTRY_RECORD: sentryRecord,
+    }),
+    "Executing generated source map upload through the owner recording transport",
+  );
+  const sourceMapArguments = JSON.parse(await readFile(sentryRecord, "utf8"));
+  if (!sourceMapArguments.includes("1.0.0") || !sourceMapArguments.includes("dist")) {
+    throw new Error("The generated source map runtime did not execute the owner plan.");
+  }
+  const failedSourceMapUpload = await run(
+    ["bun", join(generatedReact, "observability/source-maps.ts")],
+    generatedReact,
+    {
+      ...process.env,
+      OTEL_SERVICE_VERSION: "1.0.0",
+      SENTRY_RECORD: sentryRecord,
+      SENTRY_EXIT: "23",
+    },
+  );
+  if (failedSourceMapUpload.exitCode === 0) {
+    throw new Error("The generated source map runtime swallowed the uploader failure.");
+  }
+  const unboundSentryCanary = await run(
+    ["bun", join(generatedReact, "observability/sentry-canary.ts")],
+    consumer,
+    {
+      ...process.env,
+      OTEL_SERVICE_VERSION: "1.0.0",
+      OTEL_DEPLOYMENT_ENVIRONMENT: "production",
+    },
+  );
+  if (unboundSentryCanary.exitCode === 0) {
+    throw new Error("The generated Sentry canary accepted a missing application transport.");
+  }
+  const sentryCanaryRecord = join(consumer, "sentry-canary-record.json");
+  await writeFile(
+    join(generatedReact, "observability/sentry.transport.ts"),
+    `import { Effect } from "effect";
+import { writeFileSync } from "node:fs";
+import type { SentryReleaseTransport } from "@equipe-tech/observability-sentry/release";
+export const applicationSentryReleaseTransport: SentryReleaseTransport = {
+  acquire: Effect.succeed({
+    emit: (identity) => Effect.sync(() => { writeFileSync(${JSON.stringify(sentryCanaryRecord)}, JSON.stringify({ kind: "emit", identity })); return { observationId: "packed-event" }; }),
+    readBack: ({ identity, observationId }) => Effect.succeed({ identity, observationId }),
+  }),
+  release: () => Effect.void,
+};
+`,
+  );
+  requireSuccess(
+    await run(["bun", join(generatedReact, "observability/sentry-canary.ts")], consumer, {
+      ...process.env,
+      OTEL_SERVICE_VERSION: "1.0.0",
+      OTEL_DEPLOYMENT_ENVIRONMENT: "production",
+    }),
+    "Executing generated Sentry event and identity-bound read-back",
+  );
+  const sentryCanaryInvocation = JSON.parse(await readFile(sentryCanaryRecord, "utf8"));
+  if (
+    sentryCanaryInvocation.kind !== "emit" ||
+    sentryCanaryInvocation.identity.serviceVersion !== "1.0.0"
+  ) {
+    throw new Error("The generated Sentry canary did not bind the release identity.");
+  }
+  await writeFile(
+    join(consumer, "generated-consumers.ts"),
+    `import "reflect-metadata";
+import { Module } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+import { createNestBrowserObservability } from "./generated-nest/src/observability/bootstrap.ts";
+import { startBrowserObservability } from "./generated-react/src/observability/bootstrap.ts";
+const nest = await createNestBrowserObservability({ OTEL_SERVICE_NAME: "packed-nest", OTEL_SERVICE_VERSION: "1.0.0", OTEL_DEPLOYMENT_ENVIRONMENT: "test", OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4318" });
+class AppModule {}
+Module({ imports: [nest.module] })(AppModule);
+const app = await NestFactory.create(AppModule, { logger: false });
+await app.listen(0, "127.0.0.1");
+const response = await fetch(\`\${await app.getUrl()}/_telemetry/events\`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ version: 1, events: [] }) });
+if (response.status !== 202) throw new Error(\`Generated Nest browser route returned \${response.status}.\`);
+await app.close();
+await nest.handle.close();
+const browser = startBrowserObservability({ serviceVersion: "1.0.0", environment: "test", ingestEndpoint: "http://127.0.0.1:3000/_telemetry/events" });
+if (browser.reactRootOptions.onUncaughtError === undefined) throw new Error("Generated React root options are unavailable.");
+const report = await browser.dispose();
+if (report.degraded) throw new Error("Generated React composition degraded during disposal.");
+`,
+  );
+  await writeFile(
+    join(consumer, "generated-tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: {
+        target: "ESNext",
+        module: "Preserve",
+        moduleResolution: "Bundler",
+        lib: ["ESNext", "DOM"],
+        strict: true,
+        noEmit: true,
+        skipLibCheck: true,
+        allowImportingTsExtensions: true,
+        types: ["bun"],
+      },
+      include: [
+        "generated-consumers.ts",
+        "generated-nest/observability/**/*.ts",
+        "generated-nest/src/**/*.ts",
+        "generated-react/observability/**/*.ts",
+        "generated-react/src/**/*.ts",
+        "generated-worker/observability/**/*.ts",
+        "generated-worker/src/**/*.ts",
+        "generated-cli/observability/**/*.ts",
+        "generated-cli/src/**/*.ts",
+        "generated-library/observability/**/*.ts",
+      ],
+    }),
+  );
+  requireSuccess(
+    await run(
+      ["bun", join(root, "node_modules/typescript/bin/tsc"), "-p", "generated-tsconfig.json"],
+      consumer,
+    ),
+    "Type-checking all five fresh packed generated profile consumers",
+  );
+  requireSuccess(
+    await run(["bun", "generated-consumers.ts"], consumer),
+    "Executing fresh packed generated Nest and React consumers",
+  );
 
   await mkdir(join(consumer, "conformance-source", "positive"), { recursive: true });
   await mkdir(join(consumer, "conformance-source", "negative"), { recursive: true });

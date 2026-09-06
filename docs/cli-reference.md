@@ -5,10 +5,10 @@
 ## `auth login axiom`
 
 ```text
-observability auth login axiom --organization-id <id>
+observability auth login axiom --organization-id <id> [--token-env <name>]
 ```
 
-O comando solicita um personal access token em um prompt protegido. A CLI valida o token com `GET /v2/user`.
+Sem `--token-env`, o comando solicita um personal access token em um prompt protegido. Com a flag, a CLI lê a variável nomeada e falha antes do provider quando o valor está ausente, vazio ou inválido. A CLI valida o token com `GET /v2/user`.
 
 A CLI salva o token e o identificador da organização no arquivo local de credenciais.
 
@@ -18,10 +18,11 @@ A CLI salva o token e o identificador da organização no arquivo local de crede
 observability auth login sentry \
   --organization <slug> \
   --team <slug> \
-  [--url https://sentry.io]
+  [--url https://sentry.io] \
+  [--token-env <name>]
 ```
 
-O comando solicita um organization auth token em um prompt protegido. A CLI valida o acesso à organização informada.
+Sem `--token-env`, o comando solicita um organization auth token em um prompt protegido. Com a flag, a CLI aplica a mesma validação de variável do login Axiom. A CLI valida o acesso à organização informada.
 
 `--url` permite um servidor Sentry próprio. O valor padrão é `https://sentry.io`.
 

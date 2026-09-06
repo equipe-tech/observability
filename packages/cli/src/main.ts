@@ -13,6 +13,7 @@ import { Authentication, RemoteEnvironment } from "./RemoteEnvironment.ts";
 import { OperationsPlanner } from "./OperationsPlan.ts";
 import { OperationsState } from "./OperationsState.ts";
 import { StackAssets } from "./StackAssets.ts";
+import { SetupGenerator } from "./setup/SetupGenerator.ts";
 
 const ProviderLayer = Layer.mergeAll(CredentialsStore.layer, AxiomApi.layer, SentryApi.layer);
 const RemoteLayer = Layer.mergeAll(Authentication.layer, RemoteEnvironment.layer).pipe(
@@ -28,6 +29,7 @@ const MainLayer = Layer.mergeAll(
   ProviderLayer,
   RemoteLayer,
   OperationsLayer,
+  SetupGenerator.layer,
 ).pipe(Layer.provideMerge(BunServices.layer));
 
 observability.pipe(
@@ -54,6 +56,14 @@ observability.pipe(
       Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
     OperationsStateError: (error) =>
       Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
+    SetupError: (error) =>
+      Console.error(
+        `${error.code}: ${error.message} request_id=${error.requestId} retryable=${error.retryable}`,
+      ).pipe(Effect.andThen(Effect.fail(error))),
+    AuthenticationInputError: (error) =>
+      Console.error(
+        `${error.code}: ${error.message} request_id=${error.requestId} retryable=${error.retryable}`,
+      ).pipe(Effect.andThen(Effect.fail(error))),
   }),
   Effect.catchCause((cause) =>
     Option.match(publicErrorFromCause(cause), {

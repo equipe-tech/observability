@@ -144,6 +144,7 @@ Consulte estes documentos:
 - [Perfis oficiais de observabilidade](docs/profiles.md)
 - [Ambientes isolam dados sem acoplar a aplicação](docs/environment-management.md)
 - [Configurar um projeto com ambientes remotos](docs/setup-project-environments.md)
+- [Preparar uma aplicação gerada para release](docs/setup-release.md)
 - [Referência da CLI](docs/cli-reference.md)
 - [Migrar o SDK e a CLI para 0.3](docs/migration-0.3.md)
 
