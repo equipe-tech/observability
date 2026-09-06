@@ -44,18 +44,21 @@ cleanup_verification() {
     OBSERVABILITY_HOME="$STATE_ROOT" bun "$CLI" dev down --file "$owned_compose" > "$ARTIFACT_ROOT/cleanup.stdout" 2> "$ARTIFACT_ROOT/cleanup.stderr"
     cleanup_status="$?"
     printf '%s\n' "$cleanup_status" > "$ARTIFACT_ROOT/cleanup.exit-code"
-    docker compose -f "$owned_compose" ps --all --quiet > "$ARTIFACT_ROOT/cleanup-containers.txt" 2>> "$ARTIFACT_ROOT/cleanup.stderr"
-    if test -s "$ARTIFACT_ROOT/cleanup-containers.txt"; then
+    if ! docker compose -f "$owned_compose" ps --all --quiet > "$ARTIFACT_ROOT/cleanup-containers.txt" 2>> "$ARTIFACT_ROOT/cleanup.stderr"; then
+      cleanup_status=1
+    elif test -s "$ARTIFACT_ROOT/cleanup-containers.txt"; then
       cleanup_status=1
     fi
-  fi
-  if test -n "${STACK_LOCK:-}" && test -f "$STACK_LOCK/run-id" && test "$(cat "$STACK_LOCK/run-id")" = "$RUN_ID"; then
-    rm -rf -- "$STACK_LOCK"
   fi
   if test "$cleanup_status" = "0"; then
     case "${STATE_ROOT:-}" in
       "${TMPDIR:-/tmp}"/observability-verify-*) rm -rf -- "$STATE_ROOT" ;;
     esac
+    if test -n "${STACK_LOCK:-}" && test -f "$STACK_LOCK/run-id" && test "$(cat "$STACK_LOCK/run-id")" = "$RUN_ID"; then
+      rm -rf -- "$STACK_LOCK"
+    fi
+  else
+    printf '%s\n' 'Cleanup failed. The owned state and stack lock were retained for recovery.' >> "$ARTIFACT_ROOT/cleanup.stderr"
   fi
   set -e
   return "$cleanup_status"
@@ -138,6 +141,8 @@ Provider authentication requires dedicated verification accounts. If credentials
 ## Drive
 
 Use [Project provisioning](features/project-provisioning.md) as the safe baseline proof.
+
+Use [Setup and release](features/setup-release.md) for setup planning, generated application verification, and release prerequisites.
 
 Use [Local pipeline](features/local-pipeline.md) for stack lifecycle, viewer readiness, telemetry export, and redaction.
 

@@ -44,7 +44,7 @@ bun --version > "$ARTIFACT_ROOT/bun-version.txt"
 run_capture cli-version bun "$CLI" --version
 test "$(cat "$ARTIFACT_ROOT/cli-version.stdout")" = "observability v$CLI_VERSION"
 run_capture cli-help bun "$CLI" --help
-for command in dev auth provision env ops; do
+for command in dev auth provision env ops setup; do
   grep -Eq "^[[:space:]]+$command[[:space:]]" "$ARTIFACT_ROOT/cli-help.stdout"
 done
 run_capture provision-create env OBSERVABILITY_HOME="$STATE_ROOT" bun "$CLI" provision --dir "$PROVISION_TARGET" --name verify-app
