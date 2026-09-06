@@ -64,15 +64,66 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       ref: ${{ needs.tag-check.outputs.tag }}
-      release_tag: ${{ needs.tag-check.outputs.tag }}
-      run_deployed_canary: true
+
+  deployed-canary:
+    needs: [tag-check, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: publication
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag-check.outputs.tag }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - name: Resolve release canary identity
+        env:
+          RELEASE_TAG: ${{ needs.tag-check.outputs.tag }}
+        run: bun scripts/release-canary.ts --tag "$RELEASE_TAG" --github-env "$GITHUB_ENV"
+      - name: Start the production collector
+        env:
+          AXIOM_INGEST_TOKEN: ${{ secrets.AXIOM_INGEST_TOKEN }}
+          AXIOM_DATASET_TRACES: ${{ vars.AXIOM_DATASET_TRACES }}
+          AXIOM_DATASET_LOGS: ${{ vars.AXIOM_DATASET_LOGS }}
+          AXIOM_DATASET_METRICS: ${{ vars.AXIOM_DATASET_METRICS }}
+        run: |
+          bun scripts/release-canary.ts --require-credential AXIOM_INGEST_TOKEN
+          export AXIOM_TOKEN="$AXIOM_INGEST_TOKEN"
+          docker run -d --name otel-production \
+            -p 127.0.0.1:24318:4318 \
+            -e AXIOM_TOKEN \
+            -e AXIOM_DATASET_TRACES -e AXIOM_DATASET_LOGS -e AXIOM_DATASET_METRICS \
+            -v "$PWD/packages/cli/src/assets/production.yaml:/etc/otelcol/config.yaml:ro" \
+            otel/opentelemetry-collector-contrib:0.159.0 --config=/etc/otelcol/config.yaml
+          for _ in $(seq 1 30); do
+            if curl -s -o /dev/null http://127.0.0.1:24318; then break; fi
+            sleep 1
+          done
+      - name: Run the deployed release canary
+        env:
+          OBSERVABILITY_E2E_DEPLOYED: "1"
+          OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:24318
+          AXIOM_READ_TOKEN: ${{ secrets.AXIOM_READ_TOKEN }}
+          AXIOM_ORGANIZATION_ID: ${{ vars.AXIOM_ORGANIZATION_ID }}
+          AXIOM_URL: ${{ vars.AXIOM_URL }}
+          AXIOM_DATASET_TRACES: ${{ vars.AXIOM_DATASET_TRACES }}
+          AXIOM_DATASET_LOGS: ${{ vars.AXIOM_DATASET_LOGS }}
+          AXIOM_DATASET_METRICS: ${{ vars.AXIOM_DATASET_METRICS }}
+        run: |
+          bun scripts/release-canary.ts --require-credential AXIOM_READ_TOKEN
+          bun run test:canary:deployed
+      - if: always()
+        run: docker rm -f otel-production 2>/dev/null || true
 
   canary-gate:
-    needs: verify
+    if: ${{ !cancelled() }}
+    needs: deployed-canary
     runs-on: ubuntu-latest
     steps:
       - env:
-          DEPLOYED_CANARY_RESULT: ${{ needs.verify.outputs.deployed_canary_result }}
+          DEPLOYED_CANARY_RESULT: ${{ needs.deployed-canary.result }}
         run: test "$DEPLOYED_CANARY_RESULT" = "success"
 
   release:

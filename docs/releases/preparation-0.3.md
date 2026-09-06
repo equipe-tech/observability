@@ -4,7 +4,7 @@ Esta preparação cobre os seis pacotes alterados pelo stack. Cada pacote manté
 
 | Pacote                              | Versão candidata | Motivo                                                                 |
 | ----------------------------------- | ---------------- | ---------------------------------------------------------------------- |
-| `@equipe-tech/observability`        | `0.3.0`          | Contratos tipados, identidade canônica, política, métricas e auditoria |
+| `@equipe-tech/observability`        | `0.3.1`          | Contratos tipados, identidade canônica, política, métricas e auditoria |
 | `@equipe-tech/observability-evlog`  | `0.3.0`          | Primeiro release do adapter oficial de eventos                         |
 | `@equipe-tech/observability-nestjs` | `0.3.0`          | Primeiro release da integração extraída do núcleo                      |
 | `@equipe-tech/observability-sentry` | `0.3.0`          | Primeiro release dos adapters de defeitos Node e browser               |
@@ -23,18 +23,16 @@ Leia [o guia de migração](../migration-0.3.md) antes da atualização. Leia [o
 
 Publique o núcleo antes dos adapters e da CLI, pois os consumidores precisam resolver o peer `@equipe-tech/observability@0.3.x`.
 
-Execute `Release Preflight` para cada pacote na revisão aprovada. Crie somente tags independentes, como `observability@0.3.0`, depois do preflight.
+Execute `Release Preflight` para cada pacote na revisão aprovada. Crie somente tags independentes, como `observability@0.3.1`, depois do preflight.
 
 Mantenha a aprovação humana do environment `publication`. O push da tag solicita somente a verificação protegida. A publicação exige outro `workflow_dispatch`, com `tag` e `confirm_tag` idênticos.
 
-## Pendências externas
+## Recuperação da primeira tentativa
 
-A inspeção do environment `publication` identificou estas pendências:
+A tag `observability@0.3.0` registra uma tentativa sem publicação no npm. O canário protegido falhou ao resolver o secret de ingestão no workflow reutilizável. Preserve essa tag para diagnóstico.
 
-- A política permite somente tags `v*`. Ela não permite as tags independentes `<slug>@<versão>`.
-- Os secrets `AXIOM_INGEST_TOKEN`, `AXIOM_READ_TOKEN` e `NPM_TOKEN` não estão configurados nesse environment.
-- As variables `AXIOM_ORGANIZATION_ID`, `AXIOM_URL`, `AXIOM_DATASET_TRACES`, `AXIOM_DATASET_LOGS` e `AXIOM_DATASET_METRICS` não estão configuradas.
+A recuperação usa `observability@0.3.1` e executa o job protegido diretamente no workflow de release. Os outros cinco pacotes mantêm `0.3.0`, pois suas tags ainda não foram criadas.
 
-Configure credenciais restritas aos datasets E2E. Permita as tags dos seis slugs sem remover a aprovação humana.
+Os cadastros dos dois secrets Axiom e das cinco variables existem no environment `publication`. As regras permitem as tags dos seis slugs. O `NPM_TOKEN` existe no escopo do repositório.
 
-Esta preparação não publica tags, GitHub Releases ou pacotes npm. A aceitação deployed permanece pendente até a configuração e aprovação do environment.
+A existência desses cadastros não comprova autenticação ou entrega de telemetria. A publicação continua condicionada ao canário deployed e à aprovação humana.
