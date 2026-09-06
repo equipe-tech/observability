@@ -35,7 +35,7 @@
 13. Run `curl --fail --silent --show-error http://127.0.0.1:8000/`.
 14. Save the nonempty viewer response.
 15. Run `OBSERVABILITY_HOME="$STATE_ROOT" OBSERVABILITY_E2E=1 bun run test:canary`.
-16. Require two passing canary tests.
+16. Require the telemetry canary, redaction, and browser canary suites to pass. Record each suite and test count.
 17. Find `data/otlp.jsonl` under `STATE_ROOT`.
 18. Require that the export is nonempty.
 19. Copy the export into `ARTIFACT_ROOT`.

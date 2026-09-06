@@ -13,7 +13,7 @@ Read [the feature map](features/README.md). Select every feature that the change
 
 The primary surface is the short-lived CLI. The local Collector, telemetry viewer, provider APIs, and installed packages are secondary surfaces.
 
-Require Bash, Bun 1.4 or later, and installed dependencies. Local pipeline proofs also require curl, netcat, Docker Compose, and an active Docker daemon.
+Require Bash, Bun 1.4 or later, and installed dependencies. Local pipeline proofs also require curl, netcat, Docker Compose, Playwright browsers, and an active Docker daemon.
 
 Run the baseline helper for CLI build, readiness, provisioning, state verification, and cleanup:
 
@@ -44,8 +44,8 @@ cleanup_verification() {
     OBSERVABILITY_HOME="$STATE_ROOT" bun "$CLI" dev down --file "$owned_compose" > "$ARTIFACT_ROOT/cleanup.stdout" 2> "$ARTIFACT_ROOT/cleanup.stderr"
     cleanup_status="$?"
     printf '%s\n' "$cleanup_status" > "$ARTIFACT_ROOT/cleanup.exit-code"
-    docker compose -f "$owned_compose" ps --all --services > "$ARTIFACT_ROOT/cleanup-services.txt" 2>> "$ARTIFACT_ROOT/cleanup.stderr"
-    if test -s "$ARTIFACT_ROOT/cleanup-services.txt"; then
+    docker compose -f "$owned_compose" ps --all --quiet > "$ARTIFACT_ROOT/cleanup-containers.txt" 2>> "$ARTIFACT_ROOT/cleanup.stderr"
+    if test -s "$ARTIFACT_ROOT/cleanup-containers.txt"; then
       cleanup_status=1
     fi
   fi
@@ -67,8 +67,12 @@ on_exit() {
   exit "$status"
 }
 trap on_exit EXIT
+set +e
 bun run build > "$ARTIFACT_ROOT/build.stdout" 2> "$ARTIFACT_ROOT/build.stderr"
-printf '%s\n' "$?" > "$ARTIFACT_ROOT/build.exit-code"
+BUILD_STATUS="$?"
+set -e
+printf '%s\n' "$BUILD_STATUS" > "$ARTIFACT_ROOT/build.exit-code"
+test "$BUILD_STATUS" = "0"
 git rev-parse HEAD > "$ARTIFACT_ROOT/build-revision.txt"
 test -f "$CLI"
 ```
@@ -87,7 +91,7 @@ bun --version > "$ARTIFACT_ROOT/bun-version.txt"
 bun "$CLI" --version > "$ARTIFACT_ROOT/cli-version.txt"
 test "$(cat "$ARTIFACT_ROOT/cli-version.txt")" = "observability v$EXPECTED_VERSION"
 bun "$CLI" --help > "$ARTIFACT_ROOT/cli-help.txt"
-for command in dev auth provision env ops; do
+for command in dev auth provision env ops setup; do
   grep -Eq "^[[:space:]]+$command[[:space:]]" "$ARTIFACT_ROOT/cli-help.txt"
 done
 test "$(git rev-parse HEAD)" = "$(cat "$ARTIFACT_ROOT/build-revision.txt")"
@@ -100,10 +104,12 @@ Before local stack control, verify ownership and ports:
 ```bash
 export STACK_LOCK="${TMPDIR:-/tmp}/observability-verification-local-stack.lock"
 if ! mkdir "$STACK_LOCK" 2>/dev/null; then
-  printf '%s\n' 'Another verification run owns the local stack lock.' >&2
+  printf '%s\n' 'Another verification run or a stale lock owns the local stack lock.' >&2
+  printf '%s\n' 'Read owner-pid and run-id. Remove the lock only when the process is absent and no observability-local containers exist.' >&2
   exit 1
 fi
 printf '%s\n' "$RUN_ID" > "$STACK_LOCK/run-id"
+printf '%s\n' "$$" > "$STACK_LOCK/owner-pid"
 for port in 4317 4318 8000; do
   if nc -z 127.0.0.1 "$port"; then
     printf 'Port %s already has a listener.\n' "$port" >&2
@@ -169,8 +175,8 @@ cleanup_verification
 test ! -e "$STATE_ROOT"
 test -d "$ARTIFACT_ROOT"
 test -f "$ARTIFACT_ROOT/run.env"
-if test -f "$ARTIFACT_ROOT/cleanup-services.txt"; then
-  test ! -s "$ARTIFACT_ROOT/cleanup-services.txt"
+if test -f "$ARTIFACT_ROOT/cleanup-containers.txt"; then
+  test ! -s "$ARTIFACT_ROOT/cleanup-containers.txt"
 fi
 ```
 

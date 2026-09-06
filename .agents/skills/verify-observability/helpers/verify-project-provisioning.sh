@@ -5,15 +5,25 @@ cd "$ROOT"
 RUN_ID="verify-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
 STATE_ROOT="${TMPDIR:-/tmp}/observability-$RUN_ID"
 ARTIFACT_ROOT="$ROOT/.verification/observability/$RUN_ID"
+PROJECT_ARTIFACT_ROOT="$ARTIFACT_ROOT/project-provisioning"
 PROVISION_TARGET="$STATE_ROOT/provision-target"
 CLI="$ROOT/packages/cli/dist/main.js"
 cleanup() {
+  local status="$?"
+  if test "$status" != "0" && test -d "$PROVISION_TARGET"; then
+    mkdir -p "$ARTIFACT_ROOT/failure-state"
+    if ! cp -R "$PROVISION_TARGET/." "$ARTIFACT_ROOT/failure-state/"; then
+      printf '%s\n' 'Failed to preserve provisioning state. Temporary state was retained.' > "$ARTIFACT_ROOT/failure-preservation.stderr"
+      return "$status"
+    fi
+  fi
   if [[ -n "${STATE_ROOT:-}" && "$STATE_ROOT" == "${TMPDIR:-/tmp}/observability-verify-"* ]]; then
     rm -rf -- "$STATE_ROOT"
   fi
+  return "$status"
 }
 trap cleanup EXIT
-mkdir -p "$STATE_ROOT" "$ARTIFACT_ROOT" "$PROVISION_TARGET"
+mkdir -p "$STATE_ROOT" "$ARTIFACT_ROOT" "$PROJECT_ARTIFACT_ROOT" "$PROVISION_TARGET"
 printf 'RUN_ID=%q\nSTATE_ROOT=%q\nARTIFACT_ROOT=%q\nPROVISION_TARGET=%q\nCLI=%q\n' "$RUN_ID" "$STATE_ROOT" "$ARTIFACT_ROOT" "$PROVISION_TARGET" "$CLI" > "$ARTIFACT_ROOT/run.env"
 run_capture() {
   local name="$1"
@@ -44,8 +54,8 @@ grep -F '${env:AXIOM_TOKEN}' "$PROVISION_TARGET/observability/collector.yaml"
 for dataset in verify-app-traces verify-app-logs verify-app-metrics; do
   grep -F "$dataset" "$PROVISION_TARGET/observability/kamal.accessory.yml"
 done
-cp "$PROVISION_TARGET/observability/collector.yaml" "$ARTIFACT_ROOT/first-collector.yaml"
-cp "$PROVISION_TARGET/observability/kamal.accessory.yml" "$ARTIFACT_ROOT/first-kamal.accessory.yml"
+cp "$PROVISION_TARGET/observability/collector.yaml" "$PROJECT_ARTIFACT_ROOT/first-collector.yaml"
+cp "$PROVISION_TARGET/observability/kamal.accessory.yml" "$PROJECT_ARTIFACT_ROOT/first-kamal.accessory.yml"
 run_capture provision-repeat env OBSERVABILITY_HOME="$STATE_ROOT" bun "$CLI" provision --dir "$PROVISION_TARGET" --name verify-app
 test "$(grep -c '^unchanged  observability/' "$ARTIFACT_ROOT/provision-repeat.stdout")" = "2"
 printf '%s\n' 'receivers: {}' > "$PROVISION_TARGET/observability/collector.yaml"
@@ -58,7 +68,7 @@ test "$(cat "$PROVISION_TARGET/observability/collector.yaml")" = 'receivers: {}'
 run_capture provision-force env OBSERVABILITY_HOME="$STATE_ROOT" bun "$CLI" provision --dir "$PROVISION_TARGET" --name verify-app --force
 grep -F 'updated  observability/collector.yaml' "$ARTIFACT_ROOT/provision-force.stdout"
 grep -F '${env:AXIOM_TOKEN}' "$PROVISION_TARGET/observability/collector.yaml"
-cp "$PROVISION_TARGET/observability/collector.yaml" "$ARTIFACT_ROOT/final-collector.yaml"
-cp "$PROVISION_TARGET/observability/kamal.accessory.yml" "$ARTIFACT_ROOT/final-kamal.accessory.yml"
+cp "$PROVISION_TARGET/observability/collector.yaml" "$PROJECT_ARTIFACT_ROOT/final-collector.yaml"
+cp "$PROVISION_TARGET/observability/kamal.accessory.yml" "$PROJECT_ARTIFACT_ROOT/final-kamal.accessory.yml"
 test "$(git rev-parse HEAD)" = "$(cat "$ARTIFACT_ROOT/build-revision.txt")"
 printf '%s\n' "$ARTIFACT_ROOT"

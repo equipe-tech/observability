@@ -32,6 +32,7 @@ This map defines the maintained user paths for the Observability CLI and telemet
 ## Features
 
 - [Project provisioning](./project-provisioning.md) covers asset creation, idempotency, conflict protection, and forced replacement.
+- [Setup and release](./setup-release.md) covers setup planning, writes, local verification, and release prerequisites.
 - [Local pipeline](./local-pipeline.md) covers stack control, viewer readiness, telemetry export, correlation, and redaction.
 - [Provider operations](./provider-operations.md) covers authentication, remote environments, operations plans, apply, verify, and manual actions.
 - [Production recovery](./production-recovery.md) covers persistent queues, restart, drain, saturation, health, and internal metrics.
