@@ -101,7 +101,7 @@ O produtor exige todos os atributos declarados e rejeita atributos extras. Lista
 
 ## Compatibilidade de release
 
-Esta migração documenta a quebra intencional da linha 0.3. `bun run compat` compara os exports e as declarações de `v0.2.1` com a candidata. A remoção de `./nestjs`, a migração de Effect para peer e os símbolos movidos exigem a linha `0.3.0`. O registro fica em `observability/compatibility/declared-breaks.json`. A versão candidata da CLI também fica declarada como `0.3.0`, sem alterar o manifest antes da release.
+Esta migração documenta a quebra intencional da linha 0.3. `bun run compat` compara os exports e as declarações de `v0.2.1` com a candidata. A remoção de `./nestjs`, a migração de Effect para peer e os símbolos movidos exigem a linha `0.3.0`. O registro fica em `observability/compatibility/declared-breaks.json`. A versão candidata da CLI também fica declarada como `0.3.0`. O manifest da CLI agora registra essa versão para o preflight.
 
 ## Migrar os entrypoints de Effect e NestJS
 
@@ -151,4 +151,4 @@ Mantenha o ledger no banco de dados da aplicação. Use `commitAuditRecord` ou `
 
 ## Usar releases independentes
 
-Os pacotes não compartilham versão. O núcleo, o adapter evlog e o pacote NestJS começam em `0.3.0`. A CLI permanece em `0.2.1`. Tags usam `<slug>@<semver>`, por exemplo `observability@0.3.0`, `observability-evlog@0.3.0`, `observability-nestjs@0.3.0` e `observability-cli@0.2.1`.
+Os pacotes mantêm versões independentes. Esta preparação seleciona `0.3.0` para os seis pacotes alterados. A CLI avança de `0.2.1` para `0.3.0` pelas mudanças incompatíveis descritas neste guia. Tags usam `<slug>@<semver>`, por exemplo `observability@0.3.0`, `observability-evlog@0.3.0`, `observability-nestjs@0.3.0` e `observability-cli@0.3.0`. Releases futuras alteram somente os pacotes afetados.
