@@ -1,5 +1,6 @@
 import { Cause, Context, Duration, Effect, Layer, ManagedRuntime, Option } from "effect";
 import { OtlpExporter } from "effect/unstable/observability";
+import { TelemetryEventSink } from "../contract/EventProducer.ts";
 import * as Telemetry from "../Telemetry.ts";
 import {
   nodeObservabilityConfigFromEnv,
@@ -26,6 +27,7 @@ import { profileCapabilityRank } from "../profile/ObservabilityProfile.ts";
 
 export type NodeObservabilityDisabled = {
   readonly enabled: false;
+  readonly eventLayer: Layer.Layer<TelemetryEventSink>;
   readonly flush: () => Promise<LifecycleReport>;
   readonly close: () => Promise<LifecycleReport>;
   readonly dispose: () => Promise<LifecycleReport>;
@@ -36,6 +38,7 @@ export type NodeObservabilityEnabled = {
   readonly enabled: true;
   readonly config: NodeObservabilityConfigEnabled;
   readonly runtime: ManagedRuntime.ManagedRuntime<OtlpExporter.Flusher, InvalidObservabilityConfig>;
+  readonly eventLayer: Layer.Layer<TelemetryEventSink>;
   readonly flush: () => Promise<LifecycleReport>;
   readonly close: () => Promise<LifecycleReport>;
   readonly dispose: () => Promise<LifecycleReport>;
@@ -61,6 +64,11 @@ const closedFlush = (): Promise<LifecycleReport> =>
     }),
   );
 
+const noopEventLayer = Layer.succeed(
+  TelemetryEventSink,
+  TelemetryEventSink.of({ record: () => Effect.void, recordBrowserBatch: () => Effect.void }),
+);
+
 const disabledHandle = (): NodeObservabilityDisabled => {
   const report = emptyReport("close");
   const closePromise = Promise.resolve(report);
@@ -71,6 +79,7 @@ const disabledHandle = (): NodeObservabilityDisabled => {
   };
   return {
     enabled: false,
+    eventLayer: noopEventLayer,
     flush: () => (closed ? closedFlush() : Promise.resolve(emptyReport("flush"))),
     close,
     dispose: close,
@@ -92,6 +101,7 @@ class LiveNodeObservability implements NodeObservabilityEnabled {
       OtlpExporter.Flusher,
       InvalidObservabilityConfig
     >,
+    readonly eventLayer: Layer.Layer<TelemetryEventSink>,
     private readonly runLifecycle: (operation: "flush" | "close") => Effect.Effect<LifecycleReport>,
   ) {}
 
@@ -213,8 +223,26 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
     }
     started.push({ registration, handle: result.value });
   }
+  const eventHandle = started.find(
+    (entry) => entry.registration.adapter.capability === "events",
+  )?.handle;
+  const eventLayer = eventHandle?.eventLayer ?? Option.none();
+  if (Option.isNone(eventLayer)) {
+    yield* rollbackStartedAdapters(started);
+    yield* runtime.disposeEffect;
+    return yield* new ObservabilityLifecycleError({
+      code: "OBS_OBSERVABILITY_STARTUP_FAILED",
+      message:
+        "The events adapter did not provide its TelemetryEventSink layer. Use an official events adapter that owns event delivery.",
+      adapter: Option.fromNullishOr(
+        started.find((entry) => entry.registration.adapter.capability === "events")?.registration
+          .adapter.name,
+      ),
+      cause: "missing events service layer",
+    });
+  }
   const registry = createLifecycleRegistry(config.profile, started, flusher, runtime.disposeEffect);
-  return new LiveNodeObservability(config, runtime, registry.run);
+  return new LiveNodeObservability(config, runtime, eventLayer.value, registry.run);
 });
 
 export const makeNodeObservability = (

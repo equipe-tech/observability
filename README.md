@@ -59,7 +59,9 @@ O Collector roda como accessory do [Kamal](https://kamal-deploy.org), com filas 
 
 ```text
 packages/
-  telemetry/          @equipe-tech/observability: config validada, layer OTLP (traces, logs, métricas), wide events e adapters sobre Effect
+  telemetry/          @equipe-tech/observability: núcleo neutro, contratos, política, identidade e lifecycle
+  evlog/              @equipe-tech/observability-evlog: eventos tipados com fila e entrega OTLP do evlog
+  nestjs/             @equipe-tech/observability-nestjs: integração HTTP e lifecycle do NestJS
   cli/                observability dev|provision: CLI, assets da stack local e do Collector de produção
 docs/                 padrões de código, erros, testes e workflow
 tools/oxlint/         plugins de lint do projeto (anti-slop, effect)
@@ -79,11 +81,11 @@ O núcleo `@equipe-tech/observability` publica entrypoints explícitos:
 | `./browser/client` | Cliente imperativo do browser sem tipos Effect na API pública                                     |
 | `./testing`        | Captura em memória dos exports OTLP reais para asserts de spans, logs e métricas                  |
 
-A integração NestJS vive na raiz de `@equipe-tech/observability-nestjs`. Ela publica `TelemetryModule`, `TelemetryInterceptor`, `withRequestSpan`, `createBrowserEventsController` e a política HTTP.
+A integração NestJS vive na raiz de `@equipe-tech/observability-nestjs`. Ela publica `TelemetryModule`, `TelemetryInterceptor`, `withRequestSpan`, `createBrowserEventsController` e a política HTTP. O adapter oficial de eventos vive em `@equipe-tech/observability-evlog` e fornece `registration`, `drops()` e `pending()`.
 
 O [cliente imperativo do browser](docs/browser-client.md) publica `emit`, `flush`, `pending` e `dispose` sem tipos Effect e documenta o ciclo de vida React suportado. O contrato do endpoint `/_telemetry/events` vive em `BrowserEvents` no entrypoint raiz. O servidor faz o parse com `parseBrowserEventBatch` e re-emite os eventos como wide events com atributos de servidor (`event.source`, `browser.event.id`). O cliente sanitiza nomes e campos antes da fila conforme a [política de dados da telemetria do browser](docs/browser-telemetry-data-policy.md).
 
-O pacote `@equipe-tech/observability-nestjs` publica o endpoint pronto. Registre `createBrowserEventsController(runtime)` nos controllers do módulo. O controller responde `202 { accepted }` e rejeita batches inválidos com `400 { code, message, correlationId }`. O valor `correlationId` é um identificador seguro para suporte. O limite de corpo bruto pertence ao transporte HTTP; o Express responde `413` acima do limite configurado.
+O pacote `@equipe-tech/observability-nestjs` publica o endpoint pronto. Registre `createBrowserEventsController(observability.runtime, { eventLayer: observability.eventLayer })` nos controllers do módulo. Assim, o endpoint usa o mesmo adapter de eventos do servidor. O controller responde `202 { accepted }` e rejeita batches inválidos com `400 { code, message, correlationId }`. O valor `correlationId` é um identificador seguro para suporte. O limite de corpo bruto pertence ao transporte HTTP; o Express responde `413` acima do limite configurado.
 
 Consulte [Métricas sem dependência de framework](docs/metrics.md) para lifecycle, limites de cardinalidade, atributos e erros.
 

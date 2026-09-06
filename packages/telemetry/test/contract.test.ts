@@ -4,11 +4,14 @@ import { CorrelationContext } from "../src/Correlation.ts";
 import {
   defineEventDefinitions,
   defineTelemetryContract,
+  InvalidTelemetryEvent,
   isValidEventName,
   makeEventProducer,
+  maxOtlpUnixTimestampMillis,
   organizationContractVersion,
   organizationEvents,
   telemetryContractDefinition,
+  validateContractEvent,
   type AttributeDefinitionsInput,
   type TelemetryContract,
   type TelemetryContractInput,
@@ -405,11 +408,17 @@ describe("defineTelemetryContract", () => {
         "event.outcome",
         "event.timestamp",
         "event.duration_ms",
+        "event.source",
+        "event.policy_dropped_attributes",
+        "browser.event.id",
+        "browser.event.occurred_at",
         "http.request.method",
         "http.route",
         "http.response.status_code",
         "error.type",
+        "error.name",
         "error.message",
+        "error.status",
         "error.retryable",
         "audit.action",
         "audit.actor.kind",
@@ -628,6 +637,19 @@ describe("organization contracts", () => {
 });
 
 describe("contract event producer", () => {
+  it.effect("returns typed failures for malformed, reserved, and unknown event names", () =>
+    Effect.gen(function* () {
+      const contract = yield* compileApplicationContract;
+      for (const eventName of ["Invalid Name", "job.error", "job.unknown"]) {
+        const result = validateContractEvent(contract, eventName, {});
+        assert.instanceOf(result, InvalidTelemetryEvent);
+        assert.strictEqual(result.code, "OBS_EVENT_UNKNOWN_NAME");
+        assert.include(result.message, "Use a valid declared canonical event name");
+        assert.notInclude(result.message, "Schema");
+      }
+    }),
+  );
+
   it("exports every reachable event error code", () => {
     assert.sameMembers(Array.from(telemetryEventErrorFixtures), [
       "OBS_EVENT_UNKNOWN_NAME",
@@ -934,6 +956,49 @@ describe("contract event producer", () => {
         assert.isNotEmpty(error.eventName);
       }
       assert.lengthOf(yield* sink.events, 0);
+    }),
+  );
+
+  it.effect("enforces the OTLP fixed64 timestamp boundary before recording", () =>
+    Effect.gen(function* () {
+      const contract = yield* compileApplicationContract;
+      const sink = yield* makeCollectingTelemetryEventSink();
+      const producer = makeEventProducer(contract);
+      for (const timestamp of [
+        "1970-01-01T00:00:00.000Z",
+        "2026-08-30T16:41:55.558Z",
+        new Date(maxOtlpUnixTimestampMillis).toISOString(),
+      ]) {
+        const accepted = yield* producer
+          .emit("CanaryCompleted", {
+            outcome: "success",
+            timestamp,
+            attributes: {},
+          })
+          .pipe(Effect.provide(sink.layer));
+        assert.strictEqual(accepted.decision, "recorded");
+      }
+      for (const timestamp of [
+        "1969-12-31T23:59:59.999Z",
+        "1900-01-01T00:00:00Z",
+        "not-a-date",
+        new Date(maxOtlpUnixTimestampMillis + 1).toISOString(),
+        "3000-01-01T00:00:00Z",
+        "9999-01-01T00:00:00Z",
+        "+275760-09-13T00:00:00.000Z",
+        Number.NEGATIVE_INFINITY,
+        Number.POSITIVE_INFINITY,
+        Number.NaN,
+      ]) {
+        const payload = JSON.parse('{"outcome":"success","attributes":{}}');
+        payload.timestamp = timestamp;
+        const failure = yield* producer
+          .emit("CanaryCompleted", payload)
+          .pipe(Effect.provide(sink.layer), Effect.flip);
+        assert.strictEqual(failure.code, "OBS_EVENT_INVALID_FIELD");
+        assert.strictEqual(failure.attributeName, "event.timestamp");
+      }
+      assert.lengthOf(yield* sink.events, 3);
     }),
   );
 

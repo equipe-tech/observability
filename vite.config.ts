@@ -36,6 +36,10 @@ export default defineConfig({
         replacement: `${root}packages/nestjs/src/index.ts`,
       },
       {
+        find: "@equipe-tech/observability-evlog",
+        replacement: `${root}packages/evlog/src/index.ts`,
+      },
+      {
         find: "@equipe-tech/observability",
         replacement: `${root}packages/telemetry/src/index.ts`,
       },

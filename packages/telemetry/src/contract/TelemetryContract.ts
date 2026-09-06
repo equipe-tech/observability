@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { EventName, isValidAttributeName, isValidEventName } from "./EventName.ts";
 import {
   EventKind,
@@ -7,9 +7,11 @@ import {
   type EventKind as EventKindType,
   type EventOutcome as EventOutcomeType,
   type EventSeverity as EventSeverityType,
+  type EventAttributes,
 } from "./TelemetryEvent.ts";
 import {
   InvalidTelemetryContract,
+  InvalidTelemetryEvent,
   type ContractIssue,
   type ContractIssueCode,
 } from "./TelemetryContractError.ts";
@@ -101,6 +103,49 @@ export type CompiledAuditActionDefinition = AuditActionDefinitionInput & {
   readonly alias: string;
 };
 
+export type EventContractRegistry = {
+  readonly eventByName: ReadonlyMap<EventName, CompiledEventDefinition>;
+};
+
+export const validateContractEvent = (
+  contract: EventContractRegistry,
+  eventName: string,
+  attributes: EventAttributes,
+): CompiledEventDefinition | InvalidTelemetryEvent => {
+  const parsedEventName = EventName.makeOption(eventName);
+  const definition = Option.isSome(parsedEventName)
+    ? contract.eventByName.get(parsedEventName.value)
+    : undefined;
+  if (definition === undefined) {
+    return new InvalidTelemetryEvent({
+      code: "OBS_EVENT_UNKNOWN_NAME",
+      message: `Event "${eventName}" is not declared by the telemetry contract. Use a valid declared canonical event name.`,
+      eventName,
+    });
+  }
+  for (const required of definition.requiredAttributes) {
+    if (!Object.hasOwn(attributes, required)) {
+      return new InvalidTelemetryEvent({
+        code: "OBS_EVENT_MISSING_ATTRIBUTE",
+        message: `Event "${eventName}" is missing required attribute "${required}". Add the declared scalar attribute before emitting.`,
+        eventName,
+        attributeName: required,
+      });
+    }
+  }
+  for (const attributeName of Object.keys(attributes)) {
+    if (!definition.attributes.has(attributeName)) {
+      return new InvalidTelemetryEvent({
+        code: "OBS_EVENT_UNDECLARED_ATTRIBUTE",
+        message: `Event "${eventName}" does not declare attribute "${attributeName}". Add it to the contract or remove it from the event.`,
+        eventName,
+        attributeName,
+      });
+    }
+  }
+  return definition;
+};
+
 export type TelemetryContract<Definition extends TelemetryContractInput> = {
   readonly version: 1;
   readonly definition: Definition;
@@ -125,11 +170,17 @@ const canonicalSinkFields = new Set([
   "event.outcome",
   "event.timestamp",
   "event.duration_ms",
+  "event.source",
+  "event.policy_dropped_attributes",
+  "browser.event.id",
+  "browser.event.occurred_at",
   "http.request.method",
   "http.route",
   "http.response.status_code",
   "error.type",
+  "error.name",
   "error.message",
+  "error.status",
   "error.retryable",
   "audit.action",
   "audit.actor.kind",

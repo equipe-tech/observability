@@ -139,6 +139,14 @@ export const validateAdapterRegistrations = Effect.fn("validateAdapterRegistrati
         ),
       );
     }
+    if (capabilities.has(adapter.capability)) {
+      return yield* Effect.fail(
+        invalidAdapter(
+          "OBS_OBSERVABILITY_ADAPTER_DUPLICATE",
+          `Capability "${adapter.capability}" is registered by more than one adapter. Use one registration per capability.`,
+        ),
+      );
+    }
     capabilities.add(adapter.capability);
   }
   const externalCapabilities: ReadonlyArray<ExternalAdapterCapability> = [
@@ -295,7 +303,12 @@ const coreRegistration = (
     stage,
     start: () => Effect.die("Built-in lifecycle participants are already started."),
   }),
-  handle: { flush: effect, close: effect },
+  handle: {
+    flush: effect,
+    close: effect,
+    eventLayer: Option.none(),
+    degraded: () => false,
+  },
 });
 
 export type LifecycleRegistry = {
@@ -372,7 +385,9 @@ export const createLifecycleRegistry = (
       operation,
       outcomes,
       durationMillis,
-      degraded: outcomes.some((outcome) => outcome.result.kind !== "completed"),
+      degraded:
+        outcomes.some((outcome) => outcome.result.kind !== "completed") ||
+        started.some((entry) => entry.handle.degraded()),
     };
   });
   return { run };

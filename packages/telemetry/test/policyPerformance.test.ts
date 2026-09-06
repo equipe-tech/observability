@@ -2,6 +2,7 @@ import { assert, describe, it } from "vite-plus/test";
 import { Effect, Exit } from "effect";
 import { maxEventsPerBatch, maxFieldsPerEvent, maxFieldValueLength } from "../src/BrowserEvents.ts";
 import { ingestBrowserEvents } from "../src/node/index.ts";
+import { layerWideEvent } from "../src/effect/WideEventSink.ts";
 import { baseDataPolicy, parseDataPolicy } from "../src/policy/DataPolicy.ts";
 import { metricLabelRejection } from "../src/policy/MetricLabelPolicy.ts";
 import { sanitizeText, transformSignalFields } from "../src/policy/PolicyTransform.ts";
@@ -87,7 +88,7 @@ describe("policy sanitizer performance", () => {
     }));
     const started = performance.now();
     const result = await Effect.runPromise(
-      Testing.run(ingestBrowserEvents({ version: 1, events })),
+      Testing.run(ingestBrowserEvents({ version: 1, events }).pipe(Effect.provide(layerWideEvent))),
     );
     const timing = performance.now() - started;
     assert.deepStrictEqual(

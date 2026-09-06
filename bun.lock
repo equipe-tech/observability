@@ -31,6 +31,21 @@
         "effect": "4.0.0-rc.111",
       },
     },
+    "packages/evlog": {
+      "name": "@equipe-tech/observability-evlog",
+      "version": "0.3.0",
+      "dependencies": {
+        "evlog": "2.27.1",
+      },
+      "devDependencies": {
+        "@equipe-tech/observability": "workspace:*",
+        "effect": "4.0.0-rc.111",
+      },
+      "peerDependencies": {
+        "@equipe-tech/observability": "0.3.x",
+        "effect": "4.0.0-rc.111",
+      },
+    },
     "packages/nestjs": {
       "name": "@equipe-tech/observability-nestjs",
       "version": "0.3.0",
@@ -122,6 +137,8 @@
     "@equipe-tech/observability": ["@equipe-tech/observability@workspace:packages/telemetry"],
 
     "@equipe-tech/observability-cli": ["@equipe-tech/observability-cli@workspace:packages/cli"],
+
+    "@equipe-tech/observability-evlog": ["@equipe-tech/observability-evlog@workspace:packages/evlog"],
 
     "@equipe-tech/observability-nestjs": ["@equipe-tech/observability-nestjs@workspace:packages/nestjs"],
 

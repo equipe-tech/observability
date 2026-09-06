@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
+import evlogManifest from "../packages/evlog/package.json" with { type: "json" };
 import nestjsManifest from "../packages/nestjs/package.json" with { type: "json" };
 import telemetryManifest from "../packages/telemetry/package.json" with { type: "json" };
 import tsconfig from "../tsconfig.json" with { type: "json" };
@@ -13,6 +14,7 @@ const expected = new Map([
   ["@equipe-tech/observability/testing", "packages/telemetry/src/testing/index.ts"],
   ["@equipe-tech/observability/node", "packages/telemetry/src/node/index.ts"],
   ["@equipe-tech/observability-nestjs", "packages/nestjs/src/index.ts"],
+  ["@equipe-tech/observability-evlog", "packages/evlog/src/index.ts"],
   ["@equipe-tech/observability", "packages/telemetry/src/index.ts"],
 ]);
 const TypeScriptConfig = Schema.Struct({
@@ -39,13 +41,14 @@ const packageEntrypoints = (
   );
 
 describe("development entrypoint mappings", () => {
-  test("maps every telemetry and NestJS export to its exact TypeScript source", () => {
+  test("maps every package export to its exact TypeScript source", () => {
     const entrypoints = [
       ...packageEntrypoints("@equipe-tech/observability", Object.keys(telemetryManifest.exports)),
       ...packageEntrypoints(
         "@equipe-tech/observability-nestjs",
         Object.keys(nestjsManifest.exports),
       ),
+      ...packageEntrypoints("@equipe-tech/observability-evlog", Object.keys(evlogManifest.exports)),
     ];
     expect(entrypoints.toSorted()).toEqual([...expected.keys()].toSorted());
     for (const [specifier, source] of expected) {

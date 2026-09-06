@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { checkPackageBoundaries } from "./package-boundaries.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const packages = ["telemetry", "nestjs", "cli"];
+const packages = ["telemetry", "nestjs", "evlog", "cli"];
 
 const boundaryViolations = await checkPackageBoundaries();
 if (boundaryViolations.length > 0) {

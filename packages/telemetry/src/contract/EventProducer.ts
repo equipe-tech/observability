@@ -6,6 +6,7 @@ import {
   type CompiledEventDefinition,
   type TelemetryContract,
   type TelemetryContractInput,
+  validateContractEvent,
 } from "./TelemetryContract.ts";
 import {
   AuditContext,
@@ -26,9 +27,29 @@ import { sensitiveFieldReplacement } from "../policy/PolicyVocabulary.ts";
 import type { PolicyRedaction } from "../policy/PolicyTransform.ts";
 import { InvalidTelemetryEvent } from "./TelemetryContractError.ts";
 
+export type EventAdmissionMetadata = {
+  readonly policyDroppedAttributes: number;
+};
+
+export type BrowserTelemetryEvent = {
+  readonly id: string;
+  readonly name: string;
+  readonly occurredAt: number;
+  readonly attributes: EventAttributes;
+  readonly admission: EventAdmissionMetadata;
+};
+
 export class TelemetryEventSink extends Context.Service<
   TelemetryEventSink,
-  { readonly record: (event: TelemetryEvent) => Effect.Effect<void> }
+  {
+    readonly record: (
+      event: TelemetryEvent,
+      admission: EventAdmissionMetadata,
+    ) => Effect.Effect<void, InvalidTelemetryEvent>;
+    readonly recordBrowserBatch: (
+      events: ReadonlyArray<BrowserTelemetryEvent>,
+    ) => Effect.Effect<void, InvalidTelemetryEvent>;
+  }
 >()("@equipe-tech/observability/TelemetryEventSink") {}
 
 type RequiredAttributeNames<Attributes extends AttributeDefinitionsInput> = {
@@ -104,6 +125,7 @@ export type EmitReceipt =
       readonly decision: "recorded";
       readonly event: TelemetryEvent;
       readonly redactions: ReadonlyArray<PolicyRedaction>;
+      readonly admission: EventAdmissionMetadata;
     }
   | { readonly decision: "sampled_out"; readonly name: string };
 
@@ -144,6 +166,7 @@ const parseEventPayload = <Payload>(
 
 const parseAttributes = (
   policy: DataPolicy,
+  contract: TelemetryContract<TelemetryContractInput>,
   definition: CompiledEventDefinition,
   attributes: EmittedAttributes,
 ):
@@ -151,6 +174,7 @@ const parseAttributes = (
   | {
       readonly attributes: EventAttributes;
       readonly redactions: ReadonlyArray<PolicyRedaction>;
+      readonly admission: EventAdmissionMetadata;
     } => {
   if (!Predicate.isObject(attributes)) {
     return eventError(
@@ -159,26 +183,10 @@ const parseAttributes = (
       { eventName: definition.name, attributeName: "attributes" },
     );
   }
-  for (const attributeName of definition.requiredAttributes) {
-    if (!Object.hasOwn(attributes, attributeName)) {
-      return eventError(
-        "OBS_EVENT_MISSING_ATTRIBUTE",
-        `Event "${definition.name}" is missing required attribute "${attributeName}". Add the declared scalar attribute before emitting.`,
-        { eventName: definition.name, attributeName },
-      );
-    }
-  }
   const parsed: { [attributeName: string]: AttributeValue } = {};
   const contractRedactions: Array<PolicyRedaction> = [];
   for (const [attributeName, value] of Object.entries(attributes)) {
     const attribute = definition.attributes.get(attributeName);
-    if (attribute === undefined) {
-      return eventError(
-        "OBS_EVENT_UNDECLARED_ATTRIBUTE",
-        `Event "${definition.name}" does not declare attribute "${attributeName}". Add it to the contract or remove it from the event.`,
-        { eventName: definition.name, attributeName },
-      );
-    }
     if (
       value === undefined ||
       (!Predicate.isString(value) &&
@@ -190,6 +198,10 @@ const parseAttributes = (
         `Event "${definition.name}" has a non-scalar or non-finite value for "${attributeName}". Use a string, finite number, or boolean.`,
         { eventName: definition.name, attributeName },
       );
+    }
+    if (attribute === undefined) {
+      parsed[attributeName] = value;
+      continue;
     }
     if (attribute.classification === "forbidden") {
       return eventError(
@@ -214,10 +226,15 @@ const parseAttributes = (
       contractRedactions.push({ rule: "classification", action: "masked", surface: "event" });
     }
   }
+  const validation = validateContractEvent(contract, definition.name, parsed);
+  if (validation instanceof InvalidTelemetryEvent) {
+    return validation;
+  }
   const decision = transformSignalFields(policy, "event", parsed);
   return {
     attributes: decision.value,
     redactions: [...contractRedactions, ...decision.redactions],
+    admission: { policyDroppedAttributes: decision.dropped },
   };
 };
 
@@ -476,7 +493,12 @@ export const makeEventProducer = <const Definition extends TelemetryContractInpu
       return yield* parsedPayload;
     }
     const policy = yield* CurrentDataPolicy;
-    const parsedAttributes = parseAttributes(policy, definition, parsedPayload.attributes);
+    const parsedAttributes = parseAttributes(
+      policy,
+      contract,
+      definition,
+      parsedPayload.attributes,
+    );
     if (parsedAttributes instanceof InvalidTelemetryEvent) {
       return yield* parsedAttributes;
     }
@@ -490,7 +512,12 @@ export const makeEventProducer = <const Definition extends TelemetryContractInpu
       return { decision: "sampled_out", name: definition.name };
     }
     const sink = yield* TelemetryEventSink;
-    yield* sink.record(event);
-    return { decision: "recorded", event, redactions: parsedAttributes.redactions };
+    yield* sink.record(event, parsedAttributes.admission);
+    return {
+      decision: "recorded",
+      event,
+      redactions: parsedAttributes.redactions,
+      admission: parsedAttributes.admission,
+    };
   }),
 });

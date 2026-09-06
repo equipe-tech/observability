@@ -1,6 +1,7 @@
 import { Controller, HttpCode, HttpException, Post, Req } from "@nestjs/common";
-import { Cause, Exit, Option, Schema } from "effect";
+import { Cause, Effect, Exit, Layer, Option, Schema } from "effect";
 import type { ManagedRuntime } from "effect";
+import { Contract, TelemetryEventSink } from "@equipe-tech/observability";
 import {
   ingestBrowserEvents,
   InvalidBrowserEventBatch,
@@ -14,7 +15,10 @@ export const defaultBrowserEventsPath = "_telemetry/events";
 export class BrowserEventsRejection extends Schema.Class<BrowserEventsRejection>(
   "@equipe-tech/observability/BrowserEventsRejection",
 )({
-  code: Schema.Literal("OBS_BROWSER_EVENTS_INVALID_BATCH"),
+  code: Schema.Union([
+    Schema.Literal("OBS_BROWSER_EVENTS_INVALID_BATCH"),
+    Contract.TelemetryEventErrorCode,
+  ]),
   message: Schema.String,
   correlationId: Schema.String,
 }) {}
@@ -38,12 +42,13 @@ const correlationId = (request: RequestReference): string =>
   );
 
 export type BrowserEventsControllerOptions = {
+  readonly eventLayer: Layer.Layer<TelemetryEventSink>;
   readonly path?: string;
 };
 
 export const createBrowserEventsController = <RuntimeError>(
   runtime: ManagedRuntime.ManagedRuntime<never, RuntimeError>,
-  options?: BrowserEventsControllerOptions,
+  options: BrowserEventsControllerOptions,
 ) => {
   class BrowserEventsController {
     async events(request: RequestReference): Promise<BrowserEventIngestReceipt> {
@@ -52,13 +57,20 @@ export const createBrowserEventsController = <RuntimeError>(
         Option.getOrUndefined,
       );
       const exit = await runtime.runPromiseExit(
-        ingestBrowserEvents(body).pipe(withRequestSpan(request)),
+        ingestBrowserEvents(body).pipe(
+          withRequestSpan(request),
+          Effect.provide(options.eventLayer),
+        ),
       );
       if (Exit.isSuccess(exit)) {
         return exit.value;
       }
       const error = Cause.findErrorOption(exit.cause);
-      if (Option.isSome(error) && error.value instanceof InvalidBrowserEventBatch) {
+      if (
+        Option.isSome(error) &&
+        (error.value instanceof InvalidBrowserEventBatch ||
+          error.value instanceof Contract.InvalidTelemetryEvent)
+      ) {
         throw new HttpException(
           new BrowserEventsRejection({
             code: error.value.code,
@@ -81,7 +93,7 @@ export const createBrowserEventsController = <RuntimeError>(
     });
   }
   Controller()(BrowserEventsController);
-  Post(options?.path ?? defaultBrowserEventsPath)(prototype, "events", descriptor);
+  Post(options.path ?? defaultBrowserEventsPath)(prototype, "events", descriptor);
   HttpCode(202)(prototype, "events", descriptor);
   Req()(prototype, "events", 0);
   return BrowserEventsController;

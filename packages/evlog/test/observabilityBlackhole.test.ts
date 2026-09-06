@@ -63,6 +63,9 @@ it("closes and exits naturally when the Collector blackholes every request", asy
   assert.strictEqual(requests, requestCountAtExit, output);
   assert.include(output, "WORK_COMPLETED");
   assert.include(output, '"activeTimeouts":0');
+  assert.include(output, '"event.name":"job.completed"');
+  assert.include(output, '"transport":1');
+  assert.include(output, '"degraded":true');
   assert.include(output, '"participant":"runtime-disposal","result":{"kind":"completed"');
   const closeMatch = /"closeMillis":(\d+)/.exec(output);
   if (closeMatch?.[1] === undefined) throw new Error(`Missing close duration in ${output}`);

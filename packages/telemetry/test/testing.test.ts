@@ -3,6 +3,7 @@ import { Cause, Effect, Exit, Metric, Option } from "effect";
 import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
 import * as Testing from "../src/testing/index.ts";
 import { TelemetryConfig } from "../src/TelemetryConfig.ts";
+import { ingestBrowserEvents } from "../src/node/BrowserEventIngest.ts";
 import * as WideEvent from "../src/effect/WideEvent.ts";
 
 const attributeOrUndefined = (
@@ -145,6 +146,33 @@ describe("Testing.run", () => {
       assert.isDefined(capturedGaugePoint);
       assert.deepStrictEqual(capturedGaugePoint.value, Option.some(7));
       assert.isTrue(Option.isNone(Testing.attribute(capturedGaugePoint.attributes, "unit")));
+    }),
+  );
+
+  it.effect("captures browser events with admission metadata", () =>
+    Effect.gen(function* () {
+      const sink = yield* Testing.makeCollectingTelemetryEventSink();
+      const receipt = yield* ingestBrowserEvents({
+        version: 1,
+        events: [
+          {
+            id: "browser-captured",
+            name: "checkout.completed",
+            occurredAt: 1,
+            fields: { "checkout.total": 42 },
+          },
+        ],
+      }).pipe(Effect.provide(sink.layer));
+      assert.deepStrictEqual(receipt, { accepted: 1, redacted: 0, dropped: 0 });
+      assert.deepStrictEqual(yield* sink.browserEvents, [
+        {
+          id: "browser-captured",
+          name: "checkout.completed",
+          occurredAt: 1,
+          attributes: { "checkout.total": 42 },
+          admission: { policyDroppedAttributes: 0 },
+        },
+      ]);
     }),
   );
 

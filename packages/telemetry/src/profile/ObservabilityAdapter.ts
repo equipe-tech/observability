@@ -1,10 +1,11 @@
-import { Effect, ManagedRuntime, Option, Predicate, Schema } from "effect";
+import { Effect, Layer, ManagedRuntime, Option, Predicate, Schema } from "effect";
 import type { OtlpExporter } from "effect/unstable/observability";
 import type {
   CompiledAuditActionDefinition,
   CompiledEventDefinition,
 } from "../contract/TelemetryContract.ts";
 import type { EventName } from "../contract/EventName.ts";
+import type { TelemetryEventSink } from "../contract/EventProducer.ts";
 import type { ResourceIdentity } from "../ResourceIdentity.ts";
 import type { TelemetryConfig } from "../TelemetryConfig.ts";
 import type { DataPolicy } from "./DataPolicy.ts";
@@ -50,6 +51,8 @@ export type ObservabilityAdapterContext = {
 export type ObservabilityAdapterHandle = {
   readonly flush: Effect.Effect<void, AdapterFailure>;
   readonly close: Effect.Effect<void, AdapterFailure>;
+  readonly eventLayer: Option.Option<Layer.Layer<TelemetryEventSink>>;
+  readonly degraded: () => boolean;
 };
 
 export type ObservabilityAdapter = {

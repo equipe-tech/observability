@@ -1,4 +1,4 @@
-import { Effect, Fiber, Layer, ManagedRuntime } from "effect";
+import { Effect, Fiber, Layer, ManagedRuntime, Option } from "effect";
 import { TestClock } from "effect/testing";
 import { OtlpExporter } from "effect/unstable/observability";
 import { describe, expect, it } from "vite-plus/test";
@@ -17,6 +17,7 @@ import {
   type StartedAdapter,
 } from "../src/profile/ObservabilityAdapter.ts";
 import { parseNodeObservabilityConfig } from "../src/profile/ObservabilityConfig.ts";
+import { TelemetryEventSink } from "../src/contract/EventProducer.ts";
 import {
   createLifecycleRegistry,
   validateAdapterRegistrations,
@@ -42,6 +43,10 @@ const contract: ContractRegistry = {
   auditActionByName: new Map<string, CompiledAuditActionDefinition>(),
 };
 const policy = { attributes: {}, blockedKeys: [], blockedValuePatterns: [] };
+const testEventLayer = Layer.succeed(
+  TelemetryEventSink,
+  TelemetryEventSink.of({ record: () => Effect.void, recordBrowserBatch: () => Effect.void }),
+);
 
 const config = (environment = "test") =>
   parseNodeObservabilityConfig({
@@ -77,6 +82,8 @@ const recordingAdapter = (
       );
     }
     return Effect.succeed({
+      eventLayer: Option.some(testEventLayer),
+      degraded: () => false,
       flush: Effect.sync(() => {
         calls.push(`flush:${name}`);
       }),
@@ -132,7 +139,13 @@ describe("observability lifecycle", () => {
         name: AdapterName.make(core.name),
         capability: core.capability,
         stage: core.stage,
-        start: () => Effect.succeed({ flush: Effect.void, close: Effect.void }),
+        start: () =>
+          Effect.succeed({
+            flush: Effect.void,
+            close: Effect.void,
+            eventLayer: Option.none(),
+            degraded: () => false,
+          }),
       });
       const error = await Effect.runPromise(
         Effect.flip(
@@ -189,6 +202,19 @@ describe("observability lifecycle", () => {
       ),
     );
     expect(duplicate.code).toBe("OBS_OBSERVABILITY_ADAPTER_DUPLICATE");
+
+    const differentlyNamedDuplicate = registerTestingAdapter(
+      recordingAdapter("other-events", "events", calls),
+    );
+    const capabilityDuplicate = await Effect.runPromise(
+      Effect.flip(
+        validateAdapterRegistrations(parsed.profile, "test", [events, differentlyNamedDuplicate], {
+          allowTesting: true,
+        }),
+      ),
+    );
+    expect(capabilityDuplicate.code).toBe("OBS_OBSERVABILITY_ADAPTER_DUPLICATE");
+    expect(capabilityDuplicate.message).toContain('Capability "events"');
   });
 
   it("runs the public create and Effect entrypoints", async () => {
@@ -422,6 +448,8 @@ describe("observability lifecycle", () => {
       stage: "server",
       start: () =>
         Effect.succeed({
+          eventLayer: Option.some(testEventLayer),
+          degraded: () => false,
           flush: Effect.promise(() => {
             calls.push("flush:events");
             return flushGate;
@@ -458,6 +486,8 @@ describe("observability lifecycle", () => {
         handle: {
           flush: operation === "flush" ? Effect.fail(failure) : Effect.void,
           close: operation === "close" ? Effect.fail(failure) : Effect.void,
+          eventLayer: Option.none(),
+          degraded: () => false,
         },
       };
       const flusher = OtlpExporter.Flusher.of({
@@ -488,6 +518,8 @@ describe("observability lifecycle", () => {
       handle: {
         flush: Effect.void,
         close: Effect.void,
+        eventLayer: Option.none(),
+        degraded: () => false,
       },
     };
     let flushCalls = 0;
@@ -529,7 +561,15 @@ describe("observability lifecycle", () => {
       return yield* Effect.never;
     });
     const started: ReadonlyArray<StartedAdapter> = [
-      { registration: events, handle: { flush: Effect.void, close: hangingClose } },
+      {
+        registration: events,
+        handle: {
+          flush: Effect.void,
+          close: hangingClose,
+          eventLayer: Option.none(),
+          degraded: () => false,
+        },
+      },
       {
         registration: defects,
         handle: {
@@ -537,6 +577,8 @@ describe("observability lifecycle", () => {
           close: Effect.sync(() => {
             calls.push("close:defects");
           }),
+          eventLayer: Option.none(),
+          degraded: () => false,
         },
       },
     ];
@@ -605,6 +647,31 @@ describe("observability lifecycle", () => {
     ]);
     expect(calls).toEqual(["close:events", "close:events", "close:defects"]);
     expect(report.durationMillis).toBeLessThanOrEqual(5_000);
+  });
+
+  it("rolls back startup when the events adapter omits its service layer", async () => {
+    const calls: Array<string> = [];
+    const parsed = await Effect.runPromise(config());
+    const events = registerTestingAdapter({
+      name: AdapterName.make("events"),
+      capability: "events",
+      stage: "server",
+      start: () =>
+        Effect.succeed({
+          eventLayer: Option.none(),
+          degraded: () => false,
+          flush: Effect.void,
+          close: Effect.sync(() => {
+            calls.push("close:events");
+          }),
+        }),
+    });
+    await expect(createTestingNodeObservabilityFromConfig(parsed, [events])).rejects.toMatchObject({
+      code: "OBS_OBSERVABILITY_STARTUP_FAILED",
+      adapter: { value: AdapterName.make("events") },
+      cause: "missing events service layer",
+    });
+    expect(calls).toEqual(["close:events"]);
   });
 
   it("rolls back started adapters in exact reverse order", async () => {
