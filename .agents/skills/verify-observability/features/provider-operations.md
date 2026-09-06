@@ -43,19 +43,21 @@
 15. Repeat the identical provision command with `--correlation-confirmed` and the same `--axiom-edge-deployment`.
 16. Run `env list --name <name>` and inspect provider state through a second provider view.
 17. After correlation confirmation succeeds, run `env export --name <name> --environment <environment> --release <release>` without recording secrets.
-18. Copy `observability/operations.yaml` and `observability/contract.json` into `PROJECT_ROOT/observability`.
-19. Keep every managed query inline in its operations manifest field.
-20. Generate an operations plan for the exact environment.
-21. Require the local plan file, mode `0600`, and the reported digest.
-22. Verify that provider state remains unchanged after the plan.
-23. Apply the exact saved plan.
-24. Read every changed resource through a second provider request.
-25. If a manual action remains, save its identifier and complete it in the non-production provider console.
-26. Generate and save a new plan after the provider-side action.
-27. Confirm each completed action with `ops apply --plan <new-file> --confirm-manual <id>` and the same environment.
-28. Run `ops verify` only after every required manual confirmation.
-29. Generate a final plan and require no provider changes.
-30. Retain redacted evidence and remove local state.
+18. Copy the repository `observability/contract.json` into `PROJECT_ROOT/observability`.
+19. Write `operations.yaml` with version `1`, contract version `1`, and the exact unique service and environment from provisioning.
+20. Add matching retention, empty dashboard and monitor lists, and the intended Sentry setting to that manifest.
+21. Keep every managed query inline in its operations manifest field.
+22. Generate an operations plan for the exact service and environment.
+23. Require the local plan file, mode `0600`, and the reported digest.
+24. Verify that provider state remains unchanged after the plan.
+25. Apply the exact saved plan.
+26. Read every changed resource through a second provider request.
+27. If a manual action remains, save its identifier and complete it in the non-production provider console.
+28. Generate and save a new plan after the provider-side action.
+29. Confirm each completed action with `ops apply --plan <new-file> --confirm-manual <id>` and the same environment.
+30. Run `ops verify` only after every required manual confirmation.
+31. Generate a final plan and require no provider changes.
+32. Retain redacted evidence and remove local state.
 
 Use [`docs/operations-manifest.md`](../../../../docs/operations-manifest.md) for the required manifest, contract, and inline query schemas.
 
