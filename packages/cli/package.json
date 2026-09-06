@@ -42,7 +42,7 @@
     "@effect/platform-bun": "4.0.0-rc.111",
     "@effect/platform-node-shared": "4.0.0-rc.111",
     "effect": "4.0.0-rc.111",
-    "yaml": "2.8.2",
+    "yaml": "2.8.3",
     "yuku-parser": "0.5.48"
   },
   "devDependencies": {
