@@ -35,6 +35,10 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
           fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
       - name: Validate the scoped package tag
         id: meta
         env:
@@ -49,43 +53,31 @@ jobs:
             [[ "$CONFIRM_TAG" == "$tag" ]] || { echo "Publication confirmation must exactly match $tag."; exit 1; }
             [[ "$EVENT_REF" == "refs/tags/$tag" ]] || { echo "Publication dispatch must run from the exact tag ref refs/tags/$tag."; exit 1; }
           fi
-          [[ "$tag" =~ ^[a-z0-9-]+@[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]] || { echo "The tag $tag does not match the scoped release tag format."; exit 1; }
           git show-ref --verify --quiet "refs/tags/$tag" || { echo "The tag $tag does not exist in this checkout."; exit 1; }
           tag_commit="$(git rev-list -n 1 "$tag")"
           head_commit="$(git rev-parse HEAD)"
           [[ "$head_commit" == "$tag_commit" ]] || { echo "HEAD $head_commit is not the exact commit for $tag ($tag_commit)."; exit 1; }
-          slug="${tag%@*}"
-          version="${tag#*@}"
-          manifest=""
-          for candidate in packages/*/package.json; do
-            candidate_slug="$(jq -r .name "$candidate" | sed 's#^@equipe-tech/##')"
-            if [[ "$candidate_slug" == "$slug" ]]; then manifest="$candidate"; break; fi
-          done
-          [[ -n "$manifest" ]] || { echo "The tag selects unknown package $slug."; exit 1; }
-          manifest_version="$(jq -r .version "$manifest")"
-          [[ "$manifest_version" == "$version" ]] || { echo "The tag $tag does not match $manifest ($manifest_version)."; exit 1; }
-          archive="equipe-tech-${slug}-${version}.tgz"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "archive=$archive" >> "$GITHUB_OUTPUT"
-          if [[ "$version" == *-* ]]; then
-            suffix="${version#*-}"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=${suffix%%.*}" >> "$GITHUB_OUTPUT"
-          else
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
-          fi
+          bun scripts/release-canary.ts --tag "$tag" --github-output "$GITHUB_OUTPUT"
 
   verify:
     needs: tag-check
     uses: ./.github/workflows/ci.yml
     with:
       ref: ${{ needs.tag-check.outputs.tag }}
-      run_deployed_canary: false
+      release_tag: ${{ needs.tag-check.outputs.tag }}
+      run_deployed_canary: true
+
+  canary-gate:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOYED_CANARY_RESULT: ${{ needs.verify.outputs.deployed_canary_result }}
+        run: test "$DEPLOYED_CANARY_RESULT" = "success"
 
   release:
     if: github.event_name == 'workflow_dispatch'
-    needs: [tag-check, verify]
+    needs: [tag-check, verify, canary-gate]
     runs-on: ubuntu-latest
     environment: publication
     permissions:

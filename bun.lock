@@ -36,6 +36,9 @@
         "effect": "4.0.0-rc.111",
         "yaml": "2.8.2",
       },
+      "devDependencies": {
+        "@equipe-tech/observability": "workspace:*",
+      },
     },
     "packages/evlog": {
       "name": "@equipe-tech/observability-evlog",

@@ -1,0 +1,60 @@
+{
+  "resource": {
+    "attributes": [
+      {
+        "key": "service.namespace",
+        "value": {
+          "stringValue": "equipe-tech"
+        }
+      },
+      {
+        "key": "service.name",
+        "value": {
+          "stringValue": "observability-canary"
+        }
+      },
+      {
+        "key": "service.version",
+        "value": {
+          "stringValue": "0.3.0"
+        }
+      },
+      {
+        "key": "deployment.environment.name",
+        "value": {
+          "stringValue": "test"
+        }
+      },
+      {
+        "key": "deployment.environment",
+        "value": {
+          "stringValue": "test"
+        }
+      }
+    ]
+  },
+  "metric": {
+    "name": "canary.operations",
+    "description": "Completed observability canary operations",
+    "unit": "1",
+    "sum": {
+      "dataPoints": [
+        {
+          "attributes": [
+            {
+              "key": "canary.run_id",
+              "value": {
+                "stringValue": "test-nothing-1788635705006-5rpp5y51"
+              }
+            }
+          ],
+          "startTimeUnixNano": "1788635705010000000",
+          "timeUnixNano": "1788635705030000000",
+          "asDouble": 2
+        }
+      ],
+      "aggregationTemporality": 2,
+      "isMonotonic": true
+    }
+  }
+}

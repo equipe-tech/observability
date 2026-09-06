@@ -40,6 +40,9 @@
     "effect": "4.0.0-rc.111",
     "yaml": "2.8.2"
   },
+  "devDependencies": {
+    "@equipe-tech/observability": "workspace:*"
+  },
   "engines": {
     "bun": ">=1.4.0"
   }

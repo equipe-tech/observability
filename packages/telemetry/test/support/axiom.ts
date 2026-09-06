@@ -4,7 +4,8 @@ const AxiomEnvironment = Schema.Struct({
   AXIOM_URL: Schema.NonEmptyString.pipe(
     Schema.withDecodingDefault(Effect.succeed("https://api.axiom.co")),
   ),
-  AXIOM_TOKEN: Schema.NonEmptyString,
+  AXIOM_READ_TOKEN: Schema.NonEmptyString,
+  AXIOM_ORGANIZATION_ID: Schema.NonEmptyString,
   AXIOM_DATASET_TRACES: Schema.NonEmptyString,
   AXIOM_DATASET_LOGS: Schema.NonEmptyString,
   AXIOM_DATASET_METRICS: Schema.NonEmptyString,
@@ -21,56 +22,83 @@ const QueryResponse = Schema.Struct({
 });
 
 const decodeQueryResponse = Schema.decodeUnknownEffect(QueryResponse);
-const decodeMetricsResponse = Schema.decodeUnknownEffect(Schema.Json);
+const decodeProviderResponse = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json));
 
 const queryStartTime = (): string => new Date(Date.now() - 30 * 60 * 1000).toISOString();
 const queryEndTime = (): string => new Date().toISOString();
 
-const runQuery = (env: AxiomEnvironment, apl: string): Effect.Effect<ReadonlyArray<unknown>> =>
+export type AxiomQueryObserver = (response: string) => Effect.Effect<void>;
+
+export type AxiomQueryOptions = {
+  readonly observe?: AxiomQueryObserver;
+  readonly timeoutMilliseconds?: number;
+};
+
+const noopQueryObserver: AxiomQueryObserver = () => Effect.void;
+const defaultQueryTimeoutMilliseconds = 10_000;
+const summarizeResponse = (payload: string): string => payload.slice(0, 500);
+
+const runQuery = (
+  env: AxiomEnvironment,
+  apl: string,
+  options: AxiomQueryOptions,
+): Effect.Effect<ReadonlyArray<unknown>> =>
   Effect.gen(function* () {
     const response = yield* Effect.promise((signal) =>
       fetch(`${env.AXIOM_URL}/v1/datasets/_apl?format=legacy`, {
         method: "POST",
         headers: {
-          authorization: `Bearer ${env.AXIOM_TOKEN}`,
+          authorization: `Bearer ${env.AXIOM_READ_TOKEN}`,
           "content-type": "application/json",
+          "x-axiom-org-id": env.AXIOM_ORGANIZATION_ID,
         },
         body: JSON.stringify({ apl, startTime: queryStartTime() }),
-        signal,
+        signal: AbortSignal.any([
+          signal,
+          AbortSignal.timeout(options.timeoutMilliseconds ?? defaultQueryTimeoutMilliseconds),
+        ]),
       }),
     );
-    const payload: unknown = yield* Effect.promise(() => response.json());
+    const payload = yield* Effect.promise(() => response.text());
+    const summary = summarizeResponse(payload);
+    yield* (options.observe ?? noopQueryObserver)(`status=${response.status} body=${summary}`);
     if (!response.ok) {
-      return yield* Effect.die(
-        `Axiom query failed with status ${response.status}: ${JSON.stringify(payload).slice(0, 500)}`,
-      );
+      return yield* Effect.die(`Axiom query failed with status ${response.status}: ${summary}`);
     }
-    const decoded = yield* decodeQueryResponse(payload).pipe(Effect.orDie);
+    const decodedPayload = yield* decodeProviderResponse(payload).pipe(Effect.orDie);
+    const decoded = yield* decodeQueryResponse(decodedPayload).pipe(Effect.orDie);
     return decoded.matches.map((match) => match.data);
   });
 
 const runMetricsQuery = Effect.fn("runMetricsQuery")(function* (
   env: AxiomEnvironment,
   mpl: string,
+  options: AxiomQueryOptions,
 ): Effect.fn.Return<string, never> {
   const response = yield* Effect.promise((signal) =>
     fetch(`${env.AXIOM_URL}/v1/query/_mpl?format=metrics-v2`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${env.AXIOM_TOKEN}`,
+        authorization: `Bearer ${env.AXIOM_READ_TOKEN}`,
         "content-type": "application/json",
+        "x-axiom-org-id": env.AXIOM_ORGANIZATION_ID,
       },
       body: JSON.stringify({ mpl, startTime: queryStartTime(), endTime: queryEndTime() }),
-      signal,
+      signal: AbortSignal.any([
+        signal,
+        AbortSignal.timeout(options.timeoutMilliseconds ?? defaultQueryTimeoutMilliseconds),
+      ]),
     }),
   );
-  const payload: unknown = yield* Effect.promise(() => response.json());
+  const payload = yield* Effect.promise(() => response.text());
+  const summary = summarizeResponse(payload);
+  yield* (options.observe ?? noopQueryObserver)(`status=${response.status} body=${summary}`);
   if (!response.ok) {
     return yield* Effect.die(
-      `Axiom metrics query failed with status ${response.status}: ${JSON.stringify(payload).slice(0, 500)}`,
+      `Axiom metrics query failed with status ${response.status}: ${summary}`,
     );
   }
-  const decoded = yield* decodeMetricsResponse(payload).pipe(Effect.orDie);
+  const decoded = yield* decodeProviderResponse(payload).pipe(Effect.orDie);
   return JSON.stringify(decoded);
 });
 
@@ -165,15 +193,28 @@ const toAxiomSpan = (row: typeof AxiomSpanRow.Type): AxiomSpan => ({
   redaction: toAxiomRedactionAttributes(row),
 });
 
-const spanProjection = `project trace_id, span_id, parent_span_id, name, service_namespace = tostring(['resource.custom']['service.namespace']), service_name = ['service.name'], service_version = ['service.version'], service_instance_id = tostring(['resource.custom']['service.instance.id']), environment_name = tostring(['resource.custom']['deployment.environment.name']), environment_alias = tostring(['resource.custom']['deployment.environment']), events = tostring(events), ${redactionProjection}`;
+export const axiomServiceResourceFields = Object.freeze({
+  namespace: "['resource.custom']['service.namespace']",
+  name: "['service.name']",
+  version: "['service.version']",
+});
+
+const serviceNamespacePath = axiomServiceResourceFields.namespace;
+const serviceNamePath = axiomServiceResourceFields.name;
+const serviceVersionPath = axiomServiceResourceFields.version;
+
+const spanProjection = `project trace_id, span_id, parent_span_id, name, service_namespace = tostring(${serviceNamespacePath}), service_name = tostring(${serviceNamePath}), service_version = tostring(${serviceVersionPath}), service_instance_id = tostring(['resource.custom']['service.instance.id']), environment_name = tostring(['resource.custom']['deployment.environment.name']), environment_alias = tostring(['resource.custom']['deployment.environment']), events = tostring(events), ${redactionProjection}`;
 
 export const findRootSpan = (
   env: AxiomEnvironment,
   runId: string,
+  serviceVersion: string,
+  options: AxiomQueryOptions = {},
 ): Effect.Effect<Option.Option<AxiomSpan>> =>
   runQuery(
     env,
-    `['${env.AXIOM_DATASET_TRACES}'] | where ['attributes.custom']['canary.run_id'] == '${runId}' and name == 'canary.operation' | ${spanProjection}`,
+    `['${env.AXIOM_DATASET_TRACES}'] | where ['attributes.custom']['canary.run_id'] == '${runId}' and ${serviceVersionPath} == '${serviceVersion}' and name == 'canary.operation' | ${spanProjection}`,
+    options,
   ).pipe(
     Effect.map((rows) =>
       Option.fromNullishOr(rows[0]).pipe(
@@ -186,10 +227,12 @@ export const findRootSpan = (
 export const findChildSpan = (
   env: AxiomEnvironment,
   traceId: string,
+  options: AxiomQueryOptions = {},
 ): Effect.Effect<Option.Option<AxiomSpan>> =>
   runQuery(
     env,
     `['${env.AXIOM_DATASET_TRACES}'] | where trace_id == '${traceId}' and name == 'canary.child' | ${spanProjection}`,
+    options,
   ).pipe(
     Effect.map((rows) =>
       Option.fromNullishOr(rows[0]).pipe(
@@ -206,6 +249,7 @@ const AxiomLogRow = Schema.Struct({
   event_source: OptionalString,
   service_namespace: OptionalString,
   service_name: OptionalString,
+  service_version: OptionalString,
   service_instance_id: OptionalString,
   environment_name: OptionalString,
   environment_alias: OptionalString,
@@ -222,6 +266,7 @@ export type AxiomLog = {
   readonly eventSource: Option.Option<string>;
   readonly serviceNamespace: Option.Option<string>;
   readonly serviceName: Option.Option<string>;
+  readonly serviceVersion: Option.Option<string>;
   readonly serviceInstanceId: Option.Option<string>;
   readonly environmentName: Option.Option<string>;
   readonly environmentAlias: Option.Option<string>;
@@ -236,6 +281,7 @@ const toAxiomLog = (row: typeof AxiomLogRow.Type): AxiomLog => ({
   eventSource: Option.fromNullishOr(row.event_source),
   serviceNamespace: Option.fromNullishOr(row.service_namespace),
   serviceName: Option.fromNullishOr(row.service_name),
+  serviceVersion: Option.fromNullishOr(row.service_version),
   serviceInstanceId: Option.fromNullishOr(row.service_instance_id),
   environmentName: Option.fromNullishOr(row.environment_name),
   environmentAlias: Option.fromNullishOr(row.environment_alias),
@@ -246,10 +292,13 @@ const toAxiomLog = (row: typeof AxiomLogRow.Type): AxiomLog => ({
 export const findLogs = (
   env: AxiomEnvironment,
   runId: string,
+  serviceVersion: string,
+  options: AxiomQueryOptions = {},
 ): Effect.Effect<ReadonlyArray<AxiomLog>> =>
   runQuery(
     env,
-    `['${env.AXIOM_DATASET_LOGS}'] | where ['attributes.custom']['canary.run_id'] == '${runId}' | project trace_id, event_name = tostring(['attributes.custom']['event.name']), event_kind = tostring(['attributes.custom']['event.kind']), event_source = tostring(['attributes.custom']['event.source']), service_namespace = tostring(['resource.custom']['service.namespace']), service_name = ['service.name'], service_instance_id = tostring(['resource.custom']['service.instance.id']), environment_name = tostring(['resource.custom']['deployment.environment.name']), environment_alias = tostring(['resource.custom']['deployment.environment']), body = tostring(body), ${redactionProjection}`,
+    `['${env.AXIOM_DATASET_LOGS}'] | where ['attributes.custom']['canary.run_id'] == '${runId}' and ${serviceVersionPath} == '${serviceVersion}' | project trace_id, event_name = tostring(['attributes.custom']['event.name']), event_kind = tostring(['attributes.custom']['event.kind']), event_source = tostring(['attributes.custom']['event.source']), service_namespace = tostring(${serviceNamespacePath}), service_name = tostring(${serviceNamePath}), service_version = tostring(${serviceVersionPath}), service_instance_id = tostring(['resource.custom']['service.instance.id']), environment_name = tostring(['resource.custom']['deployment.environment.name']), environment_alias = tostring(['resource.custom']['deployment.environment']), body = tostring(body), ${redactionProjection}`,
+    options,
   ).pipe(
     Effect.map((rows) =>
       rows.flatMap((row) =>
@@ -271,10 +320,12 @@ export const findMetric = (
   environment: string,
   serviceName: string,
   serviceVersion: string,
+  options: AxiomQueryOptions = {},
 ): Effect.Effect<Option.Option<AxiomMetric>> =>
   runMetricsQuery(
     env,
     `\`${env.AXIOM_DATASET_METRICS}\`:\`canary.operations\` | where \`canary.run_id\` == "${runId}" and \`service.namespace\` == "equipe-tech" and \`service.name\` == "${serviceName}" and \`service.version\` == "${serviceVersion}" and \`deployment.environment.name\` == "${environment}" and \`deployment.environment\` == "${environment}"`,
+    options,
   ).pipe(
     Effect.map((content) =>
       content.includes(runId) ? Option.some({ content }) : Option.none<AxiomMetric>(),

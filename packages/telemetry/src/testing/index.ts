@@ -10,6 +10,7 @@ import type { ResourceAttribute } from "../policy/ResourceAttributePolicy.ts";
 import type { ContractRegistry } from "../profile/ObservabilityAdapter.ts";
 
 export * from "./contract.ts";
+export * from "./deployedCanary.ts";
 export {
   registerTestingAdapter,
   type TestingAdapterRegistration,
