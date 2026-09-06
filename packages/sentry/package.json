@@ -1,6 +1,6 @@
 {
   "name": "@equipe-tech/observability-sentry",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Adaptadores Sentry para defeitos Node e browser da plataforma de observabilidade da Equipe Tech",
   "homepage": "https://github.com/equipe-tech/observability#readme",
   "bugs": {
