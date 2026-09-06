@@ -1,6 +1,6 @@
 {
   "name": "@equipe-tech/observability-react",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Adaptador React para observabilidade de browser da Equipe Tech",
   "homepage": "https://github.com/equipe-tech/observability#readme",
   "bugs": {

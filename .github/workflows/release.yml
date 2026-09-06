@@ -261,6 +261,6 @@ jobs:
           [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]] || { echo "GitHub OIDC request URL is unavailable."; exit 1; }
           [[ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]] || { echo "GitHub OIDC request token is unavailable."; exit 1; }
           npm whoami --registry https://registry.npmjs.org
-          npm publish "dist-release/$ARCHIVE" --access public --tag "$NPM_TAG" --provenance
+          npm publish "./dist-release/$ARCHIVE" --access public --tag "$NPM_TAG" --provenance
       - if: always()
         run: rm -rf .release-candidate dist-release

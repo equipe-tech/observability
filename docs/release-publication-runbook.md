@@ -41,6 +41,8 @@ O dry run não altera manifest, lockfile, commit ou tag. Uma release real altera
 
 `bun run test:package` compila e empacota os seis pacotes. O smoke instala os archives em consumidores Node e Bun, testa NestJS 10 e 11, percorre as declarações, rejeita imports não declarados e confirma os entrypoints públicos.
 
+Use o prefixo `./` ao passar o archive relativo para `npm publish`, como `./dist-release/$ARCHIVE`. Sem esse prefixo, o npm interpreta `dist-release/arquivo.tgz` como uma referência Git. O teste do workflow executa o comando real em dry run offline com transporte Git bloqueado.
+
 `release-candidate.ts` empacota a candidata duas vezes e exige bytes idênticos. O job de publicação reconstrói a candidata a partir do checkout do tag, verifica o checksum gerado e compara os bytes reconstruídos com o asset baixado do GitHub antes de publicar no npm.
 
 ## Gate do canário no provedor

@@ -1,7 +1,7 @@
 import { deployedCanarySuiteTimeoutMilliseconds } from "@equipe-tech/observability/testing";
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -227,7 +227,7 @@ describe("release workflow publication gate", () => {
     );
     expect(workflow).not.toContain("for candidate in packages/*/package.json");
     expect(workflow).not.toContain("jq -r .version");
-    expect(workflow).toContain('npm publish "dist-release/$ARCHIVE"');
+    expect(workflow).toContain('npm publish "./dist-release/$ARCHIVE"');
   });
 
   test("checks out and validates the exact existing tag commit", () => {
@@ -606,6 +606,78 @@ describe("release workflow publication gate", () => {
     expect(workflow.match(/bun scripts\/release-candidate\.ts/g)).toHaveLength(2);
     expect(workflow.match(/sha256sum --check/g)).toHaveLength(2);
     expect(workflow).toContain('cmp ".release-candidate/$ARCHIVE" "dist-release/$ARCHIVE"');
+  });
+
+  test("passes the archive to the real npm publish parser without Git interpretation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "npm-publication-path-"));
+    try {
+      const packageDirectory = join(directory, "package");
+      const archiveDirectory = join(directory, "dist-release");
+      await mkdir(packageDirectory);
+      await mkdir(archiveDirectory);
+      await writeFile(
+        join(packageDirectory, "package.json"),
+        JSON.stringify({
+          name: "release-path-fixture",
+          version: "0.0.0",
+        }),
+      );
+      const archive = "release-path-fixture-0.0.0.tgz";
+      const pack = Bun.spawn(
+        ["tar", "-czf", join(archiveDirectory, archive), "-C", directory, "package"],
+        {
+          stdout: "ignore",
+          stderr: "pipe",
+          timeout: 10_000,
+        },
+      );
+      const [packExit, packError] = await Promise.all([
+        pack.exited,
+        new Response(pack.stderr).text(),
+      ]);
+      expect(packExit).toBe(0);
+      expect(packError).toBe("");
+      const publication = workflow.match(/^\s*npm publish .+$/m)?.[0];
+      if (publication === undefined) throw new Error("The npm publication command is missing.");
+      const userConfig = join(directory, "npmrc");
+      await writeFile(userConfig, "");
+      const child = Bun.spawn(
+        [
+          "bash",
+          "-eu",
+          "-c",
+          `${publication} --dry-run --offline --ignore-scripts --json=false --registry http://127.0.0.1:1 --userconfig "$USER_CONFIG"`,
+        ],
+        {
+          cwd: directory,
+          env: {
+            ...process.env,
+            ARCHIVE: archive,
+            NPM_TAG: "latest",
+            NODE_AUTH_TOKEN: "",
+            USER_CONFIG: userConfig,
+            NPM_CONFIG_CACHE: join(directory, "npm-cache"),
+            GIT_CONFIG_COUNT: "1",
+            GIT_CONFIG_KEY_0: "protocol.allow",
+            GIT_CONFIG_VALUE_0: "never",
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+          timeout: 15_000,
+        },
+      );
+      const [exitCode, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      expect(exitCode).toBe(0);
+      expect(stdout.trim()).toBe("+ release-path-fixture@0.0.0");
+      expect(stderr).not.toContain("ls-remote");
+      expect(stderr).not.toContain("npm error");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   test("converges when release and npm publication already exist", () => {

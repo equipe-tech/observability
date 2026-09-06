@@ -809,10 +809,7 @@ describe("compatibility gate", () => {
 
   test("accepts exact initial package releases without fetching a predecessor", async () => {
     const baseline = JSON.parse(readFileSync("observability/compatibility/baseline.json", "utf8"));
-    const versions = JSON.parse(
-      readFileSync("observability/compatibility/candidate-versions.json", "utf8"),
-    );
-    const initial = packageSurface("0.3.0", ["."]);
+    const initial = packageSurface("0.3.1", ["."]);
     for (const slug of [
       "observability-evlog",
       "observability-nestjs",
@@ -820,15 +817,24 @@ describe("compatibility gate", () => {
       "observability-sentry",
     ]) {
       const namedInitial = { ...initial, name: `@equipe-tech/${slug}` };
+      const versions: Parameters<typeof releaseIntegrityIssue>[1] = {
+        version: 1,
+        packages: [{ name: namedInitial.name, version: initial.version }],
+      };
       expect(
-        await releaseIntegrityIssue(baseline, versions, [namedInitial], `${slug}@0.3.0`),
+        await releaseIntegrityIssue(
+          baseline,
+          versions,
+          [namedInitial],
+          `${slug}@${initial.version}`,
+        ),
       ).toBeUndefined();
       expect(
         await releaseIntegrityIssue(
           baseline,
           versions,
-          [{ ...namedInitial, version: "0.3.1" }],
-          `${slug}@0.3.0`,
+          [{ ...namedInitial, version: "0.3.2" }],
+          `${slug}@${initial.version}`,
         ),
       ).toBe("release package does not match the exact initial candidate declaration");
     }
