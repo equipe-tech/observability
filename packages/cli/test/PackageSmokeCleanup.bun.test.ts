@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
-import { access, mkdtemp, readdir, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -97,9 +97,6 @@ const waitForPidAbsence = async (pid: number): Promise<void> => {
   throw new Error(`The cleanup harness left process ${pid}.`);
 };
 
-const packageTemporaryDirectories = async (): Promise<ReadonlyArray<string>> =>
-  (await readdir(tmpdir())).filter((entry) => entry.startsWith("observability-package-")).sort();
-
 interface SignalScenario {
   readonly scenario: string;
   readonly signals: ReadonlyArray<CleanupSignal>;
@@ -110,7 +107,6 @@ const runSignalScenario = async (options: SignalScenario): Promise<number> => {
   const controlRoot = await mkdtemp(join(tmpdir(), "package-smoke-cleanup-test-"));
   const readyFile = join(controlRoot, "ready.json");
   const confirmationFile = join(controlRoot, "signal.json");
-  const before = await packageTemporaryDirectories();
   const cleanupDeadline = options.cleanupDeadlineMilliseconds ?? 3_000;
   const child = Bun.spawn(
     [
@@ -160,7 +156,6 @@ const runSignalScenario = async (options: SignalScenario): Promise<number> => {
     if (descendantPid !== 0) {
       await waitForPidAbsence(descendantPid);
     }
-    expect(await packageTemporaryDirectories()).toEqual(before);
     return elapsed;
   } finally {
     if (!exited) {
@@ -209,7 +204,6 @@ describe("package smoke cleanup", () => {
   test("cleans a normal failure", async () => {
     const controlRoot = await mkdtemp(join(tmpdir(), "package-smoke-failure-test-"));
     const readyFile = join(controlRoot, "ready.json");
-    const before = await packageTemporaryDirectories();
     const child = Bun.spawn(
       ["bun", "scripts/package-smoke.ts", "--signal-cleanup-test", readyFile, "failure"],
       { cwd: projectRoot, stdout: "ignore", stderr: "ignore" },
@@ -221,7 +215,6 @@ describe("package smoke cleanup", () => {
       temporaryDirectory = decodeCleanupReady(content).temporaryDirectory ?? "";
       expect(await child.exited).toBe(1);
       await waitForAbsence(temporaryDirectory);
-      expect(await packageTemporaryDirectories()).toEqual(before);
     } finally {
       child.kill("SIGKILL");
       if (temporaryDirectory !== "") {

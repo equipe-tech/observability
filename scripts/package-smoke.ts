@@ -385,6 +385,9 @@ try {
       await run(["bun", "install"], nestConsumer),
       `Installing the Nest ${nestMajor} packed consumer`,
     );
+    if (await Bun.file(join(nestConsumer, "node_modules/evlog/package.json")).exists()) {
+      throw new Error(`The Nest ${nestMajor} packed consumer installed evlog.`);
+    }
     for (const nestPackage of ["common", "core", "platform-express"]) {
       const manifest: unknown = JSON.parse(
         await readFile(
@@ -447,6 +450,35 @@ try {
       `Executing the Nest ${nestMajor} packed consumer`,
     );
   }
+
+  const evlogBoundaryConsumer = join(temporaryDirectory, "nestjs evlog boundary consumer");
+  await mkdir(evlogBoundaryConsumer, { recursive: true });
+  await writeFile(
+    join(evlogBoundaryConsumer, "package.json"),
+    JSON.stringify({
+      private: true,
+      type: "module",
+      dependencies: {
+        "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
+        "@nestjs/common": "^11.0.0",
+        "@nestjs/core": "^11.0.0",
+        effect: "4.0.0-rc.111",
+        "reflect-metadata": "^0.2.2",
+        rxjs: "^7.2.0",
+      },
+    }),
+  );
+  requireSuccess(
+    await run(["npm", "install", "evlog@latest"], evlogBoundaryConsumer),
+    "Installing evlog with npm in the boundary consumer",
+  );
+  requireSuccess(
+    await run(
+      ["npm", "install", `file:${join(temporaryDirectory, "nestjs.tgz")}`],
+      evlogBoundaryConsumer,
+    ),
+    "Installing the packed NestJS package in the evlog boundary consumer",
+  );
 
   const consumer = join(temporaryDirectory, "consumer outside repository");
   await mkdir(consumer, { recursive: true });

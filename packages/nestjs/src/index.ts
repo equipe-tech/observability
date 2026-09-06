@@ -4,6 +4,22 @@ export {
   TelemetryEventSink,
 } from "@equipe-tech/observability";
 export {
+  InvalidNestErrorCatalog,
+  InvalidNestErrorCatalogDeclaration,
+  NestErrorBoundary,
+  NestErrorBoundaryModule,
+  NestErrorFilter,
+  type ClassifiedError,
+  type DefectEventInput,
+  type ErrorCatalogReference,
+  type ExpectedError,
+  type HttpOutcome,
+  type NestErrorBoundaryOptions,
+  type PublicErrorResponse,
+  type SentryDefectsService,
+  type UnexpectedDefect,
+} from "./ErrorBoundary.ts";
+export {
   BrowserEventsRejection,
   createBrowserEventsController,
   defaultBrowserEventsPath,

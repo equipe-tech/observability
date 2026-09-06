@@ -14,6 +14,8 @@ No encerramento, o módulo fecha a admissão de spans, aguarda ou interrompe req
 
 O suporte usa NestJS com Express. O adapter não declara suporte ao Fastify.
 
+O pacote não declara `evlog` como dependência ou peer. Consumidores que usam os tipos de catálogo aceitos pelo limite de erros instalam `evlog` como dependência direta própria. Consumidores que usam apenas a instrumentação HTTP não precisam instalar evlog.
+
 ## Adapter de correlação com eventos amplos
 
 `createRequestWideEventTraceCorrelation` adapta um logger de evento amplo que oferece `set`. Passe o resultado em `requestWideEventTraceCorrelation` nas opções habilitadas de `TelemetryModule` ou `TelemetryInterceptor`. Somente as declarações públicas desse contrato de correlação, incluindo a factory, a classe e seus tipos auxiliares, são livres de referências a Effect. Essa garantia não descreve todas as exportações do entrypoint NestJS. O pacote não depende de evlog em runtime.
@@ -31,6 +33,31 @@ Rotas sem span ativo não recebem correlação. Um resolver que não encontra lo
 Guards do Nest executam antes dos interceptors. Uma rejeição de guard não cria o span de servidor deste interceptor e não recebe a correlação deste adapter. Consumidores que precisam cobrir rejeições de guard devem instrumentar esse caminho separadamente.
 
 O drain OTLP do logger deve mapear os campos superiores `traceId` e `spanId` para os campos nativos do LogRecord. Copiar esses valores apenas para atributos arbitrários não atende ao contrato de correlação.
+
+## Limite de erros
+
+Use `NestErrorBoundaryModule.forRoot` junto de `TelemetryModule`. O módulo registra um filtro global, não um interceptor. `TelemetryInterceptor` continua sendo o único dono do span HTTP.
+
+A configuração recebe um catálogo criado por `defineErrorCatalog`. O prefixo `_prefix` segue a gramática aceita por essa factory e deve ser não vazio. Prefixos que começam com `OBS_`, sem distinção entre maiúsculas e minúsculas, são reservados aos pacotes da plataforma. Uma configuração inválida falha imediatamente com `InvalidNestErrorCatalog` e código `OBS_NESTJS_ERROR_CATALOG_PREFIX_INVALID`. Cada declaração deve corresponder à lista `_codes` do catálogo. Código ou mensagem ausentes, status fora do intervalo inteiro de 400 a 599 e qualquer divergência nessa lista falham a construção com `InvalidNestErrorCatalogDeclaration`, código `OBS_NESTJS_ERROR_CATALOG_INVALID` e o código de catálogo afetado. Mensagens de catálogo devem ser strings literais. Declarações com mensagens templated falham a construção porque a mensagem pública deve vir da declaração.
+
+O limite usa quatro regras de classificação fechadas.
+
+| Resultado          | Origem                                                                 | Resposta                                                                                               | Evento e captura                                                                        |
+| ------------------ | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| `ExpectedError`    | Código e declaração presentes no catálogo configurado                  | Status e mensagem declarados no catálogo, código estável, `request_id` e `trace_id` quando disponíveis | Anexa o erro ao evento amplo e nunca captura no Sentry                                  |
+| `UnexpectedDefect` | `HttpException` 5xx com causa que não é outra `HttpException`          | Resposta 500 segura com correlação                                                                     | Emite um evento `defect` e tenta uma captura no Sentry quando configurado               |
+| `HttpOutcome`      | Demais `HttpException`, identificadas pelo contrato estrutural público | Preserva `getStatus()` e `getResponse()`                                                               | Anexa o resultado ao evento amplo e nunca emite evento de defeito nem captura no Sentry |
+| `UnexpectedDefect` | Demais erros e valores lançados                                        | Resposta 500 segura com correlação                                                                     | Emite um evento `defect` e tenta uma captura no Sentry quando configurado               |
+
+A mensagem pública de `ExpectedError` sempre vem da declaração do catálogo. Mensagens constantes ignoram uma substituição na instância. Mensagens templated não são aceitas. Uma substituição de `status` na instância lançada continua disponível para diagnóstico, mas não altera a resposta pública.
+
+`NotFoundException`, `ForbiddenException`, `BadRequestException` de pipes e as demais subclasses de `HttpException` são resultados HTTP esperados. Isso inclui o 404 criado pelo Nest para uma rota inexistente. Uma `HttpException` 4xx continua sendo um resultado HTTP mesmo quando carrega uma causa não HTTP. Uma `HttpException` 5xx lançada deliberadamente pela aplicação também é um resultado HTTP esperado. Somente uma `HttpException` 5xx com uma `cause` que não é outra `HttpException` é classificada como defeito.
+
+O limite responde antes de aguardar `recordDefect` e `SentryDefects`. Falhas síncronas e assíncronas desses destinos são isoladas e assentadas sem alterar a resposta. Quando os headers já foram enviados, o adapter HTTP encerra a resposta como `BaseExceptionFilter`.
+
+A marca de captura pertence à requisição. Dois filtros que tratam a mesma instância na mesma requisição produzem um evento e uma tentativa de captura. Requisições diferentes que recebem a mesma instância produzem seus próprios eventos e tentativas. A decisão de deduplicação ocorre antes de anexar o erro ao evento amplo.
+
+Quando o perfil desabilita Sentry, omita `sentryDefects`. O evento de defeito continua obrigatório.
 
 ## Nomes e rotas
 
