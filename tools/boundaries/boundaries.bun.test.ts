@@ -23,6 +23,7 @@ const adapterPaths = [
   "packages/telemetry/src/PolicyOtlpLogger.ts",
   "packages/telemetry/src/Telemetry.ts",
   "packages/telemetry/src/node/AuditDigest.ts",
+  "packages/telemetry/src/node/LocalCollector.ts",
   "packages/telemetry/src/node/Observability.ts",
   "packages/telemetry/src/profile/LifecycleRegistry.ts",
   "packages/telemetry/src/profile/ObservabilityAdapter.ts",
@@ -513,6 +514,7 @@ describe("package boundaries", () => {
     assert.equal(sourceRole("packages/react/src/index.ts"), "react");
     assert.equal(sourceRole("packages/telemetry/src/index.ts"), "core");
     assert.equal(sourceRole("packages/telemetry/src/node/AuditDigest.ts"), "adapter");
+    assert.equal(sourceRole("packages/telemetry/src/node/LocalCollector.ts"), "adapter");
     assert.equal(sourceRole("packages/telemetry/src/contract/EventName.ts"), "domain");
     assert.equal(sourceRole("packages/telemetry/src/trace/HttpServerOtlpTracer.ts"), "adapter");
     assert.equal(sourceRole("packages/cli/src/CredentialsStore.ts"), "adapter");

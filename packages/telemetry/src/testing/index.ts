@@ -7,10 +7,13 @@ import { TelemetryConfig } from "../TelemetryConfig.ts";
 import type { DataPolicy } from "../policy/DataPolicy.ts";
 import type { InvalidDataPolicy } from "../policy/DataPolicyError.ts";
 import type { ResourceAttribute } from "../policy/ResourceAttributePolicy.ts";
+import { createServer, type Server } from "node:http";
 import type { ContractRegistry } from "../profile/ObservabilityAdapter.ts";
 
 export * from "./contract.ts";
+export * from "./conformance/index.ts";
 export * from "./deployedCanary.ts";
+export * from "../node/LocalCollector.ts";
 export {
   registerTestingAdapter,
   type TestingAdapterRegistration,
@@ -175,7 +178,7 @@ const ExportedLogRecord = Schema.Struct({
   traceId: Schema.String.pipe(Schema.optionalKey),
   spanId: Schema.String.pipe(Schema.optionalKey),
   severityText: Schema.String.pipe(Schema.optionalKey),
-  droppedAttributesCount: Schema.Number,
+  droppedAttributesCount: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   body: Schema.Struct({ stringValue: Schema.String.pipe(Schema.optionalKey) }).pipe(
     Schema.optionalKey,
   ),
@@ -301,7 +304,7 @@ const captureClient = (store: Ref.Ref<ReadonlyArray<CapturedRequest>>): HttpClie
     }),
   );
 
-const decodeCapturedTelemetry = Effect.fn("decodeCapturedTelemetry")(function* (
+export const decodeCapturedTelemetry = Effect.fn("decodeCapturedTelemetry")(function* (
   requests: ReadonlyArray<CapturedRequest>,
 ): Effect.fn.Return<CapturedTelemetry, never> {
   const spans: Array<CapturedSpan> = [];
@@ -451,6 +454,100 @@ export type RunOptions = {
 export type TelemetryCapture = {
   readonly layer: Layer.Layer<OtlpExporter.Flusher, InvalidDataPolicy>;
   readonly telemetry: Effect.Effect<CapturedTelemetry>;
+};
+
+export type OtlpCaptureServer = {
+  readonly endpoint: URL;
+  readonly telemetry: () => CapturedTelemetry;
+  readonly stop: () => Promise<void>;
+};
+
+const ServerAddress = Schema.Struct({ address: Schema.String, port: Schema.Number });
+const decodeServerAddress = Schema.decodeUnknownSync(ServerAddress);
+
+const listenForCapture = (server: Server, host: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const onError = (cause: Error): void => {
+      server.off("listening", onListening);
+      reject(cause);
+    };
+    const onListening = (): void => {
+      server.off("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    try {
+      server.listen(0, host);
+    } catch (cause) {
+      server.off("error", onError);
+      server.off("listening", onListening);
+      reject(cause);
+    }
+  });
+
+const closeCaptureServer = (server: Server): Promise<void> =>
+  new Promise((resolve, reject) => {
+    server.close((cause) => (cause === undefined ? resolve() : reject(cause)));
+    server.closeAllConnections();
+  });
+
+const captureEndpoint = (host: string, port: number): URL => {
+  const hostname = host.includes(":") ? `[${host}]` : host;
+  return new URL(`http://${hostname}:${port}`);
+};
+
+type OtlpCapturePayload = typeof SpanExport.Type | typeof LogExport.Type | typeof MetricExport.Type;
+
+const capturePayloadDecoders = new Map<string, (body: string) => Option.Option<OtlpCapturePayload>>(
+  [
+    ["/v1/traces", Schema.decodeUnknownOption(Schema.fromJsonString(SpanExport))],
+    ["/v1/logs", Schema.decodeUnknownOption(Schema.fromJsonString(LogExport))],
+    ["/v1/metrics", Schema.decodeUnknownOption(Schema.fromJsonString(MetricExport))],
+  ],
+);
+
+export const startOtlpCaptureServer = async (options?: {
+  readonly host?: string;
+}): Promise<OtlpCaptureServer> => {
+  const requests: Array<CapturedRequest> = [];
+  const server: Server = createServer((request, response) => {
+    const chunks: Array<Buffer> = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      const path = request.url ?? "";
+      const decodePayload = capturePayloadDecoders.get(path);
+      if (decodePayload !== undefined) {
+        const payload = decodePayload(Buffer.concat(chunks).toString("utf8"));
+        if (Option.isNone(payload)) {
+          response.writeHead(400, { "content-type": "application/json" });
+          response.end(JSON.stringify({ code: 3, message: "Invalid OTLP JSON payload." }));
+          return;
+        }
+        requests.push({ path, payload: payload.value });
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end("{}");
+    });
+  });
+  const host = options?.host ?? "127.0.0.1";
+  await listenForCapture(server, host);
+  try {
+    const address = decodeServerAddress(server.address());
+    const endpoint = captureEndpoint(address.address, address.port);
+    let stopPromise: Promise<void> | undefined;
+    return {
+      endpoint,
+      telemetry: () => Effect.runSync(decodeCapturedTelemetry(requests)),
+      stop: () => {
+        stopPromise ??= closeCaptureServer(server);
+        return stopPromise;
+      },
+    };
+  } catch (cause) {
+    await closeCaptureServer(server).catch(() => undefined);
+    throw cause;
+  }
 };
 
 export const makeCapture = Effect.fn("makeCapture")(function* (

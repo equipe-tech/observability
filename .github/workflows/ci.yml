@@ -41,6 +41,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun check
       - run: bun run test
+      - name: Run the reusable conformance suite
+        run: bun run test:conformance
       - run: bun run build
       - run: echo "OBSERVABILITY_COMPATIBILITY_DATE=$(date -u +%F)" >> "$GITHUB_ENV"
       - run: bun run compat

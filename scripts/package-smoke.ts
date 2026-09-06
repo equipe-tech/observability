@@ -264,6 +264,8 @@ try {
         "package/dist/LICENSE",
         "package/dist/index.js",
         "package/dist/index.d.ts",
+        "package/dist/testing/index.js",
+        "package/dist/testing/index.d.ts",
       ],
     },
     {
@@ -279,6 +281,8 @@ try {
         "package/dist/node/index.d.ts",
         "package/dist/browser/index.js",
         "package/dist/browser/index.d.ts",
+        "package/dist/testing/index.js",
+        "package/dist/testing/index.d.ts",
       ],
     },
     {
@@ -290,6 +294,8 @@ try {
         "package/dist/LICENSE",
         "package/dist/index.js",
         "package/dist/index.d.ts",
+        "package/dist/testing/index.js",
+        "package/dist/testing/index.d.ts",
       ],
     },
     {
@@ -303,6 +309,8 @@ try {
         "package/dist/index.d.ts",
         "package/dist/RequestWideEventTraceCorrelation.js",
         "package/dist/RequestWideEventTraceCorrelation.d.ts",
+        "package/dist/testing/index.js",
+        "package/dist/testing/index.d.ts",
       ],
     },
     {
@@ -318,6 +326,8 @@ try {
         "package/dist/index.d.ts",
         "package/dist/query.js",
         "package/dist/query.d.ts",
+        "package/dist/testing/index.js",
+        "package/dist/testing/index.d.ts",
         "package/package.json",
         "package/dist/assets/docker-compose.yml",
         "package/dist/assets/local.yaml",
@@ -504,6 +514,82 @@ try {
     }),
   );
   requireSuccess(await run(["bun", "install"], consumer), "Installing packed packages");
+
+  await mkdir(join(consumer, "conformance-source", "positive"), { recursive: true });
+  await mkdir(join(consumer, "conformance-source", "negative"), { recursive: true });
+  await writeFile(
+    join(consumer, "conformance-source", "positive", "index.ts"),
+    "export const worker = true;\n",
+  );
+  await writeFile(
+    join(consumer, "conformance-source", "negative", "telemetry.ts"),
+    'import { OtlpTracer } from "effect/unstable/observability";\nexport const exporter = OtlpTracer.layer({ url: "http://127.0.0.1:4318/v1/traces" });\n',
+  );
+  await writeFile(
+    join(consumer, "conformance.mjs"),
+    [
+      "import { Effect, Option } from 'effect';",
+      "import { Contract, CorrelationContext, defineTelemetryContract, generateRunId, makeEventProducer, makeMetricProducer, parseNodeObservabilityConfig, parseSpanId, parseTraceId, withBackgroundCorrelation } from '@equipe-tech/observability';",
+      "import { createNodeObservabilityFromConfig } from '@equipe-tech/observability/node';",
+      "import { conformanceTargetBinding, contractConformance, correlationConformance, defineConformanceEvidenceProvider, identityConformance, lifecycleConformance, policyConformance, producersConformance, profileConformance, runConformance, startLocalCollectorDestination, telemetryCanaryConformance } from '@equipe-tech/observability/testing';",
+      "import { packageBoundaryConformance } from '@equipe-tech/observability-cli/testing';",
+      "import { evlogAdapter } from '@equipe-tech/observability-evlog';",
+      "import { evlogConformance } from '@equipe-tech/observability-evlog/testing';",
+      "const passing = (id, owner) => defineConformanceEvidenceProvider({ id, owner, verify: () => Effect.succeed({ owner, receiptType: 'packed-consumer', receiptId: `packed-${id}`, summary: `packed consumer delegated ${id}` }) });",
+      "const contractInput = Contract.telemetryContractDefinition({ version: 1, events: { Run: { name: 'packed.run', kind: 'operation', defaultSeverity: 'info', mandatory: true, sampling: { kind: 'always' }, attributes: {} } }, metrics: { Runs: { name: 'packed.runs', description: 'Packed runs', unit: '1', kind: 'counter', attributes: { 'packed.run_id': { classification: 'internal', maximumCardinality: 100 } } } }, auditActions: {} });",
+      "const contract = await Effect.runPromise(defineTelemetryContract(contractInput));",
+      "const identity = { serviceName: 'packed-worker', serviceVersion: '1.0.0', environment: 'test' };",
+      "const binding = conformanceTargetBinding(contract, identity);",
+      "const collector = await startLocalCollectorDestination();",
+      "let adapter; let receipt; let correlation; let lifecycle; let destination; let runId;",
+      "try {",
+      "runId = await Effect.runPromise(generateRunId('job', 'packed'));",
+      "const config = await Effect.runPromise(parseNodeObservabilityConfig({ enabled: true, profile: 'worker', service: { name: identity.serviceName, version: identity.serviceVersion, environment: identity.environment }, telemetry: { endpoint: collector.endpoint }, evlog: { contract, policy: { attributes: {}, blockedKeys: [], blockedValuePatterns: [] } }, sentry: { enabled: false } }));",
+      "adapter = evlogAdapter({ installGlobalLogger: false });",
+      "const handle = await createNodeObservabilityFromConfig(config, [adapter.registration]);",
+      "try { if (!handle.enabled) throw new Error('Packed runtime disabled'); receipt = await handle.runtime.runPromise(Effect.gen(function* () { const root = yield* Effect.currentSpan; correlation = new CorrelationContext({ trace: { _tag: 'Traced', traceId: yield* parseTraceId(root.traceId), spanId: yield* parseSpanId(root.spanId) }, runId: Option.some(runId) }); return yield* makeEventProducer(contract).emit('Run', { outcome: 'success', durationMs: 1, attributes: {} }).pipe(withBackgroundCorrelation(correlation, 'packed.job')); }).pipe(Effect.withSpan('packed.root'), Effect.provide(handle.eventLayer))); makeMetricProducer(contract, handle.metrics).counter('Runs').add(1, { 'packed.run_id': runId }); lifecycle = await handle.close(); await collector.awaitDestination(runId); destination = collector.destinationReceipt(runId, binding); } finally { await handle.close(); }",
+      "} finally { await collector.stop(); }",
+      "const baseProviders = [profileConformance({ profile: 'worker', service: { name: identity.serviceName, version: identity.serviceVersion, environment: identity.environment } }), identityConformance({ identity }), contractConformance({ contract: contractInput }), passing('manifest.valid', 'cli'), producersConformance({ receipt }), passing('queries.contract-derived', 'cli'), correlationConformance({ correlation }), policyConformance({ policy: { attributes: {}, blockedKeys: [], blockedValuePatterns: [] } }), evlogConformance({ delivery: Option.getOrThrow(adapter.delivery(runId, 'packed.run')), drops: adapter.drops(), destination, runId, eventName: 'packed.run' }), lifecycleConformance({ report: lifecycle }), packageBoundaryConformance({ projectRoot: process.cwd(), sourceRoots: ['conformance-source/positive'] }), telemetryCanaryConformance({ runId, receipt: destination, metricRunIdAttribute: 'packed.run_id' })];",
+      "const target = { name: 'packed-worker', profile: 'worker', environment: 'test', topology: 'local', capabilities: { traces: true, metrics: true, defects: false, browserIngest: false, audit: false }, binding, providers: baseProviders };",
+      "const report = await Effect.runPromise(runConformance(target));",
+      "if (!report.conforms) throw new Error(`Packed conformance report failed: ${JSON.stringify(report)}`);",
+      "const negative = await Effect.runPromise(runConformance({ ...target, name: 'packed-worker-negative', providers: [...baseProviders.filter((provider) => provider.id !== 'pipeline.no-application-otlp'), packageBoundaryConformance({ projectRoot: process.cwd(), sourceRoots: ['conformance-source/negative'] })] }));",
+      "const failure = negative.checks.find((check) => check.id === 'pipeline.no-application-otlp');",
+      "if (failure?.status !== 'fail' || failure.failure.code !== 'OBS_CONFORMANCE_LOCAL_OTLP_PIPELINE') throw new Error(`Packed negative conformance control failed: ${JSON.stringify(negative)}`);",
+      "console.log(JSON.stringify({ positive: report.conforms, negative: { id: failure.id, code: failure.failure.code, offendingValue: failure.failure.offendingValue } }));",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(consumer, "conformance-types.ts"),
+    "import type { ConformanceCheckId, ConformanceEvidenceProvider, ConformanceTarget } from '@equipe-tech/observability/testing';\nimport { packageBoundaryConformance } from '@equipe-tech/observability-cli/testing';\nconst id: ConformanceCheckId = 'pipeline.no-application-otlp';\nconst provider: ConformanceEvidenceProvider<typeof id> = packageBoundaryConformance({ projectRoot: '.', sourceRoots: ['src'] });\nconst target: ConformanceTarget = { name: 'typed-worker', profile: 'worker', environment: 'test', topology: 'local', capabilities: { traces: true, metrics: true, defects: false, browserIngest: false, audit: false }, binding: { identity: { serviceName: 'typed-worker', serviceVersion: '1.0.0', environment: 'test' }, contract: { index: 1, contractVersion: 1, service: 'typed-worker', events: [], metrics: [], aliases: [] }, producerContractProvenance: '{}' }, providers: [provider] };\nvoid target;\n",
+  );
+  requireSuccess(
+    await run(
+      [
+        "bun",
+        join(root, "node_modules/typescript/bin/tsc"),
+        "--noEmit",
+        "--module",
+        "Preserve",
+        "--moduleResolution",
+        "Bundler",
+        "--target",
+        "ESNext",
+        "--strict",
+        "conformance-types.ts",
+      ],
+      consumer,
+    ),
+    "Type-checking the packed conformance suite",
+  );
+  requireSuccess(
+    await run(["bun", "conformance.mjs"], consumer),
+    "Executing the packed conformance suite with Bun",
+  );
+  requireSuccess(
+    await run(["node", "conformance.mjs"], consumer),
+    "Executing the packed conformance suite with Node.js",
+  );
 
   const nodeConsumer = join(temporaryDirectory, "node consumer outside repository");
   await mkdir(nodeConsumer, { recursive: true });

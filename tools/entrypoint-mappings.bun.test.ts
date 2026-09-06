@@ -10,11 +10,14 @@ import tsconfig from "../tsconfig.json" with { type: "json" };
 import viteConfig from "../vite.config.ts";
 
 const expected = new Map([
+  ["@equipe-tech/observability-cli/testing", "packages/cli/src/testing/index.ts"],
   ["@equipe-tech/observability-cli/query", "packages/cli/src/query.ts"],
   ["@equipe-tech/observability-cli", "packages/cli/src/index.ts"],
+  ["@equipe-tech/observability-react/testing", "packages/react/src/testing/index.ts"],
   ["@equipe-tech/observability-react", "packages/react/src/index.ts"],
   ["@equipe-tech/observability-sentry/browser", "packages/sentry/src/browser/index.ts"],
   ["@equipe-tech/observability-sentry/node", "packages/sentry/src/node/index.ts"],
+  ["@equipe-tech/observability-sentry/testing", "packages/sentry/src/testing/index.ts"],
   ["@equipe-tech/observability-sentry", "packages/sentry/src/index.ts"],
   [
     "@equipe-tech/observability/react-web-profile",
@@ -27,7 +30,9 @@ const expected = new Map([
   ["@equipe-tech/observability/policy", "packages/telemetry/src/policy/entrypoint.ts"],
   ["@equipe-tech/observability/testing", "packages/telemetry/src/testing/index.ts"],
   ["@equipe-tech/observability/node", "packages/telemetry/src/node/index.ts"],
+  ["@equipe-tech/observability-nestjs/testing", "packages/nestjs/src/testing/index.ts"],
   ["@equipe-tech/observability-nestjs", "packages/nestjs/src/index.ts"],
+  ["@equipe-tech/observability-evlog/testing", "packages/evlog/src/testing/index.ts"],
   ["@equipe-tech/observability-evlog", "packages/evlog/src/index.ts"],
   ["@equipe-tech/observability", "packages/telemetry/src/index.ts"],
 ]);

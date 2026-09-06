@@ -134,6 +134,113 @@ describe("defineTelemetryContract", () => {
     }),
   );
 
+  it.effect("canonicalizes distinct Unicode aliases independently of insertion order", () =>
+    Effect.gen(function* () {
+      const definition = telemetryContractDefinition({
+        version: 1,
+        events: {
+          é: {
+            name: "review.alpha",
+            kind: "domain",
+            defaultSeverity: "info",
+            mandatory: true,
+            sampling: { kind: "always" },
+            attributes: {},
+          },
+          "e\u0301": {
+            name: "review.beta",
+            kind: "domain",
+            defaultSeverity: "info",
+            mandatory: true,
+            sampling: { kind: "always" },
+            attributes: {},
+          },
+        },
+        metrics: {
+          é: {
+            name: "review.alpha",
+            description: "Alpha reviews",
+            unit: "1",
+            kind: "counter",
+            attributes: {},
+          },
+          "e\u0301": {
+            name: "review.beta",
+            description: "Beta reviews",
+            unit: "1",
+            kind: "counter",
+            attributes: {},
+          },
+        },
+        auditActions: {
+          é: {
+            action: "review.alpha",
+            resourceType: "account",
+            allowedOutcomes: ["success"],
+          },
+          "e\u0301": {
+            action: "review.beta",
+            resourceType: "account",
+            allowedOutcomes: ["success"],
+          },
+        },
+      });
+      const reversed = telemetryContractDefinition({
+        version: definition.version,
+        events: {
+          "e\u0301": definition.events["e\u0301"],
+          é: definition.events.é,
+        },
+        metrics: {
+          "e\u0301": definition.metrics["e\u0301"],
+          é: definition.metrics.é,
+        },
+        auditActions: {
+          "e\u0301": definition.auditActions["e\u0301"],
+          é: definition.auditActions.é,
+        },
+      });
+      const originalContract = yield* defineTelemetryContract(definition);
+      const reversedContract = yield* defineTelemetryContract(reversed);
+
+      assert.strictEqual(originalContract.provenance, reversedContract.provenance);
+      assert.strictEqual(originalContract.eventByAlias.get("é")?.name, "review.alpha");
+      assert.strictEqual(originalContract.eventByAlias.get("e\u0301")?.name, "review.beta");
+      assert.isBelow(
+        originalContract.provenance.indexOf('"é"'),
+        originalContract.provenance.indexOf('"é"'),
+      );
+    }),
+  );
+
+  it.effect("keeps compiled producer indexes immutable for the contract lifetime", () =>
+    Effect.gen(function* () {
+      const contract = yield* compileApplicationContract;
+      const definition = contract.eventByAlias.get("RequestCompleted");
+      assert.isDefined(definition);
+      if (definition === undefined) return;
+      assert.throws(() => Object.assign(definition, { kind: "domain" }), TypeError);
+      assert.throws(
+        () => Map.prototype.set.call(contract.eventByAlias, "RequestCompleted", definition),
+        TypeError,
+      );
+      assert.throws(() => Map.prototype.clear.call(definition.attributes), TypeError);
+      const sink = yield* makeCollectingTelemetryEventSink();
+      const receipt = yield* makeEventProducer(contract)
+        .emit("RequestCompleted", {
+          outcome: "success",
+          durationMs: 1,
+          http: { method: "GET", route: "/proof", statusCode: 200 },
+          attributes: {},
+        })
+        .pipe(Effect.provide(sink.layer));
+      assert.strictEqual(receipt.decision, "recorded");
+      if (receipt.decision !== "recorded") return;
+      assert.strictEqual(receipt.event.kind, contract.definition.events.RequestCompleted.kind);
+      assert.strictEqual(receipt.contractProvenance, contract.provenance);
+    }),
+  );
+
   it.effect("compiles typed metric definitions and canonical indexes", () =>
     Effect.gen(function* () {
       const contract = yield* defineTelemetryContract({

@@ -1,6 +1,6 @@
 # Perfis oficiais de observabilidade
 
-Cada processo seleciona um dos cinco perfis fechados. Combinações livres de flags não formam um perfil válido.
+Cada processo seleciona um dos cinco perfis fechados. Combinações livres de flags não formam um perfil válido. A [suíte de conformidade](conformance.md) prova essa seleção e as regras aplicáveis de cada perfil.
 
 | Perfil       | Eventos     | Traces      | Métricas    | Defeitos                | Browser ingest | Runtime        | Prazo |
 | ------------ | ----------- | ----------- | ----------- | ----------------------- | -------------- | -------------- | ----- |
