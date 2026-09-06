@@ -50,7 +50,15 @@ O contrato reserva os campos canônicos exatos `event.name`, `event.kind`, `even
 
 A classificação não escolhe destino ou provedor. O produtor mascara atributos `sensitive` com `****` e rejeita atributos `forbidden` antes do sink. A política compilada também remove chaves proibidas, mascara valores bloqueados e aplica os limites de cada sinal antes da exportação.
 
-O registro `metrics` permanece opaco nesta fundação. O OBS-52 define e valida cada definição de métrica.
+## Métricas
+
+O registro `metrics` usa aliases e definições tipadas. Cada definição exige `name`, `description`, `unit`, `kind` e `attributes`. Os tipos aceitos são `counter`, `histogram` e `observable_gauge`. Somente histogramas aceitam `boundaries`, que devem conter de 1 a 50 números finitos em ordem crescente.
+
+Nomes canônicos seguem exatamente `<domínio>.<medição>`, com a expressão `^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$` e no máximo 128 caracteres. Partes reservadas para serviço, ambiente, unidade, severidade ou resultado são inválidas. O compilador também prova que o nome satisfaz a gramática mais ampla do runtime.
+
+Atributos formam um registro por nome. Cada atributo declara `classification` como `public` ou `internal` e `maximumCardinality` entre 1 e 100. `allowedValues`, quando presente, contém uma lista não vazia de escalares únicos que não excede `maximumCardinality`. Chaves sensíveis, proibidas ou reservadas não compilam.
+
+O contrato compila `metricByAlias` e `metricByName`. `makeMetricProducer(contract, metrics)` cria um produtor síncrono sem tipos Effect. Os métodos `counter`, `histogram` e `observableGauge` aceitam apenas aliases do tipo correspondente. Os atributos obrigatórios e valores fechados são inferidos do contrato.
 
 ## Eventos canônicos
 

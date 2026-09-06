@@ -35,21 +35,16 @@ describe("policy sanitizer performance", () => {
     assert.isAtMost(timings[1] ?? 0, (timings[0] ?? 0) * 20 + 100);
   });
 
-  it("scales within bounded linear limits through 128 KB", () => {
-    const sizes = [8_192, 32_768, 65_536, 131_072];
-    const timings = sizes.map((size) =>
-      measure(() => {
-        sanitizeText(
-          baseDataPolicy,
-          `${"a@".repeat(Math.floor(size / 2))}password=value`,
-          "defect",
-        );
-      }),
+  it("bounds sanitizer work before scanning blocked values", () => {
+    const bounded = "a".repeat(65_536);
+    const baseline = sanitizeText(baseDataPolicy, bounded, "defect");
+    const oversized = sanitizeText(
+      baseDataPolicy,
+      `${bounded}${"a@".repeat(65_536)}password=value`,
+      "defect",
     );
-    for (const timing of timings) assert.isBelow(timing, 1_000);
-    for (let index = 1; index < timings.length; index += 1) {
-      assert.isAtMost(timings[index] ?? 0, (timings[index - 1] ?? 0) * 4 + 25);
-    }
+    assert.strictEqual(oversized, baseline);
+    assert.lengthOf(oversized, 65_536);
   });
 
   it("rejects the bounded catastrophic report patterns without executing them", async () => {

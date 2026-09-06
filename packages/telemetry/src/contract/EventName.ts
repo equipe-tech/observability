@@ -39,6 +39,8 @@ const reservedEventParts = new Set([
   "error",
 ]);
 
+export const isReservedEventNamePart = (part: string): boolean => reservedEventParts.has(part);
+
 export const EventName = Schema.String.check(
   Schema.makeFilter((name) => isValidEventName(name), { expected: "a valid telemetry event name" }),
 ).pipe(Schema.brand("EventName"));
@@ -55,7 +57,7 @@ export const isValidEventName = (name: string): boolean => {
     .split(".")
     .every(
       (part) =>
-        !reservedEventParts.has(part) &&
+        !isReservedEventNamePart(part) &&
         !numericIdentifierPattern.test(part) &&
         !uuidIdentifierPattern.test(part) &&
         !longIdentifierPattern.test(part),

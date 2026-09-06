@@ -22,6 +22,9 @@ const reserved = new Set([
   "time_unit",
 ]);
 
+export const isForbiddenMetricAttributeName = (key: string): boolean =>
+  !isValidAttributeName(key) || reserved.has(key) || isSensitiveFieldKey(key);
+
 export type MetricLabelRejection =
   | "attribute-name"
   | "classification"
@@ -34,7 +37,7 @@ export const metricLabelRejection = (
   key: string,
   value: MetricAttributeValue,
 ): MetricLabelRejection | undefined => {
-  if (!isValidAttributeName(key) || reserved.has(key) || isSensitiveFieldKey(key)) {
+  if (isForbiddenMetricAttributeName(key)) {
     return "attribute-name";
   }
   const definition = policy.attributes.get(key);

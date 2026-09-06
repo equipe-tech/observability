@@ -13,6 +13,16 @@ export const ContractIssueCode = Schema.Literals([
   "OBS_CONTRACT_INVALID_SAMPLING_RATE",
   "OBS_CONTRACT_INVALID_AUDIT_ACTION",
   "OBS_CONTRACT_DUPLICATE_AUDIT_ACTION",
+  "OBS_CONTRACT_INVALID_METRIC_NAME",
+  "OBS_CONTRACT_DUPLICATE_METRIC_NAME",
+  "OBS_CONTRACT_INVALID_METRIC_KIND",
+  "OBS_CONTRACT_INVALID_METRIC_UNIT",
+  "OBS_CONTRACT_INVALID_METRIC_DESCRIPTION",
+  "OBS_CONTRACT_INVALID_METRIC_BOUNDARIES",
+  "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_NAME",
+  "OBS_CONTRACT_INVALID_METRIC_ATTRIBUTE_DEFINITION",
+  "OBS_CONTRACT_INVALID_METRIC_ALLOWED_VALUES",
+  "OBS_CONTRACT_INVALID_METRIC_CARDINALITY",
 ]);
 
 export type ContractIssueCode = typeof ContractIssueCode.Type;
@@ -25,6 +35,8 @@ export const ContractIssue = Schema.Struct({
   attributeName: Schema.String.pipe(Schema.optionalKey),
   auditActionAlias: Schema.String.pipe(Schema.optionalKey),
   auditActionName: Schema.String.pipe(Schema.optionalKey),
+  metricAlias: Schema.String.pipe(Schema.optionalKey),
+  metricName: Schema.String.pipe(Schema.optionalKey),
 });
 
 export type ContractIssue = typeof ContractIssue.Type;

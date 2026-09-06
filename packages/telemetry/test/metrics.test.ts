@@ -1,7 +1,12 @@
 import { assert, describe, it } from "vite-plus/test";
 import { Effect, ManagedRuntime, Metric, Option, Predicate, Schema } from "effect";
 import { createServer, type Server } from "node:http";
-import { createMetrics, MetricsError, type MetricAttribute } from "../src/Metrics.ts";
+import { createMetrics, MetricsError, type MetricAttribute, type Metrics } from "../src/Metrics.ts";
+import {
+  defineTelemetryContract,
+  InvalidMetricMeasurement,
+  makeMetricProducer,
+} from "../src/index.ts";
 import { parseResourceIdentity } from "../src/ResourceIdentity.ts";
 import { baseDataPolicy, parseDataPolicy } from "../src/policy/DataPolicy.ts";
 import { metricLabelRejection } from "../src/policy/MetricLabelPolicy.ts";
@@ -137,7 +142,9 @@ const errorCode = (operation: () => void): string | undefined => {
     operation();
     return undefined;
   } catch (cause) {
-    return cause instanceof MetricsError ? cause.code : undefined;
+    return cause instanceof MetricsError || cause instanceof InvalidMetricMeasurement
+      ? cause.code
+      : undefined;
   }
 };
 
@@ -1120,6 +1127,594 @@ describe("framework-neutral metrics", () => {
         "FLUSH_TIMED_OUT",
       );
       collector.control.delayMilliseconds = 0;
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
+  it("records contract-bound metric kinds with declared metadata", async () => {
+    const collector = await startCollector();
+    try {
+      const contract = await Effect.runPromise(
+        defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            OrdersCreated: {
+              name: "orders.created",
+              description: "Created orders",
+              unit: "1",
+              kind: "counter",
+              attributes: {
+                "order.channel": {
+                  classification: "public",
+                  allowedValues: ["web", "mobile"],
+                  maximumCardinality: 2,
+                },
+              },
+            },
+            OrderDuration: {
+              name: "orders.duration",
+              description: "Order duration",
+              unit: "ms",
+              kind: "histogram",
+              boundaries: [10, 25, 50],
+              attributes: {},
+            },
+            QueueDepth: {
+              name: "orders.queue_depth",
+              description: "Queue depth",
+              unit: "1",
+              kind: "observable_gauge",
+              attributes: {},
+            },
+          },
+          auditActions: {},
+        }),
+      );
+      const facade = await createMetrics(options(collector.endpoint));
+      const producer = makeMetricProducer(contract, facade);
+      producer.counter("OrdersCreated").add(1, { "order.channel": "web" });
+      producer.histogram("OrderDuration").record(17, {});
+      producer.observableGauge("QueueDepth", () => [{ value: 3, attributes: {} }]);
+      const result = await facade.flush();
+      assert.deepStrictEqual(result.gaugeFailures, []);
+      const payload = collector.requests.at(-1);
+      assert.isDefined(payload);
+      assert.strictEqual(metricNamed(payload, "orders.created")?.unit, "1");
+      assert.deepStrictEqual(
+        metricNamed(payload, "orders.duration")?.histogram?.dataPoints[0]?.explicitBounds,
+        [10, 25, 50],
+      );
+      assert.strictEqual(
+        metricNamed(payload, "orders.queue_depth")?.gauge?.dataPoints[0]?.asDouble,
+        3,
+      );
+      await facade.close();
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
+  it("rejects runtime alias, kind, attribute, closed-set, and numeric violations", async () => {
+    const collector = await startCollector();
+    try {
+      const contract = await Effect.runPromise(
+        defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            OrdersCreated: {
+              name: "orders.created",
+              description: "Created orders",
+              unit: "1",
+              kind: "counter",
+              attributes: {
+                "order.channel": {
+                  classification: "public",
+                  allowedValues: ["web", "mobile"],
+                  maximumCardinality: 2,
+                },
+              },
+            },
+            OrderDuration: {
+              name: "orders.duration",
+              description: "Order duration",
+              unit: "ms",
+              kind: "histogram",
+              boundaries: [1, 10],
+              attributes: {},
+            },
+          },
+          auditActions: {},
+        }),
+      );
+      const facade = await createMetrics(options(collector.endpoint));
+      const producer = makeMetricProducer(contract, facade);
+      const failures = [
+        () => producer.counter(JSON.parse('"Unknown"')),
+        () => producer.counter(JSON.parse('"OrderDuration"')),
+        () => producer.counter("OrdersCreated").add(1, JSON.parse("{}")),
+        () =>
+          producer
+            .counter("OrdersCreated")
+            .add(1, JSON.parse('{"order.channel":"web","order.region":"south"}')),
+        () => producer.counter("OrdersCreated").add(1, JSON.parse('{"order.channel":"partner"}')),
+        () => producer.counter("OrdersCreated").add(1, JSON.parse('{"order.channel":null}')),
+      ];
+      const codes = failures.map((operation) => {
+        try {
+          operation();
+          return undefined;
+        } catch (cause) {
+          return cause instanceof InvalidMetricMeasurement ? cause.code : undefined;
+        }
+      });
+      assert.deepStrictEqual(codes, [
+        "OBS_METRIC_UNKNOWN_ALIAS",
+        "OBS_METRIC_KIND_MISMATCH",
+        "OBS_METRIC_MISSING_ATTRIBUTE",
+        "OBS_METRIC_UNDECLARED_ATTRIBUTE",
+        "OBS_METRIC_VALUE_NOT_ALLOWED",
+        "OBS_METRIC_INVALID_VALUE",
+      ]);
+      assert.strictEqual(collector.requests.length, 0);
+      await facade.close();
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
+  it("rejects contract producers bound to unsupported metrics facades", async () => {
+    const contract = await Effect.runPromise(
+      defineTelemetryContract({
+        version: 1,
+        events: {},
+        metrics: {
+          Counter: {
+            name: "fixture.counter",
+            description: "Fixture",
+            unit: "1",
+            kind: "counter",
+            attributes: {},
+          },
+        },
+        auditActions: {},
+      }),
+    );
+    const unsupported: Metrics = {
+      counter: () => ({ add: () => undefined }),
+      histogram: () => ({ record: () => undefined }),
+      observableGauge: () => ({
+        unregister: () => undefined,
+        [Symbol.dispose]: () => undefined,
+      }),
+      flush: async () => ({ gaugeFailures: [] }),
+      close: async () => ({ gaugeFailures: [] }),
+    };
+    assert.strictEqual(
+      errorCode(() => makeMetricProducer(contract, unsupported).counter("Counter").add(1, {})),
+      "OBS_METRIC_INVALID_VALUE",
+    );
+  });
+
+  it("shares declared cardinality across producers and facade leases without committing failures", async () => {
+    const collector = await startCollector();
+    try {
+      const contract = await Effect.runPromise(
+        defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            OrdersCreated: {
+              name: "orders.created",
+              description: "Created orders",
+              unit: "1",
+              kind: "counter",
+              attributes: {
+                "order.channel": {
+                  classification: "public",
+                  maximumCardinality: 1,
+                },
+              },
+            },
+          },
+          auditActions: {},
+        }),
+      );
+      const firstFacade = await createMetrics(options(collector.endpoint));
+      const secondFacade = await createMetrics(options(collector.endpoint));
+      const first = makeMetricProducer(contract, firstFacade).counter("OrdersCreated");
+      const second = makeMetricProducer(contract, secondFacade).counter("OrdersCreated");
+      assert.strictEqual(
+        errorCode(() => first.add(1, { "order.channel": "authorization: Bearer hidden" })),
+        "POLICY_BLOCKED",
+      );
+      assert.strictEqual(
+        errorCode(() => first.add(-1, { "order.channel": "mobile" })),
+        "INVALID_MEASUREMENT",
+      );
+      first.add(1, { "order.channel": "web" });
+      let cardinalityFailure: InvalidMetricMeasurement | undefined;
+      try {
+        second.add(1, { "order.channel": "mobile" });
+      } catch (cause) {
+        if (cause instanceof InvalidMetricMeasurement) cardinalityFailure = cause;
+      }
+      assert.strictEqual(cardinalityFailure?.code, "OBS_METRIC_CARDINALITY_EXCEEDED");
+      second.add(1, { "order.channel": "web" });
+      assert.strictEqual((await secondFacade.flush()).gaugeFailures.length, 0);
+      await firstFacade.close();
+      await secondFacade.close();
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
+  it("isolates same-name metric contracts in both producer orders", async () => {
+    const collector = await startCollector();
+    try {
+      const largerContract = await Effect.runPromise(
+        defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            Shared: {
+              name: "contract.shared_total",
+              description: "Shared total",
+              unit: "1",
+              kind: "counter",
+              attributes: {
+                "contract.value": {
+                  classification: "public",
+                  allowedValues: ["alpha", "beta"],
+                  maximumCardinality: 2,
+                },
+              },
+            },
+          },
+          auditActions: {},
+        }),
+      );
+      const smallerContract = await Effect.runPromise(
+        defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            Shared: {
+              name: "contract.shared_total",
+              description: "Shared total",
+              unit: "1",
+              kind: "counter",
+              attributes: {
+                "contract.value": {
+                  classification: "public",
+                  allowedValues: ["gamma"],
+                  maximumCardinality: 1,
+                },
+              },
+            },
+          },
+          auditActions: {},
+        }),
+      );
+
+      for (const smallerFirst of [false, true]) {
+        const facade = await createMetrics(options(collector.endpoint));
+        const larger = makeMetricProducer(largerContract, facade).counter("Shared");
+        const smaller = makeMetricProducer(smallerContract, facade).counter("Shared");
+        if (smallerFirst) {
+          smaller.add(1, { "contract.value": "gamma" });
+          larger.add(1, { "contract.value": "alpha" });
+        } else {
+          larger.add(1, { "contract.value": "alpha" });
+          smaller.add(1, { "contract.value": "gamma" });
+        }
+        larger.add(1, { "contract.value": "beta" });
+        smaller.add(1, { "contract.value": "gamma" });
+        assert.deepStrictEqual(await facade.flush(), { gaugeFailures: [] });
+        await facade.close();
+      }
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
+  it("isolates concurrent same-name gauge collection across contracts", async () => {
+    const collector = await startCollector();
+    try {
+      const firstContract = await Effect.runPromise(
+        defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            Shared: {
+              name: "contract.shared_depth",
+              description: "Shared depth",
+              unit: "1",
+              kind: "observable_gauge",
+              attributes: {
+                "contract.value": {
+                  classification: "internal",
+                  allowedValues: ["alpha"],
+                  maximumCardinality: 1,
+                },
+              },
+            },
+          },
+          auditActions: {},
+        }),
+      );
+      const secondContract = await Effect.runPromise(
+        defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            Shared: {
+              name: "contract.shared_depth",
+              description: "Shared depth",
+              unit: "1",
+              kind: "observable_gauge",
+              attributes: {
+                "contract.value": {
+                  classification: "internal",
+                  allowedValues: ["beta"],
+                  maximumCardinality: 1,
+                },
+              },
+            },
+          },
+          auditActions: {},
+        }),
+      );
+      const firstFacade = await createMetrics(options(collector.endpoint));
+      const secondFacade = await createMetrics(options(collector.endpoint));
+      makeMetricProducer(firstContract, firstFacade).observableGauge("Shared", () => [
+        { value: 1, attributes: { "contract.value": "alpha" } },
+      ]);
+      makeMetricProducer(secondContract, secondFacade).observableGauge("Shared", () => [
+        { value: 2, attributes: { "contract.value": "beta" } },
+      ]);
+
+      assert.deepStrictEqual(await Promise.all([firstFacade.flush(), secondFacade.flush()]), [
+        { gaugeFailures: [] },
+        { gaugeFailures: [] },
+      ]);
+      const payload = collector.requests.at(-1);
+      assert.isDefined(payload);
+      assert.strictEqual(
+        metricNamed(payload, "contract.shared_depth")?.gauge?.dataPoints.length,
+        2,
+      );
+      await firstFacade.close();
+      await secondFacade.close();
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
+  it("rejects a same-callback gauge cardinality overflow and rolls back the batch", async () => {
+    const collector = await startCollector();
+    try {
+      const contract = await Effect.runPromise(
+        defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            QueueDepth: {
+              name: "queue.rollback_depth",
+              description: "Queue rollback depth",
+              unit: "1",
+              kind: "observable_gauge",
+              attributes: {
+                "queue.name": {
+                  classification: "internal",
+                  maximumCardinality: 1,
+                },
+              },
+            },
+          },
+          auditActions: {},
+        }),
+      );
+      const facade = await createMetrics(options(collector.endpoint));
+      let observations = [
+        { value: 1, attributes: { "queue.name": "alpha" } },
+        { value: 2, attributes: { "queue.name": "beta" } },
+      ];
+      makeMetricProducer(contract, facade).observableGauge("QueueDepth", () => observations);
+
+      const rejected = await facade.flush();
+      assert.deepStrictEqual(
+        rejected.gaugeFailures.map((failure) => [failure.code, failure.contractReason]),
+        [["CONTRACT_REJECTED", "OBS_METRIC_CARDINALITY_EXCEEDED"]],
+      );
+      const rejectedPayload = collector.requests.at(-1);
+      assert.isDefined(rejectedPayload);
+      assert.isUndefined(metricNamed(rejectedPayload, "queue.rollback_depth"));
+
+      observations = [{ value: 3, attributes: { "queue.name": "beta" } }];
+      assert.deepStrictEqual(await facade.flush(), { gaugeFailures: [] });
+      const acceptedPayload = collector.requests.at(-1);
+      assert.isDefined(acceptedPayload);
+      assert.strictEqual(
+        metricNamed(acceptedPayload, "queue.rollback_depth")?.gauge?.dataPoints.length,
+        1,
+      );
+      await facade.close();
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
+  it("shares staged gauge values across flushes and accepts duplicate declared values", async () => {
+    const collector = await startCollector();
+    try {
+      const contract = await Effect.runPromise(
+        defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            QueueDepth: {
+              name: "queue.staged_depth",
+              description: "Queue staged depth",
+              unit: "1",
+              kind: "observable_gauge",
+              attributes: {
+                "queue.group": {
+                  classification: "internal",
+                  maximumCardinality: 1,
+                },
+                "queue.name": {
+                  classification: "internal",
+                  maximumCardinality: 3,
+                },
+              },
+            },
+          },
+          auditActions: {},
+        }),
+      );
+      const facade = await createMetrics(options(collector.endpoint));
+      let observations = [
+        { value: 1, attributes: { "queue.group": "shared", "queue.name": "alpha" } },
+        { value: 2, attributes: { "queue.group": "shared", "queue.name": "beta" } },
+      ];
+      makeMetricProducer(contract, facade).observableGauge("QueueDepth", () => observations);
+
+      assert.deepStrictEqual(await facade.flush(), { gaugeFailures: [] });
+      observations = [
+        { value: 3, attributes: { "queue.group": "shared", "queue.name": "beta" } },
+        { value: 4, attributes: { "queue.group": "shared", "queue.name": "gamma" } },
+      ];
+      assert.deepStrictEqual(await facade.flush(), { gaugeFailures: [] });
+      observations = [{ value: 5, attributes: { "queue.group": "shared", "queue.name": "delta" } }];
+      const rejected = await facade.flush();
+      assert.deepStrictEqual(
+        rejected.gaugeFailures.map((failure) => failure.contractReason),
+        ["OBS_METRIC_CARDINALITY_EXCEEDED"],
+      );
+      const rejectedPayload = collector.requests.at(-1);
+      assert.isDefined(rejectedPayload);
+      assert.isUndefined(metricNamed(rejectedPayload, "queue.staged_depth"));
+      await facade.close();
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
+  it("shares one gauge transaction across producers, leases, and callback discriminators", async () => {
+    const collector = await startCollector();
+    try {
+      const contract = await Effect.runPromise(
+        defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            QueueDepth: {
+              name: "queue.concurrent_depth",
+              description: "Queue concurrent depth",
+              unit: "1",
+              kind: "observable_gauge",
+              attributes: {
+                "queue.name": {
+                  classification: "internal",
+                  maximumCardinality: 2,
+                },
+              },
+            },
+          },
+          auditActions: {},
+        }),
+      );
+      const firstFacade = await createMetrics(options(collector.endpoint));
+      const secondFacade = await createMetrics(options(collector.endpoint));
+      const firstProducer = makeMetricProducer(contract, firstFacade);
+      const secondProducer = makeMetricProducer(contract, secondFacade);
+      let secondDiscriminator = "beta";
+      firstProducer.observableGauge("QueueDepth", () => [
+        { value: 1, attributes: { "queue.name": "alpha" } },
+      ]);
+      secondProducer.observableGauge("QueueDepth", () => [
+        { value: 2, attributes: { "queue.name": secondDiscriminator } },
+      ]);
+
+      assert.deepStrictEqual(await Promise.all([firstFacade.flush(), secondFacade.flush()]), [
+        { gaugeFailures: [] },
+        { gaugeFailures: [] },
+      ]);
+      const acceptedPayload = collector.requests.at(-1);
+      assert.isDefined(acceptedPayload);
+      assert.strictEqual(
+        metricNamed(acceptedPayload, "queue.concurrent_depth")?.gauge?.dataPoints.length,
+        2,
+      );
+
+      secondDiscriminator = "gamma";
+      const rejected = await firstFacade.flush();
+      assert.deepStrictEqual(
+        rejected.gaugeFailures.map((failure) => failure.contractReason),
+        ["OBS_METRIC_CARDINALITY_EXCEEDED"],
+      );
+      const rejectedPayload = collector.requests.at(-1);
+      assert.isDefined(rejectedPayload);
+      assert.isUndefined(metricNamed(rejectedPayload, "queue.concurrent_depth"));
+      await firstFacade.close();
+      await secondFacade.close();
+    } finally {
+      await closeServer(collector.server);
+    }
+  });
+
+  it("reports gauge contract rejection and keeps disabled producers inert", async () => {
+    const collector = await startCollector();
+    try {
+      const contract = await Effect.runPromise(
+        defineTelemetryContract({
+          version: 1,
+          events: {},
+          metrics: {
+            QueueDepth: {
+              name: "orders.queue_depth",
+              description: "Queue depth",
+              unit: "1",
+              kind: "observable_gauge",
+              attributes: {
+                "queue.name": {
+                  classification: "internal",
+                  maximumCardinality: 1,
+                },
+              },
+            },
+          },
+          auditActions: {},
+        }),
+      );
+      const facade = await createMetrics(options(collector.endpoint));
+      const producer = makeMetricProducer(contract, facade);
+      producer.observableGauge("QueueDepth", () => [
+        { value: Number.NaN, attributes: { "queue.name": "primary" } },
+      ]);
+      assert.deepStrictEqual(await facade.flush(), {
+        gaugeFailures: [
+          {
+            instrumentName: "orders.queue_depth",
+            code: "INVALID_OBSERVATION",
+            message: 'Observable gauge "orders.queue_depth" produced a non-finite observation.',
+          },
+        ],
+      });
+      await facade.close();
+      const activeRequestCount = collector.requests.length;
+
+      const disabled = await createMetrics({ ...options(collector.endpoint), enabled: false });
+      const disabledProducer = makeMetricProducer(contract, disabled);
+      disabledProducer.observableGauge("QueueDepth", () => [
+        { value: 1, attributes: { "queue.name": "primary" } },
+      ]);
+      await disabled.flush();
+      await disabled.close();
+      assert.strictEqual(collector.requests.length, activeRequestCount);
     } finally {
       await closeServer(collector.server);
     }

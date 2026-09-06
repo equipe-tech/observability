@@ -7,7 +7,7 @@ import { layerPolicyOtlpLogger } from "./PolicyOtlpLogger.ts";
 import { instanceResourceAttributes } from "./ResourceIdentity.ts";
 import type { EnvironmentVariables, InvalidTelemetryEnvironment } from "./TelemetryConfig.ts";
 import { telemetryConfigFromEnv, type TelemetryConfig } from "./TelemetryConfig.ts";
-import { layerMetricsRuntime } from "./MetricsRuntime.ts";
+import { LayerMetricsRuntime, layerMetricsRuntime } from "./MetricsRuntime.ts";
 import { layerHttpServerOtlpTracer } from "./trace/HttpServerOtlpTracer.ts";
 import { baseDataPolicy, CurrentDataPolicy, type DataPolicy } from "./policy/DataPolicy.ts";
 import type { InvalidDataPolicy } from "./policy/DataPolicyError.ts";
@@ -27,7 +27,11 @@ export type OtlpLayerOptions = {
 export const layerOtlp = (
   config: TelemetryConfig,
   options: OtlpLayerOptions = {},
-): Layer.Layer<OtlpExporter.Flusher, InvalidDataPolicy, HttpClient.HttpClient> => {
+): Layer.Layer<
+  OtlpExporter.Flusher | LayerMetricsRuntime,
+  InvalidDataPolicy,
+  HttpClient.HttpClient
+> => {
   const policy = options.policy ?? baseDataPolicy;
   const canonical = instanceResourceAttributes(config.identity, config.environmentAlias);
   return Layer.unwrap(
@@ -73,15 +77,15 @@ type OtlpLayerOptionsWithoutResourceAttributes = Omit<OtlpLayerOptions, "resourc
 export function layer(
   config: TelemetryConfig,
   options?: OtlpLayerOptionsWithoutResourceAttributes,
-): Layer.Layer<OtlpExporter.Flusher, never>;
+): Layer.Layer<OtlpExporter.Flusher | LayerMetricsRuntime, never>;
 export function layer(
   config: TelemetryConfig,
   options: OtlpLayerOptions,
-): Layer.Layer<OtlpExporter.Flusher, InvalidDataPolicy>;
+): Layer.Layer<OtlpExporter.Flusher | LayerMetricsRuntime, InvalidDataPolicy>;
 export function layer(
   config: TelemetryConfig,
   options: OtlpLayerOptions = {},
-): Layer.Layer<OtlpExporter.Flusher, InvalidDataPolicy> {
+): Layer.Layer<OtlpExporter.Flusher | LayerMetricsRuntime, InvalidDataPolicy> {
   return layerOtlp(config, options).pipe(Layer.provide(FetchHttpClient.layer));
 }
 
@@ -89,7 +93,7 @@ export const layerFromEnv = (
   env: EnvironmentVariables,
   options: OtlpLayerOptions = {},
 ): Layer.Layer<
-  OtlpExporter.Flusher,
+  OtlpExporter.Flusher | LayerMetricsRuntime,
   | InvalidTelemetryEnvironment
   | InvalidResourceIdentity
   | DuplicateReleaseVariable

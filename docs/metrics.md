@@ -44,6 +44,47 @@ queue.unregister();
 await metrics.close();
 ```
 
+## Contract-bound producer
+
+Application code should define metrics in `defineTelemetryContract` and bind the compiled contract to the existing facade. `makeMetricProducer` is exported from the package root and does not expose Effect types.
+
+```ts
+import { Effect } from "effect";
+import { defineTelemetryContract, makeMetricProducer } from "@equipe-tech/observability";
+
+const contract = await Effect.runPromise(
+  defineTelemetryContract({
+    version: 1,
+    events: {},
+    metrics: {
+      OrdersCreated: {
+        name: "orders.created",
+        description: "Created orders",
+        unit: "1",
+        kind: "counter",
+        attributes: {
+          "order.channel": {
+            classification: "public",
+            allowedValues: ["web", "mobile"],
+            maximumCardinality: 2,
+          },
+        },
+      },
+    },
+    auditActions: {},
+  }),
+);
+
+const producer = makeMetricProducer(contract, observability.metrics);
+producer.counter("OrdersCreated").add(1, { "order.channel": "web" });
+```
+
+The producer checks contract shape and allowed values, then probes declared cardinality. Each declared cardinality budget belongs to one compiled metric definition. Separate compiled contracts receive separate declared budgets even when they use the same metric name. Runtime instrument, attribute, and series limits remain global to the shared runtime. The existing metrics facade applies data policy and runtime limits. The producer commits declared cardinality only after the facade accepts the record. A rejected record does not consume declared cardinality. The shared runtime owns the declared cardinality catalog, so producers and facade leases with equal options share it. Enabled Node observability handles expose the pool-matched facade through `metrics`. Disabled handles run contract validation but export nothing. Their facade uses the disabled policy defaults rather than the enabled handle's configured evlog policy.
+
+`InvalidMetricMeasurement` reports stable `OBS_METRIC_*` codes for unknown aliases, kind mismatches, missing or undeclared attributes, closed-set violations, invalid values, and declared cardinality overflow. Gauge callback failures use `CONTRACT_REJECTED` and expose the evidence-safe code through `contractReason`.
+
+`createMetrics` remains available for framework integration and low-level runtime use. It does not require a telemetry contract.
+
 ## Configuration
 
 `createMetrics` parses identity before acquiring a runtime. `serviceName` uses lowercase letters, numbers, and single hyphens between segments, with at most 63 characters. `environment` uses the same grammar with at most 32 characters. `serviceVersion` accepts SemVer 2.0.0 or a 7 to 64 character lowercase hexadecimal immutable release identifier. Metrics omit `service.instance.id` from resources.

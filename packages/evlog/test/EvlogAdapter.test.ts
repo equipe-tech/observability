@@ -95,15 +95,23 @@ const makeConfig = async (endpoint: URL) => {
   return { contract, config };
 };
 
+type ReceiverRequest = {
+  readonly path: string;
+  readonly body: string;
+  readonly receivedAt: number;
+};
+
 const startReceiver = async (responseDelayMillis = 0, status = 200) => {
   const bodies: Array<string> = [];
-  const requestTimes: Array<number> = [];
+  const requests: Array<ReceiverRequest> = [];
   const server = createServer((request, response) => {
-    requestTimes.push(Date.now());
+    const receivedAt = Date.now();
     const chunks: Array<Uint8Array> = [];
     request.on("data", (chunk: Uint8Array) => chunks.push(chunk));
     request.on("end", () => {
-      bodies.push(Buffer.concat(chunks).toString("utf8"));
+      const body = Buffer.concat(chunks).toString("utf8");
+      bodies.push(body);
+      requests.push({ path: request.url ?? "", body, receivedAt });
       setTimeout(() => {
         response.writeHead(status, { "content-type": "application/json" });
         response.end("{}");
@@ -117,7 +125,7 @@ const startReceiver = async (responseDelayMillis = 0, status = 200) => {
   return {
     endpoint: new URL(`http://127.0.0.1:${address.port}`),
     bodies,
-    requestTimes,
+    requests,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 };
@@ -1004,40 +1012,56 @@ describe("evlogAdapter", () => {
   });
 
   it("uses retry delays, maximum attempts, and transport deadlines", async () => {
-    const receiver = await startReceiver(50, 503);
-    const { contract, config } = await makeConfig(receiver.endpoint);
-    const lines: Array<string> = [];
-    const adapter = evlogAdapter({
-      installGlobalLogger: false,
-      batchSize: 1,
-      maximumAttempts: 3,
-      initialRetryDelayMillis: 10,
-      maximumRetryDelayMillis: 15,
-      transportTimeoutMillis: 5,
-      transportRetries: 0,
-      stdout: { write: (line) => lines.push(line) > 0 },
-    });
-    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
-    if (!observability.enabled) throw new Error("Expected enabled observability.");
-    const startedAt = Date.now();
-    await observability.runtime.runPromise(
-      makeEventProducer(contract)
-        .emit("completed", {
-          outcome: "success",
-          durationMs: 1,
-          attributes: { "job.name": "retry-exhausted" },
-        })
-        .pipe(Effect.provide(observability.eventLayer)),
-    );
-    await observability.close();
-    const elapsed = Date.now() - startedAt;
-    await receiver.close();
-    expect(receiver.requestTimes).toHaveLength(10);
-    expect(elapsed).toBeGreaterThanOrEqual(25);
-    expect(adapter.drops().reasons.transport).toBe(1);
-    expect(lines).toHaveLength(1);
-    expect(adapter.pending()).toEqual({ count: 0, serializedBytes: 0 });
-  });
+    const runRetryScenario = async (maximumAttempts: number) => {
+      const receiver = await startReceiver(50, 503);
+      const { contract, config } = await makeConfig(receiver.endpoint);
+      const lines: Array<string> = [];
+      const adapter = evlogAdapter({
+        installGlobalLogger: false,
+        batchSize: 1,
+        maximumAttempts,
+        initialRetryDelayMillis: 10,
+        maximumRetryDelayMillis: 15,
+        transportTimeoutMillis: 5,
+        transportRetries: 0,
+        stdout: { write: (line) => lines.push(line) > 0 },
+      });
+      const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+      if (!observability.enabled) throw new Error("Expected enabled observability.");
+      await observability.runtime.runPromise(
+        makeEventProducer(contract)
+          .emit("completed", {
+            outcome: "success",
+            durationMs: 1,
+            attributes: { "job.name": "retry-exhausted" },
+          })
+          .pipe(Effect.provide(observability.eventLayer)),
+      );
+      await observability.close();
+      await receiver.close();
+      const markedLogRequests = receiver.requests.filter(
+        (request) => request.path === "/v1/logs" && request.body.includes("retry-exhausted"),
+      );
+      return { adapter, lines, markedLogRequests };
+    };
+
+    const threeAttempts = await runRetryScenario(3);
+    expect(threeAttempts.markedLogRequests).toHaveLength(3);
+    const firstAttempt = threeAttempts.markedLogRequests[0];
+    const secondAttempt = threeAttempts.markedLogRequests[1];
+    const thirdAttempt = threeAttempts.markedLogRequests[2];
+    if (firstAttempt === undefined || secondAttempt === undefined || thirdAttempt === undefined) {
+      throw new Error("Expected three marked log attempts.");
+    }
+    expect(secondAttempt.receivedAt - firstAttempt.receivedAt).toBeGreaterThanOrEqual(10);
+    expect(thirdAttempt.receivedAt - secondAttempt.receivedAt).toBeGreaterThanOrEqual(15);
+    expect(threeAttempts.adapter.drops().reasons.transport).toBe(1);
+    expect(threeAttempts.lines).toHaveLength(1);
+    expect(threeAttempts.adapter.pending()).toEqual({ count: 0, serializedBytes: 0 });
+
+    const twoAttempts = await runRetryScenario(2);
+    expect(twoAttempts.markedLogRequests).toHaveLength(2);
+  }, 10_000);
 
   it("counts post-close admission without requeueing", async () => {
     const receiver = await startReceiver();
