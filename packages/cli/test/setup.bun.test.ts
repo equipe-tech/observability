@@ -1,8 +1,21 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { Effect, Fiber } from "effect";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  readlink,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   SetupGenerator,
   type SetupInputEncoded,
@@ -51,6 +64,16 @@ const write = (target: string, input: SetupInputEncoded, force = false): Promise
 
 const plan = (target: string, input: SetupInputEncoded): Promise<SetupPlan> =>
   run(Effect.flatMap(SetupGenerator, (generator) => generator.plan(target, input)));
+
+const verify = (target: string) =>
+  run(
+    Effect.flatMap(SetupGenerator, (generator) =>
+      generator.verify(target, undefined, true, true, false),
+    ),
+  );
+
+const install = (proposed: SetupPlan) =>
+  run(Effect.flatMap(SetupGenerator, (generator) => generator.install(proposed)));
 
 const allFiles = async (root: string): Promise<ReadonlyArray<string>> => {
   const files: Array<string> = [];
@@ -146,6 +169,262 @@ describe("setup generator", () => {
     expect(write(target, inputs("library"))).rejects.toMatchObject({
       code: "OBS_SETUP_CONFLICT",
     });
+    expect(await readdir(outside)).toEqual([]);
+  });
+
+  for (const existing of [false, true]) {
+    for (const location of ["root", "ancestor"]) {
+      it(`rejects a linked ${location} with an ${existing ? "existing" : "absent"} target before plan, write, verify or install`, async () => {
+        const base = await directory();
+        const outside = join(base, "outside");
+        await mkdir(outside);
+        const linked = join(base, "link");
+        const suffix = location === "root" ? [] : ["nested", "app"];
+        const physical = join(outside, ...suffix);
+        if (existing) await mkdir(physical, { recursive: true });
+        const proposed = await plan(physical, inputs("library"));
+        await symlink(
+          location === "root" && !existing ? join(outside, "missing") : outside,
+          linked,
+        );
+        const target = join(linked, ...suffix);
+        const before = await allFiles(base);
+        expect(plan(target, inputs("library"))).rejects.toMatchObject({
+          code: "OBS_SETUP_CONFLICT",
+        });
+        expect(write(target, inputs("library"), true)).rejects.toMatchObject({
+          code: "OBS_SETUP_CONFLICT",
+        });
+        expect(verify(target)).rejects.toMatchObject({ code: "OBS_SETUP_CONFLICT" });
+        expect(install({ ...proposed, directory: target })).rejects.toMatchObject({
+          code: "OBS_SETUP_CONFLICT",
+        });
+        expect(await allFiles(base)).toEqual(before);
+        expect(await readdir(outside)).toEqual(existing && suffix.length > 0 ? ["nested"] : []);
+      });
+    }
+  }
+
+  for (const path of [
+    "observability",
+    ".github",
+    ".github/workflows",
+    "observability/contract.json",
+    "observability/policy.ts",
+    "observability/setup.json",
+    ".github/workflows/observability.yml",
+  ]) {
+    it(`rejects a linked ${path} atomically across plan, write, verify and install`, async () => {
+      const target = await directory();
+      const outside = await directory();
+      const proposed = await write(target, inputs("worker"));
+      const destination = join(target, path);
+      const moved = join(outside, "original");
+      await rename(destination, moved);
+      await symlink(moved, destination);
+      const before = await allFiles(target);
+      const externalFiles = await allFiles(outside);
+      const externalContents = await Promise.all(
+        externalFiles.map((file) => readFile(join(outside, file), "utf8")),
+      );
+      expect(plan(target, inputs("worker"))).rejects.toMatchObject({
+        code: "OBS_SETUP_CONFLICT",
+      });
+      expect(write(target, inputs("worker"), true)).rejects.toMatchObject({
+        code: "OBS_SETUP_CONFLICT",
+      });
+      expect(verify(target)).rejects.toMatchObject({ code: "OBS_SETUP_CONFLICT" });
+      expect(install(proposed)).rejects.toMatchObject({ code: "OBS_SETUP_CONFLICT" });
+      expect(await allFiles(target)).toEqual(before);
+      expect(await allFiles(outside)).toEqual(externalFiles);
+      expect(
+        await Promise.all(externalFiles.map((file) => readFile(join(outside, file), "utf8"))),
+      ).toEqual(externalContents);
+      expect((await lstat(destination)).isSymbolicLink()).toBe(true);
+    });
+  }
+
+  it("revalidates a root replaced after planning before starting installation", async () => {
+    const base = await directory();
+    const target = join(base, "app");
+    const moved = join(base, "moved");
+    await mkdir(target);
+    const proposed = await write(target, inputs("library"));
+    await rename(target, moved);
+    await symlink(moved, target);
+    const before = await allFiles(moved);
+    expect(install(proposed)).rejects.toMatchObject({ code: "OBS_SETUP_CONFLICT" });
+    expect(await allFiles(moved)).toEqual(before);
+  });
+
+  it("rejects non-directory ancestors and non-regular outputs before any write", async () => {
+    const target = await directory();
+    await writeFile(join(target, "ancestor"), "unchanged");
+    expect(write(join(target, "ancestor", "app"), inputs("library"))).rejects.toMatchObject({
+      code: "OBS_SETUP_CONFLICT",
+    });
+    await mkdir(join(target, "observability", "dependencies.json"), { recursive: true });
+    expect(write(target, inputs("library"))).rejects.toMatchObject({ code: "OBS_SETUP_CONFLICT" });
+    expect(await allFiles(target)).toEqual(["ancestor"]);
+    expect(await readFile(join(target, "ancestor"), "utf8")).toBe("unchanged");
+  });
+
+  it("rejects record paths outside the root before running verification", async () => {
+    const target = await directory();
+    await write(target, inputs("library"));
+    const path = join(target, "observability/setup.json");
+    const original = await readFile(path, "utf8");
+    for (const invalid of ["../outside", "/outside"]) {
+      await writeFile(
+        path,
+        original.replace(
+          '"path": "observability/contract.ts"',
+          `"path": ${JSON.stringify(invalid)}`,
+        ),
+      );
+      expect(verify(target)).rejects.toMatchObject({ code: "OBS_SETUP_CONFLICT" });
+    }
+  });
+
+  it("rejects a late output link before creating any of the earlier planned files", async () => {
+    const target = await directory();
+    const outside = await directory();
+    await mkdir(join(target, ".github"));
+    await symlink(outside, join(target, ".github/workflows"));
+    await writeFile(join(target, "unknown.txt"), "keep me");
+    expect(write(target, inputs("worker"), true)).rejects.toMatchObject({
+      code: "OBS_SETUP_CONFLICT",
+    });
+    expect((await readdir(target)).toSorted()).toEqual([".github", "unknown.txt"]);
+    expect(await readFile(join(target, "unknown.txt"), "utf8")).toBe("keep me");
+    expect(await readdir(outside)).toEqual([]);
+  });
+
+  it("rejects a dangling final link and a hard-linked reconciliation output", async () => {
+    const target = await directory();
+    const outside = await directory();
+    await write(target, inputs("library"));
+    const contract = join(target, "observability/contract.json");
+    const original = await readFile(contract, "utf8");
+    await link(contract, join(outside, "contract.json"));
+    expect(verify(target)).rejects.toMatchObject({ code: "OBS_SETUP_CONFLICT" });
+    expect(await readFile(join(outside, "contract.json"), "utf8")).toBe(original);
+    await rm(contract);
+    await symlink(join(outside, "missing"), contract);
+    expect(write(target, inputs("library"), true)).rejects.toMatchObject({
+      code: "OBS_SETUP_CONFLICT",
+    });
+    expect(await readdir(outside)).toEqual(["contract.json"]);
+  });
+
+  for (const path of ["package.json", "bun.lock", "bun.lockb", "node_modules"]) {
+    it(`rejects a linked install destination ${path} before starting the package manager`, async () => {
+      const target = await directory();
+      const outside = await directory();
+      const proposed = await write(target, inputs("library"));
+      const destination = join(outside, "destination");
+      if (path === "node_modules") await mkdir(destination);
+      else await writeFile(destination, "untouched");
+      await symlink(destination, join(target, path));
+      const before = await allFiles(target);
+      expect(install(proposed)).rejects.toMatchObject({ code: "OBS_SETUP_CONFLICT" });
+      expect(await allFiles(target)).toEqual(before);
+      await rm(join(target, "observability"), { recursive: true });
+      expect(
+        run(
+          Effect.flatMap(SetupGenerator, (generator) =>
+            generator.write(target, inputs("library"), false, true),
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "OBS_SETUP_CONFLICT" });
+      expect(await readdir(target)).toEqual([path]);
+      if (path === "node_modules") expect(await readdir(destination)).toEqual([]);
+      else expect(await readFile(destination, "utf8")).toBe("untouched");
+    });
+  }
+
+  for (const existing of [false, true]) {
+    it(`keeps an ${existing ? "existing" : "absent"} ordinary nested root nonmutating until write`, async () => {
+      const base = await realpath(await directory());
+      const target = join(base, "normal", "nested", "app");
+      if (existing) {
+        await mkdir(target, { recursive: true });
+        await writeFile(join(target, "unknown.txt"), "user owned");
+      }
+      const before = await allFiles(base);
+      const proposed = await plan(target, inputs("library"));
+      expect(proposed.directory).toBe(target);
+      expect(proposed.requestedDirectory).toBe(target);
+      expect(await allFiles(base)).toEqual(before);
+      if (!existing) expect(await readdir(base)).toEqual([]);
+      const generated = await write(target, inputs("library"));
+      expect(generated.directory).toBe(target);
+      const report = await run(
+        Effect.flatMap(SetupGenerator, (generator) =>
+          generator.verify(target, undefined, false, false, false),
+        ),
+      );
+      expect(report.directory).toBe(target);
+      expect(report.requestedDirectory).toBe(target);
+      expect(await readFile(join(target, "observability/setup.json"), "utf8")).toContain(
+        JSON.stringify(target),
+      );
+      if (existing) expect(await readFile(join(target, "unknown.txt"), "utf8")).toBe("user owned");
+    });
+  }
+
+  it("reads prior v1 records without target metadata and never trusts recorded directory authority", async () => {
+    const target = await directory();
+    const proposed = await write(target, inputs("library"));
+    const record = join(target, "observability/setup.json");
+    const original = await readFile(record, "utf8");
+    const withoutTarget = original.replace(/  "target": \{[^}]+\},\n/, "");
+    expect(withoutTarget).not.toBe(original);
+    await writeFile(record, withoutTarget);
+    expect(
+      (await plan(target, inputs("library"))).files.every((file) => file.action === "unchanged"),
+    ).toBe(true);
+    const outside = await directory();
+    await writeFile(
+      record,
+      original.replaceAll(JSON.stringify(proposed.directory), JSON.stringify(outside)),
+    );
+    expect((await plan(target, inputs("library"))).directory).toBe(proposed.directory);
+    await write(target, inputs("library"));
+    expect(await readdir(outside)).toEqual([]);
+  });
+
+  it("reports exact Darwin system aliases as canonical paths without trusting arbitrary aliases", async () => {
+    if (process.platform === "darwin") {
+      for (const prefix of ["/tmp", "/var", "/etc"]) {
+        expect(await readlink(prefix)).toBe(`private${prefix}`);
+        const proposed = await plan(prefix, inputs("library"));
+        expect(proposed.requestedDirectory).toBe(prefix);
+        expect(proposed.directory).toBe(`/private${prefix}`);
+      }
+      for (const prefix of ["/tmp", "/var/tmp"]) {
+        const target = await mkdtemp(join(prefix, "obs58-alias-"));
+        directories.push(target);
+        const canonical = await realpath(target);
+        const proposed = await plan(join(target, "missing", "app"), inputs("library"));
+        expect(proposed.directory).toBe(join(canonical, "missing", "app"));
+        expect(await readdir(target)).toEqual([]);
+        const generated = await write(join(target, "missing", "app"), inputs("library"));
+        expect(generated.directory).toBe(proposed.directory);
+        expect(generated.requestedDirectory).toBe(join(target, "missing", "app"));
+      }
+    } else {
+      const target = await realpath(await directory());
+      expect((await plan(target, inputs("library"))).directory).toBe(resolve(target));
+    }
+    const base = await directory();
+    const outside = await directory();
+    for (const name of ["tmp", "var", "etc"]) {
+      await symlink(outside, join(base, name));
+      expect(plan(join(base, name, "app"), inputs("library"))).rejects.toMatchObject({
+        code: "OBS_SETUP_CONFLICT",
+      });
+    }
     expect(await readdir(outside)).toEqual([]);
   });
 

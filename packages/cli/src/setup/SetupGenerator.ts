@@ -1,6 +1,6 @@
 import { Context, Effect, Layer, Schema } from "effect";
-import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve, sep } from "node:path";
+import { lstat, mkdir, readFile, readlink, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { observabilityProfiles, type ProfileName } from "@equipe-tech/observability";
 import { EnvironmentName, ServiceName } from "../ResourceNamePolicy.ts";
@@ -61,8 +61,13 @@ export type SetupPlannedFile = {
   readonly action: SetupFileAction;
   readonly recorded: boolean;
 };
-export type SetupPlan = {
-  readonly directory: string;
+const SetupTarget = Schema.Struct({
+  requestedDirectory: Schema.String,
+  directory: Schema.String,
+});
+type SetupTarget = typeof SetupTarget.Type;
+
+export type SetupPlan = SetupTarget & {
   readonly input: SetupInput;
   readonly packages: ReadonlyArray<string>;
   readonly files: ReadonlyArray<SetupPlannedFile>;
@@ -79,9 +84,8 @@ export type SetupVerificationStep = {
   readonly detail: string;
   readonly exitCode?: number;
 };
-export type SetupVerificationReport = {
+export type SetupVerificationReport = SetupTarget & {
   readonly profile: ProfileName;
-  readonly directory: string;
   readonly filesystemEffects: ReadonlyArray<string>;
   readonly providerReads: ReadonlyArray<string>;
   readonly providerMutations: readonly [];
@@ -91,6 +95,7 @@ export type SetupVerificationReport = {
 
 const DecisionRecord = Schema.Struct({
   version: Schema.Literal(1),
+  target: Schema.optional(SetupTarget),
   profile: ProfileNameSchema,
   input: SetupInputDocument,
   packages: Schema.Array(Schema.String),
@@ -798,18 +803,31 @@ const classify = async (
   return files;
 };
 
-const planSetup = Effect.fn("planSetup")(function* (directory: string, encoded: SetupInputEncoded) {
+const installationFiles = ["package.json", "bun.lock", "bun.lockb"];
+const installationDirectories = ["node_modules"];
+
+const planSetup = Effect.fn("planSetup")(function* (
+  directory: string,
+  encoded: SetupInputEncoded,
+  installDependencies = false,
+) {
   const input = yield* validateInput(encoded);
-  const root = resolve(directory);
+  const target = yield* resolveSetupTarget(directory);
   const packages = packagesFor(input);
-  const files = yield* Effect.tryPromise(() =>
-    readRecord(root).then((record) => classify(root, renderedFiles(input, packages), record)),
-  ).pipe(
-    Effect.mapError((cause) =>
-      fail("OBS_SETUP_INPUT_INVALID", "The existing setup decision record is unreadable.", cause),
-    ),
+  const rendered = renderedFiles(input, packages);
+  yield* checkSetupPaths(
+    target.directory,
+    rendered.map((file) => file.path),
   );
-  return { directory: root, input, packages, files } satisfies SetupPlan;
+  if (installDependencies)
+    yield* checkSetupPaths(target.directory, installationFiles, installationDirectories);
+  const files = yield* Effect.tryPromise({
+    try: () =>
+      readRecord(target.directory).then((record) => classify(target.directory, rendered, record)),
+    catch: (cause) =>
+      fail("OBS_SETUP_INPUT_INVALID", "The existing setup decision record is unreadable.", cause),
+  });
+  return { ...target, input, packages, files } satisfies SetupPlan;
 });
 
 const assertAllowed = (plan: SetupPlan): void => {
@@ -827,21 +845,44 @@ const assertAllowed = (plan: SetupPlan): void => {
 const assertNoSymlinkTraversal = async (
   root: string,
   paths: ReadonlyArray<string>,
+  directories: ReadonlyArray<string> = [],
 ): Promise<void> => {
-  const candidates = new Set<string>([root]);
-  for (const path of paths) {
-    let current = dirname(join(root, path));
-    while (current.startsWith(`${root}${sep}`)) {
-      candidates.add(current);
-      current = dirname(current);
+  const candidates = new Map<string, "file" | "directory">([[root, "directory"]]);
+  for (const path of [...paths, ...directories]) {
+    const destination = resolve(root, path);
+    const rooted = relative(root, destination);
+    if (isAbsolute(path) || rooted === "" || rooted === ".." || rooted.startsWith(`..${sep}`))
+      throw fail(
+        "OBS_SETUP_CONFLICT",
+        "Setup requires output paths inside the target directory. Correct the setup paths before retrying.",
+        path,
+      );
+    candidates.set(destination, directories.includes(path) ? "directory" : "file");
+  }
+  for (const destination of candidates.keys()) {
+    let current = dirname(destination);
+    while (true) {
+      candidates.set(current, "directory");
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
     }
   }
-  for (const candidate of candidates) {
+  for (const [candidate, kind] of [...candidates].sort(
+    ([left], [right]) => left.length - right.length,
+  )) {
     try {
-      if ((await lstat(candidate)).isSymbolicLink())
+      const entry = await lstat(candidate);
+      if (entry.isSymbolicLink() || (kind === "file" && entry.nlink > 1))
         throw fail(
           "OBS_SETUP_CONFLICT",
-          `Setup refuses symlink traversal at ${candidate}. No files were written.`,
+          "Setup refuses linked target ancestors or output files. Use an unlinked directory and regular files before retrying.",
+          candidate,
+        );
+      if (kind === "directory" ? !entry.isDirectory() : !entry.isFile())
+        throw fail(
+          "OBS_SETUP_CONFLICT",
+          "Setup requires directory ancestors and regular output files. Correct the filesystem entries before retrying.",
           candidate,
         );
     } catch (cause) {
@@ -852,11 +893,61 @@ const assertNoSymlinkTraversal = async (
   }
 };
 
-const atomicWrite = async (path: string, content: string): Promise<void> => {
+const checkSetupPaths = (
+  root: string,
+  paths: ReadonlyArray<string>,
+  directories: ReadonlyArray<string> = [],
+): Effect.Effect<void, SetupError> =>
+  Effect.tryPromise({
+    try: () => assertNoSymlinkTraversal(root, [...paths, "observability/setup.json"], directories),
+    catch: (cause) =>
+      cause instanceof SetupError
+        ? cause
+        : fail(
+            "OBS_SETUP_CONFLICT",
+            "Setup could not inspect the target paths. Review filesystem permissions before retrying.",
+            cause,
+          ),
+  });
+
+const resolveSetupTarget = (directory: string): Effect.Effect<SetupTarget, SetupError> =>
+  Effect.tryPromise({
+    try: async () => {
+      const requestedDirectory = resolve(directory);
+      let canonicalDirectory = requestedDirectory;
+      if (process.platform === "darwin") {
+        for (const prefix of ["/tmp", "/var", "/etc"]) {
+          if (requestedDirectory !== prefix && !requestedDirectory.startsWith(`${prefix}/`))
+            continue;
+          if (
+            (await lstat(prefix)).isSymbolicLink() &&
+            (await readlink(prefix)) === `private${prefix}`
+          )
+            canonicalDirectory = `/private${requestedDirectory}`;
+        }
+      }
+      await assertNoSymlinkTraversal(canonicalDirectory, []);
+      return { requestedDirectory, directory: canonicalDirectory };
+    },
+    catch: (cause) =>
+      cause instanceof SetupError
+        ? cause
+        : fail(
+            "OBS_SETUP_CONFLICT",
+            "Setup could not resolve a safe target directory. Use an unlinked canonical path before retrying.",
+            cause,
+          ),
+  });
+
+const atomicWrite = async (root: string, relativePath: string, content: string): Promise<void> => {
+  await assertNoSymlinkTraversal(root, [relativePath]);
+  const path = join(root, relativePath);
   await mkdir(dirname(path), { recursive: true });
+  await assertNoSymlinkTraversal(root, [relativePath]);
   const temporary = `${path}.tmp-${process.pid}-${crypto.randomUUID()}`;
   try {
     await writeFile(temporary, content, { flag: "wx" });
+    await assertNoSymlinkTraversal(root, [relativePath]);
     await rename(temporary, path);
   } finally {
     await rm(temporary, { force: true });
@@ -867,8 +958,9 @@ const writeSetup = Effect.fn("writeSetup")(function* (
   directory: string,
   encoded: SetupInputEncoded,
   force: boolean,
+  installDependencies = false,
 ) {
-  const plan = yield* planSetup(directory, encoded);
+  const plan = yield* planSetup(directory, encoded, installDependencies);
   yield* Effect.try({
     try: () => assertAllowed(plan),
     catch: (cause) =>
@@ -896,42 +988,42 @@ const writeSetup = Effect.fn("writeSetup")(function* (
       file.action === "updated" ||
       (force && file.action === "conflict" && file.ownership === "skill-owned" && file.recorded),
   );
-  yield* Effect.tryPromise(async () => {
-    const outputPaths = [...plan.files.map((file) => file.path), "observability/setup.json"];
-    await assertNoSymlinkTraversal(plan.directory, outputPaths);
-    for (const file of writable) {
-      await assertNoSymlinkTraversal(plan.directory, [file.path]);
-      await atomicWrite(join(plan.directory, file.path), file.content);
-    }
-    const finalFiles: Array<{
-      readonly path: string;
-      readonly ownership: SetupFileOwnership;
-      readonly digest: string;
-    }> = [];
-    for (const file of plan.files) {
-      const content =
-        file.action === "preserved"
-          ? await readFile(join(plan.directory, file.path), "utf8")
-          : file.content;
-      finalFiles.push({ path: file.path, ownership: file.ownership, digest: digest(content) });
-    }
-    const record = json({
-      version: 1,
-      profile: plan.input.profile,
-      input: plan.input,
-      packages: [...plan.packages],
-      files: finalFiles,
-    });
-    if (ForbiddenSecret.test(record))
-      throw fail(
-        "OBS_SETUP_FORBIDDEN_OUTPUT",
-        "The setup decision record contains a credential-bearing value.",
-        "observability/setup.json",
-      );
-    await assertNoSymlinkTraversal(plan.directory, ["observability/setup.json"]);
-    await atomicWrite(join(plan.directory, "observability/setup.json"), record);
-  }).pipe(
-    Effect.mapError((cause) =>
+  yield* Effect.tryPromise({
+    try: async () => {
+      const outputPaths = [...plan.files.map((file) => file.path), "observability/setup.json"];
+      await assertNoSymlinkTraversal(plan.directory, outputPaths);
+      const finalFiles: Array<{
+        readonly path: string;
+        readonly ownership: SetupFileOwnership;
+        readonly digest: string;
+      }> = [];
+      for (const file of plan.files) {
+        const content =
+          file.action === "preserved"
+            ? await readFile(join(plan.directory, file.path), "utf8")
+            : file.content;
+        finalFiles.push({ path: file.path, ownership: file.ownership, digest: digest(content) });
+      }
+      const record = json({
+        version: 1,
+        target: { requestedDirectory: plan.requestedDirectory, directory: plan.directory },
+        profile: plan.input.profile,
+        input: plan.input,
+        packages: [...plan.packages],
+        files: finalFiles,
+      });
+      if (ForbiddenSecret.test(record))
+        throw fail(
+          "OBS_SETUP_FORBIDDEN_OUTPUT",
+          "The setup decision record contains a credential-bearing value.",
+          "observability/setup.json",
+        );
+      for (const file of writable) {
+        await atomicWrite(plan.directory, file.path, file.content);
+      }
+      await atomicWrite(plan.directory, "observability/setup.json", record);
+    },
+    catch: (cause) =>
       cause instanceof SetupError
         ? cause
         : fail(
@@ -939,8 +1031,7 @@ const writeSetup = Effect.fn("writeSetup")(function* (
             "Setup could not write the complete application composition. Review filesystem permissions and retry.",
             cause,
           ),
-    ),
-  );
+  });
   return {
     ...plan,
     files: plan.files.map((file): SetupPlannedFile => {
@@ -972,46 +1063,51 @@ const runCommand = (
   cwd: string,
   code: SetupError["code"],
   operation: string,
+  paths: ReadonlyArray<string>,
+  directories: ReadonlyArray<string> = [],
 ): Effect.Effect<{ readonly exitCode: number; readonly output: string }, SetupError> =>
-  Effect.acquireUseRelease(
-    Effect.try({
-      try: () =>
-        Bun.spawn([...command], {
-          cwd,
-          stdin: "ignore",
-          stdout: "pipe",
-          stderr: "pipe",
-          detached: process.platform !== "win32",
-        }),
-      catch: (cause) => fail(code, `${operation} could not start.`, cause),
-    }),
-    (child) =>
-      Effect.tryPromise({
-        try: async () => {
-          const [exitCode, stdout, stderr] = await Promise.all([
-            child.exited,
-            new Response(child.stdout).text(),
-            new Response(child.stderr).text(),
-          ]);
-          return { exitCode, output: commandOutput(stdout, stderr, exitCode) };
-        },
-        catch: (cause) => fail(code, `${operation} could not complete.`, cause),
-      }).pipe(
-        Effect.timeout("5 minutes"),
-        Effect.mapError((cause) =>
-          cause instanceof SetupError ? cause : fail(code, `${operation} timed out.`, cause),
-        ),
-      ),
-    (child) =>
-      Effect.sync(() => {
-        if (process.platform !== "win32") {
-          try {
-            process.kill(-child.pid, "SIGTERM");
-          } catch {
-            child.kill();
-          }
-        } else child.kill();
+  Effect.andThen(
+    checkSetupPaths(cwd, paths, directories),
+    Effect.acquireUseRelease(
+      Effect.try({
+        try: () =>
+          Bun.spawn([...command], {
+            cwd,
+            stdin: "ignore",
+            stdout: "pipe",
+            stderr: "pipe",
+            detached: process.platform !== "win32",
+          }),
+        catch: (cause) => fail(code, `${operation} could not start.`, cause),
       }),
+      (child) =>
+        Effect.tryPromise({
+          try: async () => {
+            const [exitCode, stdout, stderr] = await Promise.all([
+              child.exited,
+              new Response(child.stdout).text(),
+              new Response(child.stderr).text(),
+            ]);
+            return { exitCode, output: commandOutput(stdout, stderr, exitCode) };
+          },
+          catch: (cause) => fail(code, `${operation} could not complete.`, cause),
+        }).pipe(
+          Effect.timeout("5 minutes"),
+          Effect.mapError((cause) =>
+            cause instanceof SetupError ? cause : fail(code, `${operation} timed out.`, cause),
+          ),
+        ),
+      (child) =>
+        Effect.sync(() => {
+          if (process.platform !== "win32") {
+            try {
+              process.kill(-child.pid, "SIGTERM");
+            } catch {
+              child.kill();
+            }
+          } else child.kill();
+        }),
+    ),
   );
 
 const installSetup = Effect.fn("installSetup")(function* (plan: SetupPlan) {
@@ -1020,6 +1116,8 @@ const installSetup = Effect.fn("installSetup")(function* (plan: SetupPlan) {
     plan.directory,
     "OBS_SETUP_RECONCILE_FAILED",
     "The selected profile dependency installation",
+    [...plan.files.map((file) => file.path), ...installationFiles],
+    installationDirectories,
   );
   if (result.exitCode !== 0)
     return yield* fail(
@@ -1043,7 +1141,9 @@ const verifySetup = Effect.fn("verifySetup")(function* (
   providerRead: boolean,
   target: "local" | "deployed" = "local",
 ) {
-  const root = resolve(directory);
+  const resolvedTarget = yield* resolveSetupTarget(directory);
+  const root = resolvedTarget.directory;
+  yield* checkSetupPaths(root, []);
   const record = yield* Effect.tryPromise(() => readRecord(root)).pipe(
     Effect.mapError((cause) =>
       fail("OBS_SETUP_INPUT_INVALID", "The setup decision record is unreadable.", cause),
@@ -1055,6 +1155,11 @@ const verifySetup = Effect.fn("verifySetup")(function* (
       "observability/setup.json is required before verification.",
       "setup.json",
     );
+  const outputPaths = [
+    ...renderedFiles(record.input, packagesFor(record.input)).map((file) => file.path),
+    ...record.files.map((file) => file.path),
+  ];
+  yield* checkSetupPaths(root, outputPaths);
   const steps: Array<SetupVerificationStep> = [];
   const filesystemEffects: Array<string> = [];
   const providerReads: Array<string> = [];
@@ -1070,6 +1175,7 @@ const verifySetup = Effect.fn("verifySetup")(function* (
       root,
       "OBS_SETUP_RECONCILE_FAILED",
       "Contract reconciliation",
+      outputPaths,
     );
     filesystemEffects.push("observability/contract.json");
     steps.push({
@@ -1124,6 +1230,7 @@ const verifySetup = Effect.fn("verifySetup")(function* (
       root,
       "OBS_SETUP_RECONCILE_FAILED",
       "Provider read-back",
+      outputPaths,
     );
     steps.push({
       name: "providers",
@@ -1149,6 +1256,7 @@ const verifySetup = Effect.fn("verifySetup")(function* (
       root,
       "OBS_SETUP_CONFORMANCE_FAILED",
       "Application conformance",
+      outputPaths,
     );
     steps.push({
       name: "conformance",
@@ -1185,7 +1293,7 @@ const verifySetup = Effect.fn("verifySetup")(function* (
   );
   return {
     profile: record.profile,
-    directory: root,
+    ...resolvedTarget,
     filesystemEffects,
     providerReads,
     providerMutations: [],
@@ -1200,11 +1308,13 @@ export class SetupGenerator extends Context.Service<
     readonly plan: (
       directory: string,
       input: SetupInputEncoded,
+      installDependencies?: boolean,
     ) => Effect.Effect<SetupPlan, SetupError>;
     readonly write: (
       directory: string,
       input: SetupInputEncoded,
       force: boolean,
+      installDependencies?: boolean,
     ) => Effect.Effect<SetupPlan, SetupError>;
     readonly install: (plan: SetupPlan) => Effect.Effect<SetupVerificationStep, SetupError>;
     readonly verify: (

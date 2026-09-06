@@ -548,12 +548,21 @@ const printSetupFiles = Effect.fn("printSetupFiles")(function* (
   for (const file of files) yield* Console.log(`${file.action}  ${file.path}`);
 });
 
+const printSetupTarget = Effect.fn("printSetupTarget")(function* (target: {
+  readonly requestedDirectory: string;
+  readonly directory: string;
+}) {
+  yield* Console.log(`target  requested  ${target.requestedDirectory}`);
+  yield* Console.log(`target  canonical  ${target.directory}`);
+});
+
 const setupPlan = Command.make(
   "plan",
   setupOptions,
   Effect.fn(function* (options) {
     const generator = yield* SetupGenerator;
     const plan = yield* generator.plan(options.dir, setupInput(options));
+    yield* printSetupTarget(plan);
     yield* printSetupFiles(plan.files);
     yield* Console.log(`packages  ${plan.packages.join(",")}`);
     yield* Console.log("step  filesystem  no writes");
@@ -566,7 +575,13 @@ const setupWrite = Command.make(
   { ...setupOptions, force: setupForce, install: setupInstall },
   Effect.fn(function* (options) {
     const generator = yield* SetupGenerator;
-    const plan = yield* generator.write(options.dir, setupInput(options), options.force);
+    const plan = yield* generator.write(
+      options.dir,
+      setupInput(options),
+      options.force,
+      options.install,
+    );
+    yield* printSetupTarget(plan);
     yield* printSetupFiles(plan.files);
     if (options.install) {
       const installed = yield* generator.install(plan);
@@ -618,9 +633,11 @@ const setupVerify = Command.make(
       target,
     );
     if (json) yield* Console.log(JSON.stringify(report));
-    else
+    else {
+      yield* printSetupTarget(report);
       for (const step of report.steps)
         yield* Console.log(`step  ${step.name}  ${step.status}  ${step.detail}`);
+    }
     if (!report.passed) {
       return yield* new SetupError({
         code: "OBS_SETUP_CONFORMANCE_FAILED",
