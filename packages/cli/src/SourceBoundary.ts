@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { Schema } from "effect";
-import { parse, walk } from "yuku-parser";
+import { parse, walk, type Node, type Program } from "yuku-parser";
 
 const isString = Schema.is(Schema.String);
 
@@ -59,7 +59,199 @@ export const classifyDependency = (specifier: string): DependencyKind | undefine
   return undefined;
 };
 
-export const scanImportSpecifiers = (source: string): ReadonlyArray<string> => {
+type SourceBinding = { readonly root: boolean; readonly initializer: Node | null };
+type SourceScope = {
+  readonly parent: SourceScope | undefined;
+  readonly bindings: Map<string, SourceBinding>;
+  readonly functionScope: boolean;
+};
+
+const bindingNames = (node: Node): ReadonlyArray<string> => {
+  if (node.type === "Identifier") return [node.name];
+  if (node.type === "ObjectPattern")
+    return node.properties.flatMap((property) =>
+      bindingNames(property.type === "RestElement" ? property.argument : property.value),
+    );
+  if (node.type === "ArrayPattern")
+    return node.elements.flatMap((element) => (element === null ? [] : bindingNames(element)));
+  if (node.type === "AssignmentPattern") return bindingNames(node.left);
+  if (node.type === "RestElement") return bindingNames(node.argument);
+  return [];
+};
+
+const importsEffectMetric = (program: Program): boolean => {
+  const scopes = new Map<Node, SourceScope>();
+  let current: SourceScope = { parent: undefined, bindings: new Map(), functionScope: true };
+  const bind = (node: Node, initializer: Node | null, root = false, scope = current): void => {
+    for (const name of bindingNames(node)) scope.bindings.set(name, { root, initializer });
+  };
+  walk(program, {
+    enter: (node) => {
+      const functionScope =
+        node.type === "FunctionDeclaration" ||
+        node.type === "FunctionExpression" ||
+        node.type === "ArrowFunctionExpression";
+      if (
+        (node.type === "FunctionDeclaration" || node.type === "ClassDeclaration") &&
+        node.id !== null
+      )
+        bind(node.id, null);
+      if (
+        functionScope ||
+        node.type === "BlockStatement" ||
+        node.type === "CatchClause" ||
+        node.type === "ForStatement" ||
+        node.type === "ForOfStatement" ||
+        node.type === "ForInStatement"
+      )
+        current = { parent: current, bindings: new Map(), functionScope };
+      scopes.set(node, current);
+      if (
+        node.type === "FunctionDeclaration" ||
+        node.type === "FunctionExpression" ||
+        node.type === "ArrowFunctionExpression"
+      ) {
+        for (const parameter of node.params) bind(parameter, null);
+        if (node.type === "FunctionExpression" && node.id !== null) bind(node.id, null);
+      }
+      if (node.type === "CatchClause" && node.param !== null) bind(node.param, null);
+      if (node.type === "ImportDeclaration")
+        for (const specifier of node.specifiers)
+          bind(
+            specifier.local,
+            null,
+            node.source.value === "effect" && specifier.type === "ImportNamespaceSpecifier",
+          );
+      if (node.type === "TSImportEqualsDeclaration")
+        bind(
+          node.id,
+          node.moduleReference,
+          node.moduleReference.type === "TSExternalModuleReference" &&
+            node.moduleReference.expression.value === "effect",
+        );
+      if (node.type === "VariableDeclaration") {
+        let scope = current;
+        while (node.kind === "var" && !scope.functionScope && scope.parent !== undefined)
+          scope = scope.parent;
+        for (const declaration of node.declarations)
+          bind(
+            declaration.id,
+            declaration.id.type === "Identifier" ? declaration.init : null,
+            false,
+            scope,
+          );
+      }
+    },
+    leave: (node) => {
+      if (
+        node.type === "FunctionDeclaration" ||
+        node.type === "FunctionExpression" ||
+        node.type === "ArrowFunctionExpression" ||
+        node.type === "BlockStatement" ||
+        node.type === "CatchClause" ||
+        node.type === "ForStatement" ||
+        node.type === "ForOfStatement" ||
+        node.type === "ForInStatement"
+      )
+        current = current.parent ?? current;
+    },
+  });
+  const isRoot = (node: Node | null, visited = new Set<SourceBinding>()): boolean => {
+    if (node === null) return false;
+    if (
+      node.type === "ParenthesizedExpression" ||
+      node.type === "TSAsExpression" ||
+      node.type === "TSNonNullExpression" ||
+      node.type === "TSSatisfiesExpression"
+    )
+      return isRoot(node.expression, visited);
+    if (node.type === "AwaitExpression") return isRoot(node.argument, visited);
+    if (node.type === "ImportExpression")
+      return node.source.type === "Literal" && node.source.value === "effect";
+    if (node.type === "CallExpression")
+      return (
+        node.callee.type === "Identifier" &&
+        node.callee.name === "require" &&
+        node.arguments[0]?.type === "Literal" &&
+        node.arguments[0].value === "effect"
+      );
+    if (node.type !== "Identifier") return false;
+    let scope = scopes.get(node);
+    while (scope !== undefined) {
+      const binding = scope.bindings.get(node.name);
+      if (binding !== undefined) {
+        if (visited.has(binding)) return false;
+        visited.add(binding);
+        return binding.root || isRoot(binding.initializer, visited);
+      }
+      scope = scope.parent;
+    }
+    return false;
+  };
+  const isMetric = (node: Node): boolean =>
+    node.type === "Identifier"
+      ? node.name === "Metric"
+      : node.type === "Literal" && node.value === "Metric";
+  let found = false;
+  walk(program, {
+    ImportDeclaration: (node) => {
+      if (
+        node.source.value === "effect" &&
+        node.specifiers.some(
+          (specifier) => specifier.type === "ImportSpecifier" && isMetric(specifier.imported),
+        )
+      )
+        found = true;
+    },
+    ExportNamedDeclaration: (node) => {
+      if (
+        node.source?.value === "effect" &&
+        node.specifiers.some((specifier) => isMetric(specifier.local))
+      )
+        found = true;
+    },
+    ExportAllDeclaration: (node) => {
+      if (node.source.value === "effect") found = true;
+    },
+    MemberExpression: (node) => {
+      if (
+        isRoot(node.object) &&
+        isMetric(node.property) &&
+        (!node.computed || node.property.type === "Literal")
+      )
+        found = true;
+    },
+    TSQualifiedName: (node) => {
+      if (isRoot(node.left) && isMetric(node.right)) found = true;
+    },
+    VariableDeclarator: (node) => {
+      if (
+        node.id.type === "ObjectPattern" &&
+        isRoot(node.init) &&
+        node.id.properties.some(
+          (property) =>
+            property.type === "Property" &&
+            isMetric(property.key) &&
+            (!property.computed || property.key.type === "Literal"),
+        )
+      )
+        found = true;
+    },
+    TSImportType: (node) => {
+      let qualifier: Node | null = node.qualifier;
+      while (qualifier?.type === "TSQualifiedName") qualifier = qualifier.left;
+      if (node.source.value === "effect" && qualifier !== null && isMetric(qualifier)) found = true;
+    },
+  });
+  return found;
+};
+
+export type SourceDependency = {
+  readonly specifier: string;
+  readonly kind: DependencyKind | undefined;
+};
+
+export const scanSourceDependencies = (source: string): ReadonlyArray<SourceDependency> => {
   const program = parse(source, { lang: "ts" }).program;
   const specifiers: Array<string> = [];
   for (const statement of program.body) {
@@ -96,9 +288,19 @@ export const scanImportSpecifiers = (source: string): ReadonlyArray<string> => {
         specifiers.push(expression.source.value);
       }
     },
+    TSImportType: (expression) => {
+      specifiers.push(expression.source.value);
+    },
   });
-  return specifiers;
+  const metric = specifiers.includes("effect") && importsEffectMetric(program);
+  return specifiers.map((specifier) => ({
+    specifier,
+    kind: specifier === "effect" && metric ? "metric-api" : classifyDependency(specifier),
+  }));
 };
+
+export const scanImportSpecifiers = (source: string): ReadonlyArray<string> =>
+  scanSourceDependencies(source).map((dependency) => dependency.specifier);
 
 export type ApplicationBoundaryViolation = {
   readonly rule: "boundary/application-otlp" | "boundary/absolute-file-import";
@@ -150,7 +352,6 @@ export const findApplicationOtlpImports = async (
           violations.push({ rule: "boundary/application-otlp", file, specifier });
           continue;
         }
-        if (specifier.startsWith(".") === false) continue;
         if (isAbsoluteSpecifier(specifier)) {
           violations.push({ rule: "boundary/absolute-file-import", file, specifier });
         }

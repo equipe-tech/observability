@@ -127,6 +127,12 @@ import {
 } from "@equipe-tech/observability-nestjs";
 ```
 
+Os tipos `ProxyPolicy` e `TelemetryRoutePolicyOptions` também mantêm seus nomes no novo pacote. Substitua os imports de tipo do antigo `@equipe-tech/observability/nestjs`:
+
+```ts
+import type { ProxyPolicy, TelemetryRoutePolicyOptions } from "@equipe-tech/observability-nestjs";
+```
+
 O núcleo mantém `./metrics`, `./node`, `./browser`, `./browser/client` e `./testing`. `effect@4.0.0-rc.111` passa a ser peer obrigatório do núcleo e dos pacotes de integração. O consumidor deve instalar uma única cópia.
 
 ## Instalar o adapter oficial de eventos
