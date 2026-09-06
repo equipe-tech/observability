@@ -38,6 +38,12 @@ const noopQueryObserver: AxiomQueryObserver = () => Effect.void;
 const defaultQueryTimeoutMilliseconds = 10_000;
 const summarizeResponse = (payload: string): string => payload.slice(0, 500);
 
+export const axiomAplQueryUrl = (baseUrl: string): URL => {
+  const base = new URL(baseUrl);
+  const path = base.hostname.endsWith(".edge.axiom.co") ? "/v1/query/_apl" : "/v1/datasets/_apl";
+  return new URL(`${path}?format=legacy`, base);
+};
+
 const runQuery = (
   env: AxiomEnvironment,
   apl: string,
@@ -45,7 +51,7 @@ const runQuery = (
 ): Effect.Effect<ReadonlyArray<unknown>> =>
   Effect.gen(function* () {
     const response = yield* Effect.promise((signal) =>
-      fetch(`${env.AXIOM_URL}/v1/datasets/_apl?format=legacy`, {
+      fetch(axiomAplQueryUrl(env.AXIOM_URL), {
         method: "POST",
         headers: {
           authorization: `Bearer ${env.AXIOM_READ_TOKEN}`,

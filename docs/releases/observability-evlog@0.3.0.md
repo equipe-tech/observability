@@ -37,7 +37,8 @@
 
 ### Correções
 
-- fix(release): provision Collector storage and enforce readiness
+- fix(release): query Axiom edge through the regional APL route
+- fix(release): start the protected Collector reliably (#83)
 - fix(release): restore protected canary secret access (#82)
 - fix: resolve stack review findings (#78)
 - fix(cli): accept Axiom default retention payloads (#24)

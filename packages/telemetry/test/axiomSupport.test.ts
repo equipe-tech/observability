@@ -3,6 +3,7 @@ import { Effect, Option, Schema } from "effect";
 import { readFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import {
+  axiomAplQueryUrl,
   axiomServiceResourceFields,
   decodeAxiomEnvironment,
   findChildSpan,
@@ -139,6 +140,23 @@ const startStubAxiom = (
   });
 
 describe("axiom query support", () => {
+  it("selects the regional APL route while preserving the global API and response format", () => {
+    for (const base of [
+      "https://us-east-1.aws.edge.axiom.co",
+      "https://eu-central-1.aws.edge.axiom.co/",
+    ]) {
+      const url = axiomAplQueryUrl(base);
+      assert.strictEqual(url.origin, new URL(base).origin);
+      assert.strictEqual(url.pathname, "/v1/query/_apl");
+      assert.strictEqual(url.searchParams.get("format"), "legacy");
+    }
+    for (const base of ["https://api.axiom.co", "http://127.0.0.1:4318/"]) {
+      const url = axiomAplQueryUrl(base);
+      assert.strictEqual(url.origin, new URL(base).origin);
+      assert.strictEqual(url.pathname, "/v1/datasets/_apl");
+      assert.strictEqual(url.searchParams.get("format"), "legacy");
+    }
+  });
   it.live("queries root spans with the run id and decodes the projected row", () =>
     Effect.gen(function* () {
       const stub = yield* Effect.promise(() =>
