@@ -147,7 +147,15 @@ export default defineConfig({
     "*.{css,html,json,jsonc,md,mdx,toml,yaml,yml}": "vp fmt --write",
   },
   test: {
-    exclude: ["**/node_modules/**", "**/*.bun.test.ts", "**/*.browser.test.ts", "repos/**"],
+    exclude: [
+      "**/node_modules/**",
+      "**/.git/**",
+      "**/.pstack/**",
+      "**/.verification/**",
+      "**/*.bun.test.ts",
+      "**/*.browser.test.ts",
+      "repos/**",
+    ],
   },
   run: {
     cache: {

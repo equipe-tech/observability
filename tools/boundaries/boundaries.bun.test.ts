@@ -221,6 +221,71 @@ describe("package boundaries", () => {
     }
   });
 
+  it("rejects root Effect metrics across import forms without banning ordinary Effect usage", async () => {
+    const temporary = await mkdtemp(join(tmpdir(), "boundaries-effect-root-"));
+    const forbidden = [
+      'import { Metric } from "effect"; Metric.counter("direct");',
+      'import { Metric as M } from "effect"; M.counter("direct");',
+      'import type { Metric as M } from "effect";',
+      'export { Metric as PublicMetric } from "effect";',
+      'export type { Metric } from "effect";',
+      'export * from "effect";',
+      'export * as E from "effect";',
+      'import * as E from "effect"; E.Metric.counter("direct");',
+      'import * as E from "effect"; E["Metric"].counter("direct");',
+      'import * as E from "effect"; const { Metric: M } = E;',
+      'import * as E from "effect"; let M; ({ Metric: M } = E); M.counter("direct");',
+      'let M; ({ Metric: M } = await import("effect")); M.counter("direct");',
+      'import * as E from "effect"; const alias = E; alias.Metric.counter("direct");',
+      'import * as E from "effect"; type T = E.Metric.Metric;',
+      'import E = require("effect"); E.Metric.counter("direct");',
+      'const { Metric: M } = require("effect");',
+      'const E = require("effect"); E.Metric.counter("direct");',
+      'require("effect").Metric.counter("direct");',
+      'const { Metric } = await import("effect");',
+      '(await import("effect")).Metric.counter("direct");',
+      'type T = import("effect").Metric.Metric;',
+    ];
+    const allowed = [
+      'import { Effect, Schema } from "effect"; Effect.succeed(Schema.String);',
+      'import * as E from "effect"; E.Effect.succeed(1);',
+      'import { Effect } from "effect"; const Metric = { counter() {} }; Metric.counter();',
+      'import * as E from "effect"; const local = { Metric: 1 }; void local.Metric;',
+      'import * as E from "effect"; function local(E: { Metric: number }) { return E.Metric; }',
+      'import * as E from "effect"; { const E = { Metric: 1 }; void E.Metric; }',
+      'const { Effect } = require("effect"); Effect.succeed(1);',
+      'const E = await import("effect"); E.Effect.succeed(1);',
+      'export { Effect as PublicEffect } from "effect";',
+      'import * as E from "effect"; let F; ({ Effect: F } = E); F.succeed(1);',
+    ];
+    try {
+      await cp(join(projects, "allowed"), temporary, { recursive: true });
+      const domain = "packages/telemetry/src/contract/root-metric.ts";
+      for (const source of forbidden) {
+        await writeFile(join(temporary, domain), source);
+        assert.deepEqual(
+          await checkPackageBoundaries(temporary),
+          [{ rule: "boundary/domain-forbidden-metric-api", file: domain, specifier: "effect" }],
+          source,
+        );
+      }
+      for (const source of allowed) {
+        await writeFile(join(temporary, domain), source);
+        assert.deepEqual(await checkPackageBoundaries(temporary), [], source);
+      }
+      await rename(
+        join(temporary, domain),
+        join(temporary, "packages/telemetry/src/MetricsRuntime.ts"),
+      );
+      for (const source of forbidden) {
+        await writeFile(join(temporary, "packages/telemetry/src/MetricsRuntime.ts"), source);
+        assert.deepEqual(await checkPackageBoundaries(temporary), [], source);
+      }
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
   it("parses external exports and import-equals declarations", async () => {
     const temporary = await mkdtemp(join(tmpdir(), "boundaries-declarations-"));
     try {

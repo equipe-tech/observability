@@ -46,6 +46,23 @@ test("scans TypeScript ESM and CommonJS application exporters", async () => {
   }
 });
 
+test("rejects absolute application imports before relative-path filtering", async () => {
+  const root = await mkdtemp(join(tmpdir(), "obs-source-boundary-"));
+  try {
+    await mkdir(join(root, "src"));
+    for (const specifier of ["/tmp/otlp.ts", "C:/telemetry/otlp.ts", "C:\\telemetry\\otlp.ts"]) {
+      await writeFile(join(root, "src", "index.ts"), `import ${JSON.stringify(specifier)};`);
+      expect(await findApplicationOtlpImports(root, ["src"])).toEqual([
+        { rule: "boundary/absolute-file-import", file: "src/index.ts", specifier },
+      ]);
+    }
+    await writeFile(join(root, "src", "index.ts"), 'import "./local.ts"; import "effect";');
+    expect(await findApplicationOtlpImports(root, ["src"])).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("allows ordinary Effect HTTP clients while rejecting OTLP imports", async () => {
   const root = await mkdtemp(join(tmpdir(), "obs-source-boundary-"));
   try {

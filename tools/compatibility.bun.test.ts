@@ -63,6 +63,120 @@ const declaredBreak = (
 });
 
 describe("compatibility gate", () => {
+  test("classifies named declaration reexport removals without leaking implementation exports", () => {
+    const directory = mkdtempSync(join(tmpdir(), "observability-public-declarations-"));
+    try {
+      writeFileSync(
+        join(directory, "package.json"),
+        JSON.stringify({
+          name: "@equipe-tech/example",
+          version: "1.0.0",
+          type: "module",
+          exports: { ".": { types: "./index.d.ts", import: "./index.js" } },
+        }),
+      );
+      writeFileSync(join(directory, "index.js"), "export {};\n");
+      writeFileSync(
+        join(directory, "impl.d.ts"),
+        "export declare const kept: 1; export declare const removed: 2; export declare const internal: 3;\n",
+      );
+      writeFileSync(join(directory, "index.d.ts"), 'export { kept, removed } from "./impl.js";\n');
+      const baseline = inspectPackageSurface(directory).surface;
+      writeFileSync(join(directory, "index.d.ts"), 'export { kept } from "./impl.js";\n');
+      const candidate = inspectPackageSurface(directory).surface;
+      expect(baseline.declarationSymbols).toEqual([".:kept", ".:removed"]);
+      expect(candidate.declarationSymbols).toEqual([".:kept"]);
+      expect(classifyPackageChange(baseline, candidate, "1.0.1", [])).toEqual([
+        expect.objectContaining({
+          code: "OBS_PACKAGE_SYMBOL_REMOVED",
+          path: "symbols/.:removed",
+          severity: "breaking",
+          satisfied: false,
+        }),
+      ]);
+      const declaration = declaredBreak("OBS_PACKAGE_SYMBOL_REMOVED", "2.0.0", "symbols/.:removed");
+      expect(classifyPackageChange(baseline, candidate, "2.0.0", [declaration])[0]?.satisfied).toBe(
+        true,
+      );
+      writeFileSync(
+        join(directory, "impl.d.ts"),
+        "export declare const kept: 1; export declare const removed: 2; export declare const anotherInternal: 3;\n",
+      );
+      expect(
+        classifyPackageChange(candidate, inspectPackageSurface(directory).surface, "1.0.1", []),
+      ).toEqual([]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("extracts public aliases, defaults, namespaces and transitive type stars per entrypoint", () => {
+    const directory = mkdtempSync(join(tmpdir(), "observability-declaration-syntax-"));
+    try {
+      writeFileSync(
+        join(directory, "package.json"),
+        JSON.stringify({
+          name: "@equipe-tech/example",
+          version: "1.0.0",
+          type: "module",
+          exports: {
+            ".": { types: "./index.d.ts", import: "./index.js" },
+            "./default": { types: "./default.d.ts", import: "./index.js" },
+            "./types": { types: "./types.d.mts", import: "./index.js" },
+          },
+        }),
+      );
+      writeFileSync(join(directory, "index.js"), "export {};\n");
+      writeFileSync(
+        join(directory, "impl.d.ts"),
+        "export declare const internal: 1; export interface InternalType {} export default class Hidden {}\n",
+      );
+      writeFileSync(
+        join(directory, "default.d.ts"),
+        "export default class Implementation { method(): void; }\n",
+      );
+      writeFileSync(
+        join(directory, "types.d.mts"),
+        "export interface PublicType {} export type OtherType = string;\n",
+      );
+      writeFileSync(
+        join(directory, "barrel.d.ts"),
+        'export { internal as publicName } from "./impl.js"; export type * from "./types.mjs"; export * from "./index.js";\n',
+      );
+      writeFileSync(
+        join(directory, "index.d.ts"),
+        [
+          'export * from "./barrel.js";',
+          'export * from "./default.js";',
+          'export type { InternalType as PublicAlias } from "./impl.js";',
+          'export { default as NamedDefault } from "./impl.js";',
+          'export * as Namespace from "./impl.js";',
+          'declare const local: 1; export { local as "public-string" };',
+          "export declare const first: 1, second: 2;",
+          "export declare namespace PublicNamespace { const nested: 1; }",
+        ].join("\n"),
+      );
+      expect(inspectPackageSurface(directory).surface.declarationSymbols).toEqual(
+        [
+          ".:NamedDefault",
+          ".:Namespace",
+          ".:OtherType",
+          ".:PublicAlias",
+          ".:PublicNamespace",
+          ".:PublicType",
+          ".:first",
+          ".:public-string",
+          ".:publicName",
+          ".:second",
+          "./default:default",
+          "./types:OtherType",
+          "./types:PublicType",
+        ].sort(),
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
   test("emits formatter-stable compatibility artifacts across scalar array widths", async () => {
     const directory = mkdtempSync(join(tmpdir(), "observability-compatibility-format-"));
     try {

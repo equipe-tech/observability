@@ -5,8 +5,9 @@ import {
   classifyDependency,
   decodePackageManifest,
   packageNameForSpecifier,
-  scanImportSpecifiers,
+  scanSourceDependencies,
   type DependencyKind,
+  type SourceDependency,
 } from "../packages/cli/src/SourceBoundary.ts";
 
 export { decodePackageManifest };
@@ -118,14 +119,13 @@ const classifyRoleDependency = (specifier: string): DependencyKind | undefined =
 const evaluateSpecifier = (
   role: BoundaryRole,
   file: string,
-  specifier: string,
+  dependency: SourceDependency,
 ): ReadonlyArray<BoundaryViolation> => {
-  const kind = classifyRoleDependency(specifier);
+  const { specifier } = dependency;
+  const kind = dependency.kind ?? classifyRoleDependency(specifier);
   if (kind === undefined || !forbiddenByRole.get(role)?.has(kind)) return [];
   return [{ rule: `boundary/${role}-forbidden-${kind}`, file, specifier }];
 };
-
-const importSpecifiers = (source: string): ReadonlyArray<string> => scanImportSpecifiers(source);
 
 const sourcePathViolation = (
   projectRoot: string,
@@ -177,8 +177,9 @@ export const checkPackageBoundaries = async (
       const absolute = join(directory, sourcePath);
       const file = relative(projectRoot, absolute).split(sep).join("/");
       const source = await readFile(absolute, "utf8");
-      for (const specifier of importSpecifiers(source)) {
-        violations.push(...evaluateSpecifier(sourceRole(file), file, specifier));
+      for (const dependencyImport of scanSourceDependencies(source)) {
+        const { specifier } = dependencyImport;
+        violations.push(...evaluateSpecifier(sourceRole(file), file, dependencyImport));
         const pathViolation = sourcePathViolation(projectRoot, directory, file, specifier);
         if (pathViolation !== undefined) {
           violations.push(pathViolation);

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Effect, Schema } from "effect";
 import { Range, validRange } from "semver";
+import { parse, type Node } from "yuku-parser";
 import { compareParsedPeerRanges } from "./peer-range-coverage.ts";
 import { Contract } from "../packages/telemetry/src/index.ts";
 import { decodeCompatibilityJson } from "./compatibility-json.ts";
@@ -161,54 +162,72 @@ const exportConditions = (document: typeof PackageDocument.Type): ReadonlyArray<
     )
     .sort();
 
+const declarationBindingNames = (node: Node): ReadonlyArray<string> => {
+  if (node.type === "Identifier") return [node.name];
+  if (node.type === "ObjectPattern")
+    return node.properties.flatMap((property) =>
+      declarationBindingNames(property.type === "RestElement" ? property.argument : property.value),
+    );
+  if (node.type === "ArrayPattern")
+    return node.elements.flatMap((element) =>
+      element === null ? [] : declarationBindingNames(element),
+    );
+  if (node.type === "AssignmentPattern") return declarationBindingNames(node.left);
+  if (node.type === "RestElement") return declarationBindingNames(node.argument);
+  return [];
+};
+
 const declarationSymbols = (
   packageRoot: string,
   document: typeof PackageDocument.Type,
 ): ReadonlyArray<string> => {
   const symbols = new Set<string>();
-  const visited = new Set<string>();
-  const visit = (path: string, exportName: string): void => {
-    const visitKey = `${exportName}\u0000${path}`;
-    if (visited.has(visitKey) || !existsSync(path)) return;
-    visited.add(visitKey);
-    const content = readFileSync(path, "utf8");
-    for (const match of content.matchAll(
-      /export\s+(?:declare\s+)?(?:abstract\s+)?(?:class|function|interface|type|enum|const|let|var|namespace)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g,
-    )) {
-      const name = match[1];
-      if (name !== undefined) symbols.add(`${exportName}:${name}`);
-    }
-    for (const match of content.matchAll(/export\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
-      const name = match[1];
-      if (name !== undefined) symbols.add(`${exportName}:${name}`);
-    }
-    for (const match of content.matchAll(/export\s*\{([^}]+)\}/g)) {
-      const members = match[1];
-      if (members === undefined) continue;
-      for (const member of members.split(",")) {
-        const name = member
-          .trim()
-          .replace(/^type\s+/, "")
-          .split(/\s+as\s+/)
-          .at(-1)
-          ?.trim();
-        if (name !== undefined && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name))
-          symbols.add(`${exportName}:${name}`);
+  const visit = (path: string, visited: Set<string>): ReadonlySet<string> => {
+    const names = new Set<string>();
+    if (visited.has(path) || !existsSync(path)) return names;
+    visited.add(path);
+    const program = parse(readFileSync(path, "utf8"), { lang: "ts" }).program;
+    for (const statement of program.body) {
+      if (statement.type === "ExportDefaultDeclaration") names.add("default");
+      if (statement.type === "ExportNamedDeclaration") {
+        for (const member of statement.specifiers) {
+          names.add(
+            member.exported.type === "Identifier" ? member.exported.name : member.exported.value,
+          );
+        }
+        const declaration = statement.declaration;
+        if (declaration?.type === "VariableDeclaration") {
+          for (const binding of declaration.declarations)
+            for (const name of declarationBindingNames(binding.id)) names.add(name);
+        } else if (declaration !== null && "id" in declaration && declaration.id !== null) {
+          if (declaration.id.type === "Identifier") names.add(declaration.id.name);
+        }
       }
-    }
-    for (const match of content.matchAll(/export\s+(?:\*|\{[^}]+\})\s+from\s+["']([^"']+)["']/g)) {
-      const reference = match[1];
-      if (reference === undefined || !reference.startsWith(".")) continue;
-      const resolved = join(dirname(path), reference.replace(/[.]js$/, ".d.ts"));
-      visit(
-        existsSync(resolved) ? resolved : join(resolved.replace(/[.]d[.]ts$/, ""), "index.d.ts"),
-        exportName,
+      if (statement.type !== "ExportAllDeclaration") continue;
+      if (statement.exported !== null) {
+        names.add(
+          statement.exported.type === "Identifier"
+            ? statement.exported.name
+            : statement.exported.value,
+        );
+        continue;
+      }
+      const reference = statement.source.value;
+      if (!reference.startsWith(".")) continue;
+      const target = resolve(dirname(path), reference.replace(/\.(m|c)?js$/, ".d.$1ts"));
+      const resolved = [target, `${target}.d.ts`, join(target, "index.d.ts")].find(
+        (candidate) => existsSync(candidate) && statSync(candidate).isFile(),
       );
+      if (resolved !== undefined)
+        for (const name of visit(resolved, visited)) if (name !== "default") names.add(name);
     }
+    return names;
   };
   for (const [exportName, target] of exportEntries(document)) {
     const typesPath = exportTypesPath(target);
-    if (typesPath !== undefined) visit(join(packageRoot, typesPath), exportName);
+    if (typesPath === undefined) continue;
+    for (const name of visit(resolve(packageRoot, typesPath), new Set()))
+      symbols.add(`${exportName}:${name}`);
   }
   return [...symbols].sort();
 };

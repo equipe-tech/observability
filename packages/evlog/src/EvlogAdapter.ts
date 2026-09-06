@@ -7,6 +7,11 @@ import {
   AdapterName,
   BrowserEvents,
   Contract,
+  CorrelationContext,
+  CurrentDataPolicy,
+  RequestId,
+  RunId,
+  AuditOutcome,
   instanceResourceAttributes,
   isCommittedAuditRecord,
   registerOfficialAdapter,
@@ -38,10 +43,13 @@ import {
   type SignedOptions,
   type WideEvent,
 } from "evlog";
-import { sendBatchToOTLP } from "evlog/otlp";
-import { createDrainPipeline, type PipelineDrainFn } from "evlog/pipeline";
-import { Clock, DateTime, Effect, Layer, Option, Schema } from "effect";
+import { Clock, DateTime, Effect, Layer, Option, Random, Schema } from "effect";
 import { sealEvlogDeliveryReceipt, type EvlogDeliveryReceipt } from "./DeliveryEvidence.ts";
+import {
+  startEvlogTransport,
+  type EvlogTransport,
+  type TransportAcceptance,
+} from "./EvlogTransport.ts";
 import { EvlogAdapterError } from "./EvlogAdapterError.ts";
 
 export type { EvlogDeliveryReceipt } from "./DeliveryEvidence.ts";
@@ -119,7 +127,7 @@ type ResolvedOptions = {
 type AuditReservationTerminal = "delivered" | "retry";
 
 type OfferResult =
-  | { readonly kind: "queued" }
+  | { readonly kind: "queued"; readonly accepted: Promise<TransportAcceptance> }
   | {
       readonly kind: "closed" | "queue-overflow";
       readonly droppedAt: string;
@@ -208,6 +216,17 @@ const decodeScalar = Schema.decodeUnknownOption(
 );
 const decodeTraceId = Schema.decodeUnknownOption(TraceId);
 const decodeSpanId = Schema.decodeUnknownOption(SpanId);
+const decodeNativePayload = Schema.decodeUnknownOption(
+  Schema.Struct({
+    outcome: Schema.optional(AuditOutcome),
+    durationMs: Schema.optional(Contract.EventDuration),
+    http: Schema.optional(Contract.HttpContext),
+    error: Schema.optional(Contract.ErrorContext),
+    severity: Schema.optional(Contract.EventSeverity),
+  }),
+);
+const decodeRequestId = Schema.decodeUnknownOption(RequestId);
+const decodeRunId = Schema.decodeUnknownOption(RunId);
 const textEncoder = new TextEncoder();
 const globalEnvelopeFields = new Set([
   "timestamp",
@@ -227,6 +246,12 @@ const globalEnvelopeFields = new Set([
   "event.name",
   "traceId",
   "spanId",
+  "runId",
+  "outcome",
+  "http",
+  "error",
+  "event.outcome",
+  "event.duration_ms",
 ]);
 let globalLoggerOwner: symbol | undefined;
 
@@ -603,7 +628,7 @@ export const makeEvlogAdapter = (
   const loggerOwner = Symbol("evlog-adapter");
   let latestDeliveryReceipt: EvlogDeliveryReceipt | undefined;
   let pendingBytes = 0;
-  let pipeline: PipelineDrainFn<AdmittedRecord> | undefined;
+  let pipeline: EvlogTransport<AdmittedRecord> | undefined;
   let started = false;
   let detached = false;
 
@@ -622,6 +647,7 @@ export const makeEvlogAdapter = (
           ),
         );
         const clock = yield* Clock.Clock;
+        const random = yield* Random.Random;
         const dropTimestamp = (): string =>
           DateTime.formatIso(DateTime.makeUnsafe(clock.currentTimeMillisUnsafe()));
         const makeAuditReservation = (): AuditReservation => {
@@ -702,6 +728,7 @@ export const makeEvlogAdapter = (
           );
         }
         started = true;
+        if (resolvedOptions.installGlobalLogger) globalLoggerOwner = loggerOwner;
         let accepting = true;
         let closePromise: Promise<void> | undefined;
         let probeSequence = 0;
@@ -750,50 +777,21 @@ export const makeEvlogAdapter = (
             pendingBytes = Math.max(0, pendingBytes - record.serializedBytes);
         };
 
-        pipeline = createDrainPipeline<AdmittedRecord>({
-          batch: {
-            size: resolvedOptions.batchSize,
-            intervalMs: resolvedOptions.batchIntervalMillis,
+        pipeline = yield* startEvlogTransport<AdmittedRecord>(
+          {
+            endpoint: context.telemetryConfig.otlpEndpoint.toString(),
+            serviceName: context.identity.serviceName,
+            resourceAttributes: resourceAttributesFor(context),
+            maximumBufferedEvents: resolvedOptions.maximumBufferedEvents,
+            batchSize: resolvedOptions.batchSize,
+            batchIntervalMillis: resolvedOptions.batchIntervalMillis,
+            maximumAttempts: resolvedOptions.maximumAttempts,
+            initialRetryDelayMillis: resolvedOptions.initialRetryDelayMillis,
+            maximumRetryDelayMillis: resolvedOptions.maximumRetryDelayMillis,
+            transportTimeoutMillis: resolvedOptions.transportTimeoutMillis,
+            transportRetries: resolvedOptions.transportRetries,
           },
-          retry: {
-            maxAttempts: resolvedOptions.maximumAttempts,
-            backoff: "exponential",
-            initialDelayMs: resolvedOptions.initialRetryDelayMillis,
-            maxDelayMs: resolvedOptions.maximumRetryDelayMillis,
-          },
-          maxBufferSize: resolvedOptions.maximumBufferedEvents,
-          onDropped: (records, error) => {
-            release(records);
-            for (const record of records) {
-              const droppedAt = dropTimestamp();
-              incrementReason(
-                dropState,
-                error === undefined ? "count-overflow" : "transport",
-                droppedAt,
-              );
-              if (record.auditRecordId !== undefined && record.auditReservation !== undefined) {
-                completeAuditReservation(record.auditRecordId, record.auditReservation, "retry");
-                incrementAuditDrop(
-                  auditState,
-                  error === undefined ? "queue-overflow" : "transport",
-                  droppedAt,
-                );
-              }
-              fallback(record);
-            }
-          },
-        })(async (records) => {
-          try {
-            await sendBatchToOTLP(
-              records.map((record) => record.event),
-              {
-                endpoint: context.telemetryConfig.otlpEndpoint.toString(),
-                serviceName: context.identity.serviceName,
-                resourceAttributes: resourceAttributesFor(context),
-                timeout: resolvedOptions.transportTimeoutMillis,
-                retries: resolvedOptions.transportRetries,
-              },
-            );
+          (records) => {
             for (const record of records) {
               if (record.auditRecordId !== undefined && record.auditReservation !== undefined) {
                 deliveredAuditRecords.set(record.auditRecordId, clock.currentTimeMillisUnsafe());
@@ -810,10 +808,44 @@ export const makeEvlogAdapter = (
               }
             }
             release(records);
-          } catch {
-            throw adapterErrors.TRANSPORT_FAILED();
-          }
-        });
+          },
+          (records, reason) => {
+            release(records);
+            for (const record of records) {
+              const droppedAt = dropTimestamp();
+              incrementReason(dropState, reason, droppedAt);
+              if (record.auditRecordId !== undefined && record.auditReservation !== undefined) {
+                completeAuditReservation(record.auditRecordId, record.auditReservation, "retry");
+                incrementAuditDrop(
+                  auditState,
+                  reason === "count-overflow" ? "queue-overflow" : "transport",
+                  droppedAt,
+                );
+              }
+              fallback(record);
+            }
+          },
+        ).pipe(
+          Effect.onExit((exit) =>
+            Effect.sync(() => {
+              if (exit._tag === "Failure") {
+                started = false;
+                if (globalLoggerOwner === loggerOwner) globalLoggerOwner = undefined;
+              }
+            }),
+          ),
+          Effect.mapError((cause) =>
+            safeAdapterFailure(
+              "The evlog transport could not start. Check the installed package and retry startup.",
+              new EvlogAdapterError({
+                code: "OBS_EVLOG_ADAPTER_CONFIG_INVALID",
+                message:
+                  "The evlog transport worker could not start. Check the installed package and retry startup.",
+                cause,
+              }),
+            ),
+          ),
+        );
 
         const offer = (record: AdmittedRecord): OfferResult => {
           if (!accepting) {
@@ -828,18 +860,11 @@ export const makeEvlogAdapter = (
             fallback(record);
             return { kind: "queue-overflow", droppedAt };
           }
-          if (
-            record.auditRecordId !== undefined &&
-            (pipeline?.pending ?? 0) >= resolvedOptions.maximumBufferedEvents
-          ) {
-            const droppedAt = dropTimestamp();
-            incrementReason(dropState, "count-overflow", droppedAt);
-            fallback(record);
-            return { kind: "queue-overflow", droppedAt };
-          }
           pendingBytes += record.serializedBytes;
-          pipeline?.(record);
-          return { kind: "queued" };
+          return {
+            kind: "queued",
+            accepted: pipeline?.offer(record) ?? Promise.resolve("transport"),
+          };
         };
 
         const admitContract = (event: TelemetryEvent, admission: EventAdmissionMetadata) =>
@@ -989,7 +1014,9 @@ export const makeEvlogAdapter = (
           if (
             Option.isNone(rawName) &&
             Option.isSome(resolvedOptions.requestEventName) &&
-            drainContext.request !== undefined
+            (drainContext.request !== undefined ||
+              drainContext.event.method !== undefined ||
+              drainContext.event.path !== undefined)
           ) {
             drainContext.event["event.name"] = resolvedOptions.requestEventName.value;
             rawName = resolvedOptions.requestEventName;
@@ -1026,41 +1053,77 @@ export const makeEvlogAdapter = (
             }
             attributes[name] = scalar.value;
           }
-          const validation = validateContractEvent(context.contract, rawName.value, attributes);
-          if (validation instanceof Contract.InvalidTelemetryEvent) {
+          const requestIdValue = drainContext.request?.requestId ?? drainContext.event.requestId;
+          const requestId = decodeRequestId(requestIdValue);
+          const runId = decodeRunId(drainContext.event.runId);
+          if (
+            (requestIdValue !== undefined && Option.isNone(requestId)) ||
+            (drainContext.event.runId !== undefined && Option.isNone(runId)) ||
+            Option.isSome(traceId) !== Option.isSome(spanId)
+          ) {
             incrementReason(dropState, "contract-rejected", dropTimestamp());
             return;
           }
-          const fields: { [attributeName: string]: Contract.AttributeValue } = {
-            "event.name": rawName.value,
-            "event.kind": "wide",
-            "event.type": definition.kind,
-            "event.severity": definition.defaultSeverity,
-            "event.outcome": "success",
-            "event.timestamp": timestamp.value,
-            ...attributes,
-          };
-          if (definition.kind === "request") {
-            const method = decodeString(drainContext.request?.method);
-            const path = decodeString(drainContext.request?.path);
-            const requestId = decodeString(drainContext.request?.requestId);
-            const status = decodeNumber(drainContext.event.status);
-            const duration = decodeNumber(drainContext.event.duration);
-            if (Option.isSome(method)) fields["http.request.method"] = method.value;
-            if (Option.isSome(path)) fields["http.route"] = path.value;
-            if (Option.isSome(requestId)) fields["request.id"] = requestId.value;
-            if (Option.isSome(status)) fields["http.response.status_code"] = status.value;
-            if (Option.isSome(duration)) fields["event.duration_ms"] = duration.value;
+          const status = decodeNumber(drainContext.event.status);
+          const outcome = drainContext.event["event.outcome"] ?? drainContext.event.outcome;
+          const http =
+            drainContext.event.http ??
+            (definition.kind === "request"
+              ? {
+                  method: drainContext.request?.method ?? drainContext.event.method,
+                  route: drainContext.request?.path ?? drainContext.event.path,
+                  statusCode: drainContext.event.status,
+                }
+              : undefined);
+          const payload = decodeNativePayload({
+            outcome:
+              outcome ??
+              (definition.kind === "request" && Option.isSome(status)
+                ? status.value >= 400
+                  ? "failure"
+                  : "success"
+                : undefined),
+            durationMs:
+              drainContext.event["event.duration_ms"] ??
+              drainContext.event.durationMs ??
+              drainContext.event.duration,
+            http,
+            error: definition.kind === "defect" ? drainContext.event.error : undefined,
+            severity: drainContext.event.level,
+          });
+          if (Option.isNone(payload)) {
+            incrementReason(dropState, "contract-rejected", dropTimestamp());
+            return;
           }
-          offer(
-            admittedRecord(
-              wideEventFor(
-                context,
-                timestamp.value,
-                definition.defaultSeverity,
-                finalCanonicalFields(context.policy, fields, 0),
-                Option.getOrUndefined(traceId),
-                Option.getOrUndefined(spanId),
+          const correlation = new CorrelationContext({
+            trace:
+              Option.isSome(traceId) && Option.isSome(spanId)
+                ? { _tag: "Traced", traceId: traceId.value, spanId: spanId.value }
+                : { _tag: "Untraced" },
+            requestId,
+            runId,
+          });
+          const nativePayload: Contract.CanonicalEventPayload = {
+            timestamp: timestamp.value,
+            attributes,
+            correlation,
+          };
+          for (const [name, value] of Object.entries(payload.value)) {
+            if (value !== undefined) Object.assign(nativePayload, { [name]: value });
+          }
+          Effect.runSync(
+            Contract.admitEvent(context.contract, definition, nativePayload).pipe(
+              Effect.provideService(CurrentDataPolicy, context.policy),
+              Effect.provideService(Random.Random, random),
+              Effect.flatMap((admission) =>
+                admission.decision === "recorded"
+                  ? admitContract(admission.event, admission.admission)
+                  : Effect.void,
+              ),
+              Effect.catchTag("InvalidTelemetryEvent", () =>
+                Effect.sync(() => {
+                  incrementReason(dropState, "contract-rejected", dropTimestamp());
+                }),
               ),
             ),
           );
@@ -1096,6 +1159,7 @@ export const makeEvlogAdapter = (
               drain: globalDrain,
             });
           } catch (cause) {
+            yield* Effect.promise(() => pipeline?.close() ?? Promise.resolve());
             globalLoggerOwner = undefined;
             started = false;
             return yield* safeAdapterFailure(
@@ -1251,6 +1315,8 @@ export const makeEvlogAdapter = (
                 completeAuditReservation(recordId, reservation, "retry");
                 return incrementAuditDrop(auditState, admission.kind, admission.droppedAt);
               }
+              const accepted = await admission.accepted;
+              if (accepted !== "queued") return { kind: "dropped", reason: accepted };
               auditState.published += 1;
               return { kind: "published" };
             }
@@ -1277,28 +1343,39 @@ export const makeEvlogAdapter = (
         );
 
         const flush = Effect.promise(() => pipeline?.flush() ?? Promise.resolve());
+        const releaseLogger = (): void => {
+          if (globalLoggerOwner !== loggerOwner) return;
+          try {
+            if (!detached && !probeLogger()) detached = true;
+            if (!detached) initializeLogger({ enabled: false });
+          } finally {
+            globalLoggerOwner = undefined;
+          }
+        };
+        const stop = Effect.promise(async () => {
+          accepting = false;
+          try {
+            await pipeline?.close();
+          } finally {
+            releaseLogger();
+          }
+        });
         const close = Effect.promise(() => {
           accepting = false;
-          const activePipeline = pipeline;
-          const pending =
-            closePromise ??
-            (activePipeline?.flush() ?? Promise.resolve())
-              .then(() => activePipeline?.settled() ?? Promise.resolve())
-              .then(() => {
-                if (globalLoggerOwner !== loggerOwner) return;
-                if (!detached && !probeLogger()) detached = true;
-                if (!detached) initializeLogger({ enabled: false });
-                globalLoggerOwner = undefined;
-              });
-          closePromise = pending;
-          return pending;
-        });
+          closePromise ??= pipeline?.flush() ?? Promise.resolve();
+          return closePromise;
+        }).pipe(Effect.ensuring(stop));
+
         return {
           flush,
           close,
           eventLayer: Option.some(eventLayer),
           auditLayer: Option.some(auditLayer),
-          degraded: () => dropState.total > 0 || auditState.dropped > 0 || detached,
+          degraded: () =>
+            dropState.total > 0 ||
+            auditState.dropped > 0 ||
+            detached ||
+            (pipeline?.failed ?? false),
         };
       }),
   });

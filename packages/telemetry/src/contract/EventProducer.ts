@@ -5,6 +5,8 @@ import {
   type AttributeDefinitionsInput,
   type AuditActionDefinitionInput,
   type CompiledEventDefinition,
+  type EventContractRegistry,
+  type CompiledAuditActionDefinition,
   type TelemetryContract,
   type TelemetryContractInput,
   telemetryContractProvenance,
@@ -179,7 +181,7 @@ const parseEventPayload = <Payload>(
 
 const parseAttributes = (
   policy: DataPolicy,
-  contract: TelemetryContract<TelemetryContractInput>,
+  contract: AdmissionContract,
   definition: CompiledEventDefinition,
   attributes: EmittedAttributes,
 ):
@@ -383,13 +385,9 @@ const shouldRecord = Effect.fn("shouldRecord")(function* (
 
 const buildEvent = Effect.fn("buildEvent")(function* (
   definition: CompiledEventDefinition,
-  contract: TelemetryContract<TelemetryContractInput>,
+  contract: AdmissionContract,
   attributes: EventAttributes,
-  payload: EventPayloadForKind<
-    "request" | "operation" | "domain" | "defect" | "audit",
-    AttributeDefinitionsInput,
-    TelemetryContractInput
-  >,
+  payload: CanonicalEventPayload,
 ): Effect.fn.Return<TelemetryEvent, InvalidTelemetryEvent> {
   const rawTimestamp =
     payload.timestamp ?? DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
@@ -408,7 +406,11 @@ const buildEvent = Effect.fn("buildEvent")(function* (
   };
   switch (definition.kind) {
     case "request": {
-      if (!("durationMs" in payload) || !("http" in payload) || !("outcome" in payload)) {
+      if (
+        payload.durationMs === undefined ||
+        payload.http === undefined ||
+        payload.outcome === undefined
+      ) {
         return yield* eventError(
           "OBS_EVENT_INVALID_FIELD",
           `Request event "${definition.name}" requires outcome, durationMs, and http fields. Add every required field.`,
@@ -421,7 +423,7 @@ const buildEvent = Effect.fn("buildEvent")(function* (
       return { ...base, kind: "request", outcome, durationMs, http };
     }
     case "operation": {
-      if (!("durationMs" in payload) || !("outcome" in payload)) {
+      if (payload.durationMs === undefined || payload.outcome === undefined) {
         return yield* eventError(
           "OBS_EVENT_INVALID_FIELD",
           `Operation event "${definition.name}" requires outcome and durationMs. Add both fields.`,
@@ -433,7 +435,7 @@ const buildEvent = Effect.fn("buildEvent")(function* (
       return { ...base, kind: "operation", outcome, durationMs };
     }
     case "domain": {
-      if (!("outcome" in payload)) {
+      if (payload.outcome === undefined) {
         return yield* eventError(
           "OBS_EVENT_INVALID_FIELD",
           `Domain event "${definition.name}" requires an outcome. Add the required field.`,
@@ -444,7 +446,7 @@ const buildEvent = Effect.fn("buildEvent")(function* (
       return { ...base, kind: "domain", outcome };
     }
     case "defect": {
-      if (!("error" in payload)) {
+      if (payload.error === undefined) {
         return yield* eventError(
           "OBS_EVENT_INVALID_FIELD",
           `Defect event "${definition.name}" requires error context. Add error type, message, and retryable fields.`,
@@ -462,7 +464,7 @@ const buildEvent = Effect.fn("buildEvent")(function* (
       return { ...base, kind: "defect", outcome: "failure", error };
     }
     case "audit": {
-      if (!("audit" in payload) || !("outcome" in payload)) {
+      if (payload.audit === undefined || payload.outcome === undefined) {
         return yield* eventError(
           "OBS_EVENT_INVALID_FIELD",
           `Audit event "${definition.name}" requires outcome and audit context. Add both fields.`,
@@ -513,6 +515,45 @@ const buildEvent = Effect.fn("buildEvent")(function* (
   }
 });
 
+type AdmissionContract = EventContractRegistry & {
+  readonly auditActionByName: ReadonlyMap<string, CompiledAuditActionDefinition>;
+};
+
+export type CanonicalEventPayload = {
+  readonly timestamp?: string;
+  readonly severity?: EventSeverity;
+  readonly correlation?: CorrelationContext;
+  readonly attributes: EmittedAttributes;
+  readonly outcome?: AuditOutcome;
+  readonly durationMs?: number;
+  readonly http?: HttpContext;
+  readonly error?: ErrorContext;
+  readonly audit?: AuditContextInput;
+};
+
+export const admitEvent = Effect.fn("admitEvent")(function* (
+  contract: AdmissionContract,
+  definition: CompiledEventDefinition,
+  payload: CanonicalEventPayload,
+) {
+  const policy = yield* CurrentDataPolicy;
+  const parsedAttributes = parseAttributes(policy, contract, definition, payload.attributes);
+  if (parsedAttributes instanceof InvalidTelemetryEvent) return yield* parsedAttributes;
+  const event = yield* buildEvent(definition, contract, parsedAttributes.attributes, payload);
+  if (!(yield* shouldRecord(definition, event.outcome))) {
+    return { decision: "sampled_out", name: definition.name } satisfies Omit<
+      Extract<EmitReceipt, { decision: "sampled_out" }>,
+      "contractProvenance"
+    >;
+  }
+  return {
+    decision: "recorded",
+    event,
+    redactions: parsedAttributes.redactions,
+    admission: parsedAttributes.admission,
+  } satisfies Omit<Extract<EmitReceipt, { decision: "recorded" }>, "contractProvenance">;
+});
+
 export const makeEventProducer = <const Definition extends TelemetryContractInput>(
   contract: TelemetryContract<Definition>,
 ): EventProducer<Definition> => {
@@ -531,32 +572,17 @@ export const makeEventProducer = <const Definition extends TelemetryContractInpu
       if (parsedPayload instanceof InvalidTelemetryEvent) {
         return yield* parsedPayload;
       }
-      const policy = yield* CurrentDataPolicy;
-      const parsedAttributes = parseAttributes(
-        policy,
-        contract,
-        definition,
-        parsedPayload.attributes,
-      );
-      if (parsedAttributes instanceof InvalidTelemetryEvent) {
-        return yield* parsedAttributes;
-      }
-      const event = yield* buildEvent(
-        definition,
-        contract,
-        parsedAttributes.attributes,
-        parsedPayload,
-      );
-      if (!(yield* shouldRecord(definition, event.outcome))) {
-        return { decision: "sampled_out", name: definition.name, contractProvenance };
+      const admitted = yield* admitEvent(contract, definition, parsedPayload);
+      if (admitted.decision === "sampled_out") {
+        return { ...admitted, contractProvenance };
       }
       const sink = yield* TelemetryEventSink;
-      yield* sink.record(event, parsedAttributes.admission);
+      yield* sink.record(admitted.event, admitted.admission);
       return {
         decision: "recorded",
-        event,
-        redactions: parsedAttributes.redactions,
-        admission: parsedAttributes.admission,
+        event: admitted.event,
+        redactions: admitted.redactions,
+        admission: admitted.admission,
         contractProvenance,
       };
     }),
