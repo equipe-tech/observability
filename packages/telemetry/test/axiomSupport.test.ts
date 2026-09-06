@@ -38,6 +38,19 @@ const MplQueryBody = Schema.Struct({
 });
 const decodeAplQueryBody = Schema.decodeUnknownOption(AplQueryBody);
 const decodeMplQueryBody = Schema.decodeUnknownOption(MplQueryBody);
+const CapturedDatasetSchema = Schema.Array(
+  Schema.Struct({
+    signal: Schema.Literals(["traces", "logs"]),
+    fields: Schema.Array(Schema.Struct({ name: Schema.String, type: Schema.String })),
+  }),
+);
+const decodeCapturedDatasetSchema = Schema.decodeUnknownSync(CapturedDatasetSchema);
+const capturedDatasetSchema = decodeCapturedDatasetSchema(
+  JSON.parse(
+    await readFile(new URL("./fixtures/axiom-canary-schema.json", import.meta.url), "utf8"),
+  ),
+);
+
 const productionCollectorConfig = await readFile(
   new URL("../../cli/src/assets/production.yaml", import.meta.url),
   "utf8",
@@ -157,6 +170,29 @@ describe("axiom query support", () => {
       assert.strictEqual(url.searchParams.get("format"), "legacy");
     }
   });
+  it.live("references only columns observed in the deployed Axiom schemas", () =>
+    Effect.gen(function* () {
+      for (const schema of capturedDatasetSchema) {
+        const stub = yield* Effect.promise(() => startStubAxiom([]));
+        const lookup =
+          schema.signal === "traces"
+            ? findRootSpan(stub.env, "test-run-1", "0.1.0").pipe(Effect.asVoid)
+            : findLogs(stub.env, "test-run-1", "0.1.0").pipe(Effect.asVoid);
+        yield* lookup.pipe(Effect.ensuring(Effect.sync(() => stub.server.close())));
+        const query = stub.queries[0];
+        assert.isDefined(query);
+        const references = [...query.query.matchAll(/(?<!\])\['([^']+)'\]/g)].slice(1);
+        assert.isAbove(references.length, 0);
+        for (const reference of references) {
+          assert.include(
+            schema.fields.map((field) => field.name),
+            reference[1],
+          );
+        }
+      }
+    }),
+  );
+
   it.live("queries root spans with the run id and decodes the projected row", () =>
     Effect.gen(function* () {
       const stub = yield* Effect.promise(() =>
@@ -199,9 +235,10 @@ describe("axiom query support", () => {
       assert.include(query.query, "name == 'canary.operation'");
       assert.include(query.query, "service_name = tostring(['service.name'])");
       assert.include(query.query, "service_version = tostring(['service.version'])");
+      assert.include(query.query, "service_namespace = tostring(['service.namespace'])");
       assert.include(
         query.query,
-        "environment_name = tostring(['resource.custom']['deployment.environment.name'])",
+        "environment_name = tostring(['resource.deployment.environment.name'])",
       );
       assert.include(
         query.query,
@@ -274,7 +311,7 @@ describe("axiom query support", () => {
       assert.isDefined(query);
       assert.include(query.query, "['e2e-logs']");
       assert.deepStrictEqual(axiomServiceResourceFields, {
-        namespace: "['resource.custom']['service.namespace']",
+        namespace: "['service.namespace']",
         name: "['service.name']",
         version: "['service.version']",
       });
@@ -287,14 +324,59 @@ describe("axiom query support", () => {
       assert.include(query.query, `${axiomServiceResourceFields.version} == '0.1.0'`);
       assert.include(productionCollectorConfig, "otlphttp/logs:");
       assert.include(productionCollectorConfig, "X-Axiom-Dataset: ${env:AXIOM_DATASET_LOGS}");
+      assert.include(query.query, "['attributes.canary.run_id'] == 'test-run-1'");
+      assert.include(query.query, "event_name = tostring(['attributes.event.name'])");
+      assert.include(query.query, "event_kind = tostring(['attributes.event.kind'])");
+      assert.include(query.query, "event_source = tostring(['attributes.event.source'])");
+      assert.include(query.query, "authorization = tostring(['attributes.http.authorization'])");
+      assert.include(query.query, "password = tostring(['attributes.user.password'])");
+      assert.include(query.query, "access_token = tostring(['attributes.auth.access_token'])");
+      assert.include(query.query, "user_password = tostring(['attributes.profile.password'])");
+      assert.include(query.query, "phone_number = tostring(['attributes.contact.phone'])");
+      assert.include(query.query, "tokenizer = tostring(['attributes.tool.tokenizer'])");
+      assert.include(query.query, "documentation = tostring(['attributes.docs.documentation'])");
+      assert.include(query.query, "safe_message = tostring(['attributes.safe.message'])");
+      assert.include(query.query, "column_ifexists('service.instance.id', '')");
+      assert.include(query.query, "column_ifexists('resource.service.instance.id', '')");
+      assert.notInclude(query.query, "['attributes.custom']");
+      assert.notInclude(query.query, "['resource.custom']");
       assert.include(
         query.query,
-        "environment_name = tostring(['resource.custom']['deployment.environment.name'])",
+        "environment_name = tostring(['resource.deployment.environment.name'])",
       );
       assert.include(
         query.query,
-        "environment_alias = tostring(['resource.custom']['deployment.environment'])",
+        "environment_alias = tostring(['resource.deployment.environment'])",
       );
+    }),
+  );
+
+  it.live("normalizes missing instance IDs without hiding an unexpected instance", () =>
+    Effect.gen(function* () {
+      for (const instanceId of [null, "", "unexpected-instance"]) {
+        const stub = yield* Effect.promise(() =>
+          startStubAxiom([
+            {
+              data: {
+                trace_id: "trace-1",
+                span_id: "span-1",
+                name: "canary.operation",
+                event_name: "canary.completed",
+                service_instance_id: instanceId,
+              },
+            },
+          ]),
+        );
+        const results = yield* Effect.all([
+          findRootSpan(stub.env, "test-run-1", "0.1.0"),
+          findLogs(stub.env, "test-run-1", "0.1.0"),
+        ]).pipe(Effect.ensuring(Effect.sync(() => stub.server.close())));
+        const expected =
+          instanceId === "unexpected-instance" ? Option.some(instanceId) : Option.none();
+        assert.deepStrictEqual(Option.getOrThrow(results[0]).serviceInstanceId, expected);
+        assert.isDefined(results[1][0]);
+        assert.deepStrictEqual(results[1][0].serviceInstanceId, expected);
+      }
     }),
   );
 

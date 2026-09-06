@@ -150,6 +150,9 @@ const toAxiomRedactionAttributes = (row: AxiomRedactionRow): AxiomRedactionAttri
 const redactionProjection =
   "authorization = tostring(['attributes.custom']['http.authorization']), password = tostring(['attributes.custom']['user.password']), access_token = tostring(['attributes.custom']['auth.access_token']), user_password = tostring(['attributes.custom']['profile.password']), phone_number = tostring(['attributes.custom']['contact.phone']), tokenizer = tostring(['attributes.custom']['tool.tokenizer']), documentation = tostring(['attributes.custom']['docs.documentation']), safe_message = tostring(['attributes.custom']['safe.message'])";
 
+const logRedactionProjection =
+  "authorization = tostring(['attributes.http.authorization']), password = tostring(['attributes.user.password']), access_token = tostring(['attributes.auth.access_token']), user_password = tostring(['attributes.profile.password']), phone_number = tostring(['attributes.contact.phone']), tokenizer = tostring(['attributes.tool.tokenizer']), documentation = tostring(['attributes.docs.documentation']), safe_message = tostring(['attributes.safe.message'])";
+
 const AxiomSpanRow = Schema.Struct({
   trace_id: Schema.NonEmptyString,
   span_id: Schema.NonEmptyString,
@@ -192,7 +195,9 @@ const toAxiomSpan = (row: typeof AxiomSpanRow.Type): AxiomSpan => ({
   serviceNamespace: Option.fromNullishOr(row.service_namespace),
   serviceName: Option.fromNullishOr(row.service_name),
   serviceVersion: Option.fromNullishOr(row.service_version),
-  serviceInstanceId: Option.fromNullishOr(row.service_instance_id),
+  serviceInstanceId: Option.fromNullishOr(row.service_instance_id).pipe(
+    Option.filter((value) => value !== ""),
+  ),
   environmentName: Option.fromNullishOr(row.environment_name),
   environmentAlias: Option.fromNullishOr(row.environment_alias),
   events: Option.fromNullishOr(row.events),
@@ -200,7 +205,7 @@ const toAxiomSpan = (row: typeof AxiomSpanRow.Type): AxiomSpan => ({
 });
 
 export const axiomServiceResourceFields = Object.freeze({
-  namespace: "['resource.custom']['service.namespace']",
+  namespace: "['service.namespace']",
   name: "['service.name']",
   version: "['service.version']",
 });
@@ -209,7 +214,7 @@ const serviceNamespacePath = axiomServiceResourceFields.namespace;
 const serviceNamePath = axiomServiceResourceFields.name;
 const serviceVersionPath = axiomServiceResourceFields.version;
 
-const spanProjection = `project trace_id, span_id, parent_span_id, name, service_namespace = tostring(${serviceNamespacePath}), service_name = tostring(${serviceNamePath}), service_version = tostring(${serviceVersionPath}), service_instance_id = tostring(['resource.custom']['service.instance.id']), environment_name = tostring(['resource.custom']['deployment.environment.name']), environment_alias = tostring(['resource.custom']['deployment.environment']), events = tostring(events), ${redactionProjection}`;
+const spanProjection = `project trace_id, span_id, parent_span_id, name, service_namespace = tostring(${serviceNamespacePath}), service_name = tostring(${serviceNamePath}), service_version = tostring(${serviceVersionPath}), service_instance_id = tostring(['resource.custom']['service.instance.id']), environment_name = tostring(['resource.deployment.environment.name']), environment_alias = tostring(['resource.custom']['deployment.environment']), events = tostring(events), ${redactionProjection}`;
 
 export const findRootSpan = (
   env: AxiomEnvironment,
@@ -288,7 +293,9 @@ const toAxiomLog = (row: typeof AxiomLogRow.Type): AxiomLog => ({
   serviceNamespace: Option.fromNullishOr(row.service_namespace),
   serviceName: Option.fromNullishOr(row.service_name),
   serviceVersion: Option.fromNullishOr(row.service_version),
-  serviceInstanceId: Option.fromNullishOr(row.service_instance_id),
+  serviceInstanceId: Option.fromNullishOr(row.service_instance_id).pipe(
+    Option.filter((value) => value !== ""),
+  ),
   environmentName: Option.fromNullishOr(row.environment_name),
   environmentAlias: Option.fromNullishOr(row.environment_alias),
   body: Option.fromNullishOr(row.body),
@@ -303,7 +310,7 @@ export const findLogs = (
 ): Effect.Effect<ReadonlyArray<AxiomLog>> =>
   runQuery(
     env,
-    `['${env.AXIOM_DATASET_LOGS}'] | where ['attributes.custom']['canary.run_id'] == '${runId}' and ${serviceVersionPath} == '${serviceVersion}' | project trace_id, event_name = tostring(['attributes.custom']['event.name']), event_kind = tostring(['attributes.custom']['event.kind']), event_source = tostring(['attributes.custom']['event.source']), service_namespace = tostring(${serviceNamespacePath}), service_name = tostring(${serviceNamePath}), service_version = tostring(${serviceVersionPath}), service_instance_id = tostring(['resource.custom']['service.instance.id']), environment_name = tostring(['resource.custom']['deployment.environment.name']), environment_alias = tostring(['resource.custom']['deployment.environment']), body = tostring(body), ${redactionProjection}`,
+    `['${env.AXIOM_DATASET_LOGS}'] | where ['attributes.canary.run_id'] == '${runId}' and ${serviceVersionPath} == '${serviceVersion}' | project trace_id, event_name = tostring(['attributes.event.name']), event_kind = tostring(['attributes.event.kind']), event_source = tostring(['attributes.event.source']), service_namespace = tostring(${serviceNamespacePath}), service_name = tostring(${serviceNamePath}), service_version = tostring(${serviceVersionPath}), service_instance_id = tostring(coalesce(column_ifexists('service.instance.id', ''), column_ifexists('resource.service.instance.id', ''))), environment_name = tostring(['resource.deployment.environment.name']), environment_alias = tostring(['resource.deployment.environment']), body = tostring(body), ${logRedactionProjection}`,
     options,
   ).pipe(
     Effect.map((rows) =>
