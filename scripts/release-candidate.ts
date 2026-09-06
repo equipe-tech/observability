@@ -35,6 +35,7 @@ const packageDirectories = new Map([
   ["observability-evlog", "evlog"],
   ["observability-nestjs", "nestjs"],
   ["observability-sentry", "sentry"],
+  ["observability-react", "react"],
   ["observability-cli", "cli"],
 ]);
 const packageDirectoryName = packageDirectories.get(slug);

@@ -2,15 +2,21 @@ import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import evlogManifest from "../packages/evlog/package.json" with { type: "json" };
 import nestjsManifest from "../packages/nestjs/package.json" with { type: "json" };
+import reactManifest from "../packages/react/package.json" with { type: "json" };
 import sentryManifest from "../packages/sentry/package.json" with { type: "json" };
 import telemetryManifest from "../packages/telemetry/package.json" with { type: "json" };
 import tsconfig from "../tsconfig.json" with { type: "json" };
 import viteConfig from "../vite.config.ts";
 
 const expected = new Map([
+  ["@equipe-tech/observability-react", "packages/react/src/index.ts"],
   ["@equipe-tech/observability-sentry/browser", "packages/sentry/src/browser/index.ts"],
   ["@equipe-tech/observability-sentry/node", "packages/sentry/src/node/index.ts"],
   ["@equipe-tech/observability-sentry", "packages/sentry/src/index.ts"],
+  [
+    "@equipe-tech/observability/react-web-profile",
+    "packages/telemetry/src/profile/ReactWebProfile.ts",
+  ],
   ["@equipe-tech/observability/browser/client", "packages/telemetry/src/browser/client.ts"],
   ["@equipe-tech/observability/browser", "packages/telemetry/src/browser/index.ts"],
   ["@equipe-tech/observability/effect", "packages/telemetry/src/effect/index.ts"],
@@ -58,6 +64,7 @@ describe("development entrypoint mappings", () => {
         "@equipe-tech/observability-sentry",
         Object.keys(sentryManifest.exports),
       ),
+      ...packageEntrypoints("@equipe-tech/observability-react", Object.keys(reactManifest.exports)),
     ];
     expect(entrypoints.toSorted()).toEqual([...expected.keys()].toSorted());
     for (const [specifier, source] of expected) {

@@ -38,6 +38,8 @@ jobs:
       - run: bun check
       - run: bun run test
       - run: bun run build
+      - run: bunx playwright install --with-deps chromium
+      - run: bun run test:browser
       - run: bun run test:package
       - run: docker run --rm -v "$PWD/packages/cli/src/assets/local.yaml:/etc/otelcol/config.yaml:ro" otel/opentelemetry-collector-contrib:0.159.0 validate --config=/etc/otelcol/config.yaml
       - run: docker run --rm -e AXIOM_TOKEN=test -e AXIOM_DATASET_TRACES=traces -e AXIOM_DATASET_LOGS=logs -e AXIOM_DATASET_METRICS=metrics -v "$PWD/packages/cli/src/assets/production.yaml:/etc/otelcol/config.yaml:ro" otel/opentelemetry-collector-contrib:0.159.0 validate --config=/etc/otelcol/config.yaml

@@ -76,7 +76,7 @@ const events = registerTestingAdapter({
           TelemetryEventSink,
           TelemetryEventSink.of({
             record: () => Effect.void,
-            recordBrowserBatch: () => Effect.void,
+            admitBrowserBatch: () => Effect.succeed({ commit: Effect.void }),
           }),
         ),
       ),

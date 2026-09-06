@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { declarationReferenceViolations } from "./declaration-references.ts";
+import { enforceBundleGzipBudget } from "./package-smoke-budget.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const cleanupTestIndex = process.argv.indexOf("--signal-cleanup-test");
@@ -281,6 +282,17 @@ try {
       ],
     },
     {
+      directory: join(root, "packages/react"),
+      archive: "react.tgz",
+      required: [
+        "package/LICENSE",
+        "package/README.md",
+        "package/dist/LICENSE",
+        "package/dist/index.js",
+        "package/dist/index.d.ts",
+      ],
+    },
+    {
       directory: join(root, "packages/nestjs"),
       archive: "nestjs.tgz",
       required: [
@@ -444,9 +456,13 @@ try {
         "@equipe-tech/observability-evlog": `file:${join(temporaryDirectory, "evlog.tgz")}`,
         "@equipe-tech/observability-nestjs": `file:${join(temporaryDirectory, "nestjs.tgz")}`,
         "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
+        "@equipe-tech/observability-react": `file:${join(temporaryDirectory, "react.tgz")}`,
         "@sentry/browser": "10.72.0",
         "@sentry/node-core": "10.72.0",
         effect: "4.0.0-rc.111",
+      },
+      overrides: {
+        "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
       },
     }),
   );
@@ -535,8 +551,12 @@ try {
       dependencies: {
         "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
         "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
+        "@equipe-tech/observability-react": `file:${join(temporaryDirectory, "react.tgz")}`,
         "@sentry/browser": "10.72.0",
         effect: "4.0.0-rc.111",
+      },
+      overrides: {
+        "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
       },
     }),
   );
@@ -550,7 +570,7 @@ try {
         "node",
         "--input-type=module",
         "--eval",
-        "const browser = await import('@equipe-tech/observability-sentry/browser'); if (!browser.createBrowserSentryDefectReporter) process.exit(1); try { await import('@sentry/node-core'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_MODULE_NOT_FOUND') process.exit(1); }",
+        "const registry = Symbol.for('@equipe-tech/observability-react/active-hosts'); Object.defineProperty(globalThis, registry, { configurable: true, value: {}, writable: true }); const poisoned = Object.getOwnPropertyDescriptor(globalThis, registry); const [browser, policy, profile] = await Promise.all([import('@equipe-tech/observability-sentry/browser'), import('@equipe-tech/observability/policy'), import('@equipe-tech/observability/react-web-profile')]); const react = await import('@equipe-tech/observability-react'); const imported = Object.getOwnPropertyDescriptor(globalThis, registry); if (imported?.value !== poisoned?.value || imported?.writable !== true || imported?.configurable !== true) process.exit(1); if (!browser.createBrowserSentryDefectReporter || !react.createBrowserObservability || !Object.isFrozen(profile.reactWebLifecycle)) process.exit(1); const lifecycle = profile.reactWebLifecycle; for (const name of ['environmentRequiringDefects', 'shutdownDeadlineMillis', 'eventShutdownDeadlineMillis', 'sentryDeadlineMillis', 'flushDeadlineMillis']) { const descriptor = Object.getOwnPropertyDescriptor(lifecycle, name); if (descriptor?.writable !== false || descriptor.configurable !== false) process.exit(1); } try { Object.defineProperty(lifecycle, 'environmentRequiringDefects', { value: 'bypassed' }); process.exit(1); } catch (error) { if (!(error instanceof TypeError)) process.exit(1); } try { Object.defineProperty(lifecycle, 'eventShutdownDeadlineMillis', { value: 1 }); process.exit(1); } catch (error) { if (!(error instanceof TypeError)) process.exit(1); } if (lifecycle.environmentRequiringDefects !== 'production' || lifecycle.eventShutdownDeadlineMillis !== 1150) process.exit(1); const config = { service: { name: 'packed-web', version: '0.3.0', environment: 'test' }, policy: policy.definePolicy({ attributes: { 'error.origin': { classification: 'internal', required: true, metricLabel: false } }, blockedKeys: [], blockedValuePatterns: [] }), sentry: { disabled: true } }; const inert = react.createBrowserObservability(config); if (inert.installed) process.exit(1); await inert.dispose(); const listeners = new Map(); const host = { addEventListener(name, listener) { listeners.set(name, listener); }, removeEventListener(name) { listeners.delete(name); } }; try { react.createBrowserObservability({ ...config, service: { ...config.service, environment: 'production' }, host }); process.exit(1); } catch (error) { if (error?.code !== 'OBS_REACT_CONFIG_INVALID') process.exit(1); } const active = react.createBrowserObservability({ ...config, host }); const recovered = Object.getOwnPropertyDescriptor(globalThis, registry); if (recovered?.writable !== false || recovered?.configurable !== false || !(recovered?.value instanceof WeakSet)) process.exit(1); if (!active.installed || active.defects.report({ error: new Error('packed'), origin: 'manual' }).kind !== 'recorded') process.exit(1); const duplicateReact = await import(`${import.meta.resolve('@equipe-tech/observability-react')}?duplicate-bundle`); try { duplicateReact.createBrowserObservability({ ...config, host }); process.exit(1); } catch (error) { if (error?.code !== 'OBS_REACT_ALREADY_INSTALLED') process.exit(1); } await active.dispose(); const replacement = duplicateReact.createBrowserObservability({ ...config, host }); await replacement.dispose(); if (listeners.size !== 0) process.exit(1); try { await import('@sentry/node-core'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_MODULE_NOT_FOUND') process.exit(1); }",
       ],
       browserConsumer,
     ),
@@ -563,6 +583,7 @@ try {
     "observability-evlog",
     "observability-nestjs",
     "observability-sentry",
+    "observability-react",
     "observability-cli",
   ]) {
     const packageDirectory = join(consumer, "node_modules/@equipe-tech", packageName);
@@ -744,6 +765,17 @@ try {
   if (/\bEffect\b|from ["']effect["']/.test(browserClientDeclaration)) {
     throw new Error("The imperative browser client declaration exposes an Effect type.");
   }
+  const browserClientRuntimeFiles = await Promise.all(
+    ["client.js", "BrowserClient.js", "ClientPolicy.js", "BrowserEventLimits.js"].map((file) =>
+      readFile(
+        join(consumer, "node_modules/@equipe-tech/observability/dist/browser", file),
+        "utf8",
+      ),
+    ),
+  );
+  if (browserClientRuntimeFiles.some((source) => /from\s*["']effect["']/.test(source))) {
+    throw new Error("The imperative browser client production graph imports Effect or Schema.");
+  }
 
   const browserSmokeSource = [
     "import { createBrowserTelemetryClient } from '@equipe-tech/observability/browser/client';",
@@ -831,11 +863,73 @@ try {
       2,
     ),
   );
-  if (facadeGzipDeltaBytes > facadeGzipRegressionCeilingBytes) {
-    throw new Error(
-      `The isolated browser facade gzip delta is ${facadeGzipDeltaBytes} bytes, above the ${facadeGzipRegressionCeilingBytes} byte regression ceiling.`,
-    );
-  }
+  enforceBundleGzipBudget({
+    artifact: "The isolated browser facade",
+    deltaBytes: facadeGzipDeltaBytes,
+    ceilingBytes: facadeGzipRegressionCeilingBytes,
+  });
+
+  const reactSmokeSource = [
+    "import { createBrowserObservability } from '@equipe-tech/observability-react';",
+    "import { definePolicy } from '@equipe-tech/observability/policy';",
+    "const policy = definePolicy({ attributes: { 'error.origin': { classification: 'internal', required: true, metricLabel: false } }, blockedKeys: [], blockedValuePatterns: [] });",
+    "const batches = [];",
+    "const host = { addEventListener() {}, removeEventListener() {} };",
+    "const handle = createBrowserObservability({ service: { name: 'bundle-smoke', version: '0.3.0', environment: 'test' }, policy, host, metrics: true, sentry: { disabled: true }, events: { transport: async (batch) => batches.push(batch), flushIntervalMs: 60000 } });",
+    "const root = handle.traces.startSpan('page.load');",
+    "const child = handle.traces.startSpan('react.render', {}, root.context);",
+    "handle.events.emit('page.rendered', {}, child.context);",
+    "handle.metrics.counter('react.render.count').add();",
+    "child.end();",
+    "root.end();",
+    "await handle.flush();",
+    "if (batches[0]?.spans?.length !== 2 || batches[0]?.metrics?.length !== 1 || batches[0]?.events[0]?.trace?.spanId !== child.context.spanId || batches[0]?.resource?.serviceName !== 'bundle-smoke') throw new Error('Packed React signal delivery failed');",
+    "await handle.dispose();",
+  ].join("\n");
+  const reactSmokeEntry = join(consumer, "react-smoke.ts");
+  const reactBundle = join(consumer, "react-smoke.min.js");
+  await writeFile(reactSmokeEntry, reactSmokeSource);
+  requireSuccess(
+    await run(
+      ["bun", "build", reactSmokeEntry, "--target=browser", "--minify", `--outfile=${reactBundle}`],
+      consumer,
+    ),
+    "Bundling the packed React production entrypoint",
+  );
+  requireSuccess(await run(["bun", reactBundle], consumer), "Executing the packed React bundle");
+  const reactBytes = await Bun.file(reactBundle).bytes();
+  const reactGzip = Bun.gzipSync(reactBytes, { level: 9 });
+  const reactGzipDeltaBytes = reactGzip.byteLength - emptyGzip.byteLength;
+  const reactGzipRegressionCeilingBytes = 137_372;
+  const reactEvidence = join(root, ".verification/observability/obs-54-react-bundle");
+  await rm(reactEvidence, { recursive: true, force: true });
+  await mkdir(reactEvidence, { recursive: true });
+  await Bun.write(join(reactEvidence, "react-smoke.ts"), reactSmokeSource);
+  await Bun.write(join(reactEvidence, "react-smoke.min.js"), reactBytes);
+  await Bun.write(join(reactEvidence, "react-smoke.min.js.gz"), reactGzip);
+  await Bun.write(
+    join(reactEvidence, "evidence.json"),
+    JSON.stringify(
+      {
+        command: "bun build react-smoke.ts --target=browser --minify --outfile=react-smoke.min.js",
+        baselineCommand: "bun build empty.ts --target=browser --minify --outfile=empty.min.js",
+        source: "packed @equipe-tech/observability-react production entrypoint",
+        reactMinifiedBytes: reactBytes.byteLength,
+        reactMinifiedGzipBytes: reactGzip.byteLength,
+        emptyMinifiedGzipBytes: emptyGzip.byteLength,
+        reactMinifiedGzipDeltaBytes: reactGzipDeltaBytes,
+        reactGzipRegressionCeilingBytes,
+        bunVersion: Bun.version,
+      },
+      undefined,
+      2,
+    ),
+  );
+  enforceBundleGzipBudget({
+    artifact: "The React production entrypoint",
+    deltaBytes: reactGzipDeltaBytes,
+    ceilingBytes: reactGzipRegressionCeilingBytes,
+  });
 
   const executable = join(consumer, "node_modules/.bin/observability");
   const help = await run([executable, "--help"], consumer);

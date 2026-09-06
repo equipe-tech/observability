@@ -58,3 +58,7 @@ Oversized original keys are dropped. Oversized original string values and event 
 ## Collector parity
 
 The telemetry package owns the semantic key vocabulary and the six core credential patterns. Behavioral suites independently execute the SDK sanitizer and a real Collector for the structured-assignment grammar. A repository parity test also checks both Collector assets against the vocabulary, processor coverage, and processor order. `redaction/sensitive` runs before `transform/redact` for traces, logs, and metrics. Scalar credential patterns run before assignment transforms to preserve credential shape. Metric resource attributes and datapoint attributes therefore receive the same structured-assignment redaction as log and trace attributes. Browser JSON traversal is intentionally outside exact Collector parity because Collector OTTL does not expose the same recursive contract.
+
+## Política no cliente React
+
+`createBrowserObservability` compila a política uma vez e injeta a transformação compilada no cliente. O cliente aplica a política e o vocabulário de browser antes de inserir eventos na fila. `BrowserTelemetryClient` mantém o comportamento anterior quando `policy` não é informado. O serviço Effect aceita `policy` e compila a mesma transformação na construção da camada. Defeitos usam o membro tipado `error` do envelope, enquanto `error.origin` permanece em `fields`.

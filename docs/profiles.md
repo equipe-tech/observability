@@ -14,7 +14,7 @@ Bibliotecas podem exportar definições de instrumentos. O perfil `library` pro�
 
 OTLP, traces e métricas pertencem ao núcleo. Aplicações registram adapters oficiais de eventos, defeitos e browser ingest com `registerOfficialAdapter`. Registros de teste e suas factories existem somente no entrypoint `@equipe-tech/observability/testing` e são rejeitados pelas factories oficiais.
 
-`react-web` é somente um descritor de contrato nesta entrega. O OBS-54 fornecerá a factory de browser. A factory de Node rejeita `react-web` porque esse perfil não possui runtime global de Node.
+`createBrowserObservability` implementa o runtime global do perfil `react-web`. A factory de Node rejeita `react-web` porque esse perfil não possui runtime global de Node.
 
 ## Configuração de Node
 
@@ -43,3 +43,7 @@ Chamadas concorrentes da mesma operação compartilham o relatório. `close` esp
 `DataPolicy` declara atributos e bloqueios. A aplicação pode acrescentar regras, mas não remove a base. Eventos, logs, spans, defeitos, recursos, métricas e browser ingest aplicam a política compilada antes de exportar ou armazenar dados.
 
 Identidade, endpoint, ambiente, topologia, rota, proxy, secrets e valores de deploy continuam sob responsabilidade da aplicação.
+
+## Runtime React web
+
+`createBrowserObservability` atende `browser-ingest`, `events`, `traces` e `defects` do perfil `react-web`. Métricas ficam desativadas até a aplicação selecionar `metrics: true`. Traces, eventos correlacionados e métricas selecionadas usam o mesmo batch versionado e a rota aprovada `/_telemetry/events`. O servidor analisa o envelope, reaplica a política e exporta pelo Collector configurado. O browser nunca envia OTLP diretamente. Em produção, a configuração exige um DSN HTTPS do Sentry e não aceita desativar a captura de defeitos. Os prazos do perfil ficam no módulo compartilhado imutável `@equipe-tech/observability/react-web-profile`: 1.150 ms para o cliente do browser, 800 ms para o Sentry, 2.000 ms para encerramento e 5.000 ms para `flush`. O handler de `pagehide` inicia o flush de eventos e do Sentry sem esperar pelos resultados. O runtime remove os listeners antes de encerrar os destinos e nunca rejeita `dispose`.

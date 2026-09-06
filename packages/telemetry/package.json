@@ -45,6 +45,10 @@
       "types": "./dist/browser/client.d.ts",
       "import": "./dist/browser/client.js"
     },
+    "./react-web-profile": {
+      "types": "./dist/profile/ReactWebProfile.d.ts",
+      "import": "./dist/profile/ReactWebProfile.js"
+    },
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js"

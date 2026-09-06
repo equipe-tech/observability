@@ -140,16 +140,12 @@ const framesFor = (
     onSome: (value) => stackParser(value).slice(-20).map(projectFrame),
   });
 
-export const projectDefect = (
-  policy: DataPolicy,
+export const projectSanitizedDefect = (
   identity: ProjectionIdentity,
-  envelope: DefectEnvelope,
+  safe: DefectEnvelope,
   eventId: string,
   stackParser: PublicStackParser,
-): Option.Option<ProjectedSentryEvent> => {
-  const decision = sanitizeDefectEnvelope(policy, envelope);
-  if (Option.isNone(decision.value)) return Option.none();
-  const safe = decision.value.value;
+): ProjectedSentryEvent => {
   const context: { [name: string]: SentryAttributeValue } = {};
   for (const [name, value] of safe.context) context[name] = value;
   const frames = framesFor(safe.stack, stackParser);
@@ -170,7 +166,20 @@ export const projectDefect = (
     tags: tagsFor(identity, safe),
   };
   if (Object.keys(context).length > 0) Object.assign(event, { contexts: { obs: context } });
-  return Option.some(event);
+  return event;
+};
+
+export const projectDefect = (
+  policy: DataPolicy,
+  identity: ProjectionIdentity,
+  envelope: DefectEnvelope,
+  eventId: string,
+  stackParser: PublicStackParser,
+): Option.Option<ProjectedSentryEvent> => {
+  const decision = sanitizeDefectEnvelope(policy, envelope);
+  return Option.map(decision.value, (safe) =>
+    projectSanitizedDefect(identity, safe, eventId, stackParser),
+  );
 };
 
 const projectFinalException = (exception: ProjectedException): ProjectedException => {

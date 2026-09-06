@@ -1,7 +1,8 @@
-import { Cause, Duration, Effect, Layer, Option, Predicate, Schema, Tracer } from "effect";
+import { Cause, Context, Duration, Effect, Layer, Option, Predicate, Schema, Tracer } from "effect";
 import type { Exit } from "effect";
 import type { HttpClient } from "effect/unstable/http";
 import { OtlpExporter, OtlpResource, OtlpSerialization } from "effect/unstable/observability";
+import type { BrowserTraceSpan } from "../BrowserEvents.ts";
 import type { ResourceAttributes } from "../ResourceIdentity.ts";
 import type { DataPolicy } from "../policy/DataPolicy.ts";
 import { sanitizeText, transformSignalFields } from "../policy/PolicyTransform.ts";
@@ -323,3 +324,148 @@ export const layerHttpServerOtlpTracer = (
   Layer.effect(Tracer.Tracer, makeHttpServerOtlpTracer(options)).pipe(
     Layer.provideMerge(OtlpExporter.layerFlusher),
   );
+
+export type BrowserSignals = {
+  readonly resource?: {
+    readonly serviceName: string;
+    readonly serviceVersion: string;
+    readonly environment: string;
+  };
+  readonly spans: ReadonlyArray<BrowserTraceSpan>;
+};
+
+export class BrowserSignalExporter extends Context.Reference(
+  "@equipe-tech/observability/BrowserSignalExporter",
+  {
+    defaultValue: (): { readonly export: (signals: BrowserSignals) => Effect.Effect<void> } => ({
+      export: () => Effect.void,
+    }),
+  },
+) {}
+
+type BrowserOtlpSpan = {
+  readonly traceId: string;
+  readonly spanId: string;
+  readonly parentSpanId: string | undefined;
+  readonly name: string;
+  readonly kind: 1;
+  readonly startTimeUnixNano: string;
+  readonly endTimeUnixNano: string;
+  readonly attributes: Array<OtlpResource.KeyValue>;
+  readonly droppedAttributesCount: number;
+  readonly events: [];
+  readonly droppedEventsCount: 0;
+  readonly status: { readonly code: 1 };
+  readonly links: [];
+  readonly droppedLinksCount: 0;
+};
+
+type BrowserTraceExport = {
+  readonly resource: OtlpResource.Resource;
+  readonly span: BrowserOtlpSpan;
+};
+
+const unixNanos = (millis: number): string => String(BigInt(Math.trunc(millis)) * 1_000_000n);
+
+const browserResource = (
+  base: OtlpResource.Resource,
+  policy: DataPolicy,
+  identity: BrowserSignals["resource"],
+): OtlpResource.Resource => {
+  if (identity === undefined) return base;
+  const replaced = new Set([
+    "service.name",
+    "service.version",
+    "deployment.environment.name",
+    "deployment.environment",
+  ]);
+  const decision = transformSignalFields(policy, "resource", {
+    "service.name": identity.serviceName,
+    "service.version": identity.serviceVersion,
+    "deployment.environment.name": identity.environment,
+    "deployment.environment": identity.environment,
+  });
+  return {
+    attributes: [
+      ...base.attributes.filter((attribute) => !replaced.has(attribute.key)),
+      ...OtlpResource.entriesToAttributes(Object.entries(decision.value)),
+    ],
+    droppedAttributesCount: base.droppedAttributesCount + decision.dropped,
+  };
+};
+
+export type BrowserSignalExporterOptions = {
+  readonly tracesUrl: string;
+  readonly policy: DataPolicy;
+  readonly resource: {
+    readonly serviceName: string;
+    readonly serviceVersion: string;
+    readonly attributes: ResourceAttributes;
+  };
+  readonly shutdownTimeout?: Duration.Input | undefined;
+};
+
+export const layerBrowserSignalExporter = (
+  options: BrowserSignalExporterOptions,
+): Layer.Layer<
+  OtlpExporter.Flusher,
+  never,
+  HttpClient.HttpClient | OtlpSerialization.OtlpSerialization
+> =>
+  Layer.effect(
+    BrowserSignalExporter,
+    Effect.gen(function* () {
+      const resource = yield* OtlpResource.fromConfig(options.resource);
+      const serialization = yield* OtlpSerialization.OtlpSerialization;
+      const traces = yield* OtlpExporter.make({
+        label: "BrowserSignalTracer",
+        url: options.tracesUrl,
+        headers: undefined,
+        exportInterval: Duration.seconds(5),
+        maxBatchSize: 1_000,
+        body: (exports: ReadonlyArray<BrowserTraceExport>) => [
+          serialization.traces({
+            resourceSpans: exports.map((entry) => ({
+              resource: entry.resource,
+              scopeSpans: [
+                {
+                  scope: { name: OtlpResource.serviceNameUnsafe(entry.resource) },
+                  spans: [entry.span],
+                },
+              ],
+            })),
+          }),
+          Effect.void,
+        ],
+        shutdownTimeout: options.shutdownTimeout ?? Duration.seconds(3),
+      });
+      return BrowserSignalExporter.of({
+        export: (signals) =>
+          Effect.sync(() => {
+            const selectedResource = browserResource(resource, options.policy, signals.resource);
+            for (const span of signals.spans) {
+              const decision = transformSignalFields(options.policy, "span", span.fields);
+              traces.push({
+                resource: selectedResource,
+                span: {
+                  traceId: span.traceId,
+                  spanId: span.spanId,
+                  parentSpanId: span.parentSpanId,
+                  name: sanitizeText(options.policy, span.name, "span"),
+                  kind: 1,
+                  startTimeUnixNano: unixNanos(span.startedAt),
+                  endTimeUnixNano: unixNanos(span.endedAt),
+                  attributes: OtlpResource.entriesToAttributes(Object.entries(decision.value)),
+                  droppedAttributesCount: decision.dropped,
+                  events: [],
+                  droppedEventsCount: 0,
+                  status: { code: 1 },
+                  links: [],
+                  droppedLinksCount: 0,
+                },
+              });
+            }
+          }),
+      });
+    }),
+  ).pipe(Layer.provideMerge(OtlpExporter.layerFlusher));

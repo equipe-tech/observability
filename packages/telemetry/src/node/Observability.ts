@@ -74,7 +74,10 @@ const closedFlush = (): Promise<LifecycleReport> =>
 
 const noopEventLayer = Layer.succeed(
   TelemetryEventSink,
-  TelemetryEventSink.of({ record: () => Effect.void, recordBrowserBatch: () => Effect.void }),
+  TelemetryEventSink.of({
+    record: () => Effect.void,
+    admitBrowserBatch: () => Effect.succeed({ commit: Effect.void }),
+  }),
 );
 
 const disabledHandle = (): NodeObservabilityDisabled => {
@@ -204,6 +207,7 @@ const makeNodeObservabilityWithOptions = Effect.fn("makeNodeObservability")(func
     Telemetry.layer(config.telemetry, {
       shutdownTimeout: Duration.millis(nodeMetricsFlushTimeoutMilliseconds),
       policy: config.evlog.policy,
+      contract: config.evlog.contract,
     }),
   );
   const flusher = yield* acquireRuntimeFlusher(runtime);

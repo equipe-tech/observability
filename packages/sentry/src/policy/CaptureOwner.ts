@@ -4,6 +4,7 @@ import type { DefectDeduplicator } from "./Deduplication.ts";
 import {
   parseSentryDefectCapture,
   projectDefect,
+  projectSanitizedDefect,
   type ProjectionIdentity,
   type PublicStackParser,
   type SentryCaptureOutcome,
@@ -19,7 +20,7 @@ export type CaptureResult = {
 };
 
 export type CaptureRuntime = {
-  readonly policy: DataPolicy;
+  readonly policy: DataPolicy | undefined;
   readonly identity: ProjectionIdentity;
   readonly dedupe: DefectDeduplicator;
   readonly settlements: EventSettlements<ProjectedSentryEvent>;
@@ -55,13 +56,18 @@ export const captureDefectNow = (
     reportState.increment(decision.reason);
     return { outcome: decision };
   }
-  const projected = projectDefect(
-    runtime.policy,
-    runtime.identity,
-    parsedInput.envelope,
-    id,
-    runtime.stackParser,
-  );
+  const projected =
+    runtime.policy === undefined
+      ? Option.some(
+          projectSanitizedDefect(runtime.identity, parsedInput.envelope, id, runtime.stackParser),
+        )
+      : projectDefect(
+          runtime.policy,
+          runtime.identity,
+          parsedInput.envelope,
+          id,
+          runtime.stackParser,
+        );
   if (Option.isNone(projected)) {
     runtime.dedupe.rollback(id);
     reportState.increment("policy");
