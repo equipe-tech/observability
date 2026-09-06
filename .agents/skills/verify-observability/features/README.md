@@ -36,4 +36,4 @@ This map defines the maintained user paths for the Observability CLI and telemet
 - [Local pipeline](./local-pipeline.md) covers stack control, viewer readiness, telemetry export, correlation, and redaction.
 - [Provider operations](./provider-operations.md) covers authentication, remote environments, operations plans, apply, verify, and manual actions.
 - [Production recovery](./production-recovery.md) covers persistent queues, restart, drain, saturation, health, and internal metrics.
-- [Package delivery](./package-delivery.md) covers archives, imports, declarations, the CLI binary, assets, and compatibility gates.
+- [Package delivery](./package-delivery.md) covers archives, imports, declarations, the CLI binary, and assets.

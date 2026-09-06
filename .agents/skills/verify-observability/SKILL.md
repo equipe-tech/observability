@@ -31,6 +31,7 @@ export RUN_ID="verify-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
 export STATE_ROOT="${TMPDIR:-/tmp}/observability-$RUN_ID"
 export ARTIFACT_ROOT="$PWD/.verification/observability/$RUN_ID"
 export CLI="$PWD/packages/cli/dist/main.js"
+export VERIFY_FEATURE="<feature-name>"
 mkdir -p "$STATE_ROOT" "$ARTIFACT_ROOT"
 printf 'RUN_ID=%q\nSTATE_ROOT=%q\nARTIFACT_ROOT=%q\nCLI=%q\n' "$RUN_ID" "$STATE_ROOT" "$ARTIFACT_ROOT" "$CLI" > "$ARTIFACT_ROOT/run.env"
 cleanup_verification() {
@@ -71,10 +72,16 @@ on_exit() {
 }
 trap on_exit EXIT
 set +e
-bun run build > "$ARTIFACT_ROOT/build.stdout" 2> "$ARTIFACT_ROOT/build.stderr"
+if test "$VERIFY_FEATURE" = "package-delivery"; then
+  LAUNCH_RESULT="package-delivery"
+  bun run test:package > "$ARTIFACT_ROOT/$LAUNCH_RESULT.stdout" 2> "$ARTIFACT_ROOT/$LAUNCH_RESULT.stderr"
+else
+  LAUNCH_RESULT="build"
+  bun run build > "$ARTIFACT_ROOT/$LAUNCH_RESULT.stdout" 2> "$ARTIFACT_ROOT/$LAUNCH_RESULT.stderr"
+fi
 BUILD_STATUS="$?"
 set -e
-printf '%s\n' "$BUILD_STATUS" > "$ARTIFACT_ROOT/build.exit-code"
+printf '%s\n' "$BUILD_STATUS" > "$ARTIFACT_ROOT/$LAUNCH_RESULT.exit-code"
 test "$BUILD_STATUS" = "0"
 git rev-parse HEAD > "$ARTIFACT_ROOT/build-revision.txt"
 test -f "$CLI"
@@ -119,7 +126,11 @@ for port in 4317 4318 8000; do
     exit 1
   fi
 done
-test -z "$(docker ps -a --filter label=com.docker.compose.project=observability-local --format '{{.ID}}')"
+if ! EXISTING_STACK="$(docker ps -a --filter label=com.docker.compose.project=observability-local --format '{{.ID}}')"; then
+  printf '%s\n' 'Docker failed while checking for an existing local stack.' >&2
+  exit 1
+fi
+test -z "$EXISTING_STACK"
 ```
 
 After `dev up`, require `collector` and `viewer` from the generated Compose file. Require a successful request to `http://127.0.0.1:8000/`.

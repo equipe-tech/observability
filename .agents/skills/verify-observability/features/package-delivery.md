@@ -8,32 +8,27 @@
 - `package-runtimes` exercises supported Bun and Node consumers.
 - `package-cli` executes the packed CLI binary and query entry point.
 - `package-assets` verifies local and production files from the packed CLI.
-- `package-compatibility` checks the public API against the accepted baseline.
 
 ## How to get to it (user POV)
 
-- Run `bun run test:package` from the repository root.
-- Run `bun run compat` from the repository root.
-- Inspect each command result for the first failed operation.
+- Set `VERIFY_FEATURE=package-delivery` before the parent Launch procedure.
+- Inspect the captured `bun run test:package` result for the first failed package operation.
 
 ## Driving it with verify-observability
 
 1. Require installed Bun dependencies.
 2. Require Docker for packed CLI status checks.
-3. Create `ARTIFACT_ROOT/package-delivery`.
-4. Run `bun run test:package` and save all output.
-5. Run `bun run compat` and save all output.
-6. Require exit code `0` from both commands.
-7. Require the smoke script to reject source and test files in archives.
-8. Require the tested external consumer imports to succeed.
-9. Require the external TypeScript compiler to accept declarations.
-10. Require supported Bun and Node consumers to run.
-11. Require the packed CLI to print help.
-12. Require the packed CLI to prepare versioned local stack files.
-13. Require provisioned Collector and Kamal assets in disposable state.
-14. Require the compatibility gate to accept the public API change classification.
-15. Confirm that no publish, tag, release, or registry mutation occurred.
-16. Keep each command, output, exit code, and the build revision.
+3. Use the package result captured once by the parent Launch procedure.
+4. Require exit code `0`.
+5. Require the smoke script to reject source and test files in archives.
+6. Require the tested external consumer imports to succeed.
+7. Require the external TypeScript compiler to accept declarations.
+8. Require supported Bun and Node consumers to run.
+9. Require the packed CLI to print help.
+10. Require the packed CLI to prepare versioned local stack files.
+11. Require provisioned Collector and Kamal assets in disposable state.
+12. Confirm that no publish, tag, release, or registry mutation occurred.
+13. Keep the command, output, exit code, and build revision.
 
 ## Gotchas
 
@@ -43,4 +38,5 @@
 - Docker must run even when the smoke test does not start the stack.
 - A source import does not replace the packed-package proof.
 - Passing tested imports does not prove every package export.
+- Public API compatibility uses the separate repository compatibility workflow.
 - Release publication requires a separate human gate.
