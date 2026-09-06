@@ -31,7 +31,7 @@ Não sugira repetir quando a operação pode ter completado parcialmente, ou qua
 - Modele erros como tipos com tag no canal de erro do Effect. Cada erro carrega um código estável, a mensagem pública e os campos de contexto seguros.
 - Separe a mensagem pública do diagnóstico interno. O diagnóstico completo vai para a telemetria; a resposta pública carrega o código, a mensagem e o identificador de correlação.
 - Preserve a causa original em um campo `cause`. O campo `cause` é a única exceção permitida para `unknown`.
-- Todo erro público inclui o identificador de correlação (`trace_id` ou id da requisição) para permitir a busca nos traces.
+- Todo erro público inclui um identificador de correlação. Use `trace_id` somente para buscar um trace real. Use o id da requisição para diagnóstico local.
 
 ## Códigos do limite NestJS
 
