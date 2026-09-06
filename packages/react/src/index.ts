@@ -1,5 +1,6 @@
 import { reactWebLifecycle } from "@equipe-tech/observability/react-web-profile";
 import {
+  browserEnvelopeVersion,
   createBrowserTelemetryClient,
   type BrowserTelemetryClient,
   type BrowserTelemetryClientConfig,
@@ -874,7 +875,7 @@ const fetchCanary: BrowserDeliveryCanaryTransport = (endpoint, signal) =>
   fetch(endpoint, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ version: 1, events: [] }),
+    body: JSON.stringify({ version: browserEnvelopeVersion, events: [] }),
     signal,
   });
 

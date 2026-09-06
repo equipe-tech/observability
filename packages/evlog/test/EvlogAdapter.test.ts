@@ -30,6 +30,12 @@ import { Effect, Option, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vite-plus/test";
 import { makeEvlogAdapter } from "../src/EvlogAdapter.ts";
+import {
+  compileManagedQuery,
+  parseOperationsContractIndex,
+  parseOperationsManifest,
+  validateOperationsManifest,
+} from "@equipe-tech/observability-cli/query";
 import { evlogAdapter } from "../src/index.ts";
 
 const contractDefinition = Contract.telemetryContractDefinition({
@@ -106,6 +112,8 @@ const RequestBody = Schema.Struct({
   ),
 });
 
+const CapturedEvent = Schema.Struct({ "event.name": Schema.String });
+
 const makeConfig = async (endpoint: URL) => {
   const contract = await Effect.runPromise(defineTelemetryContract(contractDefinition));
   const config = await Effect.runPromise(
@@ -163,6 +171,127 @@ const startReceiver = async (
 };
 
 describe("evlogAdapter", () => {
+  it("keeps historical and replacement event names queryable through an alias migration", async () => {
+    const receiver = await startReceiver();
+    const migratedContract = await Effect.runPromise(
+      defineTelemetryContract({
+        version: 2,
+        events: {
+          historical: {
+            ...contractDefinition.events.completed,
+            name: "job.completed",
+          },
+          replacement: {
+            ...contractDefinition.events.completed,
+            name: "job.finished",
+          },
+        },
+        metrics: {},
+        auditActions: {},
+      }),
+    );
+    const config = await Effect.runPromise(
+      parseNodeObservabilityConfig({
+        enabled: true,
+        profile: "worker",
+        service: { name: "alias-test", version: "1.2.3", environment: "test" },
+        telemetry: { endpoint: receiver.endpoint },
+        evlog: {
+          contract: migratedContract,
+          policy: { attributes: {}, blockedKeys: [], blockedValuePatterns: [] },
+        },
+        sentry: { enabled: false },
+      }),
+    );
+    const adapter = evlogAdapter({ installGlobalLogger: false, batchSize: 1, transportRetries: 0 });
+    const observability = await createNodeObservabilityFromConfig(config, [adapter.registration]);
+    if (!observability.enabled) throw new Error("Expected enabled observability.");
+    const producer = makeEventProducer(migratedContract);
+    const eventNames: ReadonlyArray<"historical" | "replacement"> = ["historical", "replacement"];
+    for (const eventName of eventNames) {
+      await observability.runtime.runPromise(
+        producer
+          .emit(eventName, {
+            outcome: "success",
+            durationMs: 1,
+            attributes: { "job.name": eventName },
+          })
+          .pipe(Effect.provide(observability.eventLayer)),
+      );
+    }
+    await observability.close();
+    await receiver.close();
+    const capturedNames = receiver.bodies
+      .filter((body) => body.includes('"resourceLogs"'))
+      .flatMap((body) => {
+        const request = Schema.decodeUnknownSync(RequestBody)(JSON.parse(body));
+        return request.resourceLogs.flatMap((resource) =>
+          resource.scopeLogs.flatMap((scope) =>
+            scope.logRecords.map(
+              (record) =>
+                Schema.decodeUnknownSync(CapturedEvent)(JSON.parse(record.body.stringValue))[
+                  "event.name"
+                ],
+            ),
+          ),
+        );
+      });
+    expect(capturedNames).toEqual(expect.arrayContaining(["job.completed", "job.finished"]));
+    const aliasMetadata: Contract.ContractSignalAliasMetadata = {
+      version: 1,
+      aliases: [
+        {
+          source: { kind: "event", name: "job.completed" },
+          target: { kind: "event", name: "job.finished" },
+          since: "2026-08-31",
+        },
+      ],
+    };
+    const contractIndex = await Effect.runPromise(
+      parseOperationsContractIndex(
+        JSON.stringify(Contract.contractIndex(migratedContract, "alias-test", aliasMetadata)),
+      ),
+    );
+    const manifest = await Effect.runPromise(
+      parseOperationsManifest(`
+version: 1
+contractVersion: 2
+service: alias-test
+environments: [test]
+retention:
+  - environment: test
+    days: 30
+sentry:
+  enabled: false
+dashboards:
+  - id: aliases
+    title: Alias migration
+    panels:
+      - id: events
+        title: Migrated events
+        sources:
+          - kind: event
+            name: job.completed
+        query: signal(logs) | where event.name in ("job.completed", "job.finished") | summarize count()
+monitors: []
+`),
+    );
+    const validated = await Effect.runPromise(validateOperationsManifest(manifest, contractIndex));
+    const query = validated.dashboards[0]?.panels[0]?.query;
+    if (query === undefined) throw new Error("Expected a validated alias query.");
+    const signal = query.binding.identifiers[0];
+    if (signal === undefined) throw new Error("Expected a validated alias signal.");
+    const compiled = await Effect.runPromise(
+      compileManagedQuery(query, {
+        dataset: "alias-test-logs",
+        language: "apl",
+        signals: [signal, ...query.binding.identifiers.slice(1)],
+      }),
+    );
+    expect(compiled.text).toContain("'job.completed'");
+    expect(compiled.text).toContain("'job.finished'");
+  });
+
   it("publishes sanitized native audit copies with canonical correlation and dedupe", async () => {
     const receiver = await startReceiver(100);
     const contract = await Effect.runPromise(

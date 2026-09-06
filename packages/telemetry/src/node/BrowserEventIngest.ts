@@ -28,7 +28,7 @@ export const parseBrowserEventBatch = flow(
       new InvalidBrowserEventBatch({
         code: "OBS_BROWSER_EVENTS_INVALID_BATCH",
         message:
-          "The browser event batch is invalid. Send a version 1 batch with bounded events and scalar fields.",
+          "The browser event batch is invalid. Send a batch with a positive safe integer version (version 1 or newer), bounded events, and scalar fields.",
         cause,
       }),
   ),

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "packages": [
+    { "name": "@equipe-tech/observability", "version": "0.3.0" },
+    { "name": "@equipe-tech/observability-cli", "version": "0.3.0" },
+    { "name": "@equipe-tech/observability-evlog", "version": "0.3.0" },
+    { "name": "@equipe-tech/observability-nestjs", "version": "0.3.0" },
+    { "name": "@equipe-tech/observability-react", "version": "0.3.0" },
+    { "name": "@equipe-tech/observability-sentry", "version": "0.3.0" }
+  ]
+}

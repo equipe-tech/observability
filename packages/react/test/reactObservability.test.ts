@@ -645,7 +645,7 @@ describe("React browser observability", () => {
     await replacement.dispose();
   });
 
-  it("posts the exact empty v1 batch to a real local route", async () => {
+  it("posts the current empty browser envelope to a real local route", async () => {
     let body = "";
     const server = createServer((request, response) => {
       request.setEncoding("utf8");
@@ -666,7 +666,7 @@ describe("React browser observability", () => {
         topology: "local",
       });
       assert.strictEqual(receipt.status, 202);
-      assert.strictEqual(body, '{"version":1,"events":[]}');
+      assert.strictEqual(body, '{"version":2,"events":[]}');
     } finally {
       await new Promise<void>((resolve, reject) =>
         server.close((cause) => (cause === undefined ? resolve() : reject(cause))),

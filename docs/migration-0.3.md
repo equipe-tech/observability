@@ -101,7 +101,7 @@ O produtor exige todos os atributos declarados e rejeita atributos extras. Lista
 
 ## Compatibilidade de release
 
-Esta migração documenta a quebra intencional da linha 0.3. O OBS-57 adicionará a verificação automatizada de compatibilidade e o bloqueio de versionamento.
+Esta migração documenta a quebra intencional da linha 0.3. `bun run compat` compara os exports e as declarações de `v0.2.1` com a candidata. A remoção de `./nestjs`, a migração de Effect para peer e os símbolos movidos exigem a linha `0.3.0`. O registro fica em `observability/compatibility/declared-breaks.json`. A versão candidata da CLI também fica declarada como `0.3.0`, sem alterar o manifest antes da release.
 
 ## Migrar os entrypoints de Effect e NestJS
 

@@ -36,6 +36,8 @@ const program = Effect.gen(function* () {
 });
 ```
 
+A versão do contrato aceita qualquer inteiro positivo seguro. A versão 1 continua válida. Toda quebra classificada precisa usar uma versão maior que o baseline de compatibilidade.
+
 O produtor aceita somente aliases do contrato. O alias selecionado determina os campos por tipo de evento e os atributos permitidos. A aplicação fornece campos semânticos. O produtor preenche o timestamp e a severidade padrão.
 
 ## Nomes
@@ -164,4 +166,4 @@ Falhas de emissão retornam `InvalidTelemetryEvent`. O produtor executa todas as
 
 ## Defeitos do browser
 
-O envelope versão 1 aceita um membro opcional `error` com `type`, `message` e `retryable`. Eventos de contrato do tipo `defect` exigem esse membro. Outros eventos o rejeitam. O servidor projeta defeitos com `event.outcome` igual a `failure` e com o mesmo contexto de erro dos defeitos do servidor. Decodificadores antigos removem o membro aditivo.
+O envelope versão 2 aceita um membro opcional `error` com `type`, `message` e `retryable`. Eventos de contrato do tipo `defect` exigem esse membro. Outros eventos o rejeitam. O servidor projeta defeitos com `event.outcome` igual a `failure` e com o mesmo contexto de erro dos defeitos do servidor. Decodificadores antigos removem o membro aditivo.

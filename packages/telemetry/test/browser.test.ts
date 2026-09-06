@@ -6,6 +6,7 @@ import {
   BrowserEventDeliveryError,
   BrowserEventTransport,
   BrowserTelemetry,
+  browserEnvelopeVersion,
   maxFieldValueLength,
 } from "../src/browser/index.ts";
 import { sensitiveFieldReplacement, sensitiveTextReplacement } from "../src/RedactionPolicy.ts";
@@ -53,7 +54,7 @@ describe("BrowserTelemetry", () => {
       assert.strictEqual(sent.length, 1);
       const batch = sent[0];
       assert.isDefined(batch);
-      assert.strictEqual(batch.version, 1);
+      assert.strictEqual(batch.version, browserEnvelopeVersion);
       assert.strictEqual(batch.events.length, 1);
       const event = batch.events[0];
       assert.isDefined(event);
@@ -311,7 +312,7 @@ describe("BrowserEventTransport.layerFetch", () => {
       const body = bodies[0];
       assert.isDefined(body);
       assert.include(body, "fetch.delivered");
-      assert.include(body, '"version":1');
+      assert.include(body, `"version":${browserEnvelopeVersion}`);
     }),
   );
 
@@ -364,7 +365,7 @@ describe("BrowserEventTransport.layerFetch", () => {
       assert.include(body, '"hasOwnProperty":"safe-has-own-property"');
       assert.include(body, '"__proto__":"safe-proto"');
       const batch = decodeBrowserEventBatch(JSON.parse(body));
-      assert.strictEqual(batch.version, 1);
+      assert.strictEqual(batch.version, browserEnvelopeVersion);
       assert.strictEqual(batch.events.length, 1);
       const event = batch.events[0];
       assert.isDefined(event);

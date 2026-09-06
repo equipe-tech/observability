@@ -4,6 +4,7 @@ import {
   BrowserTelemetryClientDeliveryError,
   BrowserTelemetryClientShutdownError,
   browserBatchByteLength,
+  browserEnvelopeVersion,
   browserRequestByteBudget,
   createBrowserTelemetryClient,
   maxEventNameLength,
@@ -91,6 +92,7 @@ describe("browser telemetry client", () => {
       },
     });
     await client.flush();
+    expect(batches[0]?.version).toBe(browserEnvelopeVersion);
     expect(batches[0]?.events[0]).toEqual({
       id: "0123456789abcdef0123456789abcdef",
       name: "browser.error",

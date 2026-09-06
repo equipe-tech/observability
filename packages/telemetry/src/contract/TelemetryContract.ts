@@ -93,7 +93,7 @@ export type AuditActionDefinitionsInput = {
 };
 
 export type TelemetryContractInput = {
-  readonly version: 1;
+  readonly version: number;
   readonly events: EventDefinitionsInput;
   readonly metrics: MetricDefinitionsInput;
   readonly auditActions: AuditActionDefinitionsInput;
@@ -177,7 +177,7 @@ export const validateContractEvent = (
 };
 
 export type TelemetryContract<Definition extends TelemetryContractInput> = {
-  readonly version: 1;
+  readonly version: number;
   readonly definition: Definition;
   readonly eventNames: ReadonlyArray<EventName>;
   readonly eventByAlias: ReadonlyMap<string, CompiledEventDefinition>;
@@ -295,11 +295,11 @@ const collectIssues = (definition: TelemetryContractInput): ReadonlyArray<Contra
   const eventAliasesByName = new Map<string, string>();
   const auditActionAliasesByName = new Map<string, string>();
   const metricAliasesByName = new Map<string, string>();
-  if (definition.version !== 1) {
+  if (!Number.isSafeInteger(definition.version) || definition.version <= 0) {
     issues.push(
       issue(
         "OBS_CONTRACT_INVALID_VERSION",
-        "Telemetry contract version is invalid. Use version 1.",
+        "Telemetry contract version is invalid. Use a positive safe integer.",
       ),
     );
   }
@@ -655,7 +655,7 @@ export const defineTelemetryContract = Effect.fn("defineTelemetryContract")(func
     metricByName.set(metric.name, compiled);
   }
   return {
-    version: 1,
+    version: definition.version,
     definition,
     eventNames,
     eventByAlias,

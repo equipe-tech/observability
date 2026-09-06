@@ -695,6 +695,13 @@ try {
   if (oldNestResolution.exitCode === 0) {
     throw new Error("TypeScript resolved the removed core NestJS entrypoint.");
   }
+  const oldNestDiagnostic = `${oldNestResolution.stdout}${oldNestResolution.stderr}`;
+  if (
+    !oldNestDiagnostic.includes("TS2307") ||
+    !oldNestDiagnostic.includes("@equipe-tech/observability/nestjs")
+  ) {
+    throw new Error("The earlier consumer did not fail for the declared NestJS entrypoint break.");
+  }
   for (const candidate of [
     {
       file: "browser-audit-invalid.ts",

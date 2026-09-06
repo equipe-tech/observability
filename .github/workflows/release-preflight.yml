@@ -44,6 +44,7 @@ jobs:
           [[ "$(jq -r .version "$manifest")" == "$VERSION" ]] || { echo "Version $VERSION does not match $manifest."; exit 1; }
           bun scripts/release.ts "$VERSION" --package "$SLUG" --dry-run
           bun run build
+          OBSERVABILITY_COMPATIBILITY_DATE="$(date -u +%F)" bun run compat --release "$SLUG@$VERSION"
           output="$RUNNER_TEMP/release-candidate"
           bun scripts/release-candidate.ts --package "$SLUG" --version "$VERSION" --output "$output"
           test -s "$output/$SLUG@$VERSION.md"

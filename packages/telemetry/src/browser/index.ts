@@ -36,6 +36,8 @@ export {
   BrowserResourceIdentity,
   BrowserTraceContext as BrowserTraceContextSchema,
   BrowserTraceSpan,
+  browserEnvelopeMetadata,
+  browserEnvelopeVersion,
   browserRequestByteBudget,
   maxEventNameLength,
   maxEventsPerBatch,

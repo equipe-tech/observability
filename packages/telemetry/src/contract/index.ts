@@ -1,4 +1,6 @@
+export * from "./ContractCompatibility.ts";
 export * from "./ContractIndex.ts";
+export * from "./ContractSurface.ts";
 export * from "./EventName.ts";
 export * from "./EventProducer.ts";
 export * from "./MetricContractError.ts";
