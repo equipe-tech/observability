@@ -4,7 +4,7 @@ Esta preparação cobre os seis pacotes alterados pelo stack. Cada pacote manté
 
 | Pacote                              | Versão candidata | Motivo                                                                 |
 | ----------------------------------- | ---------------- | ---------------------------------------------------------------------- |
-| `@equipe-tech/observability`        | `0.3.2`          | Contratos tipados, identidade canônica, política, métricas e auditoria |
+| `@equipe-tech/observability`        | `0.3.3`          | Contratos tipados, identidade canônica, política, métricas e auditoria |
 | `@equipe-tech/observability-evlog`  | `0.3.0`          | Primeiro release do adapter oficial de eventos                         |
 | `@equipe-tech/observability-nestjs` | `0.3.0`          | Primeiro release da integração extraída do núcleo                      |
 | `@equipe-tech/observability-sentry` | `0.3.0`          | Primeiro release dos adapters de defeitos Node e browser               |
@@ -23,7 +23,7 @@ Leia [o guia de migração](../migration-0.3.md) antes da atualização. Leia [o
 
 Publique o núcleo antes dos adapters e da CLI, pois os consumidores precisam resolver o peer `@equipe-tech/observability@0.3.x`.
 
-Execute `Release Preflight` para cada pacote na revisão aprovada. Crie somente tags independentes, como `observability@0.3.2`, depois do preflight.
+Execute `Release Preflight` para cada pacote na revisão aprovada. Crie somente tags independentes, como `observability@0.3.3`, depois do preflight.
 
 Mantenha a aprovação humana do environment `publication`. O push da tag solicita somente a verificação protegida. A publicação exige outro `workflow_dispatch`, com `tag` e `confirm_tag` idênticos.
 
@@ -33,7 +33,9 @@ A tag `observability@0.3.0` registra uma tentativa sem publicação no npm. O ca
 
 A tentativa `observability@0.3.1` resolveu os secrets no job direto, mas o Collector encerrou por falta de permissão no diretório da fila. Preserve também essa tag sem publicação.
 
-A recuperação usa `observability@0.3.2`, com armazenamento gravável pelo usuário do Collector e prontidão verificada pelo endpoint de saúde. Os outros cinco pacotes mantêm `0.3.0`, pois suas tags ainda não foram criadas.
+A tentativa `observability@0.3.2` iniciou o Collector, mas a consulta APL usou uma rota global indisponível no endpoint regional.
+
+A recuperação usa `observability@0.3.3`, com armazenamento gravável, prontidão verificada e seleção da rota APL correspondente ao domínio configurado. Os outros cinco pacotes mantêm `0.3.0`, pois suas tags ainda não foram criadas.
 
 Os cadastros dos dois secrets Axiom e das cinco variables existem no environment `publication`. As regras permitem as tags dos seis slugs. O `NPM_TOKEN` existe no escopo do repositório.
 

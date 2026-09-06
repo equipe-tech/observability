@@ -151,4 +151,4 @@ Mantenha o ledger no banco de dados da aplicação. Use `commitAuditRecord` ou `
 
 ## Usar releases independentes
 
-Os pacotes mantêm versões independentes. Esta preparação seleciona `0.3.2` para o núcleo e `0.3.0` para os outros cinco pacotes alterados. A tag inicial do núcleo permanece como registro de uma tentativa sem publicação. A CLI avança de `0.2.1` para `0.3.0` pelas mudanças incompatíveis descritas neste guia. Tags usam `<slug>@<semver>`, por exemplo `observability@0.3.0`, `observability-evlog@0.3.0`, `observability-nestjs@0.3.0` e `observability-cli@0.3.0`. Releases futuras alteram somente os pacotes afetados.
+Os pacotes mantêm versões independentes. Esta preparação seleciona `0.3.3` para o núcleo e `0.3.0` para os outros cinco pacotes alterados. A tag inicial do núcleo permanece como registro de uma tentativa sem publicação. A CLI avança de `0.2.1` para `0.3.0` pelas mudanças incompatíveis descritas neste guia. Tags usam `<slug>@<semver>`, por exemplo `observability@0.3.0`, `observability-evlog@0.3.0`, `observability-nestjs@0.3.0` e `observability-cli@0.3.0`. Releases futuras alteram somente os pacotes afetados.

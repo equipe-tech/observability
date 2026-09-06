@@ -48,6 +48,8 @@ A verificação de release executa o canário implantado antes de criar a GitHub
 
 `AXIOM_ORGANIZATION_ID`, `AXIOM_URL`, `AXIOM_DATASET_TRACES`, `AXIOM_DATASET_LOGS` e `AXIOM_DATASET_METRICS` são variables do environment. `AXIOM_URL` aponta para a API regional da organização. Nenhum token administrativo entra no job.
 
+O canário usa `/v1/query/_apl` nos domínios regionais `*.edge.axiom.co` e mantém `/v1/datasets/_apl` na API global. Os domínios regionais não oferecem a rota global. Ambas as consultas APL solicitam o formato `legacy` esperado pelo parser do teste.
+
 O script `scripts/release-canary.ts` resolve o tag para o manifest correspondente e define `OTEL_SERVICE_VERSION` com a versão desse manifest. O step do Collector recebe somente `AXIOM_INGEST_TOKEN`. O step de consulta recebe somente `AXIOM_READ_TOKEN`. O canário consulta traces, logs e métricas usando a versão e os valores de correlação da execução. A ausência de qualquer secret encerra o gate com `OBS_RELEASE_CANARY_CREDENTIALS_MISSING`. CI comum permanece sem credenciais e informa que o gate protegido pertence ao workflow de release.
 
 O orçamento de visibilidade reserva 200 ms para o `flush_timeout` do Collector e 180.000 ms para `axiomQueryVisibilityMilliseconds`. A [documentação pública de ingestão do Axiom](https://axiom.co/docs/send-data/) não publica um limite de latência entre ingestão e consulta. Por isso, os 180 segundos são uma tolerância operacional explícita, não uma garantia do provedor. O teste exige que o intervalo total de polling cubra esses dois campos e informa a margem derivada. Com os valores atuais, o intervalo de 192.000 ms deixa uma margem de 11.800 ms.
