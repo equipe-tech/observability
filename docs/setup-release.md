@@ -2,6 +2,8 @@
 
 Aplicações executáveis declaram a organização Axiom com `--axiom-organization-id`. Aplicações com defeitos também declaram `--sentry-org` e `--sentry-team`.
 
+`--release-variable` e `--sentry-dsn-variable` selecionam os nomes das variáveis fornecidas pela aplicação. Os bootstraps Node e NestJS mapeiam esses valores para `OTEL_SERVICE_VERSION` e `SENTRY_DSN`, sem alterar o objeto de ambiente recebido. Quando os nomes são customizados, seus valores prevalecem sobre os nomes canônicos presentes no ambiente. O parser do runtime mantém as regras de identidade obrigatória e DSN válido.
+
 React com defeitos exige um script existente no `package.json` e ao menos um caminho de saída relativo:
 
 ```sh

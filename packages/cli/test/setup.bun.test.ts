@@ -113,6 +113,92 @@ describe("setup generator", () => {
     });
   }
 
+  for (const profile of ["worker", "cli", "nestjs-api"]) {
+    for (const customVariables of [false, true]) {
+      it(`starts the generated ${profile} bootstrap with ${customVariables ? "custom" : "canonical"} runtime variables`, async () => {
+        const target = await directory();
+        const releaseVariable = customVariables ? "APP_VERSION" : "OTEL_SERVICE_VERSION";
+        const sentryDsnVariable = customVariables ? "APP_DSN" : "SENTRY_DSN";
+        const defects = profile !== "cli";
+        const input = {
+          ...inputs(profile),
+          releaseVariable,
+          sentryDsnVariable,
+          defects,
+          environments: ["production"],
+          sentryOrganization: "fixture-org",
+          sentryTeam: "fixture-team",
+        };
+        await write(target, input);
+        await symlink(resolve("node_modules"), join(target, "node_modules"));
+        await writeFile(
+          join(target, "tsconfig.json"),
+          JSON.stringify({ extends: resolve("tsconfig.json") }),
+        );
+        const runner = join(target, "verify-bootstrap.ts");
+        await writeFile(
+          runner,
+          `import assert from "node:assert/strict";
+import { ${profile === "nestjs-api" ? "startNestObservability" : "startObservability"} as start } from "./src/observability/bootstrap.ts";
+const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({}) });
+const dsn = "http://public@127.0.0.1:" + server.port + "/1";
+const env = Object.freeze({
+  OTEL_SERVICE_NAME: ${JSON.stringify(input.serviceName)},
+  OTEL_DEPLOYMENT_ENVIRONMENT: "production",
+  OTEL_EXPORTER_OTLP_ENDPOINT: server.url.toString(),
+  ${customVariables ? 'OTEL_SERVICE_VERSION: "9.9.9", SENTRY_DSN: "ignored",' : ""}
+  ${releaseVariable}: "1.2.3",
+  ${sentryDsnVariable}: ${defects ? "dsn" : "undefined"},
+});
+try {
+  const handle = await start(env);
+  try {
+    assert.equal(handle.enabled, true);
+    if (!handle.enabled) throw new Error("Expected an enabled runtime.");
+    assert.equal(handle.config.identity.serviceVersion, "1.2.3");
+    assert.equal(handle.config.identity.serviceName, ${JSON.stringify(input.serviceName)});
+    assert.equal(handle.config.identity.environment, "production");
+    assert.equal(handle.config.sentry.enabled, ${defects});
+    if (handle.config.sentry.enabled) assert.equal(handle.config.sentry.dsn.toString(), dsn);
+  } finally {
+    const report = await handle.close();
+    assert.equal(report.degraded, false);
+  }
+  const missingRelease = { ...env, ${releaseVariable}: undefined, OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example.test" };
+  await assert.rejects(start(missingRelease), { code: "OBS_OBSERVABILITY_CONFIG_INVALID", field: "OTEL_SERVICE_VERSION" });
+  await assert.rejects(start({ ...env, ${releaseVariable}: "invalid version!" }), { code: "OBS_OBSERVABILITY_CONFIG_INVALID", field: "OTEL_SERVICE_VERSION" });
+  ${
+    defects
+      ? `await assert.rejects(start({ ...env, ${sentryDsnVariable}: undefined }), { code: "OBS_OBSERVABILITY_CONFIG_INVALID", field: "SENTRY_DSN" });
+  await assert.rejects(start({ ...env, ${sentryDsnVariable}: "not-a-url" }), { code: "OBS_OBSERVABILITY_CONFIG_INVALID", field: "SENTRY_DSN" });`
+      : ""
+  }
+} finally {
+  server.stop(true);
+}
+`,
+        );
+        const child = Bun.spawn([process.execPath, runner], {
+          cwd: target,
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const timeout = setTimeout(() => child.kill(), 10_000);
+        try {
+          const [exitCode, stdout, stderr] = await Promise.all([
+            child.exited,
+            new Response(child.stdout).text(),
+            new Response(child.stderr).text(),
+          ]);
+          expect({ exitCode, stdout, stderr }).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+        } finally {
+          clearTimeout(timeout);
+          child.kill();
+        }
+      }, 15_000);
+    }
+  }
+
   it("preserves user-owned edits even with force", async () => {
     const target = await directory();
     await write(target, inputs("worker"));

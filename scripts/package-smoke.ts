@@ -722,6 +722,8 @@ try {
         "nestjs-api",
         "--service-name",
         "packed-nest",
+        "--release-variable",
+        "APP_VERSION",
         "--environment",
         "test",
         "--otlp-endpoint",
@@ -810,6 +812,10 @@ try {
           profile,
           "--service-name",
           `packed-${profile}`,
+          "--release-variable",
+          "APP_VERSION",
+          "--sentry-dsn-variable",
+          "APP_DSN",
           "--environment",
           "test",
           "--otlp-endpoint",
@@ -979,7 +985,10 @@ import { Module } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { createNestBrowserObservability } from "./generated-nest/src/observability/bootstrap.ts";
 import { startBrowserObservability } from "./generated-react/src/observability/bootstrap.ts";
-const nest = await createNestBrowserObservability({ OTEL_SERVICE_NAME: "packed-nest", OTEL_SERVICE_VERSION: "1.0.0", OTEL_DEPLOYMENT_ENVIRONMENT: "test", OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4318" });
+import { startObservability as startWorker } from "./generated-worker/src/observability/bootstrap.ts";
+import { startObservability as startCli } from "./generated-cli/src/observability/bootstrap.ts";
+const nest = await createNestBrowserObservability({ OTEL_SERVICE_NAME: "packed-nest", APP_VERSION: "1.0.0", OTEL_DEPLOYMENT_ENVIRONMENT: "test", OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4318" });
+if (!nest.handle.enabled || nest.handle.config.identity.serviceVersion !== "1.0.0") throw new Error("Generated Nest bootstrap lost its custom release identity.");
 class AppModule {}
 Module({ imports: [nest.module] })(AppModule);
 const app = await NestFactory.create(AppModule, { logger: false });
@@ -988,6 +997,19 @@ const response = await fetch(\`\${await app.getUrl()}/_telemetry/events\`, { met
 if (response.status !== 202) throw new Error(\`Generated Nest browser route returned \${response.status}.\`);
 await app.close();
 await nest.handle.close();
+const collector = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({}) });
+try {
+  for (const start of [startWorker, startCli]) {
+    const handle = await start({ OTEL_SERVICE_NAME: "packed-bootstrap", APP_VERSION: "1.2.3", OTEL_DEPLOYMENT_ENVIRONMENT: "test", OTEL_EXPORTER_OTLP_ENDPOINT: collector.url.toString() });
+    try {
+      if (!handle.enabled || handle.config.identity.serviceVersion !== "1.2.3") throw new Error("Generated Node bootstrap lost its custom release identity.");
+    } finally {
+      if ((await handle.close()).degraded) throw new Error("Generated Node bootstrap failed shutdown.");
+    }
+  }
+} finally {
+  collector.stop(true);
+}
 const browser = startBrowserObservability({ serviceVersion: "1.0.0", environment: "test", ingestEndpoint: "http://127.0.0.1:3000/_telemetry/events" });
 if (browser.reactRootOptions.onUncaughtError === undefined) throw new Error("Generated React root options are unavailable.");
 const report = await browser.dispose();

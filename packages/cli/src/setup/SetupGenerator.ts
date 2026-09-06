@@ -329,7 +329,11 @@ import { observabilityPolicy } from "../../observability/policy.ts";
 export const startObservability = (env: { readonly [name: string]: string | undefined }) =>
   createNodeObservability({
     profile: ${JSON.stringify(input.profile)},
-    env,
+    env: {
+      ...env,
+      OTEL_SERVICE_VERSION: env[${JSON.stringify(input.releaseVariable)}],
+      SENTRY_DSN: env[${JSON.stringify(input.sentryDsnVariable)}],
+    },
     contract: telemetryContract,
     policy: observabilityPolicy,
     adapters: [evlogAdapter().registration${sentryRegistration}],
@@ -367,7 +371,11 @@ import { observabilityPolicy } from "../../observability/policy.ts";
 export const startNestObservability = (env: { readonly [name: string]: string | undefined }) =>
   createNodeObservability({
     profile: "nestjs-api",
-    env,
+    env: {
+      ...env,
+      OTEL_SERVICE_VERSION: env[${JSON.stringify(input.releaseVariable)}],
+      SENTRY_DSN: env[${JSON.stringify(input.sentryDsnVariable)}],
+    },
     contract: telemetryContract,
     policy: observabilityPolicy,
     adapters: [evlogAdapter().registration${sentryRegistration}],
