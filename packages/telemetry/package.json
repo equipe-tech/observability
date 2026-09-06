@@ -1,6 +1,6 @@
 {
   "name": "@equipe-tech/observability",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Nucleo neutro de observabilidade da Equipe Tech para OpenTelemetry, contratos, politicas e ciclo de vida",
   "homepage": "https://github.com/equipe-tech/observability#readme",
   "bugs": {
