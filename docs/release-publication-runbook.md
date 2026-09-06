@@ -54,6 +54,10 @@ A verificação de release executa o canário implantado antes de criar a GitHub
 
 O canário usa `/v1/query/_apl` nos domínios regionais `*.edge.axiom.co` e mantém `/v1/datasets/_apl` na API global. Os domínios regionais não oferecem a rota global. Ambas as consultas APL solicitam o formato `legacy` esperado pelo parser do teste.
 
+O [preflight protegido de 6 de setembro de 2026](https://github.com/equipe-tech/observability/actions/runs/34063620778) confirmou schemas distintos. Logs expõem atributos como `attributes.canary.run_id`; traces usam o mapa `attributes.custom`. Ambos expõem `service.namespace` e `resource.deployment.environment.name`. O alias legado do ambiente permanece em `resource.custom` nos traces e em `resource.deployment.environment` nos logs. A fixture `packages/telemetry/test/fixtures/axiom-canary-schema.json` preserva somente nomes e tipos das colunas observadas.
+
+O identificador opcional de instância pode não existir no schema de logs. A consulta usa `column_ifexists` sem substituir campos obrigatórios. O decoder trata o resultado vazio de `tostring(null)` como ausência. Um identificador não vazio continua visível e reprova a política do canário.
+
 O script `scripts/release-canary.ts` resolve o tag para o manifest correspondente e define `OTEL_SERVICE_VERSION` com a versão desse manifest. O step do Collector recebe somente `AXIOM_INGEST_TOKEN`. O step de consulta recebe somente `AXIOM_READ_TOKEN`. O canário consulta traces, logs e métricas usando a versão e os valores de correlação da execução. A ausência de qualquer secret encerra o gate com `OBS_RELEASE_CANARY_CREDENTIALS_MISSING`. CI comum permanece sem credenciais e informa que o gate protegido pertence ao workflow de release.
 
 Quando o canário falha, `scripts/axiom-schema.ts` consulta `getschema` nos datasets E2E de traces e logs. O diagnóstico imprime somente nomes e tipos de colunas validados, nunca eventos, credenciais ou corpos de erro do provedor. Cada consulta tem timeout de dez segundos. Respostas malformadas ou com mais de 512 colunas falham explicitamente. O diagnóstico não converte a falha do canário em sucesso.

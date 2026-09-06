@@ -1,0 +1,292 @@
+[
+  {
+    "signal": "traces",
+    "fields": [
+      {
+        "name": "_sysTime",
+        "type": "datetime"
+      },
+      {
+        "name": "_time",
+        "type": "datetime"
+      },
+      {
+        "name": "attributes.custom",
+        "type": "dynamic"
+      },
+      {
+        "name": "duration",
+        "type": "timespan"
+      },
+      {
+        "name": "events",
+        "type": "dynamic"
+      },
+      {
+        "name": "kind",
+        "type": "string"
+      },
+      {
+        "name": "name",
+        "type": "string"
+      },
+      {
+        "name": "parent_span_id",
+        "type": "string"
+      },
+      {
+        "name": "resource.custom",
+        "type": "dynamic"
+      },
+      {
+        "name": "resource.deployment.environment.name",
+        "type": "string"
+      },
+      {
+        "name": "scope.name",
+        "type": "string"
+      },
+      {
+        "name": "service.name",
+        "type": "string"
+      },
+      {
+        "name": "service.namespace",
+        "type": "string"
+      },
+      {
+        "name": "service.version",
+        "type": "string"
+      },
+      {
+        "name": "span_id",
+        "type": "string"
+      },
+      {
+        "name": "status.code",
+        "type": "string"
+      },
+      {
+        "name": "trace_id",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "signal": "logs",
+    "fields": [
+      {
+        "name": "_sysTime",
+        "type": "datetime"
+      },
+      {
+        "name": "_time",
+        "type": "datetime"
+      },
+      {
+        "name": "attributes.auth.access_token",
+        "type": "string"
+      },
+      {
+        "name": "attributes.browser.event.id",
+        "type": "string"
+      },
+      {
+        "name": "attributes.browser.event.occurred_at",
+        "type": "int"
+      },
+      {
+        "name": "attributes.canary.run_id",
+        "type": "string"
+      },
+      {
+        "name": "attributes.contact.phone",
+        "type": "string"
+      },
+      {
+        "name": "attributes.docs.documentation",
+        "type": "string"
+      },
+      {
+        "name": "attributes.effect.fiber.id",
+        "type": "int"
+      },
+      {
+        "name": "attributes.event.kind",
+        "type": "string"
+      },
+      {
+        "name": "attributes.event.name",
+        "type": "string"
+      },
+      {
+        "name": "attributes.event.outcome",
+        "type": "string"
+      },
+      {
+        "name": "attributes.event.policy_dropped_attributes",
+        "type": "int"
+      },
+      {
+        "name": "attributes.event.source",
+        "type": "string"
+      },
+      {
+        "name": "attributes.http.authorization",
+        "type": "string"
+      },
+      {
+        "name": "attributes.profile.password",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.message",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_0",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_1",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_10",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_11",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_12",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_13",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_14",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_15",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_16",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_17",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_18",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_19",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_2",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_3",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_4",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_5",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_6",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_7",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_8",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.nested_9",
+        "type": "string"
+      },
+      {
+        "name": "attributes.safe.raw_header",
+        "type": "string"
+      },
+      {
+        "name": "attributes.tool.tokenizer",
+        "type": "string"
+      },
+      {
+        "name": "attributes.user.password",
+        "type": "string"
+      },
+      {
+        "name": "body",
+        "type": "string"
+      },
+      {
+        "name": "observed_time",
+        "type": "datetime"
+      },
+      {
+        "name": "resource.deployment.environment",
+        "type": "string"
+      },
+      {
+        "name": "resource.deployment.environment.name",
+        "type": "string"
+      },
+      {
+        "name": "scope.name",
+        "type": "string"
+      },
+      {
+        "name": "service.name",
+        "type": "string"
+      },
+      {
+        "name": "service.namespace",
+        "type": "string"
+      },
+      {
+        "name": "service.version",
+        "type": "string"
+      },
+      {
+        "name": "severity",
+        "type": "string"
+      },
+      {
+        "name": "severity_number",
+        "type": "int"
+      },
+      {
+        "name": "severity_text",
+        "type": "string"
+      },
+      {
+        "name": "span_id",
+        "type": "string"
+      },
+      {
+        "name": "trace_id",
+        "type": "string"
+      }
+    ]
+  }
+]
