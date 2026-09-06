@@ -109,6 +109,8 @@ describe("observability CLI", () => {
       );
       expect(result.exitCode).toBe(1);
       expect(result.stderr).toContain("OBS_CLI_AUTH_TOKEN_INPUT_INVALID");
+      expect(result.stderr).toMatch(/request_id=[a-f0-9-]{36} retryable=true/);
+      expect(result.stderr).not.toContain("trace_id");
       expect(result.stderr).not.toContain("private-token");
       expect(result.stdout).toBe("");
       expect(Bun.file(join(home, "credentials.json")).exists()).resolves.toBe(false);

@@ -645,7 +645,8 @@ const setupVerifyRelease = Command.make(
       return yield* new SetupError({
         code: "OBS_SETUP_RELEASE_PREREQUISITE_MISSING",
         message:
-          "Release prerequisites are blocked. Correct the installed uploader and declared source-map artifacts before retrying.",
+          "Release prerequisites are blocked. Correct the application manifest, installed uploader, and declared source-map artifacts before retrying.",
+        retryable: true,
         cause: report,
       });
   }),

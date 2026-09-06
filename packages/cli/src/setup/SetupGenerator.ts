@@ -1,5 +1,7 @@
 import { Context, Effect, Layer, Schema } from "effect";
+import { constants } from "node:fs";
 import {
+  access,
   lstat,
   mkdir,
   readFile,
@@ -204,6 +206,10 @@ export class SetupError extends Schema.TaggedError<SetupError>()("SetupError", {
     "OBS_SETUP_RELEASE_PREREQUISITE_MISSING",
   ]),
   message: Schema.String,
+  requestId: Schema.String.pipe(
+    Schema.withConstructorDefault(Effect.sync(() => crypto.randomUUID())),
+  ),
+  retryable: Schema.Boolean.pipe(Schema.withConstructorDefault(Effect.succeed(false))),
   cause: Schema.Defect(),
 }) {}
 
@@ -543,6 +549,14 @@ const workflowSource = (input: SetupInput): string => {
       ? `      - name: Require fresh source-map output
         run: |
           for path in ${input.sourceMapBuild.includePaths.join(" ")}; do
+            ancestor="$path"
+            while test "$ancestor" != .; do
+              if test -L "$ancestor" || { test "$ancestor" != "$path" && test -e "$ancestor" && ! test -d "$ancestor"; }; then
+                printf '%s\\n' 'Blocked source-map prerequisite. Declared paths must not cross linked or non-directory ancestors.' >&2
+                exit 1
+              fi
+              ancestor="$(dirname "$ancestor")"
+            done
             if test -e "$path" || test -L "$path"; then
               printf '%s\\n' "Blocked source-map prerequisite: $path must not exist before the build." >&2
               exit 1
@@ -1602,6 +1616,47 @@ type ReleaseInspection = {
   readonly detail: string;
 };
 
+const ReleasePackageManifest = Schema.Struct({
+  scripts: Schema.Record(Schema.String, Schema.String),
+  dependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  devDependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+});
+const decodeReleasePackageManifest = Schema.decodeUnknownPromise(ReleasePackageManifest);
+
+const inspectReleaseDeclaration = async (
+  root: string,
+  script: string,
+): Promise<ReleaseInspection> => {
+  try {
+    const manifest = await decodeReleasePackageManifest(
+      JSON.parse(await readFile(join(root, "package.json"), "utf8")),
+    );
+    if (!Object.hasOwn(manifest.scripts, script) || !manifest.scripts[script]?.trim())
+      return {
+        passed: false,
+        detail: `application package.json must declare nonempty build script ${script}`,
+      };
+    const declarations = [
+      manifest.dependencies?.[sentryCliDependency.name],
+      manifest.devDependencies?.[sentryCliDependency.name],
+    ].filter((value) => value !== undefined);
+    if (declarations.length === 0 || declarations.some((value) => value !== "3.7.0"))
+      return {
+        passed: false,
+        detail: "application package.json must directly declare exact @sentry/cli@3.7.0",
+      };
+    return {
+      passed: true,
+      detail: `build script ${script} and direct exact @sentry/cli@3.7.0 declaration`,
+    };
+  } catch {
+    return {
+      passed: false,
+      detail: "a readable application package.json with release declarations is required",
+    };
+  }
+};
+
 const inspectUploader = async (root: string): Promise<ReleaseInspection> => {
   try {
     const packageRoot = join(root, "node_modules/@sentry/cli");
@@ -1631,6 +1686,7 @@ const inspectUploader = async (root: string): Promise<ReleaseInspection> => {
     const executableStat = await stat(resolvedExecutable);
     if (!executableStat.isFile() || executableStat.size === 0)
       return { passed: false, detail: "the application-local sentry-cli executable is empty" };
+    await access(resolvedExecutable, constants.X_OK);
     return {
       passed: true,
       detail: `${manifest.name}@${manifest.version} resolves through ./node_modules/.bin/sentry-cli`,
@@ -1652,6 +1708,21 @@ const artifactFiles = async (root: string, path: string): Promise<ReadonlyArray<
       "A declared source-map path escapes the application root. Correct it before retrying.",
       path,
     );
+  let ancestor = root;
+  for (const segment of rooted.split(sep)) {
+    ancestor = join(ancestor, segment);
+    const entry = await lstat(ancestor);
+    if (
+      entry.isSymbolicLink() ||
+      (entry.isFile() && entry.nlink > 1) ||
+      (ancestor !== target && !entry.isDirectory())
+    )
+      throw fail(
+        "OBS_SETUP_RELEASE_PREREQUISITE_MISSING",
+        "Declared source-map paths must not cross linked or non-directory boundaries.",
+        path,
+      );
+  }
   const visit = async (current: string): Promise<ReadonlyArray<string>> => {
     const entry = await lstat(current);
     if (entry.isSymbolicLink() || (entry.isFile() && entry.nlink > 1))
@@ -1746,6 +1817,10 @@ const verifyRelease = Effect.fn("verifyRelease")(function* (directory: string) {
     ];
     return { ...target, steps, passed: false } satisfies ReleasePrerequisiteReport;
   }
+  yield* checkSetupPaths(target.directory, ["package.json"]);
+  const declaration = yield* Effect.promise(() =>
+    inspectReleaseDeclaration(target.directory, input.sourceMapBuild?.script ?? ""),
+  );
   const uploader = yield* Effect.promise(() => inspectUploader(target.directory));
   const artifacts = yield* Effect.promise(() =>
     inspectArtifacts(target.directory, input.sourceMapBuild?.includePaths ?? []),
@@ -1753,8 +1828,8 @@ const verifyRelease = Effect.fn("verifyRelease")(function* (directory: string) {
   const steps: ReadonlyArray<ReleasePrerequisiteStep> = [
     {
       name: "declaration",
-      status: "passed",
-      detail: `build script ${input.sourceMapBuild.script}`,
+      status: declaration.passed ? "passed" : "blocked",
+      detail: declaration.detail,
     },
     { name: "uploader", status: uploader.passed ? "passed" : "blocked", detail: uploader.detail },
     {

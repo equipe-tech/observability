@@ -20,7 +20,7 @@ export class AuthenticationInputError extends Schema.TaggedError<AuthenticationI
   {
     code: Schema.Literal("OBS_CLI_AUTH_TOKEN_INPUT_INVALID"),
     message: Schema.String,
-    traceId: Schema.String,
+    requestId: Schema.String,
     retryable: Schema.Boolean,
     cause: Schema.Defect(),
   },
@@ -30,7 +30,7 @@ const failure = (message: string, cause: string): AuthenticationInputError =>
   new AuthenticationInputError({
     code: "OBS_CLI_AUTH_TOKEN_INPUT_INVALID",
     message,
-    traceId: crypto.randomUUID(),
+    requestId: crypto.randomUUID(),
     retryable: true,
     cause,
   });

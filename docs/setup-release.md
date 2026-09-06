@@ -27,9 +27,13 @@ O setup instala `@sentry/cli@3.7.0` somente nessa combinação. O workflow execu
 bun ./node_modules/@equipe-tech/observability-cli/dist/main.js setup verify-release --dir .
 ```
 
-A verificação exige `./node_modules/.bin/sentry-cli` resolvido para a dependência exata. Cada caminho declarado deve permanecer dentro da aplicação e conter um bundle JavaScript não vazio e um source map versão 3 válido e não vazio.
+A verificação relê o `package.json` da aplicação e exige o script de build não vazio e `@sentry/cli` declarado diretamente como `3.7.0` em `dependencies` ou `devDependencies`. O executável `./node_modules/.bin/sentry-cli` deve ter permissão de execução e resolver para a instalação dessa versão.
 
-O job de providers usa um diretório `OBSERVABILITY_HOME` isolado. Cada token fica restrito ao passo de login correspondente:
+Cada caminho declarado deve permanecer dentro da aplicação, sem links nos segmentos ou artefatos, e conter um bundle JavaScript não vazio e um arquivo `.map` não vazio. A verificação faz parse do JSON e exige versão 3, fontes e mappings não vazios, ou seções com offsets inteiros não negativos e mapas com esses campos. Ela não decodifica mappings, valida campos opcionais ou ordenação de seções, nem comprova cobertura, correspondência entre bundle e mapa ou identidade da release. O workflow exige saídas ausentes antes do build e rejeita ancestrais vinculados ou que não sejam diretórios. Essas verificações não protegem contra substituições concorrentes no filesystem.
+
+O job de providers usa um diretório `OBSERVABILITY_HOME` isolado. Cada binding da variável de segredo fica restrito ao passo de login correspondente. O login persiste o token no arquivo efêmero de credenciais, que continua disponível para a verificação de providers até o passo de cleanup com `always()`. Os jobs de build e canários não compartilham esse filesystem. O descarte do runner hospedado cobre cancelamentos que impeçam o cleanup.
+
+Os comandos de login são:
 
 ```sh
 observability auth login axiom --organization-id acme --token-env OBSERVABILITY_AXIOM_AUTH_TOKEN

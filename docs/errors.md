@@ -45,7 +45,7 @@ Não sugira repetir quando a operação pode ter completado parcialmente, ou qua
 
 ## Autenticação de providers
 
-- `OBS_CLI_AUTH_TOKEN_INPUT_INVALID` indica que `--token-env` não nomeia uma variável segura ou que a variável selecionada está ausente, vazia ou contém caracteres de controle. Corrija a variável e tente novamente. A falha ocorre antes de acesso ao provider ou gravação de credenciais e inclui `trace_id`.
+- `OBS_CLI_AUTH_TOKEN_INPUT_INVALID` indica que `--token-env` não nomeia uma variável segura ou que a variável selecionada está ausente, vazia ou contém caracteres de controle. Corrija a variável e tente novamente. A falha ocorre antes de acesso ao provider ou gravação de credenciais e inclui `request_id` e `retryable: true`.
 
 ## Release Sentry
 
@@ -62,7 +62,9 @@ Não sugira repetir quando a operação pode ter completado parcialmente, ou qua
 - `OBS_SETUP_RECONCILE_FAILED` indica falha ao regenerar o contrato ou ler a declaração de operações. Corrija a declaração local antes de repetir.
 - `OBS_SETUP_CONFORMANCE_FAILED` indica falha ou pré-requisito bloqueado na suíte pública de conformidade. Forneça evidência produzida pelos donos e execute todos os canários aplicáveis antes da release.
 - `OBS_SETUP_FORBIDDEN_OUTPUT` indica que uma saída gerada tentou incorporar implementação pertencente à plataforma ou um valor semelhante a segredo. Use somente composição por entrypoints públicos.
-- `OBS_SETUP_RELEASE_PREREQUISITE_MISSING` indica que o uploader exato, o executável local, os artefatos de source map ou o comando de canário declarado não estão prontos. Corrija o pré-requisito local antes de repetir. A verificação local não lê variáveis de provider nem inicia requisições.
+- `OBS_SETUP_RELEASE_PREREQUISITE_MISSING` indica que o uploader exato, o executável local, os artefatos de source map ou o comando de canário declarado não estão prontos. Corrija o pré-requisito local antes de repetir. A verificação local não lê variáveis de provider nem inicia requisições. A falha inclui `request_id` e `retryable`. Pré-requisitos locais bloqueados e entradas ausentes ou inválidas do canário permitem repetir após correção. Falhas após iniciar o comando do canário usam `retryable: false`, pois podem seguir efeitos parciais da aplicação.
+
+Os erros de autenticação de entrada e de setup usam `request_id` para identificar a ocorrência no diagnóstico local. Esse identificador não é um trace OpenTelemetry e não promete um trace exportado. `trace_id` é reservado a um contexto real de tracing. Erros de setup sem garantia de idempotência usam `retryable: false`.
 
 ## Contratos públicos
 

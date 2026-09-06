@@ -26,7 +26,7 @@ bun "$OBSERVABILITY_CLI" setup write --help
 bun "$OBSERVABILITY_CLI" setup verify --help
 ```
 
-Select the profile explicitly. Collect application-owned service identity, environments, OTLP endpoint, public origin, proxy policy, ingestion path, secret variable names, Sentry source-map coordinates, and pipeline format. Never accept a secret value.
+Select the profile explicitly. Collect application-owned service identity, environments, OTLP endpoint, public origin, proxy policy, ingestion path, secret variable names, Sentry source-map coordinates, and source-map build declarations. Never accept a secret value.
 
 ## Drive
 

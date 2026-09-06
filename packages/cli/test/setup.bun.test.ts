@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { Effect, Fiber } from "effect";
 import {
+  chmod,
   link,
   lstat,
   mkdir,
@@ -499,6 +500,13 @@ describe("setup generator", () => {
       sourceMapPaths: ["dist"],
     };
     const generated = await write(target, input);
+    await writeFile(
+      join(target, "package.json"),
+      JSON.stringify({
+        scripts: { build: "build-application" },
+        devDependencies: { "@sentry/cli": "3.7.0" },
+      }),
+    );
     expect(generated.dependencies).toContainEqual({
       name: "@sentry/cli",
       installSpec: "@sentry/cli@3.7.0",
@@ -529,6 +537,113 @@ describe("setup generator", () => {
         { name: "artifacts", status: "blocked", detail: expect.any(String) },
       ]),
     });
+  });
+
+  it("rejects linked ancestors in release artifacts and the generated freshness gate", async () => {
+    const target = await directory();
+    const outside = await directory();
+    await writeFile(join(target, "package.json"), JSON.stringify({ scripts: { build: "true" } }));
+    const generated = await write(target, {
+      ...inputs("react-web"),
+      defects: true,
+      sentryOrganization: "owner",
+      sentryTeam: "frontend",
+      sentryProject: "web",
+      sourceMapBuildScript: "build",
+      sourceMapPaths: ["dist/maps"],
+    });
+    await symlink(outside, join(target, "dist"));
+    const workflow =
+      generated.files.find((file) => file.path === ".github/workflows/observability.yml")
+        ?.content ?? "";
+    const shell =
+      workflow
+        .split("      - name: Require fresh source-map output\n        run: |\n")[1]
+        ?.split("      - name:")[0]
+        ?.replace(/^          /gm, "") ?? "";
+    expect(shell.length).toBeGreaterThan(0);
+    const freshnessExit = () =>
+      Bun.spawn(["bash", "-c", shell], { cwd: target, stdout: "pipe", stderr: "pipe" }).exited;
+    expect(await freshnessExit()).toBe(1);
+    await mkdir(join(outside, "maps"));
+    await writeFile(join(outside, "maps/app.js"), "built");
+    await writeFile(
+      join(outside, "maps/app.js.map"),
+      JSON.stringify({ version: 3, sources: ["app.ts"], mappings: "AAAA" }),
+    );
+    expect(
+      (await verifyRelease(target)).steps.find((step) => step.name === "artifacts")?.status,
+    ).toBe("blocked");
+    await rm(join(target, "dist"));
+    expect(await freshnessExit()).toBe(0);
+    await mkdir(join(target, "dist"));
+    expect(await freshnessExit()).toBe(0);
+    for (const linkedTarget of [join(outside, "maps"), join(outside, "absent")]) {
+      await symlink(linkedTarget, join(target, "dist/maps"));
+      expect(await freshnessExit()).toBe(1);
+      expect(
+        (await verifyRelease(target)).steps.find((step) => step.name === "artifacts")?.status,
+      ).toBe("blocked");
+      await rm(join(target, "dist/maps"));
+    }
+    await mkdir(join(target, "dist/maps"));
+    await link(join(outside, "maps/app.js"), join(target, "dist/maps/app.js"));
+    await writeFile(
+      join(target, "dist/maps/app.js.map"),
+      JSON.stringify({ version: 3, sources: ["app.ts"], mappings: "AAAA" }),
+    );
+    expect(
+      (await verifyRelease(target)).steps.find((step) => step.name === "artifacts")?.status,
+    ).toBe("blocked");
+    expect(await freshnessExit()).toBe(1);
+  });
+
+  it("rechecks current manifest declarations and executable permissions", async () => {
+    const target = await directory();
+    const manifestPath = join(target, "package.json");
+    const manifest = { scripts: { build: "true" }, devDependencies: { "@sentry/cli": "3.7.0" } };
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await write(target, {
+      ...inputs("react-web"),
+      defects: true,
+      sentryOrganization: "owner",
+      sentryTeam: "frontend",
+      sentryProject: "web",
+      sourceMapBuildScript: "build",
+      sourceMapPaths: ["dist"],
+    });
+    await mkdir(join(target, "node_modules/@sentry/cli/bin"), { recursive: true });
+    await mkdir(join(target, "node_modules/.bin"), { recursive: true });
+    await writeFile(
+      join(target, "node_modules/@sentry/cli/package.json"),
+      JSON.stringify({ name: "@sentry/cli", version: "3.7.0" }),
+    );
+    const executable = join(target, "node_modules/@sentry/cli/bin/sentry-cli");
+    await writeFile(executable, "not executed", { mode: 0o755 });
+    await symlink("../@sentry/cli/bin/sentry-cli", join(target, "node_modules/.bin/sentry-cli"));
+    await mkdir(join(target, "dist"));
+    await writeFile(join(target, "dist/app.js"), "built");
+    await writeFile(
+      join(target, "dist/app.js.map"),
+      JSON.stringify({ version: 3, sources: ["app.ts"], mappings: "AAAA" }),
+    );
+    expect((await verifyRelease(target)).passed).toBe(true);
+    for (const changed of [
+      { ...manifest, scripts: {} },
+      { ...manifest, scripts: { build: "" } },
+      { scripts: manifest.scripts },
+      { ...manifest, devDependencies: { "@sentry/cli": "^3.7.0" } },
+      { ...manifest, dependencies: { "@sentry/cli": "3.6.0" } },
+      { ...manifest, devDependencies: {}, peerDependencies: { "@sentry/cli": "3.7.0" } },
+    ]) {
+      await writeFile(manifestPath, JSON.stringify(changed));
+      expect((await verifyRelease(target)).passed).toBe(false);
+    }
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await chmod(executable, 0o644);
+    expect(
+      (await verifyRelease(target)).steps.find((step) => step.name === "uploader")?.status,
+    ).toBe("blocked");
   });
 
   it("blocks legacy React releases without rewriting their v1 decision", async () => {
