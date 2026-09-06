@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, it } from "bun:test";
+import { afterAll, beforeAll, describe, it } from "bun:test";
 import {
   checkPackageBoundaries,
   decodePackageManifest,
@@ -10,7 +10,8 @@ import {
   sourceRole,
 } from "../../scripts/package-boundaries.ts";
 
-const projects = join(import.meta.dirname, "fixtures", "projects");
+const fixtureProjects = join(import.meta.dirname, "fixtures", "projects");
+const projects = join(tmpdir(), `boundaries-fixtures-${crypto.randomUUID()}`);
 
 const ruleNames = (
   violations: Awaited<ReturnType<typeof checkPackageBoundaries>>,
@@ -55,6 +56,30 @@ const mutateOwnedPath = async (ownedPath: string): Promise<ReadonlyArray<string>
 };
 
 describe("package boundaries", () => {
+  beforeAll(async () => {
+    await cp(fixtureProjects, projects, { recursive: true });
+    for await (const manifest of new Bun.Glob("**/package.json.fixture").scan({ cwd: projects })) {
+      await rename(join(projects, manifest), join(projects, manifest.replace(/\.fixture$/, "")));
+    }
+  });
+
+  afterAll(async () => {
+    await rm(projects, { recursive: true, force: true });
+  });
+
+  it("materializes inert fixture manifests only in the temporary test projects", () => {
+    const manifests = new Bun.Glob("**/package.json");
+    const fixtures = Array.from(
+      new Bun.Glob("**/package.json.fixture").scanSync({ cwd: fixtureProjects }),
+    );
+    assert.ok(fixtures.length > 0);
+    assert.deepEqual(Array.from(manifests.scanSync({ cwd: fixtureProjects })), []);
+    assert.deepEqual(
+      Array.from(manifests.scanSync({ cwd: projects })).toSorted(),
+      fixtures.map((path) => path.replace(/\.fixture$/, "")).toSorted(),
+    );
+  });
+
   it("runs every role policy through type-only imports in fixture projects", async () => {
     const violations = await checkPackageBoundaries(join(projects, "violations"));
     const policyRules = ruleNames(violations).filter((rule) => rule.includes("-forbidden-"));

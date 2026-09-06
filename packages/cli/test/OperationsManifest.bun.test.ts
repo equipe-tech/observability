@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
+import { parseDocument } from "yaml";
 import { compileManagedQuery } from "../src/ManagedQuery.ts";
 import {
   maximumContractAliasCount,
@@ -208,6 +209,13 @@ describe("operations manifest", () => {
         "YAML directives, tags, anchors, aliases and merge keys are unsupported",
       );
     }
+  });
+
+  test("reports deeply nested YAML as parser errors instead of throwing a RangeError", () => {
+    const content = `${"[".repeat(50_000)}1${"]".repeat(50_000)}`;
+    const document = parseDocument(content, { prettyErrors: false });
+    expect(document.errors.length).toBeGreaterThan(0);
+    expect(document.errors.every((error) => error.code === "RESOURCE_EXHAUSTION")).toBe(true);
   });
 
   test("rejects YAML parser warnings", async () => {
