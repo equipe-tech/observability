@@ -41,18 +41,18 @@ O dry run não altera manifest, lockfile, commit ou tag. Uma release real altera
 
 ## Gate do canário no provedor
 
-A verificação de release executa o canário implantado antes de criar a GitHub Release. O job reutilizável usa o environment protegido `publication` como a única origem dos secrets. O workflow chamador não repassa secrets. O job exige dois secrets independentes:
+A verificação de release executa o canário implantado antes de criar a GitHub Release. O job `deployed-canary` roda diretamente em `release.yml`, depois da verificação reutilizável de `ci.yml`, e usa o environment protegido `publication` como a única origem dos secrets. Isso evita a falha de resolução de secrets de environment na fronteira de workflows reutilizáveis descrita em [actions/runner#4453](https://github.com/actions/runner/issues/4453). CI continua reutilizável, sem receber secrets ou `NPM_TOKEN`; não use `secrets: inherit`. O gate exige sucesso explícito desse job antes da GitHub Release e da publicação npm. Falha, cancelamento, execução omitida ou resultado ausente não permitem publicação. O job exige dois secrets independentes:
 
 - `AXIOM_INGEST_TOKEN` aceita somente ingestão nos datasets E2E de traces, logs e métricas.
 - `AXIOM_READ_TOKEN` aceita somente consultas nos mesmos datasets E2E.
 
 `AXIOM_ORGANIZATION_ID`, `AXIOM_URL`, `AXIOM_DATASET_TRACES`, `AXIOM_DATASET_LOGS` e `AXIOM_DATASET_METRICS` são variables do environment. `AXIOM_URL` aponta para a API regional da organização. Nenhum token administrativo entra no job.
 
-O script `scripts/release-canary.ts` resolve o tag para o manifest correspondente e define `OTEL_SERVICE_VERSION` com a versão desse manifest. O step do Collector recebe somente `AXIOM_INGEST_TOKEN`. O step de consulta recebe somente `AXIOM_READ_TOKEN`. O canário consulta traces, logs e métricas usando a versão e os valores de correlação da execução. A ausência de qualquer secret encerra o gate com `OBS_RELEASE_CANARY_CREDENTIALS_MISSING`. CI comum permanece sem credenciais e informa que o gate protegido não foi solicitado.
+O script `scripts/release-canary.ts` resolve o tag para o manifest correspondente e define `OTEL_SERVICE_VERSION` com a versão desse manifest. O step do Collector recebe somente `AXIOM_INGEST_TOKEN`. O step de consulta recebe somente `AXIOM_READ_TOKEN`. O canário consulta traces, logs e métricas usando a versão e os valores de correlação da execução. A ausência de qualquer secret encerra o gate com `OBS_RELEASE_CANARY_CREDENTIALS_MISSING`. CI comum permanece sem credenciais e informa que o gate protegido pertence ao workflow de release.
 
 O orçamento de visibilidade reserva 200 ms para o `flush_timeout` do Collector e 180.000 ms para `axiomQueryVisibilityMilliseconds`. A [documentação pública de ingestão do Axiom](https://axiom.co/docs/send-data/) não publica um limite de latência entre ingestão e consulta. Por isso, os 180 segundos são uma tolerância operacional explícita, não uma garantia do provedor. O teste exige que o intervalo total de polling cubra esses dois campos e informa a margem derivada. Com os valores atuais, o intervalo de 192.000 ms deixa uma margem de 11.800 ms.
 
-Se o gate falhar, preserve o tag e os resultados da execução. Corrija a credencial, a variable regional, o dataset ou a entrega de telemetria indicada pelo último resultado de consulta. Execute novamente o mesmo workflow no mesmo tag. Não mova o tag, não use credencial administrativa e não publique manualmente para contornar o gate.
+Se o gate falhar, preserve o tag e os resultados da execução. Corrija a credencial, a variable regional, o dataset ou a entrega de telemetria indicada pelo último resultado de consulta. Para correções de configuração externa, execute novamente o mesmo workflow no mesmo tag. Se a correção exigir mudanças versionadas no workflow ou no código, prepare um novo patch apenas do pacote afetado com um novo tag: a execução no tag anterior continua usando os arquivos antigos. Não mova o tag, não use credencial administrativa e não publique manualmente para contornar o gate.
 
 ## Gate humano
 
@@ -68,6 +68,6 @@ Se a criação da release concluir e o npm falhar, corrija a causa e execute nov
 
 ## Rollback
 
-Nunca remova uma versão publicada do npm e nunca mova um tag publicado. Se a falha ocorrer antes da publicação no npm, mantenha o tag e a release para diagnóstico, corrija o workflow ou as credenciais e execute novamente. Se um pacote incorreto chegar ao npm, descontinue a versão com `npm deprecate`, corrija o código e publique um novo patch apenas para o pacote afetado. Registre na release anterior o link para a versão corrigida.
+Nunca remova uma versão publicada do npm e nunca mova um tag publicado. Se a falha ocorrer antes da publicação no npm, mantenha o tag e a release para diagnóstico. Correções de credenciais permitem executar novamente; correções versionadas de workflow exigem um novo patch e tag do pacote afetado. Se um pacote incorreto chegar ao npm, descontinue a versão com `npm deprecate`, corrija o código e publique um novo patch apenas para o pacote afetado. Registre na release anterior o link para a versão corrigida.
 
 Não publique um pacote irmão para alinhar versões.

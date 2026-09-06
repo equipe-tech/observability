@@ -27,8 +27,10 @@ const releaseCanaryScript = await Bun.file(releaseCanaryScriptPath).text();
 
 const WorkflowEnvironment = Schema.Struct({
   OBSERVABILITY_E2E_DEPLOYED: Schema.optionalKey(Schema.String),
-  CANARY_REQUESTED: Schema.optionalKey(Schema.String),
-  CANARY_RESULT: Schema.optionalKey(Schema.String),
+  AXIOM_INGEST_TOKEN: Schema.optionalKey(Schema.String),
+  AXIOM_READ_TOKEN: Schema.optionalKey(Schema.String),
+  NODE_AUTH_TOKEN: Schema.optionalKey(Schema.String),
+  RELEASE_TAG: Schema.optionalKey(Schema.String),
   DEPLOYED_CANARY_RESULT: Schema.optionalKey(Schema.String),
 });
 
@@ -38,7 +40,12 @@ const WorkflowStep = Schema.Struct({
   if: Schema.optionalKey(Schema.String),
   run: Schema.optionalKey(Schema.String),
   uses: Schema.optionalKey(Schema.String),
-  with: Schema.optionalKey(Schema.Struct({ "bun-version": Schema.optionalKey(Schema.String) })),
+  with: Schema.optionalKey(
+    Schema.Struct({
+      "bun-version": Schema.optionalKey(Schema.String),
+      ref: Schema.optionalKey(Schema.String),
+    }),
+  ),
   env: Schema.optionalKey(WorkflowEnvironment),
 });
 
@@ -52,16 +59,11 @@ const WorkflowDocument = Schema.Struct({
 const ConditionalJob = Schema.Struct({
   if: Schema.optionalKey(Schema.String),
   environment: Schema.optionalKey(Schema.String),
+  needs: Schema.optionalKey(Schema.Array(Schema.String)),
+  env: Schema.optionalKey(WorkflowEnvironment),
   "continue-on-error": Schema.optionalKey(Schema.Boolean),
   "timeout-minutes": Schema.optionalKey(Schema.Number),
   steps: Schema.optionalKey(Schema.Array(WorkflowStep)),
-});
-
-const GateJob = Schema.Struct({
-  if: Schema.String,
-  needs: Schema.Array(Schema.String),
-  outputs: Schema.Struct({ result: Schema.String }),
-  steps: Schema.Array(WorkflowStep),
 });
 
 const WorkflowSecrets = Schema.Struct({
@@ -73,15 +75,18 @@ const ReusableWorkflowJob = Schema.Struct({
   uses: Schema.String,
   with: Schema.Struct({
     ref: Schema.String,
-    release_tag: Schema.String,
-    run_deployed_canary: Schema.Boolean,
   }),
   secrets: Schema.optionalKey(WorkflowSecrets),
 });
 
-const DependentJob = Schema.Struct({ needs: Schema.Array(Schema.String) });
+const DependentJob = Schema.Struct({
+  needs: Schema.Array(Schema.String),
+  if: Schema.String,
+  environment: Schema.String,
+});
 
 const ReleaseGateJob = Schema.Struct({
+  if: Schema.String,
   needs: Schema.String,
   steps: Schema.Array(WorkflowStep),
 });
@@ -90,24 +95,20 @@ const CiWorkflow = Schema.Struct({
   on: Schema.Struct({
     workflow_call: Schema.Struct({
       inputs: Schema.Struct({
-        release_tag: Schema.Struct({ required: Schema.Boolean, type: Schema.String }),
-      }),
-      outputs: Schema.Struct({
-        deployed_canary_result: Schema.Struct({ value: Schema.String }),
+        ref: Schema.Struct({ required: Schema.Boolean, type: Schema.String }),
       }),
       secrets: Schema.optionalKey(WorkflowSecrets),
     }),
   }),
   jobs: Schema.Struct({
     verify: ConditionalJob,
-    "deployed-canary": ConditionalJob,
-    "canary-gate": GateJob,
   }),
 });
 
 const ReleaseWorkflow = Schema.Struct({
   jobs: Schema.Struct({
     verify: ReusableWorkflowJob,
+    "deployed-canary": ConditionalJob,
     "canary-gate": ReleaseGateJob,
     release: DependentJob,
     "publish-npm": DependentJob,
@@ -128,28 +129,12 @@ const workflowDocuments = await Array.fromAsync(
     Schema.decodeUnknownSync(WorkflowDocument)(Bun.YAML.parse(await Bun.file(path).text())),
 );
 
-type GateCase = {
-  readonly requested: "true" | "false";
-  readonly result: "success" | "failure" | "skipped" | "cancelled";
-  readonly exitCode: number;
-  readonly output: string;
-};
-
 type ShellResult = {
   readonly exitCode: number;
   readonly output: string;
   readonly stderr: string;
   readonly stdout: string;
 };
-
-const gateCases: ReadonlyArray<GateCase> = [
-  { requested: "false", result: "skipped", exitCode: 0, output: "result=not-requested\n" },
-  { requested: "false", result: "failure", exitCode: 0, output: "result=not-requested\n" },
-  { requested: "true", result: "success", exitCode: 0, output: "result=success\n" },
-  { requested: "true", result: "failure", exitCode: 1, output: "" },
-  { requested: "true", result: "skipped", exitCode: 1, output: "" },
-  { requested: "true", result: "cancelled", exitCode: 1, output: "" },
-];
 
 const executeShell = async (
   script: string,
@@ -209,7 +194,7 @@ describe("release workflow publication gate", () => {
     expect(workflow).toContain('[[ "$CONFIRM_TAG" == "$tag" ]]');
     expect(workflow).toContain("Publication confirmation must exactly match $tag.");
     expect(workflow).toContain('[[ "$EVENT_REF" == "refs/tags/$tag" ]]');
-    expect(workflow.match(/environment: publication/g)).toHaveLength(2);
+    expect(workflow.match(/environment: publication/g)).toHaveLength(3);
   });
 
   test("resolves one package manifest and archive through the release canary script", () => {
@@ -231,36 +216,12 @@ describe("release workflow publication gate", () => {
     expect(workflow).toContain('[[ "$head_commit" == "$tag_commit" ]]');
   });
 
-  test("executes the reusable workflow canary gate script", async () => {
-    const gateStep = parsedCiWorkflow.jobs["canary-gate"].steps.find(
-      (step) => step.id === "result",
-    );
-    expect(gateStep?.run).toBeDefined();
-    if (gateStep?.run === undefined) throw new Error("The reusable canary gate script is missing.");
-    for (const gateCase of gateCases) {
-      const result = await executeShell(gateStep.run, {
-        CANARY_REQUESTED: gateCase.requested,
-        CANARY_RESULT: gateCase.result,
-      });
-      expect(result.exitCode).toBe(gateCase.exitCode);
-      expect(result.output).toBe(gateCase.output);
-      expect(result.stderr).toBe("");
-      if (gateCase.exitCode === 1) {
-        expect(result.stdout).toContain("The requested deployed canary did not succeed.");
-      } else {
-        expect(result.stdout).toBe("");
-      }
-    }
-  });
-
   test("executes the release workflow canary gate script", async () => {
     const gateStep = parsedReleaseWorkflow.jobs["canary-gate"].steps?.[0];
     expect(gateStep?.run).toBeDefined();
     if (gateStep?.run === undefined) throw new Error("The release canary gate script is missing.");
-    for (const canaryResult of ["success", "failure", "skipped", "cancelled"]) {
+    for (const canaryResult of ["success", "failure", "skipped", "cancelled", "", undefined]) {
       const result = await executeShell(gateStep.run, {
-        CANARY_REQUESTED: "true",
-        CANARY_RESULT: canaryResult,
         DEPLOYED_CANARY_RESULT: canaryResult,
       });
       expect(result.exitCode).toBe(canaryResult === "success" ? 0 : 1);
@@ -270,64 +231,74 @@ describe("release workflow publication gate", () => {
     }
   });
 
-  test("wires the reusable gate output into the release gate", () => {
-    expect(parsedCiWorkflow.on.workflow_call.outputs.deployed_canary_result.value).toBe(
-      "${{ jobs.canary-gate.outputs.result }}",
-    );
-    expect(parsedCiWorkflow.jobs["deployed-canary"]["continue-on-error"]).toBeUndefined();
-    expect(parsedCiWorkflow.jobs["canary-gate"].outputs.result).toBe(
-      "${{ steps.result.outputs.result }}",
-    );
-    expect(parsedCiWorkflow.jobs["canary-gate"].steps[0]?.env).toEqual({
-      CANARY_REQUESTED: "${{ inputs.run_deployed_canary }}",
-      CANARY_RESULT: "${{ needs.deployed-canary.result }}",
-    });
-    expect(parsedReleaseWorkflow.jobs["canary-gate"].needs).toBe("verify");
-    expect(parsedReleaseWorkflow.jobs["canary-gate"].steps?.[0]?.env?.DEPLOYED_CANARY_RESULT).toBe(
-      "${{ needs.verify.outputs.deployed_canary_result }}",
+  test("gates publication on the direct protected job result", () => {
+    expect(parsedReleaseWorkflow.jobs["deployed-canary"]["continue-on-error"]).toBeUndefined();
+    expect(parsedReleaseWorkflow.jobs["deployed-canary"].if).toBeUndefined();
+    expect(parsedReleaseWorkflow.jobs["canary-gate"].needs).toBe("deployed-canary");
+    expect(parsedReleaseWorkflow.jobs["canary-gate"].if).toBe("${{ !cancelled() }}");
+    expect(parsedReleaseWorkflow.jobs["canary-gate"].steps[0]?.env?.DEPLOYED_CANARY_RESULT).toBe(
+      "${{ needs.deployed-canary.result }}",
     );
   });
 
   test("keeps the deployed canary job timeout above the suite budget", () => {
-    const timeoutMinutes = parsedCiWorkflow.jobs["deployed-canary"]["timeout-minutes"];
+    const timeoutMinutes = parsedReleaseWorkflow.jobs["deployed-canary"]["timeout-minutes"];
     expect(timeoutMinutes).toBeDefined();
     expect((timeoutMinutes ?? 0) * 60_000).toBeGreaterThanOrEqual(
       deployedCanarySuiteTimeoutMilliseconds + 3 * 60_000,
     );
   });
 
-  test("does not mask a gate bypass when the request variable is unset", async () => {
-    const gateStep = parsedCiWorkflow.jobs["canary-gate"].steps[0];
-    expect(gateStep?.run).toBeDefined();
-    if (gateStep?.run === undefined) throw new Error("The reusable canary gate script is missing.");
-    const result = await executeShell(gateStep.run, {
-      CANARY_REQUESTED: undefined,
-      CANARY_RESULT: "success",
-    });
-    expect(result).toEqual({
-      exitCode: 0,
-      output: "result=not-requested\n",
-      stderr: "",
-      stdout: "",
-    });
-  });
-
   test("builds a release graph that cannot bypass the canary gate", () => {
     expect(parsedReleaseWorkflow.jobs.verify.uses).toBe("./.github/workflows/ci.yml");
-    expect(parsedReleaseWorkflow.jobs.verify.with.run_deployed_canary).toBe(true);
-    expect(parsedCiWorkflow.jobs["canary-gate"].needs).toEqual(["verify", "deployed-canary"]);
-    expect(parsedReleaseWorkflow.jobs.release.needs).toContain("canary-gate");
-    expect(parsedReleaseWorkflow.jobs["publish-npm"].needs).toContain("release");
+    expect(parsedReleaseWorkflow.jobs["deployed-canary"].needs).toEqual(["tag-check", "verify"]);
+    expect(parsedReleaseWorkflow.jobs.release.needs).toEqual([
+      "tag-check",
+      "verify",
+      "canary-gate",
+    ]);
+    expect(parsedReleaseWorkflow.jobs["publish-npm"].needs).toEqual(["tag-check", "release"]);
+    for (const job of [
+      parsedReleaseWorkflow.jobs.release,
+      parsedReleaseWorkflow.jobs["publish-npm"],
+    ]) {
+      expect(job.if).toBe("github.event_name == 'workflow_dispatch'");
+      expect(job.environment).toBe("publication");
+    }
   });
 
   test("uses publication environment secrets without inert caller plumbing", () => {
     expect(parsedCiWorkflow.on.workflow_call.secrets).toBeUndefined();
-    expect(parsedCiWorkflow.jobs["deployed-canary"].environment).toBe("publication");
+    expect(parsedReleaseWorkflow.jobs["deployed-canary"].environment).toBe("publication");
+    expect(workflow).not.toContain("secrets: inherit");
+    expect(ciWorkflow).not.toContain("secrets.");
+    expect(ciWorkflow).not.toContain("NPM_TOKEN");
+    expect(ciWorkflow).not.toContain("environment:");
+    expect(ciWorkflow).not.toContain("deployed-canary:");
     expect(parsedReleaseWorkflow.jobs.verify.secrets).toBeUndefined();
   });
 
-  test("requires and counts an explicitly requested deployed canary test", () => {
-    const canaryStep = parsedCiWorkflow.jobs["deployed-canary"].steps?.find(
+  test("isolates ingest, read and npm credentials to their owning steps", () => {
+    const canary = parsedReleaseWorkflow.jobs["deployed-canary"];
+    expect(canary.env).toBeUndefined();
+    const steps = canary.steps ?? [];
+    const ingestStep = steps.find((step) => step.name === "Start the production collector");
+    const readStep = steps.find((step) => step.name === "Run the deployed release canary");
+    expect(ingestStep?.env?.AXIOM_INGEST_TOKEN).toBe("${{ secrets.AXIOM_INGEST_TOKEN }}");
+    expect(ingestStep?.run).toContain("--require-credential AXIOM_INGEST_TOKEN");
+    expect(readStep?.env?.AXIOM_READ_TOKEN).toBe("${{ secrets.AXIOM_READ_TOKEN }}");
+    expect(readStep?.run).toContain("--require-credential AXIOM_READ_TOKEN");
+    for (const step of steps) {
+      if (step !== ingestStep) expect(step.env?.AXIOM_INGEST_TOKEN).toBeUndefined();
+      if (step !== readStep) expect(step.env?.AXIOM_READ_TOKEN).toBeUndefined();
+      expect(step.env?.NODE_AUTH_TOKEN).toBeUndefined();
+    }
+    expect(workflow.match(/secrets\.NPM_TOKEN/g)).toHaveLength(1);
+    expect(workflow.split("  publish-npm:")[0]).not.toContain("NPM_TOKEN");
+  });
+
+  test("requires and counts the deployed canary test", () => {
+    const canaryStep = parsedReleaseWorkflow.jobs["deployed-canary"].steps?.find(
       (step) => step.name === "Run the deployed release canary",
     );
     expect(canaryStep?.env?.OBSERVABILITY_E2E_DEPLOYED).toBe("1");
@@ -335,35 +306,36 @@ describe("release workflow publication gate", () => {
   });
 
   test("derives the deployed canary service version from its release tag input", () => {
-    expect(parsedCiWorkflow.on.workflow_call.inputs.release_tag).toEqual({
+    expect(parsedCiWorkflow.on.workflow_call.inputs.ref).toEqual({
       required: false,
       type: "string",
     });
-    expect(parsedReleaseWorkflow.jobs.verify.with.release_tag).toBe(
-      "${{ needs.tag-check.outputs.tag }}",
-    );
     expect(parsedReleaseWorkflow.jobs.verify.with.ref).toBe("${{ needs.tag-check.outputs.tag }}");
-    expect(ciWorkflow).toContain("RELEASE_TAG: ${{ inputs.release_tag }}");
-    expect(ciWorkflow).toContain(
+    const steps = parsedReleaseWorkflow.jobs["deployed-canary"].steps ?? [];
+    expect(steps[0]?.with?.ref).toBe("${{ needs.tag-check.outputs.tag }}");
+    expect(
+      steps.find((step) => step.name === "Resolve release canary identity")?.env?.RELEASE_TAG,
+    ).toBe("${{ needs.tag-check.outputs.tag }}");
+    expect(workflow).toContain(
       'bun scripts/release-canary.ts --tag "$RELEASE_TAG" --github-env "$GITHUB_ENV"',
     );
     expect(releaseCanaryScript).toContain("OTEL_SERVICE_VERSION");
-    expect(ciWorkflow).not.toMatch(/serviceVersion: ["']\d+\.\d+\.\d+/);
+    expect(workflow).not.toMatch(/serviceVersion: ["']\d+\.\d+\.\d+/);
   });
 
   test("keeps ordinary CI credential-free and reports the omitted protected gate", () => {
     const reportStep = parsedCiWorkflow.jobs.verify.steps?.find(
       (step) => step.name === "Report deployed canary status",
     );
-    expect(parsedCiWorkflow.jobs["deployed-canary"].if).toBe("${{ inputs.run_deployed_canary }}");
-    expect(reportStep?.if).toBe("${{ !inputs.run_deployed_canary }}");
-    expect(parsedCiWorkflow.jobs["canary-gate"].if).toBe("${{ !cancelled() }}");
+    expect(reportStep?.if).toBeUndefined();
+    expect(reportStep?.run).toContain("runs directly in the Release workflow");
+    expect(Object.keys(parsedCiWorkflow.jobs)).toEqual(["verify"]);
   });
 
   test("keeps the ingest token out of the docker command arguments", () => {
-    expect(ciWorkflow).toContain('export AXIOM_TOKEN="$AXIOM_INGEST_TOKEN"');
-    expect(ciWorkflow).toContain("-e AXIOM_TOKEN \\");
-    expect(ciWorkflow).not.toContain('-e AXIOM_TOKEN="$AXIOM_INGEST_TOKEN"');
+    expect(workflow).toContain('export AXIOM_TOKEN="$AXIOM_INGEST_TOKEN"');
+    expect(workflow).toContain("-e AXIOM_TOKEN \\");
+    expect(workflow).not.toContain('-e AXIOM_TOKEN="$AXIOM_INGEST_TOKEN"');
   });
 
   test("uses release canary identity resolution in preflight", () => {
