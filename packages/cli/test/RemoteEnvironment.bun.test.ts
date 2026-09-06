@@ -181,6 +181,8 @@ const makeRemoteLayer = (options: RemoteOptions = {}) => {
   });
   const sentryApi = SentryApi.of({
     identity: () => Effect.succeed("Maxxi Cash"),
+    project: () => Effect.succeed(true),
+    clientKeyExists: () => Effect.succeed(true),
     ensureProject: (_credentials, slug) => {
       sentryProjectCalls += 1;
       if (failSentry) {

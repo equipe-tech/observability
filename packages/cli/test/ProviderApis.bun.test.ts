@@ -1,15 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import { Effect } from "effect";
-import { AxiomCredentials } from "../src/CredentialsStore.ts";
-import { AxiomApi, AxiomToken } from "../src/ProviderApis.ts";
+import { Effect, Fiber } from "effect";
+import { AxiomCredentials, SentryCredentials } from "../src/CredentialsStore.ts";
+import {
+  AxiomApi,
+  AxiomToken,
+  providerRequestTimeoutDefaultMilliseconds,
+  SentryApi,
+} from "../src/ProviderApis.ts";
 
 const credentials = new AxiomCredentials({ token: "test-token", organizationId: "test-org" });
 
 const withAxiomEndpoint = async <A>(url: string, use: () => Promise<A>): Promise<A> => {
   const previousNodeEnvironment = process.env.NODE_ENV;
   const previousEndpoint = process.env.OBSERVABILITY_CLI_TEST_AXIOM_BASE_URL;
+  const previousTimeout = process.env.OBSERVABILITY_CLI_REQUEST_TIMEOUT_MILLISECONDS;
   process.env.NODE_ENV = "test";
   process.env.OBSERVABILITY_CLI_TEST_AXIOM_BASE_URL = url;
+  process.env.OBSERVABILITY_CLI_REQUEST_TIMEOUT_MILLISECONDS = "100";
   try {
     return await use();
   } finally {
@@ -22,6 +29,11 @@ const withAxiomEndpoint = async <A>(url: string, use: () => Promise<A>): Promise
       delete process.env.OBSERVABILITY_CLI_TEST_AXIOM_BASE_URL;
     } else {
       process.env.OBSERVABILITY_CLI_TEST_AXIOM_BASE_URL = previousEndpoint;
+    }
+    if (previousTimeout === undefined) {
+      delete process.env.OBSERVABILITY_CLI_REQUEST_TIMEOUT_MILLISECONDS;
+    } else {
+      process.env.OBSERVABILITY_CLI_REQUEST_TIMEOUT_MILLISECONDS = previousTimeout;
     }
   }
 };
@@ -68,7 +80,159 @@ const startTruncatedResponseServer = (status: number, statusText: string) => {
   return { listener, responses: () => responses };
 };
 
+const startOpenResponseServer = (status: number, statusText: string) => {
+  const responded = new WeakSet<object>();
+  let activeSockets = 0;
+  let closedSockets = 0;
+  const listener = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      open() {
+        activeSockets += 1;
+      },
+      data(socket) {
+        if (responded.has(socket)) return;
+        responded.add(socket);
+        socket.write(
+          `HTTP/1.1 ${status} ${statusText}\r\nContent-Type: application/json\r\nContent-Length: 1000000\r\nConnection: keep-alive\r\n\r\n{`,
+        );
+      },
+      close() {
+        activeSockets -= 1;
+        closedSockets += 1;
+      },
+    },
+  });
+  return {
+    listener,
+    activeSockets: () => activeSockets,
+    closedSockets: () => closedSockets,
+  };
+};
+
 describe("provider HTTP boundary", () => {
+  test("uses a bounded provider deadline default", () => {
+    expect(providerRequestTimeoutDefaultMilliseconds).toBe(10_000);
+  });
+
+  test.serial("bounds a provider transport with the decoded override", async () => {
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async () => {
+        await Bun.sleep(500);
+        return Response.json({ id: "late", email: "late@example.com" });
+      },
+    });
+    const startedAt = Date.now();
+    try {
+      const error = await identityError(`http://127.0.0.1:${server.port}`);
+      expect(error.code).toBe("OBS_CLI_REMOTE_FAILED");
+      expect(error.message).toContain("deadline");
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test.serial(
+    "aborts a hanging loopback request and releases its callback on interruption",
+    async () => {
+      let activeCallbacks = 0;
+      let requestAborted = false;
+      let startRequest = () => {};
+      const requestStarted = new Promise<void>((resolve) => {
+        startRequest = resolve;
+      });
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch: (request) => {
+          activeCallbacks += 1;
+          startRequest();
+          return new Promise<Response>((_resolve, reject) => {
+            request.signal.addEventListener(
+              "abort",
+              () => {
+                requestAborted = true;
+                activeCallbacks -= 1;
+                reject(new Error("request interrupted"));
+              },
+              { once: true },
+            );
+          });
+        },
+      });
+      try {
+        await withAxiomEndpoint(`http://127.0.0.1:${server.port}`, async () => {
+          const fiber = Effect.runFork(
+            Effect.gen(function* () {
+              const api = yield* AxiomApi;
+              return yield* api.identity(credentials);
+            }).pipe(Effect.provide(AxiomApi.layer)),
+          );
+          await Promise.race([
+            requestStarted,
+            Bun.sleep(1_000).then(() => {
+              throw new Error("Loopback request did not start.");
+            }),
+          ]);
+          await Effect.runPromise(Fiber.interrupt(fiber));
+          for (let attempt = 0; attempt < 20 && !requestAborted; attempt += 1) {
+            await Bun.sleep(10);
+          }
+          expect(requestAborted).toBeTrue();
+          expect(activeCallbacks).toBe(0);
+          await Bun.sleep(150);
+          expect(activeCallbacks).toBe(0);
+        });
+      } finally {
+        await server.stop(true);
+      }
+    },
+  );
+
+  test("reads Sentry project and client key existence without mutation", async () => {
+    const requests: Array<string> = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const path = new URL(request.url).pathname;
+        requests.push(`${request.method} ${path}`);
+        if (path.endsWith("/keys/")) {
+          return Response.json([{ dsn: { public: "https://public@sentry.example/1" } }]);
+        }
+        return Response.json({ slug: "checkout-prod", name: "Checkout" });
+      },
+    });
+    try {
+      const credentials = new SentryCredentials({
+        token: "token",
+        organization: "equipe",
+        team: "platform",
+        baseUrl: new URL(`http://127.0.0.1:${server.port}`),
+      });
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const api = yield* SentryApi;
+          return {
+            project: yield* api.project(credentials, "checkout-prod"),
+            clientKey: yield* api.clientKeyExists(credentials, "checkout-prod"),
+          };
+        }).pipe(Effect.provide(SentryApi.layer)),
+      );
+      expect(result).toEqual({ project: true, clientKey: true });
+      expect(requests).toEqual([
+        "GET /api/0/projects/equipe/checkout-prod/",
+        "GET /api/0/projects/equipe/checkout-prod/keys/",
+      ]);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test.serial("creates signal datasets with exact kinds and optional configuration", async () => {
     const requests: Array<{ readonly path: string; readonly body: string }> = [];
     const server = Bun.serve({
@@ -644,6 +808,27 @@ describe("provider HTTP boundary", () => {
       expect(server.responses()).toBe(2);
     } finally {
       server.listener.stop(true);
+    }
+  });
+
+  test.serial("cancels unauthorized response bodies and closes loopback sockets", async () => {
+    for (const [status, statusText] of [
+      [401, "Unauthorized"],
+      [403, "Forbidden"],
+    ] satisfies ReadonlyArray<readonly [number, string]>) {
+      const server = startOpenResponseServer(status, statusText);
+      try {
+        const error = await identityError(`http://127.0.0.1:${server.listener.port}`);
+        expect(error.code).toBe("OBS_CLI_REMOTE_UNAUTHORIZED");
+        expect(error.status).toBe(status);
+        for (let attempt = 0; attempt < 20 && server.activeSockets() > 0; attempt += 1) {
+          await Bun.sleep(10);
+        }
+        expect(server.activeSockets()).toBe(0);
+        expect(server.closedSockets()).toBe(1);
+      } finally {
+        server.listener.stop(true);
+      }
     }
   });
 

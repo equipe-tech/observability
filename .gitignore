@@ -4,6 +4,7 @@ dist
 *.log
 logs
 /.verification/
+/.observability/
 .DS_Store
 
 .env

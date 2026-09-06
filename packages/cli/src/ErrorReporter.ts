@@ -16,7 +16,11 @@ export const publicErrorFromCause = (cause: Cause.Cause<unknown>): Option.Option
           value._tag === "ProvisionError" ||
           value._tag === "CredentialsError" ||
           value._tag === "RemoteApiError" ||
-          value._tag === "RemoteEnvironmentError"))
+          value._tag === "RemoteEnvironmentError" ||
+          value._tag === "OperationsManifestError" ||
+          value._tag === "ManagedQueryError" ||
+          value._tag === "OperationsError" ||
+          value._tag === "OperationsStateError"))
     ) {
       return Option.none();
     }

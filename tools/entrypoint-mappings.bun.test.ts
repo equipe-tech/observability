@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
+import cliManifest from "../packages/cli/package.json" with { type: "json" };
 import evlogManifest from "../packages/evlog/package.json" with { type: "json" };
 import nestjsManifest from "../packages/nestjs/package.json" with { type: "json" };
 import reactManifest from "../packages/react/package.json" with { type: "json" };
@@ -9,6 +10,8 @@ import tsconfig from "../tsconfig.json" with { type: "json" };
 import viteConfig from "../vite.config.ts";
 
 const expected = new Map([
+  ["@equipe-tech/observability-cli/query", "packages/cli/src/query.ts"],
+  ["@equipe-tech/observability-cli", "packages/cli/src/index.ts"],
   ["@equipe-tech/observability-react", "packages/react/src/index.ts"],
   ["@equipe-tech/observability-sentry/browser", "packages/sentry/src/browser/index.ts"],
   ["@equipe-tech/observability-sentry/node", "packages/sentry/src/node/index.ts"],
@@ -47,13 +50,16 @@ const packageEntrypoints = (
   packageName: string,
   exports: ReadonlyArray<string>,
 ): ReadonlyArray<string> =>
-  exports.map((entrypoint) =>
-    entrypoint === "." ? packageName : `${packageName}/${entrypoint.slice(2)}`,
+  exports.flatMap((entrypoint) =>
+    entrypoint === "./package.json"
+      ? []
+      : [entrypoint === "." ? packageName : `${packageName}/${entrypoint.slice(2)}`],
   );
 
 describe("development entrypoint mappings", () => {
   test("maps every package export to its exact TypeScript source", () => {
     const entrypoints = [
+      ...packageEntrypoints("@equipe-tech/observability-cli", Object.keys(cliManifest.exports)),
       ...packageEntrypoints("@equipe-tech/observability", Object.keys(telemetryManifest.exports)),
       ...packageEntrypoints(
         "@equipe-tech/observability-nestjs",

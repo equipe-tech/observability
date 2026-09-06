@@ -1,0 +1,21 @@
+{
+  "index": 1,
+  "contractVersion": 1,
+  "service": "observability",
+  "events": [
+    {
+      "name": "cli.operation",
+      "kind": "operation",
+      "attributes": [],
+      "attributeClassifications": []
+    }
+  ],
+  "metrics": [],
+  "aliases": [
+    {
+      "kind": "event",
+      "from": "cli.command",
+      "to": "cli.operation"
+    }
+  ]
+}

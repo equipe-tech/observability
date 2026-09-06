@@ -1,0 +1,12 @@
+version: 1
+contractVersion: 1
+service: observability
+environments:
+  - staging
+retention:
+  - environment: staging
+    days: 30
+dashboards: []
+monitors: []
+sentry:
+  enabled: false

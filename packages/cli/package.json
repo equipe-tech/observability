@@ -19,6 +19,17 @@
     "dist"
   ],
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./query": {
+      "types": "./dist/query.d.ts",
+      "import": "./dist/query.js"
+    },
+    "./package.json": "./package.json"
+  },
   "scripts": {
     "build": "bun ../../scripts/build-packages.ts",
     "prepack": "bun run build"
@@ -26,7 +37,8 @@
   "dependencies": {
     "@effect/platform-bun": "4.0.0-rc.111",
     "@effect/platform-node-shared": "4.0.0-rc.111",
-    "effect": "4.0.0-rc.111"
+    "effect": "4.0.0-rc.111",
+    "yaml": "2.8.2"
   },
   "engines": {
     "bun": ">=1.4.0"

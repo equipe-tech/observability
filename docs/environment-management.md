@@ -66,11 +66,11 @@ A CLI cria três datasets para cada ambiente:
 - `<project>-<environment>-logs`
 - `<project>-<environment>-metrics`
 
-Traces e logs usam `axiom:events:v1`. Métricas usam `otel:metrics:v1`. A CLI verifica kind, edge deployment explícito e retenção explícita no preflight. Retenção divergente é um conflito destrutivo e nunca produz PUT automático. A CLI nunca exclui um dataset incompatível. Uma métrica antiga com kind Events exige preservação e migração manual.
+Traces e logs usam `axiom:events:v1`. Métricas usam `otel:metrics:v1`. A CLI verifica kind, edge deployment explícito e retenção explícita no preflight. `observability/operations.yaml` é a fonte de retenção para o fluxo `ops`. Retenção divergente vira ação manual porque nenhuma atualização pública foi verificada. Uma redução é destrutiva e exige autorização do digest exato. A CLI nunca produz PUT ou exclui um dataset incompatível. Uma métrica antiga com kind Events exige preservação e migração manual.
 
 A CLI também cria um token de ingestão para cada ambiente. O token concede ingest-create somente aos três datasets exatos daquele ambiente.
 
-Como Axiom não publica uma API estável de Correlation, a CLI persiste uma ação manual. A exportação permanece bloqueada até o operador criar o grupo no Console e repetir o provisionamento com `--correlation-confirmed`.
+Como Axiom não publica uma API estável de Correlation, a CLI persiste uma ação manual. O fluxo legado mantém `--correlation-confirmed`. O fluxo `ops` registra a ação no estado sem segredos e `verify` falha enquanto ela estiver pendente.
 
 Esse isolamento permite retenções e permissões diferentes. Uma credencial de `staging` não concede acesso aos dados de `production`.
 

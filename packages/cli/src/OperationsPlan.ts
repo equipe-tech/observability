@@ -1,0 +1,953 @@
+import { Clock, Context, Effect, Layer, Option, Schema } from "effect";
+import { classifyAxiomRetentionChange } from "./AxiomDatasetRetention.ts";
+import { CredentialsStore, type CredentialsError } from "./CredentialsStore.ts";
+import {
+  type AxiomDataset,
+  type AxiomDatasetKind,
+  AxiomApi,
+  RemoteApiError,
+  SentryApi,
+} from "./ProviderApis.ts";
+import { environmentDatasets } from "./RemoteEnvironment.ts";
+import { type ValidatedOperationsManifest } from "./OperationsManifest.ts";
+import {
+  ManualAction,
+  MutationIntent,
+  OperationsState,
+  OperationsStateDocument,
+  type OperationsStateError,
+} from "./OperationsState.ts";
+
+export class OperationPlanAction extends Schema.Class<OperationPlanAction>(
+  "@equipe-tech/observability-cli/OperationPlanAction",
+)({
+  id: Schema.NonEmptyString,
+  kind: Schema.Literals(["create", "manual", "destructive"]),
+  provider: Schema.Literals(["Axiom", "Sentry"]),
+  capability: Schema.NonEmptyString,
+  resource: Schema.NonEmptyString,
+  environment: Schema.NonEmptyString,
+  desiredFingerprint: Schema.NonEmptyString,
+  observedFingerprint: Schema.NonEmptyString,
+}) {}
+
+export class OperationsPlanDocument extends Schema.Class<OperationsPlanDocument>(
+  "@equipe-tech/observability-cli/OperationsPlanDocument",
+)({
+  version: Schema.Literal(1),
+  service: Schema.NonEmptyString,
+  environments: Schema.Array(Schema.NonEmptyString),
+  manifestFingerprint: Schema.NonEmptyString,
+  contractFingerprint: Schema.NonEmptyString,
+  observedFingerprint: Schema.NonEmptyString,
+  actions: Schema.Array(OperationPlanAction),
+  pendingManualActions: Schema.Array(ManualAction),
+  digest: Schema.NonEmptyString,
+}) {}
+
+export class OperationsError extends Schema.TaggedError<OperationsError>()("OperationsError", {
+  code: Schema.Literals([
+    "OBS_CLI_PLAN_REQUIRED",
+    "OBS_CLI_PLAN_INVALID",
+    "OBS_CLI_PLAN_STALE",
+    "OBS_CLI_PLAN_DESTRUCTIVE",
+    "OBS_CLI_PROVIDER_CAPABILITY_UNAVAILABLE",
+    "OBS_CLI_READ_BACK_TIMEOUT",
+    "OBS_CLI_MANUAL_ACTION_PENDING",
+    "OBS_CLI_DRIFT_DETECTED",
+    "OBS_CLI_APPLY_OUTCOME_UNKNOWN",
+    "OBS_CLI_MUTATION_UNRESOLVED",
+  ]),
+  message: Schema.String,
+  attempts: Schema.Int.pipe(Schema.optionalKey),
+  lastResponse: Schema.String.pipe(Schema.optionalKey),
+  cause: Schema.Defect(),
+}) {}
+
+const decodePlan = Schema.decodeUnknownEffect(OperationsPlanDocument, {
+  onExcessProperty: "error",
+});
+const OperationsPlanEnvironment = Schema.Struct({
+  NODE_ENV: Schema.NonEmptyString.pipe(Schema.optionalKey),
+});
+const operationsPlanEnvironment = Schema.decodeUnknownSync(OperationsPlanEnvironment)(process.env);
+
+const isDestructiveManualAction = (action: ManualAction): boolean =>
+  action.kind === "destructive" || (action.kind === undefined && action.capability === "retention");
+
+const mutationWithStatus = (
+  mutation: MutationIntent,
+  status: MutationIntent["status"],
+  updatedAt: string,
+): MutationIntent =>
+  new MutationIntent({
+    id: mutation.id,
+    operation: mutation.operation,
+    resource: mutation.resource,
+    environment: mutation.environment,
+    desiredFingerprint: mutation.desiredFingerprint,
+    status,
+    updatedAt,
+  });
+
+const fingerprint = (value: string): string => {
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(value);
+  return hasher.digest("hex");
+};
+
+const planPayload = (plan: Omit<OperationsPlanDocument, "digest">): string =>
+  JSON.stringify({
+    version: plan.version,
+    service: plan.service,
+    environments: plan.environments,
+    manifestFingerprint: plan.manifestFingerprint,
+    contractFingerprint: plan.contractFingerprint,
+    observedFingerprint: plan.observedFingerprint,
+    actions: plan.actions,
+    pendingManualActions: plan.pendingManualActions,
+  });
+
+const desiredDatasetEntries = Effect.fn("desiredDatasetEntries")(function* (
+  service: string,
+  environments: ReadonlyArray<string>,
+) {
+  const entries: Array<{
+    readonly environment: string;
+    readonly name: string;
+    readonly kind: AxiomDatasetKind;
+  }> = [];
+  for (const environment of environments) {
+    const names = yield* environmentDatasets(service, environment);
+    entries.push(
+      { environment, name: names.traces, kind: "axiom:events:v1" },
+      { environment, name: names.logs, kind: "axiom:events:v1" },
+      { environment, name: names.metrics, kind: "otel:metrics:v1" },
+    );
+  }
+  return entries;
+});
+
+const observedDatasetFingerprint = (dataset: AxiomDataset): string =>
+  fingerprint(
+    JSON.stringify({
+      name: dataset.name,
+      kind: dataset.kind,
+      retentionDays: dataset.retentionDays,
+      useRetentionPeriod: dataset.useRetentionPeriod,
+    }),
+  );
+
+type SentryPrerequisite = {
+  readonly environment: string;
+  readonly projectExists: boolean;
+  readonly dsnExists: boolean;
+};
+
+const manualDefinitionIds = (
+  validated: ValidatedOperationsManifest,
+  selectedEnvironments: ReadonlyArray<string>,
+): ReadonlySet<string> => {
+  const ids = new Set<string>();
+  for (const environment of selectedEnvironments) {
+    if (validated.manifest.retention.some((entry) => entry.environment === environment)) {
+      ids.add(`axiom.retention.${environment}`);
+    }
+    ids.add(`axiom.correlation.${environment}`);
+    for (const dashboard of validated.dashboards) {
+      ids.add(`axiom.dashboard.${environment}.${dashboard.definition.id}`);
+    }
+    for (const monitor of validated.monitors) {
+      ids.add(`axiom.monitor.${environment}.${monitor.definition.id}`);
+    }
+    if (validated.manifest.sentry.enabled) ids.add(`sentry.project.${environment}`);
+  }
+  return ids;
+};
+
+const makePlan = (
+  validated: ValidatedOperationsManifest,
+  selectedEnvironments: ReadonlyArray<string>,
+  datasets: ReadonlyArray<AxiomDataset>,
+  sentryPrerequisites: ReadonlyArray<SentryPrerequisite>,
+  state: OperationsStateDocument,
+): Effect.Effect<OperationsPlanDocument, never, never> =>
+  Effect.gen(function* () {
+    const manifest = validated.manifest;
+    const actions: Array<OperationPlanAction> = [];
+    const desiredDatasets = yield* desiredDatasetEntries(
+      manifest.service,
+      selectedEnvironments,
+    ).pipe(Effect.orDie);
+    for (const desired of desiredDatasets) {
+      const matches = datasets.filter((dataset) => dataset.name === desired.name);
+      const observed = matches[0];
+      const desiredFingerprint = fingerprint(
+        JSON.stringify({ name: desired.name, kind: desired.kind }),
+      );
+      if (matches.length === 0) {
+        actions.push(
+          new OperationPlanAction({
+            id: `axiom.dataset.${desired.name}`,
+            kind: "create",
+            provider: "Axiom",
+            capability: "dataset",
+            resource: desired.name,
+            environment: desired.environment,
+            desiredFingerprint,
+            observedFingerprint: fingerprint("absent"),
+          }),
+        );
+      } else if (matches.length !== 1 || observed === undefined || observed.kind !== desired.kind) {
+        actions.push(
+          new OperationPlanAction({
+            id: `axiom.dataset.${desired.name}`,
+            kind: "destructive",
+            provider: "Axiom",
+            capability: "dataset-kind",
+            resource: desired.name,
+            environment: desired.environment,
+            desiredFingerprint,
+            observedFingerprint:
+              observed === undefined
+                ? fingerprint("duplicate")
+                : observedDatasetFingerprint(observed),
+          }),
+        );
+      }
+    }
+    const desiredDatasetNames = new Set(desiredDatasets.map((entry) => entry.name));
+    const manualDefinitions: Array<{
+      readonly id: string;
+      readonly provider: "Axiom" | "Sentry";
+      readonly capability: string;
+      readonly environment: string;
+      readonly desiredFingerprint: string;
+      readonly kind: "manual" | "destructive";
+      readonly publiclySatisfied: boolean;
+    }> = [];
+    for (const environment of selectedEnvironments) {
+      const retention = manifest.retention.find((entry) => entry.environment === environment);
+      if (retention !== undefined) {
+        const environmentNames = desiredDatasets
+          .filter((entry) => entry.environment === environment)
+          .map((entry) => entry.name);
+        const matchingDatasets = environmentNames.flatMap((name) =>
+          datasets.filter((dataset) => dataset.name === name),
+        );
+        manualDefinitions.push({
+          id: `axiom.retention.${environment}`,
+          provider: "Axiom",
+          capability: "retention",
+          environment,
+          desiredFingerprint: fingerprint(JSON.stringify({ days: retention.days })),
+          kind: classifyAxiomRetentionChange(matchingDatasets, retention.days),
+          publiclySatisfied:
+            environmentNames.every(
+              (name) => matchingDatasets.filter((dataset) => dataset.name === name).length === 1,
+            ) &&
+            matchingDatasets.every(
+              (dataset) => dataset.useRetentionPeriod && dataset.retentionDays === retention.days,
+            ),
+        });
+      }
+      manualDefinitions.push({
+        id: `axiom.correlation.${environment}`,
+        provider: "Axiom",
+        capability: "correlation",
+        environment,
+        desiredFingerprint: fingerprint(JSON.stringify({ service: manifest.service, environment })),
+        kind: "manual",
+        publiclySatisfied: true,
+      });
+      for (const dashboard of validated.dashboards) {
+        manualDefinitions.push({
+          id: `axiom.dashboard.${environment}.${dashboard.definition.id}`,
+          provider: "Axiom",
+          capability: "dashboard",
+          environment,
+          desiredFingerprint: fingerprint(JSON.stringify(dashboard.definition)),
+          kind: "manual",
+          publiclySatisfied: true,
+        });
+      }
+      for (const monitor of validated.monitors) {
+        manualDefinitions.push({
+          id: `axiom.monitor.${environment}.${monitor.definition.id}`,
+          provider: "Axiom",
+          capability: "monitor",
+          environment,
+          desiredFingerprint: fingerprint(JSON.stringify(monitor.definition)),
+          kind: "manual",
+          publiclySatisfied: true,
+        });
+      }
+      if (manifest.sentry.enabled) {
+        manualDefinitions.push({
+          id: `sentry.project.${environment}`,
+          provider: "Sentry",
+          capability: "project-and-client-key",
+          environment,
+          desiredFingerprint: fingerprint(
+            JSON.stringify({ project: `${manifest.service}-${environment}` }),
+          ),
+          kind: "manual",
+          publiclySatisfied:
+            sentryPrerequisites.find((entry) => entry.environment === environment)
+              ?.projectExists === true &&
+            sentryPrerequisites.find((entry) => entry.environment === environment)?.dsnExists ===
+              true,
+        });
+      }
+    }
+    for (const manual of manualDefinitions) {
+      const persisted = state.manualActions.find(
+        (entry) => entry.id === manual.id && entry.desiredFingerprint === manual.desiredFingerprint,
+      );
+      if (
+        persisted === undefined ||
+        (persisted.status === "operator-confirmed" && !manual.publiclySatisfied)
+      ) {
+        actions.push(
+          new OperationPlanAction({
+            id: manual.id,
+            kind: manual.kind,
+            provider: manual.provider,
+            capability: manual.capability,
+            resource: manual.id,
+            environment: manual.environment,
+            desiredFingerprint: manual.desiredFingerprint,
+            observedFingerprint: fingerprint(
+              manual.publiclySatisfied ? "observed" : "prerequisite-drift",
+            ),
+          }),
+        );
+      }
+    }
+    actions.sort((left, right) => left.id.localeCompare(right.id));
+    const selectedDatasets = datasets
+      .filter((dataset) => desiredDatasetNames.has(dataset.name))
+      .map((dataset) => ({
+        name: dataset.name,
+        fingerprint: observedDatasetFingerprint(dataset),
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    const observedFingerprint = fingerprint(JSON.stringify(selectedDatasets));
+    const pendingManualActions = manualDefinitions
+      .flatMap((manual) => {
+        const persisted = state.manualActions.find(
+          (action) =>
+            action.id === manual.id &&
+            action.desiredFingerprint === manual.desiredFingerprint &&
+            action.status === "pending",
+        );
+        if (persisted === undefined) return [];
+        const pending =
+          persisted.expiresAt === undefined
+            ? new ManualAction({
+                id: manual.id,
+                provider: manual.provider,
+                capability: manual.capability,
+                environment: manual.environment,
+                desiredFingerprint: manual.desiredFingerprint,
+                kind: manual.kind,
+                status: "pending",
+              })
+            : new ManualAction({
+                id: manual.id,
+                provider: manual.provider,
+                capability: manual.capability,
+                environment: manual.environment,
+                desiredFingerprint: manual.desiredFingerprint,
+                kind: manual.kind,
+                status: "pending",
+                expiresAt: persisted.expiresAt,
+              });
+        return [pending];
+      })
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const withoutDigest: Omit<OperationsPlanDocument, "digest"> = {
+      version: 1,
+      service: manifest.service,
+      environments: [...selectedEnvironments].sort(),
+      manifestFingerprint: fingerprint(JSON.stringify(manifest)),
+      contractFingerprint: fingerprint(JSON.stringify(validated.contract)),
+      observedFingerprint,
+      actions,
+      pendingManualActions,
+    };
+    return new OperationsPlanDocument({
+      ...withoutDigest,
+      digest: fingerprint(planPayload(withoutDigest)),
+    });
+  });
+
+const selectEnvironments = (
+  validated: ValidatedOperationsManifest,
+  requested: ReadonlyArray<string>,
+): Effect.Effect<ReadonlyArray<string>, OperationsError> => {
+  const selected = requested.length === 0 ? validated.manifest.environments : requested;
+  for (const environment of selected) {
+    if (!validated.manifest.environments.includes(environment)) {
+      return Effect.fail(
+        new OperationsError({
+          code: "OBS_CLI_PLAN_INVALID",
+          message: `Environment ${environment} is not declared by the operations manifest.`,
+          cause: environment,
+        }),
+      );
+    }
+  }
+  return Effect.succeed([...new Set(selected)].sort());
+};
+
+export type PlanRequest = {
+  readonly validated: ValidatedOperationsManifest;
+  readonly environments: ReadonlyArray<string>;
+};
+
+type OperationsServiceError =
+  | OperationsError
+  | RemoteApiError
+  | CredentialsError
+  | OperationsStateError;
+
+export class OperationsPlanner extends Context.Service<
+  OperationsPlanner,
+  {
+    plan(request: PlanRequest): Effect.Effect<OperationsPlanDocument, OperationsServiceError>;
+    parsePlan(content: string): Effect.Effect<OperationsPlanDocument, OperationsError>;
+    apply(
+      request: PlanRequest,
+      supplied: OperationsPlanDocument,
+      allowDestructive: boolean,
+      confirmedManualActions: ReadonlyArray<string>,
+    ): Effect.Effect<OperationsPlanDocument, OperationsServiceError>;
+    verify(request: PlanRequest): Effect.Effect<OperationsPlanDocument, OperationsServiceError>;
+  }
+>()("@equipe-tech/observability-cli/OperationsPlanner") {
+  static readonly layer = Layer.effect(
+    OperationsPlanner,
+    Effect.gen(function* () {
+      const credentialsStore = yield* CredentialsStore;
+      const axiom = yield* AxiomApi;
+      const sentry = yield* SentryApi;
+      const stateStore = yield* OperationsState;
+
+      const observe = Effect.fn("OperationsPlanner.observe")(function* (request: PlanRequest) {
+        const environments = yield* selectEnvironments(request.validated, request.environments);
+        const credentials = yield* credentialsStore.load();
+        if (Option.isNone(credentials) || credentials.value.axiom === undefined) {
+          return yield* new OperationsError({
+            code: "OBS_CLI_PROVIDER_CAPABILITY_UNAVAILABLE",
+            message:
+              "Axiom credentials are required after manifest validation. Run observability auth login axiom.",
+            cause: "Axiom",
+          });
+        }
+        const datasets = yield* axiom.datasets(credentials.value.axiom);
+        const sentryPrerequisites: Array<SentryPrerequisite> = [];
+        if (request.validated.manifest.sentry.enabled) {
+          const sentryCredentials = credentials.value.sentry;
+          if (sentryCredentials === undefined) {
+            return yield* new OperationsError({
+              code: "OBS_CLI_PROVIDER_CAPABILITY_UNAVAILABLE",
+              message:
+                "Sentry credentials are required after manifest validation. Run observability auth login sentry.",
+              cause: "Sentry",
+            });
+          }
+          for (const environment of environments) {
+            const project = `${request.validated.manifest.service}-${environment}`;
+            const projectExists = yield* sentry.project(sentryCredentials, project);
+            const dsnExists = projectExists
+              ? yield* sentry.clientKeyExists(sentryCredentials, project)
+              : false;
+            sentryPrerequisites.push({ environment, projectExists, dsnExists });
+          }
+        }
+        const state = yield* stateStore.load(request.validated.manifest.service);
+        return {
+          environments,
+          datasets,
+          sentryPrerequisites,
+          state,
+          axiomCredentials: credentials.value.axiom,
+          credentials: credentials.value,
+        };
+      });
+
+      const plan = Effect.fn("OperationsPlanner.plan")(function* (request: PlanRequest) {
+        const observed = yield* observe(request);
+        return yield* makePlan(
+          request.validated,
+          observed.environments,
+          observed.datasets,
+          observed.sentryPrerequisites,
+          observed.state,
+        );
+      });
+
+      const parsePlan = Effect.fn("OperationsPlanner.parsePlan")(function* (content: string) {
+        if (content.length > 2_097_152) {
+          return yield* new OperationsError({
+            code: "OBS_CLI_PLAN_INVALID",
+            message: "The plan file exceeds 2097152 bytes.",
+            cause: content.length,
+          });
+        }
+        const document = yield* Effect.try({
+          try: () => JSON.parse(content),
+          catch: (cause) =>
+            new OperationsError({
+              code: "OBS_CLI_PLAN_INVALID",
+              message: "The plan file is not valid JSON.",
+              cause,
+            }),
+        });
+        const decoded = yield* decodePlan(document).pipe(
+          Effect.mapError(
+            (cause) =>
+              new OperationsError({
+                code: "OBS_CLI_PLAN_INVALID",
+                message: "The plan file does not match plan version 1.",
+                cause,
+              }),
+          ),
+        );
+        const expected = fingerprint(
+          planPayload({
+            version: decoded.version,
+            service: decoded.service,
+            environments: decoded.environments,
+            manifestFingerprint: decoded.manifestFingerprint,
+            contractFingerprint: decoded.contractFingerprint,
+            observedFingerprint: decoded.observedFingerprint,
+            actions: decoded.actions,
+            pendingManualActions: decoded.pendingManualActions,
+          }),
+        );
+        if (expected !== decoded.digest) {
+          return yield* new OperationsError({
+            code: "OBS_CLI_PLAN_INVALID",
+            message: "The plan digest does not match its contents.",
+            cause: decoded.digest,
+          });
+        }
+        return decoded;
+      });
+
+      const apply = Effect.fn("OperationsPlanner.apply")(function* (
+        request: PlanRequest,
+        supplied: OperationsPlanDocument,
+        allowDestructive: boolean,
+        confirmedManualActions: ReadonlyArray<string>,
+      ) {
+        const observed = yield* observe(request);
+        const current = yield* makePlan(
+          request.validated,
+          observed.environments,
+          observed.datasets,
+          observed.sentryPrerequisites,
+          observed.state,
+        );
+        if (current.digest !== supplied.digest) {
+          return yield* new OperationsError({
+            code: "OBS_CLI_PLAN_STALE",
+            message: `The supplied plan is stale. Run ops plan again. Current digest ${current.digest}.`,
+            cause: supplied.digest,
+          });
+        }
+        const confirmsDestructiveManualAction = current.pendingManualActions.some(
+          (action) =>
+            confirmedManualActions.includes(action.id) && isDestructiveManualAction(action),
+        );
+        if (
+          (current.actions.some((action) => action.kind === "destructive") ||
+            confirmsDestructiveManualAction) &&
+          !allowDestructive
+        ) {
+          return yield* new OperationsError({
+            code: "OBS_CLI_PLAN_DESTRUCTIVE",
+            message: `Plan ${current.digest} contains destructive changes. Rerun with --allow-destructive and this exact plan.`,
+            cause: current.digest,
+          });
+        }
+        const manualActionIds = new Set([
+          ...current.actions
+            .filter((action) => action.kind !== "create")
+            .map((action) => action.id),
+          ...current.pendingManualActions.map((action) => action.id),
+        ]);
+        const invalidConfirmation = confirmedManualActions.find((id) => !manualActionIds.has(id));
+        if (invalidConfirmation !== undefined) {
+          return yield* new OperationsError({
+            code: "OBS_CLI_PLAN_INVALID",
+            message: `Manual action ${invalidConfirmation} is not contained in plan ${current.digest}.`,
+            cause: invalidConfirmation,
+          });
+        }
+        let stateGeneration = observed.state.generation;
+        const activeManualIds = manualDefinitionIds(
+          request.validated,
+          request.validated.manifest.environments,
+        );
+        if (observed.state.manualActions.some((action) => !activeManualIds.has(action.id))) {
+          const cleaned = yield* stateStore.update(
+            current.service,
+            stateGeneration,
+            (state) =>
+              new OperationsStateDocument({
+                version: state.version,
+                generation: state.generation,
+                service: state.service,
+                manualActions: state.manualActions.filter((action) =>
+                  activeManualIds.has(action.id),
+                ),
+                mutations: state.mutations,
+              }),
+          );
+          stateGeneration = cleaned.generation;
+        }
+        for (const unresolved of observed.state.mutations.filter(
+          (mutation) =>
+            current.environments.includes(mutation.environment) &&
+            (mutation.status === "pending" || mutation.status === "outcome-unknown"),
+        )) {
+          const next = yield* stateStore.update(
+            current.service,
+            stateGeneration,
+            (state) =>
+              new OperationsStateDocument({
+                version: state.version,
+                generation: state.generation,
+                service: state.service,
+                manualActions: state.manualActions,
+                mutations: state.mutations.map((entry) =>
+                  entry.id === unresolved.id
+                    ? mutationWithStatus(entry, "resolved", entry.updatedAt)
+                    : entry,
+                ),
+              }),
+          );
+          stateGeneration = next.generation;
+        }
+        for (const confirmation of confirmedManualActions) {
+          const pending = current.pendingManualActions.find((action) => action.id === confirmation);
+          if (pending === undefined) continue;
+          const next = yield* stateStore.update(
+            current.service,
+            stateGeneration,
+            (state) =>
+              new OperationsStateDocument({
+                version: state.version,
+                generation: state.generation,
+                service: state.service,
+                mutations: state.mutations,
+                manualActions: state.manualActions.map((action) =>
+                  action.id === confirmation
+                    ? new ManualAction({
+                        id: pending.id,
+                        provider: pending.provider,
+                        capability: pending.capability,
+                        environment: pending.environment,
+                        desiredFingerprint: pending.desiredFingerprint,
+                        kind: isDestructiveManualAction(pending) ? "destructive" : "manual",
+                        status: "operator-confirmed",
+                      })
+                    : action,
+                ),
+              }),
+          );
+          stateGeneration = next.generation;
+        }
+        for (const action of current.actions) {
+          if (action.kind === "manual" || action.kind === "destructive") {
+            const legacyEnvironment = observed.credentials.environments.find(
+              (environment) =>
+                environment.project === current.service &&
+                environment.environment === action.environment,
+            );
+            const legacyCorrelation =
+              legacyEnvironment === undefined || legacyEnvironment.providers.type === "sentry"
+                ? undefined
+                : legacyEnvironment.providers.axiom.correlation;
+            const migratedConfirmation =
+              action.capability === "correlation" &&
+              legacyCorrelation?.type === "operator-confirmed";
+            const operatorConfirmed =
+              migratedConfirmation || confirmedManualActions.includes(action.id);
+            const manualAction = operatorConfirmed
+              ? new ManualAction({
+                  id: action.id,
+                  provider: action.provider,
+                  capability: action.capability,
+                  environment: action.environment,
+                  desiredFingerprint: action.desiredFingerprint,
+                  kind: action.kind,
+                  status: "operator-confirmed",
+                })
+              : new ManualAction({
+                  id: action.id,
+                  provider: action.provider,
+                  capability: action.capability,
+                  environment: action.environment,
+                  desiredFingerprint: action.desiredFingerprint,
+                  kind: action.kind,
+                  status: "pending",
+                  expiresAt: new Date(
+                    (yield* Clock.currentTimeMillis) + 30 * 24 * 60 * 60 * 1_000,
+                  ).toISOString(),
+                });
+            const next = yield* stateStore.update(
+              current.service,
+              stateGeneration,
+              (state) =>
+                new OperationsStateDocument({
+                  version: state.version,
+                  generation: state.generation,
+                  service: state.service,
+                  mutations: state.mutations,
+                  manualActions: [
+                    ...state.manualActions.filter((manual) => manual.id !== action.id),
+                    manualAction,
+                  ].sort((left, right) => left.id.localeCompare(right.id)),
+                }),
+            );
+            stateGeneration = next.generation;
+            continue;
+          }
+          const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+          const pendingState = yield* stateStore.update(
+            current.service,
+            stateGeneration,
+            (state) =>
+              new OperationsStateDocument({
+                version: state.version,
+                generation: state.generation,
+                service: state.service,
+                manualActions: state.manualActions,
+                mutations: [
+                  ...state.mutations.filter((mutation) => mutation.id !== action.id),
+                  new MutationIntent({
+                    id: action.id,
+                    operation: action.kind,
+                    resource: action.resource,
+                    environment: action.environment,
+                    desiredFingerprint: action.desiredFingerprint,
+                    status: "pending",
+                    updatedAt,
+                  }),
+                ],
+              }),
+          );
+          stateGeneration = pendingState.generation;
+          const persistInterruptedOutcome = () =>
+            stateStore
+              .update(
+                current.service,
+                stateGeneration,
+                (state) =>
+                  new OperationsStateDocument({
+                    version: state.version,
+                    generation: state.generation,
+                    service: state.service,
+                    manualActions: state.manualActions,
+                    mutations: state.mutations.map((entry) =>
+                      entry.id === action.id
+                        ? mutationWithStatus(entry, "outcome-unknown", updatedAt)
+                        : entry,
+                    ),
+                  }),
+              )
+              .pipe(Effect.asVoid);
+          const kind: AxiomDatasetKind = action.resource.endsWith("-metrics")
+            ? "otel:metrics:v1"
+            : "axiom:events:v1";
+          const mutation = axiom.createDataset(observed.axiomCredentials, action.resource, {
+            kind,
+          });
+          const handleMutationError = (
+            error: RemoteApiError,
+          ): Effect.Effect<never, OperationsServiceError> => {
+            if (error.code !== "OBS_CLI_AXIOM_DATASET_OUTCOME_UNKNOWN") {
+              return Effect.gen(function* () {
+                const settled = yield* stateStore.update(
+                  current.service,
+                  stateGeneration,
+                  (state) =>
+                    new OperationsStateDocument({
+                      version: state.version,
+                      generation: state.generation,
+                      service: state.service,
+                      manualActions: state.manualActions,
+                      mutations: state.mutations.map((entry) =>
+                        entry.id === action.id
+                          ? mutationWithStatus(entry, "resolved", updatedAt)
+                          : entry,
+                      ),
+                    }),
+                );
+                stateGeneration = settled.generation;
+                return yield* error;
+              });
+            }
+            return Effect.gen(function* () {
+              const unknownState = yield* stateStore.update(
+                current.service,
+                stateGeneration,
+                (state) =>
+                  new OperationsStateDocument({
+                    version: state.version,
+                    generation: state.generation,
+                    service: state.service,
+                    manualActions: state.manualActions,
+                    mutations: state.mutations.map((entry) =>
+                      entry.id === action.id
+                        ? mutationWithStatus(entry, "outcome-unknown", updatedAt)
+                        : entry,
+                    ),
+                  }),
+              );
+              stateGeneration = unknownState.generation;
+              return yield* new OperationsError({
+                code: "OBS_CLI_APPLY_OUTCOME_UNKNOWN",
+                message: `The outcome of mutation ${action.id} is unknown. Reconcile it before retrying.`,
+                cause: error,
+              });
+            });
+          };
+          const created = yield* mutation.pipe(
+            Effect.onInterrupt(persistInterruptedOutcome),
+            Effect.catchTag("RemoteApiError", handleMutationError),
+          );
+          let matched = false;
+          let attempts = 0;
+          let lastResponse = `status=200 name=${created.name} kind=${created.kind}`.slice(0, 512);
+          while (!matched && attempts < 6) {
+            attempts += 1;
+            const datasets = yield* axiom.datasets(observed.axiomCredentials).pipe(
+              Effect.onInterrupt(persistInterruptedOutcome),
+              Effect.catchTag("RemoteApiError", (error) =>
+                handleMutationError(
+                  new RemoteApiError({
+                    code: "OBS_CLI_AXIOM_DATASET_OUTCOME_UNKNOWN",
+                    message: `The outcome of creating Axiom dataset ${action.resource} is unknown because read-back failed.`,
+                    provider: "Axiom",
+                    status: error.status,
+                    cause: error,
+                  }),
+                ),
+              ),
+            );
+            const readBack = datasets.find(
+              (dataset) => dataset.name === action.resource && dataset.kind === kind,
+            );
+            matched = readBack !== undefined;
+            lastResponse = `status=200 matched=${matched} resource=${action.resource}`.slice(
+              0,
+              512,
+            );
+            if (!matched && attempts < 6) {
+              const delay =
+                operationsPlanEnvironment.NODE_ENV === "test"
+                  ? 0
+                  : Math.min(250 * 2 ** attempts, 4_000);
+              if (delay > 0) {
+                yield* Effect.sleep(`${delay} millis`).pipe(
+                  Effect.onInterrupt(persistInterruptedOutcome),
+                );
+              }
+            }
+          }
+          if (!matched) {
+            const unknownState = yield* stateStore.update(
+              current.service,
+              stateGeneration,
+              (state) =>
+                new OperationsStateDocument({
+                  version: state.version,
+                  generation: state.generation,
+                  service: state.service,
+                  manualActions: state.manualActions,
+                  mutations: state.mutations.map((entry) =>
+                    entry.id === action.id
+                      ? mutationWithStatus(entry, "outcome-unknown", updatedAt)
+                      : entry,
+                  ),
+                }),
+            );
+            stateGeneration = unknownState.generation;
+            return yield* new OperationsError({
+              code: "OBS_CLI_READ_BACK_TIMEOUT",
+              message: `Read-back for ${action.resource} did not converge after ${attempts} attempts.`,
+              attempts,
+              lastResponse,
+              cause: action.id,
+            });
+          }
+          const resolvedState = yield* stateStore.update(
+            current.service,
+            stateGeneration,
+            (state) =>
+              new OperationsStateDocument({
+                version: state.version,
+                generation: state.generation,
+                service: state.service,
+                manualActions: state.manualActions,
+                mutations: state.mutations.map((mutation) =>
+                  mutation.id === action.id
+                    ? mutationWithStatus(mutation, "resolved", updatedAt)
+                    : mutation,
+                ),
+              }),
+          );
+          stateGeneration = resolvedState.generation;
+        }
+        return yield* plan(request);
+      });
+
+      const verify = Effect.fn("OperationsPlanner.verify")(function* (request: PlanRequest) {
+        const current = yield* plan(request);
+        const state = yield* stateStore.load(current.service);
+        const unresolved = state.mutations.find(
+          (mutation) =>
+            current.environments.includes(mutation.environment) &&
+            (mutation.status === "pending" || mutation.status === "outcome-unknown"),
+        );
+        if (unresolved !== undefined) {
+          return yield* new OperationsError({
+            code: "OBS_CLI_MUTATION_UNRESOLVED",
+            message: `Mutation ${unresolved.id} is ${unresolved.status}. Reconcile it before verification.`,
+            cause: unresolved.id,
+          });
+        }
+        if (current.actions.length > 0) {
+          return yield* new OperationsError({
+            code: "OBS_CLI_DRIFT_DETECTED",
+            message: `Operations drift detected. Plan ${current.digest} has ${current.actions.length} pending changes.`,
+            cause: current.digest,
+          });
+        }
+        const pending = current.pendingManualActions[0];
+        if (pending !== undefined) {
+          const now = yield* Clock.currentTimeMillis;
+          const expired = pending.expiresAt !== undefined && Date.parse(pending.expiresAt) <= now;
+          return yield* new OperationsError({
+            code: "OBS_CLI_MANUAL_ACTION_PENDING",
+            message: expired
+              ? `Manual action ${pending.id} expired before operator confirmation.`
+              : `Manual action ${pending.id} is pending operator confirmation.`,
+            cause: pending.id,
+          });
+        }
+        return current;
+      });
+
+      return OperationsPlanner.of({ plan, parsePlan, apply, verify });
+    }),
+  );
+}
+
+export const encodeOperationsPlan = (plan: OperationsPlanDocument): string =>
+  `${JSON.stringify(plan, null, 2)}\n`;

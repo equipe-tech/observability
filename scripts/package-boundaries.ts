@@ -52,6 +52,8 @@ export const defineOwnership = (
 
 const ownership = defineOwnership([
   { kind: "exact", path: "packages/cli/src/CredentialsStore.ts", role: "adapter" },
+  { kind: "exact", path: "packages/cli/src/ManifestSource.ts", role: "adapter" },
+  { kind: "exact", path: "packages/cli/src/OperationsState.ts", role: "adapter" },
   { kind: "exact", path: "packages/cli/src/PackageVersion.ts", role: "adapter" },
   { kind: "exact", path: "packages/cli/src/ProvisionAssets.ts", role: "adapter" },
   { kind: "exact", path: "packages/cli/src/StackAssets.ts", role: "adapter" },
