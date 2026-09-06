@@ -192,6 +192,15 @@ const importsEffectMetric = (program: Program): boolean => {
     node.type === "Identifier"
       ? node.name === "Metric"
       : node.type === "Literal" && node.value === "Metric";
+  const selectsMetric = (target: Node, source: Node | null): boolean =>
+    target.type === "ObjectPattern" &&
+    isRoot(source) &&
+    target.properties.some(
+      (property) =>
+        property.type === "Property" &&
+        isMetric(property.key) &&
+        (!property.computed || property.key.type === "Literal"),
+    );
   let found = false;
   walk(program, {
     ImportDeclaration: (node) => {
@@ -225,17 +234,10 @@ const importsEffectMetric = (program: Program): boolean => {
       if (isRoot(node.left) && isMetric(node.right)) found = true;
     },
     VariableDeclarator: (node) => {
-      if (
-        node.id.type === "ObjectPattern" &&
-        isRoot(node.init) &&
-        node.id.properties.some(
-          (property) =>
-            property.type === "Property" &&
-            isMetric(property.key) &&
-            (!property.computed || property.key.type === "Literal"),
-        )
-      )
-        found = true;
+      if (selectsMetric(node.id, node.init)) found = true;
+    },
+    AssignmentExpression: (node) => {
+      if (selectsMetric(node.left, node.right)) found = true;
     },
     TSImportType: (node) => {
       let qualifier: Node | null = node.qualifier;

@@ -234,6 +234,8 @@ describe("package boundaries", () => {
       'import * as E from "effect"; E.Metric.counter("direct");',
       'import * as E from "effect"; E["Metric"].counter("direct");',
       'import * as E from "effect"; const { Metric: M } = E;',
+      'import * as E from "effect"; let M; ({ Metric: M } = E); M.counter("direct");',
+      'let M; ({ Metric: M } = await import("effect")); M.counter("direct");',
       'import * as E from "effect"; const alias = E; alias.Metric.counter("direct");',
       'import * as E from "effect"; type T = E.Metric.Metric;',
       'import E = require("effect"); E.Metric.counter("direct");',
@@ -254,6 +256,7 @@ describe("package boundaries", () => {
       'const { Effect } = require("effect"); Effect.succeed(1);',
       'const E = await import("effect"); E.Effect.succeed(1);',
       'export { Effect as PublicEffect } from "effect";',
+      'import * as E from "effect"; let F; ({ Effect: F } = E); F.succeed(1);',
     ];
     try {
       await cp(join(projects, "allowed"), temporary, { recursive: true });
