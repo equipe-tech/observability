@@ -17,7 +17,11 @@ Execute o workflow `Release Preflight` com o slug e a versão exata antes de cri
 
 O preflight executa `bun run compat --release <slug>@<versão>` depois do build. O comando usa o baseline exato de `v0.2.1`, gerado das declarações dos tarballs npm publicados, e valida a versão candidata, as quebras declaradas e o guia de migração antes de criar o archive. Para pacotes já publicados, o gate consulta o packument diretamente, valida a integridade do tarball anterior, rejeita caminhos inseguros e links e compara sua superfície canônica com o digest congelado no baseline.
 
-O preflight não depende de arquivos existentes em `docs/releases`. Para reproduzi-lo localmente:
+Execute o preflight no branch `master`. Depois da validação local, aprove o job direto `deployed-canary` no environment `publication`. O job usa o commit imutável da execução, não um tag existente. O gate exige sucesso explícito antes de considerar o preflight aprovado. O preflight nunca publica pacotes.
+
+Permita `master` e os padrões de tags de pacote na política de branches do environment. Mantenha a aprovação obrigatória. Os jobs protegidos permanecem diretos nos dois workflows para preservar a resolução dos secrets de environment.
+
+O preflight não depende de arquivos existentes em `docs/releases`. Para reproduzir a parte local:
 
 ```sh
 bun scripts/release.ts 0.3.0 --package observability --dry-run
@@ -52,9 +56,11 @@ O canário usa `/v1/query/_apl` nos domínios regionais `*.edge.axiom.co` e mant
 
 O script `scripts/release-canary.ts` resolve o tag para o manifest correspondente e define `OTEL_SERVICE_VERSION` com a versão desse manifest. O step do Collector recebe somente `AXIOM_INGEST_TOKEN`. O step de consulta recebe somente `AXIOM_READ_TOKEN`. O canário consulta traces, logs e métricas usando a versão e os valores de correlação da execução. A ausência de qualquer secret encerra o gate com `OBS_RELEASE_CANARY_CREDENTIALS_MISSING`. CI comum permanece sem credenciais e informa que o gate protegido pertence ao workflow de release.
 
+Quando o canário falha, `scripts/axiom-schema.ts` consulta `getschema` nos datasets E2E de traces e logs. O diagnóstico imprime somente nomes e tipos de colunas validados, nunca eventos, credenciais ou corpos de erro do provedor. Cada consulta tem timeout de dez segundos. Respostas malformadas ou com mais de 512 colunas falham explicitamente. O diagnóstico não converte a falha do canário em sucesso.
+
 O orçamento de visibilidade reserva 200 ms para o `flush_timeout` do Collector e 180.000 ms para `axiomQueryVisibilityMilliseconds`. A [documentação pública de ingestão do Axiom](https://axiom.co/docs/send-data/) não publica um limite de latência entre ingestão e consulta. Por isso, os 180 segundos são uma tolerância operacional explícita, não uma garantia do provedor. O teste exige que o intervalo total de polling cubra esses dois campos e informa a margem derivada. Com os valores atuais, o intervalo de 192.000 ms deixa uma margem de 11.800 ms.
 
-Se o gate falhar, preserve o tag e os resultados da execução. Corrija a credencial, a variable regional, o dataset ou a entrega de telemetria indicada pelo último resultado de consulta. Para correções de configuração externa, execute novamente o mesmo workflow no mesmo tag. Se a correção exigir mudanças versionadas no workflow ou no código, prepare um novo patch apenas do pacote afetado com um novo tag: a execução no tag anterior continua usando os arquivos antigos. Não mova o tag, não use credencial administrativa e não publique manualmente para contornar o gate.
+Se o gate falhar, preserve o tag e os resultados da execução. Corrija a credencial, a variable regional, o dataset ou a entrega de telemetria indicada pelo último resultado de consulta. Para correções de configuração externa, execute novamente o mesmo workflow no mesmo tag. Se a correção exigir mudanças versionadas, valide primeiro o candidato com o preflight protegido em `master`. Depois do sucesso, prepare um novo patch apenas do pacote afetado com um novo tag. A execução no tag anterior continua usando os arquivos antigos. Não mova o tag, não use credencial administrativa e não publique manualmente para contornar o gate.
 
 ## Gate humano
 

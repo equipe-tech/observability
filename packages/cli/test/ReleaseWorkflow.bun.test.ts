@@ -29,6 +29,13 @@ const WorkflowEnvironment = Schema.Struct({
   OBSERVABILITY_E2E_DEPLOYED: Schema.optionalKey(Schema.String),
   AXIOM_INGEST_TOKEN: Schema.optionalKey(Schema.String),
   AXIOM_READ_TOKEN: Schema.optionalKey(Schema.String),
+  AXIOM_ORGANIZATION_ID: Schema.optionalKey(Schema.String),
+  AXIOM_URL: Schema.optionalKey(Schema.String),
+  AXIOM_DATASET_TRACES: Schema.optionalKey(Schema.String),
+  AXIOM_DATASET_LOGS: Schema.optionalKey(Schema.String),
+  AXIOM_DATASET_METRICS: Schema.optionalKey(Schema.String),
+  OTEL_EXPORTER_OTLP_ENDPOINT: Schema.optionalKey(Schema.String),
+  EVENT_REF: Schema.optionalKey(Schema.String),
   NODE_AUTH_TOKEN: Schema.optionalKey(Schema.String),
   RELEASE_TAG: Schema.optionalKey(Schema.String),
   DEPLOYED_CANARY_RESULT: Schema.optionalKey(Schema.String),
@@ -40,6 +47,8 @@ const WorkflowStep = Schema.Struct({
   if: Schema.optionalKey(Schema.String),
   run: Schema.optionalKey(Schema.String),
   uses: Schema.optionalKey(Schema.String),
+  "continue-on-error": Schema.optionalKey(Schema.Boolean),
+  "timeout-minutes": Schema.optionalKey(Schema.Number),
   with: Schema.optionalKey(
     Schema.Struct({
       "bun-version": Schema.optionalKey(Schema.String),
@@ -50,6 +59,8 @@ const WorkflowStep = Schema.Struct({
 });
 
 const WorkflowDocument = Schema.Struct({
+  permissions: Schema.Record(Schema.String, Schema.String),
+  env: Schema.optionalKey(WorkflowEnvironment),
   jobs: Schema.Record(
     Schema.String,
     Schema.Struct({ steps: Schema.optionalKey(Schema.Array(WorkflowStep)) }),
@@ -57,6 +68,9 @@ const WorkflowDocument = Schema.Struct({
 });
 
 const ConditionalJob = Schema.Struct({
+  uses: Schema.optionalKey(Schema.String),
+  "runs-on": Schema.optionalKey(Schema.String),
+  permissions: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
   if: Schema.optionalKey(Schema.String),
   environment: Schema.optionalKey(Schema.String),
   needs: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -115,11 +129,21 @@ const ReleaseWorkflow = Schema.Struct({
   }),
 });
 
+const ReleasePreflightWorkflow = Schema.Struct({
+  jobs: Schema.Struct({
+    readiness: ConditionalJob,
+    "deployed-canary": ConditionalJob,
+    "canary-gate": ReleaseGateJob,
+  }),
+});
+
 const parsedCiWorkflow = Schema.decodeUnknownSync(CiWorkflow)(Bun.YAML.parse(ciWorkflow));
-const parsedReleaseWorkflow = Schema.decodeUnknownSync(ReleaseWorkflow)(Bun.YAML.parse(workflow));
-const parsedReleasePreflightWorkflow = Schema.decodeUnknownSync(WorkflowDocument)(
-  Bun.YAML.parse(releasePreflightWorkflow),
-);
+const parsedReleaseWorkflow = Schema.decodeUnknownSync(ReleaseWorkflow, {
+  onExcessProperty: "preserve",
+})(Bun.YAML.parse(workflow));
+const parsedReleasePreflightWorkflow = Schema.decodeUnknownSync(ReleasePreflightWorkflow, {
+  onExcessProperty: "preserve",
+})(Bun.YAML.parse(releasePreflightWorkflow));
 const workflowDocuments = await Array.fromAsync(
   new Bun.Glob(".github/workflows/*.yml").scan({
     cwd: fileURLToPath(new URL("../../..", import.meta.url)),
@@ -216,37 +240,43 @@ describe("release workflow publication gate", () => {
     expect(workflow).toContain('[[ "$head_commit" == "$tag_commit" ]]');
   });
 
-  test("executes the release workflow canary gate script", async () => {
-    const gateStep = parsedReleaseWorkflow.jobs["canary-gate"].steps?.[0];
-    expect(gateStep?.run).toBeDefined();
-    if (gateStep?.run === undefined) throw new Error("The release canary gate script is missing.");
-    for (const canaryResult of ["success", "failure", "skipped", "cancelled", "", undefined]) {
-      const result = await executeShell(gateStep.run, {
-        DEPLOYED_CANARY_RESULT: canaryResult,
-      });
-      expect(result.exitCode).toBe(canaryResult === "success" ? 0 : 1);
-      expect(result.output).toBe("");
-      expect(result.stderr).toBe("");
-      expect(result.stdout).toBe("");
+  test("executes both canary gates and rejects every result except success", async () => {
+    for (const document of [parsedReleaseWorkflow, parsedReleasePreflightWorkflow]) {
+      const gateStep = document.jobs["canary-gate"].steps[0];
+      expect(gateStep?.run).toBeDefined();
+      if (gateStep?.run === undefined) throw new Error("The canary gate script is missing.");
+      for (const canaryResult of ["success", "failure", "skipped", "cancelled", "", undefined]) {
+        const result = await executeShell(gateStep.run, {
+          DEPLOYED_CANARY_RESULT: canaryResult,
+        });
+        expect(result.exitCode).toBe(canaryResult === "success" ? 0 : 1);
+        expect(result.output).toBe("");
+        expect(result.stderr).toBe("");
+        expect(result.stdout).toBe("");
+      }
     }
   });
 
   test("gates publication on the direct protected job result", () => {
-    expect(parsedReleaseWorkflow.jobs["deployed-canary"]["continue-on-error"]).toBeUndefined();
     expect(parsedReleaseWorkflow.jobs["deployed-canary"].if).toBeUndefined();
-    expect(parsedReleaseWorkflow.jobs["canary-gate"].needs).toBe("deployed-canary");
-    expect(parsedReleaseWorkflow.jobs["canary-gate"].if).toBe("${{ !cancelled() }}");
-    expect(parsedReleaseWorkflow.jobs["canary-gate"].steps[0]?.env?.DEPLOYED_CANARY_RESULT).toBe(
-      "${{ needs.deployed-canary.result }}",
-    );
+    for (const document of [parsedReleaseWorkflow, parsedReleasePreflightWorkflow]) {
+      expect(document.jobs["deployed-canary"]["continue-on-error"]).toBeUndefined();
+      expect(document.jobs["canary-gate"].needs).toBe("deployed-canary");
+      expect(document.jobs["canary-gate"].if).toBe("${{ !cancelled() }}");
+      expect(document.jobs["canary-gate"].steps[0]?.env?.DEPLOYED_CANARY_RESULT).toBe(
+        "${{ needs.deployed-canary.result }}",
+      );
+    }
   });
 
   test("keeps the deployed canary job timeout above the suite budget", () => {
-    const timeoutMinutes = parsedReleaseWorkflow.jobs["deployed-canary"]["timeout-minutes"];
-    expect(timeoutMinutes).toBeDefined();
-    expect((timeoutMinutes ?? 0) * 60_000).toBeGreaterThanOrEqual(
-      deployedCanarySuiteTimeoutMilliseconds + 3 * 60_000,
-    );
+    for (const document of [parsedReleaseWorkflow, parsedReleasePreflightWorkflow]) {
+      const timeoutMinutes = document.jobs["deployed-canary"]["timeout-minutes"];
+      expect(timeoutMinutes).toBeDefined();
+      expect((timeoutMinutes ?? 0) * 60_000).toBeGreaterThanOrEqual(
+        deployedCanarySuiteTimeoutMilliseconds + 3 * 60_000,
+      );
+    }
   });
 
   test("builds a release graph that cannot bypass the canary gate", () => {
@@ -269,8 +299,21 @@ describe("release workflow publication gate", () => {
 
   test("uses publication environment secrets without inert caller plumbing", () => {
     expect(parsedCiWorkflow.on.workflow_call.secrets).toBeUndefined();
-    expect(parsedReleaseWorkflow.jobs["deployed-canary"].environment).toBe("publication");
+    for (const document of [parsedReleaseWorkflow, parsedReleasePreflightWorkflow]) {
+      const canary = document.jobs["deployed-canary"];
+      expect(canary.environment).toBe("publication");
+      expect(canary["runs-on"]).toBe("ubuntu-latest");
+      expect(canary.uses).toBeUndefined();
+      expect(canary.env).toBeUndefined();
+      expect(canary.permissions).toBeUndefined();
+    }
+    for (const document of workflowDocuments) {
+      expect(document.permissions).toEqual({ contents: "read" });
+      expect(document.env).toBeUndefined();
+    }
     expect(workflow).not.toContain("secrets: inherit");
+    expect(releasePreflightWorkflow).not.toContain("secrets: inherit");
+    expect(releasePreflightWorkflow).not.toContain("NPM_TOKEN");
     expect(ciWorkflow).not.toContain("secrets.");
     expect(ciWorkflow).not.toContain("NPM_TOKEN");
     expect(ciWorkflow).not.toContain("environment:");
@@ -284,13 +327,16 @@ describe("release workflow publication gate", () => {
     const steps = canary.steps ?? [];
     const ingestStep = steps.find((step) => step.name === "Start the production collector");
     const readStep = steps.find((step) => step.name === "Run the deployed release canary");
+    const schemaStep = steps.find((step) => step.name === "Report failed canary dataset schemas");
     expect(ingestStep?.env?.AXIOM_INGEST_TOKEN).toBe("${{ secrets.AXIOM_INGEST_TOKEN }}");
     expect(ingestStep?.run).toContain("--require-credential AXIOM_INGEST_TOKEN");
     expect(readStep?.env?.AXIOM_READ_TOKEN).toBe("${{ secrets.AXIOM_READ_TOKEN }}");
     expect(readStep?.run).toContain("--require-credential AXIOM_READ_TOKEN");
     for (const step of steps) {
       if (step !== ingestStep) expect(step.env?.AXIOM_INGEST_TOKEN).toBeUndefined();
-      if (step !== readStep) expect(step.env?.AXIOM_READ_TOKEN).toBeUndefined();
+      if (step !== readStep && step !== schemaStep) {
+        expect(step.env?.AXIOM_READ_TOKEN).toBeUndefined();
+      }
       expect(step.env?.NODE_AUTH_TOKEN).toBeUndefined();
     }
     expect(workflow.match(/secrets\.NPM_TOKEN/g)).toHaveLength(1);
@@ -443,6 +489,96 @@ describe("release workflow publication gate", () => {
     expect(workflow).toContain('export AXIOM_TOKEN="$AXIOM_INGEST_TOKEN"');
     expect(workflow).toContain("-e AXIOM_TOKEN \\");
     expect(workflow).not.toContain('-e AXIOM_TOKEN="$AXIOM_INGEST_TOKEN"');
+  });
+
+  test("keeps direct protected canary steps identical except checkout and candidate identity", () => {
+    const releaseSteps = parsedReleaseWorkflow.jobs["deployed-canary"].steps ?? [];
+    const preflightSteps = parsedReleasePreflightWorkflow.jobs["deployed-canary"].steps ?? [];
+    expect(releaseSteps.length).toBeGreaterThan(0);
+    expect(preflightSteps).toHaveLength(releaseSteps.length);
+    for (const [index, step] of releaseSteps.entries()) {
+      if (step.uses === "actions/checkout@v4") {
+        expect(preflightSteps[index]).toEqual({
+          ...step,
+          with: { ref: "${{ github.sha }}" },
+        });
+      } else if (step.name === "Resolve release canary identity") {
+        expect(preflightSteps[index]).toEqual({
+          ...step,
+          env: { RELEASE_TAG: "${{ format('{0}@{1}', inputs.package, inputs.version) }}" },
+        });
+      } else {
+        expect(preflightSteps[index]).toEqual(step);
+      }
+    }
+  });
+
+  test("runs preflight canary only after readiness on the immutable master dispatch commit", () => {
+    const { readiness, "deployed-canary": canary } = parsedReleasePreflightWorkflow.jobs;
+    expect(canary.needs).toEqual(["readiness"]);
+    expect(canary.if).toBe("github.ref == 'refs/heads/master'");
+    expect(readiness["continue-on-error"]).toBeUndefined();
+    expect(readiness.steps?.find((step) => step.uses === "actions/checkout@v4")?.with?.ref).toBe(
+      "${{ github.sha }}",
+    );
+    expect(Object.keys(parsedReleasePreflightWorkflow.jobs)).toEqual([
+      "readiness",
+      "deployed-canary",
+      "canary-gate",
+    ]);
+    expect(releasePreflightWorkflow).not.toContain("refs/tags/");
+    expect(releasePreflightWorkflow).not.toContain("git show-ref");
+    expect(releasePreflightWorkflow).not.toContain("gh release");
+    expect(releasePreflightWorkflow).not.toContain("npm publish");
+    expect(releasePreflightWorkflow).not.toMatch(/git (?:tag|push)/);
+  });
+
+  test("rejects preflight dispatch outside master before readiness", async () => {
+    const requireBranch = parsedReleasePreflightWorkflow.jobs.readiness.steps?.[0];
+    expect(requireBranch?.name).toBe("Require the default branch");
+    expect(requireBranch?.env?.EVENT_REF).toBe("${{ github.ref }}");
+    if (requireBranch?.run === undefined) throw new Error("The preflight branch check is missing.");
+    for (const ref of [
+      "refs/heads/master",
+      "refs/heads/feature",
+      "refs/tags/observability@0.3.0",
+      "",
+      undefined,
+    ]) {
+      const result = await executeShell(requireBranch.run, { EVENT_REF: ref });
+      expect(result.exitCode).toBe(ref === "refs/heads/master" ? 0 : 1);
+    }
+  });
+
+  test("diagnoses only failed canaries with bounded read-only dataset schema access", () => {
+    for (const document of [parsedReleaseWorkflow, parsedReleasePreflightWorkflow]) {
+      const steps = document.jobs["deployed-canary"].steps ?? [];
+      const canaryIndex = steps.findIndex(
+        (step) => step.name === "Run the deployed release canary",
+      );
+      const schemaIndex = steps.findIndex(
+        (step) => step.name === "Report failed canary dataset schemas",
+      );
+      const cleanupIndex = steps.findIndex(
+        (step) => step.name === "Clean the production collector",
+      );
+      const schemaStep = steps[schemaIndex];
+      expect(steps[canaryIndex]?.id).toBe("canary");
+      expect(schemaIndex).toBeGreaterThan(canaryIndex);
+      expect(cleanupIndex).toBeGreaterThan(schemaIndex);
+      expect(schemaStep?.if).toBe("failure() && steps.canary.outcome == 'failure'");
+      expect(schemaStep?.["timeout-minutes"]).toBe(2);
+      expect(schemaStep?.run).toBe("bun scripts/axiom-schema.ts");
+      expect(schemaStep?.env).toEqual({
+        AXIOM_READ_TOKEN: "${{ secrets.AXIOM_READ_TOKEN }}",
+        AXIOM_ORGANIZATION_ID: "${{ vars.AXIOM_ORGANIZATION_ID }}",
+        AXIOM_URL: "${{ vars.AXIOM_URL }}",
+        AXIOM_DATASET_TRACES: "${{ vars.AXIOM_DATASET_TRACES }}",
+        AXIOM_DATASET_LOGS: "${{ vars.AXIOM_DATASET_LOGS }}",
+        AXIOM_DATASET_METRICS: "${{ vars.AXIOM_DATASET_METRICS }}",
+      });
+      for (const step of steps) expect(step["continue-on-error"]).toBeUndefined();
+    }
   });
 
   test("uses release canary identity resolution in preflight", () => {
