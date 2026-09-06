@@ -37,6 +37,7 @@
 
 ### Correções
 
+- fix(deps): isolate fixture manifests and patch YAML parsing
 - fix: resolve stack review findings (#78)
 - fix(cli): accept Axiom default retention payloads (#24)
 - fix(cli): create MetricsDB datasets and correlation gates (#22)
