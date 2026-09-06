@@ -123,7 +123,8 @@ Exporte as variáveis de `staging`:
 ```sh
 observability env export \
   --name livro-caixa \
-  --environment staging
+  --environment staging \
+  --release 1.4.0
 ```
 
 A saída contém somente variáveis dos providers salvos. Não salve essa saída em um arquivo versionado.
@@ -135,7 +136,8 @@ Repita o processo para `production`:
 ```sh
 observability env export \
   --name livro-caixa \
-  --environment production
+  --environment production \
+  --release 1.4.0
 ```
 
 Mescle `observability/kamal.accessory.yml` em `config/deploy.yml`. O accessory lê os nomes dos datasets das variáveis exportadas.

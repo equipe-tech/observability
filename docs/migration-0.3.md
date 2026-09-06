@@ -40,6 +40,20 @@ A mesma regra vale para `OTEL_SERVICE_VERSION` quando a configuração vem de `t
 
 A CLI 0.2 aceitava hífens consecutivos em `provision --name` e nos nomes de projeto dos comandos `env`. A CLI 0.3 aplica a mesma gramática de `serviceName` nesses argumentos. Renomeie `checkout--api` para `checkout-api` antes de atualizar. Um nome incompatível retorna `OBS_CLI_PROVISION_INVALID_NAME` em `provision` ou `OBS_CLI_REMOTE_INVALID_PROJECT` em comandos `env`.
 
+## Informar a release ao exportar ambientes
+
+`observability env export` agora exige `--release` ou `-r`.
+
+```text
+observability env export --name checkout-api --environment staging --release 1.4.0
+```
+
+A CLI valida a mesma gramática de `service.version` e exporta `OTEL_SERVICE_VERSION`. Scripts antigos sem a flag falham no parse da CLI. Atualize cada integração para fornecer a versão publicada ou o hash imutável implantado.
+
+Ambientes com Collector remoto também precisam definir `OTEL_DEPLOYMENT_ENVIRONMENT`. Somente endpoints loopback recebem os padrões `0.0.0` e `development`.
+
+Remova `SENTRY_RELEASE` e `OTEL_SERVICE_RELEASE`. Um valor não vazio em qualquer uma delas falha com `OBS_TELEMETRY_DUPLICATE_RELEASE_VARIABLE`. O adapter Sentry usa `OTEL_SERVICE_VERSION`.
+
 ## Compatibilidade de release
 
 Esta migração documenta a quebra intencional da próxima versão minor. O OBS-57 adicionará a verificação automatizada de compatibilidade e o bloqueio de versionamento. O OBS-49 não implementa esse bloqueio e não altera a versão dos pacotes.

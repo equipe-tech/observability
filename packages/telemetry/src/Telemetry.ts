@@ -2,6 +2,7 @@ import { ConfigProvider, Duration, Effect, Layer } from "effect";
 import { FetchHttpClient, type HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { OtlpExporter, OtlpLogger, OtlpSerialization } from "effect/unstable/observability";
 import type { InvalidResourceIdentity } from "./ResourceIdentity.ts";
+import type { DuplicateReleaseVariable } from "./profile/ObservabilityConfigError.ts";
 import { instanceResourceAttributes } from "./ResourceIdentity.ts";
 import type { EnvironmentVariables, InvalidTelemetryEnvironment } from "./TelemetryConfig.ts";
 import { telemetryConfigFromEnv, type TelemetryConfig } from "./TelemetryConfig.ts";
@@ -52,5 +53,7 @@ export const layer = (
 export const layerFromEnv = (
   env: EnvironmentVariables,
   options: OtlpLayerOptions = {},
-): Layer.Layer<OtlpExporter.Flusher, InvalidTelemetryEnvironment | InvalidResourceIdentity> =>
-  Layer.unwrap(Effect.map(telemetryConfigFromEnv(env), (config) => layer(config, options)));
+): Layer.Layer<
+  OtlpExporter.Flusher,
+  InvalidTelemetryEnvironment | InvalidResourceIdentity | DuplicateReleaseVariable
+> => Layer.unwrap(Effect.map(telemetryConfigFromEnv(env), (config) => layer(config, options)));

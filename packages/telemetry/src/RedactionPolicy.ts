@@ -11,7 +11,7 @@ import type { WideEventFields } from "./WideEvent.ts";
 export const sensitiveFieldReplacement = "****";
 export const sensitiveTextReplacement = "[REDACTED]";
 
-const sensitiveTermSources = [
+export const baseBlockedKeys = [
   "authorization",
   "proxy[._-]?authorization",
   "cookie",
@@ -32,7 +32,7 @@ const sensitiveTermSources = [
   "document",
 ];
 
-export const collectorBlockedKeyPattern = `(?i:${sensitiveTermSources.join("|")})(?:[._-]|[A-Z0-9]|$)`;
+export const collectorBlockedKeyPattern = `(?i:${baseBlockedKeys.join("|")})(?:[._-]|[A-Z0-9]|$)`;
 
 export const collectorBlockedValuePatterns = [
   "(?i)Bearer[[:space:]]+[A-Za-z0-9._~+/=-]+",
@@ -73,13 +73,13 @@ interface JsonTraversal {
 const asciiCaseInsensitive = (source: string): string =>
   source.replace(/[A-Za-z]/g, (letter) => `[${letter.toLowerCase()}${letter.toUpperCase()}]`);
 
-const sensitiveTerms = sensitiveTermSources.map(asciiCaseInsensitive).join("|");
+const sensitiveTerms = baseBlockedKeys.map(asciiCaseInsensitive).join("|");
 const sensitiveKeyPattern = new RegExp(`(?:${sensitiveTerms})(?=[._-]|[A-Z0-9]|$)`);
 const sensitiveTextTermPattern = new RegExp(
   `(?:${sensitiveTerms})(?=[._-]|[A-Z0-9]|[^A-Za-z0-9._-]|$)`,
 );
 
-const coreValuePatterns = [
+export const baseBlockedValuePatterns = [
   /Bearer\s+[A-Za-z0-9._~+/=-]+/gi,
   /(?:sk|rk)[_-][A-Za-z0-9_*.-]{3,}/g,
   /eyJ[A-Za-z0-9_-]+[.]eyJ[A-Za-z0-9_-]+[.][A-Za-z0-9_-]+/g,
@@ -94,7 +94,7 @@ export const isSensitiveFieldKey = (key: string): boolean => sensitiveKeyPattern
 
 const replaceCoreValues = (value: string): string => {
   let sanitized = value;
-  for (const pattern of coreValuePatterns) {
+  for (const pattern of baseBlockedValuePatterns) {
     pattern.lastIndex = 0;
     sanitized = sanitized.replace(pattern, sensitiveTextReplacement);
   }
@@ -102,7 +102,7 @@ const replaceCoreValues = (value: string): string => {
 };
 
 const containsCoreValue = (value: string): boolean => {
-  for (const pattern of coreValuePatterns) {
+  for (const pattern of baseBlockedValuePatterns) {
     pattern.lastIndex = 0;
     if (pattern.test(value)) {
       pattern.lastIndex = 0;

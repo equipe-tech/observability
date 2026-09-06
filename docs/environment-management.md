@@ -40,7 +40,7 @@ A remoção do alias requer duas condições:
 
 ## A compatibilidade no SDK tem prazo
 
-`EnvironmentAliasPolicy` controla a emissão do alias pelo SDK. O padrão `omitted` emite somente `deployment.environment.name`. Use `emitted` apenas enquanto um destino antigo ainda depende de `deployment.environment`. Essa compatibilidade é somente programática até o OBS-51 assumir a configuração por ambiente e perfil.
+`EnvironmentAliasPolicy` controla a emissão do alias pelo SDK. O padrão `omitted` emite somente `deployment.environment.name`. Use `emitted` apenas enquanto um destino antigo ainda depende de `deployment.environment`. A configuração explícita de perfil e a entrada por ambiente aceitam essa política sem combinar as duas fontes.
 
 Os exporters do pacote ignoram `OTEL_RESOURCE_ATTRIBUTES`. Assim, valores ambientes não podem inserir ou substituir `service.namespace`, `service.name`, `service.version`, `deployment.environment.name`, `deployment.environment` ou `service.instance.id`. A identidade canônica, o alias e a instância vêm somente das projeções de `ResourceIdentity`. Atributos ambientes não reservados também são suprimidos.
 
@@ -50,7 +50,11 @@ O SDK remove essa opção na primeira versão minor depois que as duas condiçõ
 
 ## O ambiente local não usa contas externas
 
-O ambiente local usa `http://localhost:4318` como endpoint padrão. O Collector local envia os sinais para o `otel-desktop-viewer`.
+O ambiente local usa `http://localhost:4318` como endpoint padrão. Endpoints em `localhost`, `127.0.0.0/8` e `::1` permitem os padrões `OTEL_SERVICE_VERSION=0.0.0` e `OTEL_DEPLOYMENT_ENVIRONMENT=development`. Essa permissão depende somente da classificação do endpoint. Um sidecar de produção acessado por loopback deve definir as duas variáveis explicitamente. Endpoints não loopback exigem as duas variáveis.
+
+`OTEL_SERVICE_VERSION` é a única identidade de release. `SENTRY_RELEASE` e `OTEL_SERVICE_RELEASE` não podem definir outra identidade.
+
+O Collector local envia os sinais para o `otel-desktop-viewer`.
 
 Esse fluxo mantém o Collector entre a aplicação e o destino. O mesmo contrato OTLP existe no ambiente local e nos ambientes remotos.
 

@@ -1,13 +1,16 @@
 import { Effect, Runtime } from "effect";
 import type { Layer } from "effect";
 import type { InvalidResourceIdentity } from "../ResourceIdentity.ts";
+import type { DuplicateReleaseVariable } from "../profile/ObservabilityConfigError.ts";
 import { layerFromEnv } from "../Telemetry.ts";
 import type { EnvironmentVariables, InvalidTelemetryEnvironment } from "../TelemetryConfig.ts";
 
 export const layer = (
   env?: EnvironmentVariables,
-): Layer.Layer<never, InvalidTelemetryEnvironment | InvalidResourceIdentity> =>
-  layerFromEnv(env ?? process.env);
+): Layer.Layer<
+  never,
+  InvalidTelemetryEnvironment | InvalidResourceIdentity | DuplicateReleaseVariable
+> => layerFromEnv(env ?? process.env);
 
 const runProcessMain = Runtime.makeRunMain(({ fiber, teardown }) => {
   let receivedSignal = false;

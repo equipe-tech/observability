@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import {
   environmentNameMaxLength,
+  immutableReleasePattern,
   resourceNamePattern,
+  semverPattern,
   serviceNameMaxLength,
 } from "../src/ResourceNamePolicy.ts";
 
@@ -16,15 +18,36 @@ const readPolicy = async (path: string) => {
   const pattern = source.match(/resourceNamePattern = \/(.+)\/;/)?.[1];
   const serviceLimit = source.match(/serviceNameMaxLength = (\d+);/)?.[1];
   const environmentLimit = source.match(/environmentNameMaxLength = (\d+);/)?.[1];
-  if (pattern === undefined || serviceLimit === undefined || environmentLimit === undefined) {
+  const semver = source.match(/semverPattern =\s*\/(.+)\/;/)?.[1];
+  const immutableRelease = source.match(/immutableReleasePattern = \/(.+)\/;/)?.[1];
+  if (
+    pattern === undefined ||
+    serviceLimit === undefined ||
+    environmentLimit === undefined ||
+    semver === undefined ||
+    immutableRelease === undefined
+  ) {
     throw new Error(`Identity policy declarations are missing from ${path}.`);
   }
   return {
     pattern,
     serviceLimit: Number(serviceLimit),
     environmentLimit: Number(environmentLimit),
+    semver,
+    immutableRelease,
   };
 };
+
+const releaseBoundaryFixtures: ReadonlyArray<readonly [string, boolean]> = [
+  ["0.0.0", true],
+  ["1.4.0", true],
+  ["1.4.0-rc.1+build.2", true],
+  ["9f2c1ab", true],
+  ["a".repeat(64), true],
+  ["latest", false],
+  ["ABCDEF0", false],
+  ["a".repeat(65), false],
+];
 
 const grammarBoundaryFixtures = [
   ["a", true],
@@ -47,6 +70,18 @@ describe("CLI identity policy ownership seam", () => {
     expect(cli.pattern).toBe(resourceNamePattern.source);
     expect(cli.serviceLimit).toBe(serviceNameMaxLength);
     expect(cli.environmentLimit).toBe(environmentNameMaxLength);
+    expect(cli.semver).toBe(semverPattern.source);
+    expect(cli.immutableRelease).toBe(immutableReleasePattern.source);
+
+    for (const [value, accepted] of releaseBoundaryFixtures) {
+      const cliAccepted =
+        new RegExp(cli.semver).test(value) || new RegExp(cli.immutableRelease).test(value);
+      const telemetryAccepted =
+        new RegExp(telemetry.semver).test(value) ||
+        new RegExp(telemetry.immutableRelease).test(value);
+      expect(cliAccepted).toBe(accepted);
+      expect(telemetryAccepted).toBe(accepted);
+    }
 
     for (const [value, accepted] of grammarBoundaryFixtures) {
       expect(new RegExp(cli.pattern).test(value)).toBe(accepted);

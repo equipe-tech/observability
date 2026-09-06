@@ -6,6 +6,11 @@ import { layerOtlp } from "../Telemetry.ts";
 import { TelemetryConfig } from "../TelemetryConfig.ts";
 
 export * from "./contract.ts";
+export {
+  registerTestingAdapter,
+  type TestingAdapterRegistration,
+} from "../profile/ObservabilityAdapter.ts";
+export { createTestingNodeObservabilityFromConfig } from "../node/Observability.ts";
 
 export type CapturedAttributeValue = string | number | boolean;
 
