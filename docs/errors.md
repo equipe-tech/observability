@@ -47,6 +47,12 @@ Não sugira repetir quando a operação pode ter completado parcialmente, ou qua
 
 - `OBS_CLI_AUTH_TOKEN_INPUT_INVALID` indica que `--token-env` não nomeia uma variável segura ou que a variável selecionada está ausente, vazia ou contém caracteres de controle. Corrija a variável e tente novamente. A falha ocorre antes de acesso ao provider ou gravação de credenciais e inclui `request_id` e `retryable: true`.
 
+## Provisionamento de assets
+
+- `OBS_CLI_PROVISION_INVALID_QUEUE_MODE` indica que `--queue-mode` não contém `best-effort` ou `durable`. Corrija o valor e tente novamente. A CLI retorna o erro antes de escrever os assets.
+- `OBS_CLI_PROVISION_ASSET_INCOMPATIBLE` indica que os assets incluídos no pacote não contêm os marcadores esperados pelo renderer de modo. Instale uma versão íntegra e compatível da CLI antes de tentar novamente.
+- `OBS_CLI_PROVISION_CONFLICT` indica uma mudança de modo sem `--force`, estado inválido ou drift em um asset gerenciado. Revise o bundle e use `--force` somente para substituir os três arquivos de forma coerente.
+
 ## Diagnóstico de schema Axiom
 
 - `OBS_AXIOM_SCHEMA_INPUT_INVALID` indica ambiente de leitura ausente ou URL inválida. Corrija a configuração antes de repetir.

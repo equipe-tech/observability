@@ -50,14 +50,17 @@ done
 run_capture provision-create env OBSERVABILITY_HOME="$STATE_ROOT" bun "$CLI" provision --dir "$PROVISION_TARGET" --name verify-app
 grep -F 'created  observability/collector.yaml' "$ARTIFACT_ROOT/provision-create.stdout"
 grep -F 'created  observability/kamal.accessory.yml' "$ARTIFACT_ROOT/provision-create.stdout"
+grep -F 'created  observability/provision.json' "$ARTIFACT_ROOT/provision-create.stdout"
+grep -F '"queueMode": "durable"' "$PROVISION_TARGET/observability/provision.json"
 grep -F '${env:AXIOM_TOKEN}' "$PROVISION_TARGET/observability/collector.yaml"
 for dataset in verify-app-traces verify-app-logs verify-app-metrics; do
   grep -F "$dataset" "$PROVISION_TARGET/observability/kamal.accessory.yml"
 done
 cp "$PROVISION_TARGET/observability/collector.yaml" "$PROJECT_ARTIFACT_ROOT/first-collector.yaml"
 cp "$PROVISION_TARGET/observability/kamal.accessory.yml" "$PROJECT_ARTIFACT_ROOT/first-kamal.accessory.yml"
+cp "$PROVISION_TARGET/observability/provision.json" "$PROJECT_ARTIFACT_ROOT/first-provision.json"
 run_capture provision-repeat env OBSERVABILITY_HOME="$STATE_ROOT" bun "$CLI" provision --dir "$PROVISION_TARGET" --name verify-app
-test "$(grep -c '^unchanged  observability/' "$ARTIFACT_ROOT/provision-repeat.stdout")" = "2"
+test "$(grep -c '^unchanged  observability/' "$ARTIFACT_ROOT/provision-repeat.stdout")" = "3"
 printf '%s\n' 'receivers: {}' > "$PROVISION_TARGET/observability/collector.yaml"
 if run_capture provision-conflict env OBSERVABILITY_HOME="$STATE_ROOT" bun "$CLI" provision --dir "$PROVISION_TARGET" --name verify-app; then
   exit 1
@@ -68,7 +71,19 @@ test "$(cat "$PROVISION_TARGET/observability/collector.yaml")" = 'receivers: {}'
 run_capture provision-force env OBSERVABILITY_HOME="$STATE_ROOT" bun "$CLI" provision --dir "$PROVISION_TARGET" --name verify-app --force
 grep -F 'updated  observability/collector.yaml' "$ARTIFACT_ROOT/provision-force.stdout"
 grep -F '${env:AXIOM_TOKEN}' "$PROVISION_TARGET/observability/collector.yaml"
+if run_capture mode-conflict env OBSERVABILITY_HOME="$STATE_ROOT" bun "$CLI" provision --dir "$PROVISION_TARGET" --name verify-app --queue-mode best-effort; then
+  exit 1
+fi
+grep -F 'OBS_CLI_PROVISION_CONFLICT' "$ARTIFACT_ROOT/mode-conflict.stderr"
+grep -F 'file_storage/queue' "$PROVISION_TARGET/observability/collector.yaml"
+grep -F 'directories:' "$PROVISION_TARGET/observability/kamal.accessory.yml"
+run_capture mode-force env OBSERVABILITY_HOME="$STATE_ROOT" bun "$CLI" provision --dir "$PROVISION_TARGET" --name verify-app --queue-mode best-effort --force
+! grep -F 'file_storage/queue' "$PROVISION_TARGET/observability/collector.yaml"
+test "$(grep -c 'max_elapsed_time: 5m' "$PROVISION_TARGET/observability/collector.yaml")" = "3"
+! grep -F 'directories:' "$PROVISION_TARGET/observability/kamal.accessory.yml"
+grep -F '"queueMode": "best-effort"' "$PROVISION_TARGET/observability/provision.json"
 cp "$PROVISION_TARGET/observability/collector.yaml" "$PROJECT_ARTIFACT_ROOT/final-collector.yaml"
 cp "$PROVISION_TARGET/observability/kamal.accessory.yml" "$PROJECT_ARTIFACT_ROOT/final-kamal.accessory.yml"
+cp "$PROVISION_TARGET/observability/provision.json" "$PROJECT_ARTIFACT_ROOT/final-provision.json"
 test "$(git rev-parse HEAD)" = "$(cat "$ARTIFACT_ROOT/build-revision.txt")"
 printf '%s\n' "$ARTIFACT_ROOT"

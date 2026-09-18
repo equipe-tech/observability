@@ -1667,25 +1667,82 @@ if (report.degraded) throw new Error("Generated React composition degraded durin
     throw new Error("The packed CLI did not prepare the local stack assets.");
   }
 
-  const provisionTarget = join(temporaryDirectory, "provision target");
-  await mkdir(provisionTarget, { recursive: true });
+  const durableProvisionTarget = join(temporaryDirectory, "durable provision target");
+  await mkdir(durableProvisionTarget, { recursive: true });
   requireSuccess(
-    await run([executable, "provision", "--dir", provisionTarget, "--name", "smoke-app"], consumer),
-    "Provisioning the production assets with the packed CLI",
+    await run(
+      [executable, "provision", "--dir", durableProvisionTarget, "--name", "smoke-app"],
+      consumer,
+    ),
+    "Provisioning durable production assets with the packed CLI",
   );
-  const provisionedCollector = await readFile(
-    join(provisionTarget, "observability", "collector.yaml"),
+  const durableCollector = await readFile(
+    join(durableProvisionTarget, "observability", "collector.yaml"),
     "utf8",
   );
-  if (!provisionedCollector.includes("file_storage/queue")) {
-    throw new Error("The packed CLI did not provision the production collector config.");
+  if (!durableCollector.includes("file_storage/queue")) {
+    throw new Error("The packed CLI did not provision the durable Collector config.");
   }
-  const provisionedAccessory = await readFile(
-    join(provisionTarget, "observability", "kamal.accessory.yml"),
+  const durableAccessory = await readFile(
+    join(durableProvisionTarget, "observability", "kamal.accessory.yml"),
     "utf8",
   );
-  if (!provisionedAccessory.includes("smoke-app-traces")) {
-    throw new Error("The packed CLI did not render the Kamal accessory template.");
+  if (
+    !durableAccessory.includes("smoke-app-traces") ||
+    !durableAccessory.includes("directories:")
+  ) {
+    throw new Error("The packed CLI did not render the durable Kamal accessory.");
+  }
+  const durableState = await readFile(
+    join(durableProvisionTarget, "observability", "provision.json"),
+    "utf8",
+  );
+  if (!durableState.includes('"queueMode": "durable"')) {
+    throw new Error("The packed CLI did not record the durable queue mode.");
+  }
+
+  const bestEffortProvisionTarget = join(temporaryDirectory, "best effort provision target");
+  await mkdir(bestEffortProvisionTarget, { recursive: true });
+  requireSuccess(
+    await run(
+      [
+        executable,
+        "provision",
+        "--dir",
+        bestEffortProvisionTarget,
+        "--name",
+        "smoke-memory-app",
+        "--queue-mode",
+        "best-effort",
+      ],
+      consumer,
+    ),
+    "Provisioning best-effort production assets with the packed CLI",
+  );
+  const bestEffortCollector = await readFile(
+    join(bestEffortProvisionTarget, "observability", "collector.yaml"),
+    "utf8",
+  );
+  if (
+    bestEffortCollector.includes("file_storage/queue") ||
+    !bestEffortCollector.includes("queue_size: 64") ||
+    !bestEffortCollector.includes("max_elapsed_time: 5m")
+  ) {
+    throw new Error("The packed CLI did not provision the best-effort Collector config.");
+  }
+  const bestEffortAccessory = await readFile(
+    join(bestEffortProvisionTarget, "observability", "kamal.accessory.yml"),
+    "utf8",
+  );
+  if (bestEffortAccessory.includes("directories:") || bestEffortAccessory.includes("/queue")) {
+    throw new Error("The packed CLI provisioned persistent state for best-effort mode.");
+  }
+  const bestEffortState = await readFile(
+    join(bestEffortProvisionTarget, "observability", "provision.json"),
+    "utf8",
+  );
+  if (!bestEffortState.includes('"queueMode": "best-effort"')) {
+    throw new Error("The packed CLI did not record the best-effort queue mode.");
   }
 } finally {
   await cleanup();

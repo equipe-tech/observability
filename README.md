@@ -126,14 +126,14 @@ A CLI copia os assets versionados para `OBSERVABILITY_HOME`. O diretório padrã
 
 ```sh
 bun packages/cli/src/main.ts provision --dir ~/projeto --name meu-app
+bun packages/cli/src/main.ts provision --dir ~/projeto --name meu-app --queue-mode best-effort
 ```
 
-O comando escreve no projeto alvo:
+Sem `--queue-mode`, a CLI usa `durable`. Esse modo mantém as filas no disco e repete a exportação sem limite de tempo. Use `best-effort` para manter filas de até 64 requisições por sinal somente na memória. O modo `best-effort` perde o backlog quando o Collector reinicia e descarta itens que não forem enviados em cinco minutos.
 
-- `observability/collector.yaml`: configuração do OTel Collector de produção (fila persistente e exporters Axiom)
-- `observability/kamal.accessory.yml`: trecho de accessory para mesclar em `config/deploy.yml`, com os datasets `<name>-traces|logs|metrics`
+O comando escreve `observability/collector.yaml`, `observability/kamal.accessory.yml` e `observability/provision.json`. O estado registra o modo, o projeto e os digests dos assets gerenciados.
 
-O comando é idempotente. Um arquivo provisionado que foi modificado localmente gera o erro `OBS_CLI_PROVISION_CONFLICT`; use `--force` para sobrescrever. Depois do merge do accessory, prepare o filesystem dedicado de 8 GiB, valide owner `10001:10001` e mode `0700`, e defina o secret `AXIOM_TOKEN` no Kamal. Pare produtores antes de 75% de uso ou com menos de 2 GiB livres. O procedimento completo de health, alertas, drain, backup e rotação está em [Operar a fila persistente do Collector](docs/collector-production-operations.md).
+O comando é idempotente. Uma mudança de modo ou um arquivo modificado gera `OBS_CLI_PROVISION_CONFLICT` antes de qualquer escrita. Use `--force` para substituir o bundle completo. No modo `durable`, prepare o filesystem dedicado de 8 GiB, valide owner `10001:10001` e mode `0700`, e defina `AXIOM_TOKEN` no Kamal. Pare produtores antes de 75% de uso ou com menos de 2 GiB livres. Consulte [Operar as filas do Collector](docs/collector-production-operations.md) para health, alertas, drain, backup e rotação.
 
 ### Ambientes remotos
 
