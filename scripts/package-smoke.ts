@@ -987,7 +987,7 @@ import { createNestBrowserObservability } from "./generated-nest/src/observabili
 import { startBrowserObservability } from "./generated-react/src/observability/bootstrap.ts";
 import { startObservability as startWorker } from "./generated-worker/src/observability/bootstrap.ts";
 import { startObservability as startCli } from "./generated-cli/src/observability/bootstrap.ts";
-const nest = await createNestBrowserObservability({ OTEL_SERVICE_NAME: "packed-nest", APP_VERSION: "1.0.0", OTEL_DEPLOYMENT_ENVIRONMENT: "test", OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4318" });
+const nest = await createNestBrowserObservability({ OTEL_SERVICE_NAME: "packed-nest", APP_VERSION: "1.0.0", OTEL_DEPLOYMENT_ENVIRONMENT: "test", OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4318", OBSERVABILITY_TELEMETRY_ROLLOUT: "enabled" });
 if (!nest.handle.enabled || nest.handle.config.identity.serviceVersion !== "1.0.0") throw new Error("Generated Nest bootstrap lost its custom release identity.");
 class AppModule {}
 Module({ imports: [nest.module] })(AppModule);
@@ -1000,7 +1000,7 @@ await nest.handle.close();
 const collector = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({}) });
 try {
   for (const start of [startWorker, startCli]) {
-    const handle = await start({ OTEL_SERVICE_NAME: "packed-bootstrap", APP_VERSION: "1.2.3", OTEL_DEPLOYMENT_ENVIRONMENT: "test", OTEL_EXPORTER_OTLP_ENDPOINT: collector.url.toString() });
+    const handle = await start({ OTEL_SERVICE_NAME: "packed-bootstrap", APP_VERSION: "1.2.3", OTEL_DEPLOYMENT_ENVIRONMENT: "test", OTEL_EXPORTER_OTLP_ENDPOINT: collector.url.toString(), OBSERVABILITY_TELEMETRY_ROLLOUT: "enabled" });
     try {
       if (!handle.enabled || handle.config.identity.serviceVersion !== "1.2.3") throw new Error("Generated Node bootstrap lost its custom release identity.");
     } finally {
@@ -1010,7 +1010,7 @@ try {
 } finally {
   collector.stop(true);
 }
-const browser = startBrowserObservability({ serviceVersion: "1.0.0", environment: "test", ingestEndpoint: "http://127.0.0.1:3000/_telemetry/events" });
+const browser = startBrowserObservability({ serviceVersion: "1.0.0", environment: "test", ingestEndpoint: "http://127.0.0.1:3000/_telemetry/events", rollout: "enabled" });
 if (browser.reactRootOptions.onUncaughtError === undefined) throw new Error("Generated React root options are unavailable.");
 const report = await browser.dispose();
 if (report.degraded) throw new Error("Generated React composition degraded during disposal.");

@@ -76,14 +76,14 @@ Sentry usa um projeto para todos os ambientes da aplicação.
 ## `ops plan`, `ops apply` e `ops verify`
 
 ```text
-observability ops plan [--dir <path>] [--environment <name>]... [--json]
-observability ops apply [--dir <path>] [--environment <name>]... --plan <file> [--allow-destructive] [--confirm-manual <id>]... [--json]
-observability ops verify [--dir <path>] [--environment <name>]... [--json]
+observability ops plan [--dir <path>] [--environment <name>]... --axiom-edge-deployment <edge> [--queue-mode <durable|best-effort>] [--accept-best-effort-data-loss] [--json]
+observability ops apply [--dir <path>] [--environment <name>]... --axiom-edge-deployment <edge> --plan <file> [--queue-mode <durable|best-effort>] [--accept-best-effort-data-loss] [--allow-destructive] [--confirm-manual <id>]... [--json]
+observability ops verify [--dir <path>] [--environment <name>]... --axiom-edge-deployment <edge> [--json]
 ```
 
 `plan` decodifica `observability/operations.yaml`, `observability/contract.json` e todas as queries antes de carregar credenciais. O manifesto rejeita diretivas YAML, tags, anchors, aliases e merge keys. O comando faz somente leituras remotas e grava `.observability/plan-<sha256>.json` com modo `0600`.
 
-`apply` exige esse arquivo exato. A CLI recalcula as precondições e rejeita manifesto, contrato ou provider alterado. `--allow-destructive` vale somente para o digest fornecido. `--confirm-manual` registra confirmação do operador somente para um ID contido no mesmo plano. Cada mutação grava intenção antes da chamada e executa read-back limitado. Após uma interrupção ou resposta ambígua, a próxima execução lê o dataset. O estado desejado conclui a intenção e a ausência permite repetir a criação idempotente.
+`apply` exige esse arquivo exato. A CLI recalcula as precondições e rejeita manifesto, contrato, credenciais ou provider alterado. O plano inclui datasets, edge deployment Axiom obrigatório, token de ingestão, projeto e client key Sentry, modo da fila e fingerprint e caminhos dos assets locais do Collector. O apply rejeita mudanças locais posteriores ao plan; verify reporta drift local. O padrão é `durable`; `best-effort` exige `--accept-best-effort-data-loss` em plan e apply. `--allow-destructive` vale somente para o digest fornecido. `--confirm-manual` registra confirmação do operador somente para um ID contido no mesmo plano. Cada mutação grava intenção antes da chamada e executa read-back limitado. Após uma interrupção ou resposta ambígua, a próxima execução lê o dataset. O estado desejado conclui a intenção e a ausência permite repetir a criação idempotente.
 
 `verify` faz somente leituras. Drift, mutação sem resultado conhecido e ação manual pendente causam falha. Consulte [Manifesto de operações](operations-manifest.md) para o schema, a gramática de queries e a tabela de capacidades.
 
@@ -95,6 +95,27 @@ As queries gerenciadas têm estes limites:
 - 1024 nós na AST e 4096 bytes UTF-8 cumulativos em literais;
 - 128 caracteres por campo e 32 caracteres por token de quantil ou duração;
 - 255 bytes UTF-8 no nome do dataset e 128 bytes UTF-8 por nome de sinal.
+
+## `deploy plan`, `deploy apply` e `env github`
+
+```text
+observability deploy plan \
+  --dir <path> \
+  --repo <owner/name> \
+  --name <project> \
+  --environment <environment> \
+  --release <immutable-version> \
+  [--rollout <disabled|enabled>]
+observability deploy apply --plan <path> [--approve-rollout]
+```
+
+`deploy plan` e `deploy apply` permanecem aliases de compatibilidade somente para a integração com GitHub. `env github plan` e `env github apply` são os nomes explícitos. O ambiente remoto já deve ter sido provisionado pela CLI, o grupo Axiom Correlation deve ter confirmação manual e o GitHub Environment deve existir com suas proteções configuradas. O comando nunca cria ou altera proteções, faz deploy da aplicação ou concede aprovação de rollout.
+
+`plan` consulta somente metadados do GitHub, grava `.observability/github-plan-<sha256>.json` com modo `0600` e lista cada criação ou sobrescrita. O plano contém variáveis não secretas, nomes de secrets, efeitos e fingerprints de metadados. Nunca contém tokens ou DSNs. O plano usa `AXIOM_TOKEN`, o nome customizado de DSN e uma allowlist de variáveis de runtime que inclui o nome customizado de release descoberto em `observability/setup.json`. Credenciais administrativas dos providers não são copiadas.
+
+`apply` recalcula o estado e rejeita plano alterado ou stale. O plano exige reviewers, prevenção de self-review e política de branches; IDs e valores dessas proteções entram no digest. Leituras de variables e secrets são paginadas. Secrets são enviados para `gh secret set` pela entrada padrão, nunca por argumento. Depois das escritas, a CLI verifica valores exatos das variables e presença dos metadados dos secrets, sem afirmar igualdade secreta. Cada mutação grava estado `pending`, `completed` ou `outcome-unknown` em arquivo `0600`, e um lock por repositório e ambiente impede apply local concorrente. Uma resposta perdida exige reconciliação ou repetição idempotente da mesma sobrescrita. `--rollout enabled` exige `--approve-rollout` no apply do digest exato. O padrão é `disabled`.
+
+O fluxo completo é deliberadamente sequencial porque o secret do token de ingestão só existe depois do apply de providers: `ops plan`, `ops apply`, confirmação manual de Correlation, `ops verify`, `env github plan` e `env github apply`. O alias `deploy` não provisiona providers. A sincronização GitHub reutiliza o estado seguro salvo por `RemoteEnvironment`; não lê nem analisa a saída insegura de `env export`.
 
 ## `env list`
 
@@ -178,6 +199,15 @@ O nome do token Axiom segue este formato:
 | `OBS_CLI_REMOTE_UNAUTHORIZED`                  | O provider recusa a credencial ou o acesso à organização.                   |
 | `OBS_CLI_REMOTE_FAILED`                        | A requisição falha ou o provider retorna um status inesperado.              |
 | `OBS_CLI_REMOTE_INVALID_RESPONSE`              | A resposta do provider não passa no parse.                                  |
+| `OBS_CLI_GITHUB_INPUT_INVALID`                 | Repositório, ambiente, release, rollout ou ambiente local é inválido.       |
+| `OBS_CLI_GITHUB_ENVIRONMENT_NOT_FOUND`         | O GitHub Environment explícito não existe ou não está acessível.            |
+| `OBS_CLI_GITHUB_RESPONSE_INVALID`              | A resposta de metadados do GitHub não passa no schema.                      |
+| `OBS_CLI_GITHUB_COMMAND_FAILED`                | `gh` não iniciou, não autenticou ou recusou a operação.                     |
+| `OBS_CLI_GITHUB_PLAN_INVALID`                  | O arquivo não passa no schema ou no digest do plano.                        |
+| `OBS_CLI_GITHUB_PLAN_STALE`                    | Metadados do GitHub ou configuração local mudaram desde o plano.            |
+| `OBS_CLI_GITHUB_ROLLOUT_APPROVAL_REQUIRED`     | Habilitar telemetria requer aprovação explícita do digest exato.            |
+| `OBS_CLI_GITHUB_APPLY_OUTCOME_UNKNOWN`         | A resposta da mutação foi perdida e seu resultado não pode ser afirmado.    |
+| `OBS_CLI_GITHUB_STATE_FAILED`                  | Plano ou estado de recuperação não pôde ser persistido com segurança.       |
 | `OBS_CLI_REMOTE_INVALID_PROJECT`               | O nome do projeto é inválido.                                               |
 | `OBS_CLI_REMOTE_INVALID_ENVIRONMENT`           | O ambiente ou o nome derivado de um dataset é inválido.                     |
 | `OBS_CLI_REMOTE_INVALID_RELEASE`               | A release não segue a gramática canônica de `service.version`.              |

@@ -34,6 +34,7 @@ const adapterPaths = [
 
 const cliNodeAdapterPaths = [
   "packages/cli/src/CredentialsStore.ts",
+  "packages/cli/src/GitHubEnvironment.ts",
   "packages/cli/src/PackageVersion.ts",
   "packages/cli/src/ProvisionAssets.ts",
   "packages/cli/src/StackAssets.ts",
@@ -608,6 +609,7 @@ describe("package boundaries", () => {
     assert.equal(sourceRole("packages/telemetry/src/contract/EventName.ts"), "domain");
     assert.equal(sourceRole("packages/telemetry/src/trace/HttpServerOtlpTracer.ts"), "adapter");
     assert.equal(sourceRole("packages/cli/src/CredentialsStore.ts"), "adapter");
+    assert.equal(sourceRole("packages/cli/src/GitHubEnvironment.ts"), "adapter");
     assert.equal(sourceRole("packages/cli/src/main.ts"), "bootstrap");
   });
 

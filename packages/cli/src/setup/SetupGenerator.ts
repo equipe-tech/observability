@@ -328,6 +328,7 @@ import { observabilityPolicy } from "../../observability/policy.ts";
 
 export const startObservability = (env: { readonly [name: string]: string | undefined }) =>
   createNodeObservability({
+    enabled: env.OBSERVABILITY_TELEMETRY_ROLLOUT === "enabled",
     profile: ${JSON.stringify(input.profile)},
     env: {
       ...env,
@@ -352,12 +353,12 @@ const nestBootstrap = (input: SetupInput): string => {
   const browserComposition = input.browserIngest
     ? `\nexport const createNestBrowserObservability = async (env: { readonly [name: string]: string | undefined }) => {
   const handle = await startNestObservability(env);
-  if (!handle.enabled) throw new Error("Nest browser ingest requires enabled observability.");
+  class ApplicationObservabilityModule {}
+  if (!handle.enabled) return { handle, module: ApplicationObservabilityModule };
   const BrowserEventsController = createBrowserEventsController(handle.runtime, {
     eventLayer: handle.eventLayer,
     path: ${JSON.stringify(input.ingestPath)},
   });
-  class ApplicationObservabilityModule {}
   Module({ controllers: [BrowserEventsController] })(ApplicationObservabilityModule);
   return { handle, module: ApplicationObservabilityModule };
 };
@@ -370,6 +371,7 @@ import { observabilityPolicy } from "../../observability/policy.ts";
 
 export const startNestObservability = (env: { readonly [name: string]: string | undefined }) =>
   createNodeObservability({
+    enabled: env.OBSERVABILITY_TELEMETRY_ROLLOUT === "enabled",
     profile: "nestjs-api",
     env: {
       ...env,
@@ -393,10 +395,12 @@ export type BrowserObservabilityValues = {
   readonly environment: string;
   readonly ingestEndpoint: string;
   readonly sentryDsn?: string;
+  readonly rollout?: "disabled" | "enabled";
 };
 
 export const startBrowserObservability = (values: BrowserObservabilityValues) =>
   createBrowserObservability({
+    enabled: values.rollout === "enabled",
     service: { name: ${JSON.stringify(input.serviceName)}, version: values.serviceVersion, environment: values.environment },
     policy: observabilityPolicy,
     events: { endpoint: values.ingestEndpoint },
@@ -593,9 +597,16 @@ const workflowSource = (input: SetupInput): string => {
   return `name: observability
 on:
   pull_request:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Existing protected GitHub Environment containing deployment configuration
+        required: true
+        type: string
+      deployed_ref:
+        description: Immutable ref already deployed by the application-owned deployment workflow
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
@@ -609,33 +620,73 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun ./node_modules/@equipe-tech/observability-cli/dist/main.js setup verify --dir . --target local --reconcile --conform
   verify-providers:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch'
     needs: verify-local
     runs-on: ubuntu-latest
+    environment: \${{ inputs.environment }}
     env:
       OBSERVABILITY_HOME: \${{ runner.temp }}/observability-provider-state
+      DEPLOYED_REF: \${{ inputs.deployed_ref }}
+      TARGET_ENVIRONMENT: \${{ inputs.environment }}
+      AXIOM_EDGE_DEPLOYMENT: \${{ vars.AXIOM_EDGE_DEPLOYMENT }}
     steps:
+      - name: Require immutable deployed commit
+        run: case "$DEPLOYED_REF" in (*[!0-9a-f]*|'') exit 1;; esac; test "\${#DEPLOYED_REF}" -eq 40
       - uses: actions/checkout@v4
+        with:
+          ref: \${{ inputs.deployed_ref }}
+      - name: Verify checked out deployment identity
+        run: test "$(git rev-parse HEAD)" = "$DEPLOYED_REF"
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
+      - name: Report deployment ownership
+        run: echo 'This workflow verifies an artifact after the application-owned deployment succeeds. It does not deploy the application.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Restore approved provider evidence
+        env:
+          OBSERVABILITY_MANAGED_ENVIRONMENT_EVIDENCE: \${{ secrets.OBSERVABILITY_MANAGED_ENVIRONMENT_EVIDENCE }}
+          OBSERVABILITY_OPERATIONS_EVIDENCE: \${{ secrets.OBSERVABILITY_OPERATIONS_EVIDENCE }}
+        run: |
+          test -n "$OBSERVABILITY_MANAGED_ENVIRONMENT_EVIDENCE"
+          test -n "$OBSERVABILITY_OPERATIONS_EVIDENCE"
+          umask 077
+          mkdir -p "$OBSERVABILITY_HOME/operations"
+          printf '%s' "$OBSERVABILITY_MANAGED_ENVIRONMENT_EVIDENCE" > "$OBSERVABILITY_HOME/credentials.json"
+          printf '%s' "$OBSERVABILITY_OPERATIONS_EVIDENCE" > "$OBSERVABILITY_HOME/operations/${input.serviceName}.json"
       - name: Prepare Axiom credentials
         env:
           OBSERVABILITY_AXIOM_AUTH_TOKEN: \${{ secrets.OBSERVABILITY_AXIOM_AUTH_TOKEN }}
         run: bun ./node_modules/@equipe-tech/observability-cli/dist/main.js auth login axiom --organization-id ${input.axiomOrganizationId} --token-env OBSERVABILITY_AXIOM_AUTH_TOKEN
 ${sentryLogin}      - name: Verify provider resources
-        run: bun ./node_modules/@equipe-tech/observability-cli/dist/main.js setup verify --dir . --target deployed --environment ${input.environments[0]} --provider-read
+        run: bun ./node_modules/@equipe-tech/observability-cli/dist/main.js ops verify --dir . --environment "$TARGET_ENVIRONMENT" --axiom-edge-deployment "$AXIOM_EDGE_DEPLOYMENT" --json
       - name: Remove credential state
         if: always()
         run: rm -rf -- "$OBSERVABILITY_HOME"
   release-canary:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     needs: [verify-local, verify-providers]
+    environment: \${{ inputs.environment }}
     env:
-      ${input.releaseVariable}: \${{ github.ref_name }}
-      OTEL_DEPLOYMENT_ENVIRONMENT: ${input.environments[0]}
+      OTEL_SERVICE_NAME: \${{ vars.OTEL_SERVICE_NAME }}
+      ${input.releaseVariable}: \${{ vars.${input.releaseVariable} }}
+      DEPLOYED_REF: \${{ inputs.deployed_ref }}
+      OTEL_DEPLOYMENT_ENVIRONMENT: \${{ vars.OTEL_DEPLOYMENT_ENVIRONMENT }}
+      OTEL_EXPORTER_OTLP_ENDPOINT: \${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
+      AXIOM_DATASET_TRACES: \${{ vars.AXIOM_DATASET_TRACES }}
+      AXIOM_DATASET_LOGS: \${{ vars.AXIOM_DATASET_LOGS }}
+      AXIOM_DATASET_METRICS: \${{ vars.AXIOM_DATASET_METRICS }}
+      AXIOM_EDGE_DEPLOYMENT: \${{ vars.AXIOM_EDGE_DEPLOYMENT }}
+      OBSERVABILITY_TELEMETRY_ROLLOUT: \${{ vars.OBSERVABILITY_TELEMETRY_ROLLOUT }}
+      AXIOM_TOKEN: \${{ secrets.AXIOM_TOKEN }}
+      ${input.sentryDsnVariable}: \${{ secrets.${input.sentryDsnVariable} }}
     steps:
+      - name: Require explicit telemetry rollout and immutable deployed commit
+        run: case "$DEPLOYED_REF" in (*[!0-9a-f]*|'') exit 1;; esac; test "\${#DEPLOYED_REF}" -eq 40; test "$OBSERVABILITY_TELEMETRY_ROLLOUT" = enabled
       - uses: actions/checkout@v4
+        with:
+          ref: \${{ inputs.deployed_ref }}
+      - name: Verify checked out deployment identity
+        run: test "$(git rev-parse HEAD)" = "$DEPLOYED_REF"
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
 ${sourceMapSteps}      - name: Run application canary
@@ -808,6 +859,27 @@ const readRecord = async (directory: string): Promise<DecisionRecord | undefined
   if (content === undefined) return undefined;
   return decodeDecisionRecord(JSON.parse(content));
 };
+
+export const readSetupDeploymentVariables = Effect.fn("readSetupDeploymentVariables")(function* (
+  directory: string,
+) {
+  const record = yield* Effect.tryPromise({
+    try: () => readRecord(resolve(directory)),
+    catch: (cause) =>
+      fail(
+        "OBS_SETUP_INPUT_INVALID",
+        "The setup decision record is invalid. Re-run setup before deployment synchronization.",
+        cause,
+      ),
+  });
+  if (record === undefined) {
+    return { releaseVariable: "OTEL_SERVICE_VERSION", sentryDsnVariable: "SENTRY_DSN" };
+  }
+  return {
+    releaseVariable: record.input.releaseVariable,
+    sentryDsnVariable: record.input.sentryDsnVariable,
+  };
+});
 
 const decisionInput = (record: DecisionRecord): SetupInput => {
   if (record.version === 2) return record.input;

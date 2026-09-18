@@ -298,6 +298,48 @@ const stateContent = (
     2,
   )}\n`;
 
+export type ProvisionAssetsObservation = {
+  readonly fingerprint: string;
+  readonly paths: ReadonlyArray<string>;
+  readonly changes: ReadonlyArray<string>;
+};
+
+export const observeProvisionAssets = Effect.fn("observeProvisionAssets")(function* (
+  targetDirectory: string,
+  name: string,
+  queueMode: QueueMode,
+): Effect.fn.Return<ProvisionAssetsObservation, ProvisionError> {
+  return yield* Effect.tryPromise({
+    try: async () => {
+      const root = await canonicalTarget(targetDirectory);
+      const rendered = await renderAssets(packagedAssetsDirectory, name, queueMode);
+      const paths = [...rendered.map((asset) => asset.path), provisionStatePath];
+      await assertSafePaths(root, paths);
+      const current = await Promise.all(paths.map((path) => readText(join(root, path))));
+      const desiredContent = [
+        ...rendered.map((asset) => asset.content),
+        stateContent(name, queueMode, rendered),
+      ];
+      return {
+        fingerprint: digest(
+          JSON.stringify({
+            name,
+            queueMode,
+            desired: rendered.map((asset) => ({ path: asset.path, digest: asset.digest })),
+            current: paths.map((path, index) => ({
+              path,
+              digest: current[index] === undefined ? "absent" : digest(current[index]),
+            })),
+          }),
+        ),
+        paths,
+        changes: paths.filter((_, index) => current[index] !== desiredContent[index]),
+      };
+    },
+    catch: (cause) => (cause instanceof ProvisionError ? cause : provisionFailure(cause)),
+  });
+});
+
 export const provisionAssets = Effect.fn("provisionAssets")(function* (
   sourceDirectory: string,
   targetDirectory: string,

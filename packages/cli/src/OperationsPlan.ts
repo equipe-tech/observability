@@ -8,7 +8,7 @@ import {
   RemoteApiError,
   SentryApi,
 } from "./ProviderApis.ts";
-import { environmentDatasets } from "./RemoteEnvironment.ts";
+import { environmentAxiom, environmentDatasets, RemoteEnvironment } from "./RemoteEnvironment.ts";
 import { type ValidatedOperationsManifest } from "./OperationsManifest.ts";
 import {
   ManualAction,
@@ -40,6 +40,13 @@ export class OperationsPlanDocument extends Schema.Class<OperationsPlanDocument>
   manifestFingerprint: Schema.NonEmptyString,
   contractFingerprint: Schema.NonEmptyString,
   observedFingerprint: Schema.NonEmptyString,
+  credentialsFingerprint: Schema.NonEmptyString,
+  queueMode: Schema.Literals(["best-effort", "durable"]),
+  bestEffortDataLossAccepted: Schema.Boolean,
+  axiomEdgeDeployment: Schema.NonEmptyString,
+  localAssetsFingerprint: Schema.NonEmptyString,
+  localAssetPaths: Schema.Array(Schema.NonEmptyString),
+  localAssetChanges: Schema.Array(Schema.NonEmptyString),
   actions: Schema.Array(OperationPlanAction),
   pendingManualActions: Schema.Array(ManualAction),
   digest: Schema.NonEmptyString,
@@ -104,6 +111,13 @@ const planPayload = (plan: Omit<OperationsPlanDocument, "digest">): string =>
     manifestFingerprint: plan.manifestFingerprint,
     contractFingerprint: plan.contractFingerprint,
     observedFingerprint: plan.observedFingerprint,
+    credentialsFingerprint: plan.credentialsFingerprint,
+    queueMode: plan.queueMode,
+    bestEffortDataLossAccepted: plan.bestEffortDataLossAccepted,
+    axiomEdgeDeployment: plan.axiomEdgeDeployment,
+    localAssetsFingerprint: plan.localAssetsFingerprint,
+    localAssetPaths: plan.localAssetPaths,
+    localAssetChanges: plan.localAssetChanges,
     actions: plan.actions,
     pendingManualActions: plan.pendingManualActions,
   });
@@ -160,7 +174,6 @@ const manualDefinitionIds = (
     for (const monitor of validated.monitors) {
       ids.add(`axiom.monitor.${environment}.${monitor.definition.id}`);
     }
-    if (validated.manifest.sentry.enabled) ids.add(`sentry.project.${environment}`);
   }
   return ids;
 };
@@ -170,6 +183,15 @@ const makePlan = (
   selectedEnvironments: ReadonlyArray<string>,
   datasets: ReadonlyArray<AxiomDataset>,
   sentryPrerequisites: ReadonlyArray<SentryPrerequisite>,
+  tokens: ReadonlyArray<import("./ProviderApis.ts").AxiomToken>,
+  managedEnvironments: ReadonlyArray<import("./CredentialsStore.ts").ManagedEnvironment>,
+  credentialsFingerprint: string,
+  queueMode: "best-effort" | "durable",
+  bestEffortDataLossAccepted: boolean,
+  axiomEdgeDeployment: string,
+  localAssetsFingerprint: string,
+  localAssetPaths: ReadonlyArray<string>,
+  localAssetChanges: ReadonlyArray<string>,
   state: OperationsStateDocument,
 ): Effect.Effect<OperationsPlanDocument, never, never> =>
   Effect.gen(function* () {
@@ -183,7 +205,11 @@ const makePlan = (
       const matches = datasets.filter((dataset) => dataset.name === desired.name);
       const observed = matches[0];
       const desiredFingerprint = fingerprint(
-        JSON.stringify({ name: desired.name, kind: desired.kind }),
+        JSON.stringify({
+          name: desired.name,
+          kind: desired.kind,
+          edgeDeployment: axiomEdgeDeployment,
+        }),
       );
       if (matches.length === 0) {
         actions.push(
@@ -198,13 +224,19 @@ const makePlan = (
             observedFingerprint: fingerprint("absent"),
           }),
         );
-      } else if (matches.length !== 1 || observed === undefined || observed.kind !== desired.kind) {
+      } else if (
+        matches.length !== 1 ||
+        observed === undefined ||
+        observed.kind !== desired.kind ||
+        observed.edgeDeployment !== axiomEdgeDeployment
+      ) {
         actions.push(
           new OperationPlanAction({
             id: `axiom.dataset.${desired.name}`,
             kind: "destructive",
             provider: "Axiom",
-            capability: "dataset-kind",
+            capability:
+              observed?.kind !== desired.kind ? "dataset-kind" : "dataset-edge-deployment",
             resource: desired.name,
             environment: desired.environment,
             desiredFingerprint,
@@ -214,6 +246,69 @@ const makePlan = (
                 : observedDatasetFingerprint(observed),
           }),
         );
+      }
+    }
+    for (const environment of selectedEnvironments) {
+      const datasets = yield* environmentDatasets(manifest.service, environment).pipe(Effect.orDie);
+      const names = [datasets.traces, datasets.logs, datasets.metrics];
+      const tokenName = `${manifest.service}-${environment}-collector`;
+      const matching = tokens.filter((token) => token.name === tokenName);
+      const managed = managedEnvironments.find(
+        (candidate) =>
+          candidate.project === manifest.service && candidate.environment === environment,
+      );
+      const localTokenId =
+        managed === undefined
+          ? undefined
+          : Option.getOrUndefined(environmentAxiom(managed))?.tokenId;
+      const desiredFingerprint = fingerprint(JSON.stringify({ name: tokenName, datasets: names }));
+      if (matching.length === 0) {
+        actions.push(
+          new OperationPlanAction({
+            id: `axiom.token.${environment}`,
+            kind: "create",
+            provider: "Axiom",
+            capability: "ingestion-token",
+            resource: tokenName,
+            environment,
+            desiredFingerprint,
+            observedFingerprint: fingerprint("absent"),
+          }),
+        );
+      } else if (matching.length !== 1 || matching[0]?.id !== localTokenId) {
+        actions.push(
+          new OperationPlanAction({
+            id: `axiom.token.${environment}`,
+            kind: "destructive",
+            provider: "Axiom",
+            capability: "ingestion-token",
+            resource: tokenName,
+            environment,
+            desiredFingerprint,
+            observedFingerprint: fingerprint(JSON.stringify(matching.map((token) => token.id))),
+          }),
+        );
+      }
+    }
+    if (
+      manifest.sentry.enabled &&
+      sentryPrerequisites.every((entry) => !entry.projectExists || !entry.dsnExists)
+    ) {
+      const environment = selectedEnvironments[0];
+      if (environment !== undefined) {
+        actions.push(
+          new OperationPlanAction({
+            id: `sentry.project.${manifest.service}`,
+            kind: "create",
+            provider: "Sentry",
+            capability: "project-and-client-key",
+            resource: manifest.service,
+            environment,
+            desiredFingerprint: fingerprint(JSON.stringify({ project: manifest.service })),
+            observedFingerprint: fingerprint("absent-or-missing-client-key"),
+          }),
+        );
+        actions.sort((left, right) => left.id.localeCompare(right.id));
       }
     }
     const desiredDatasetNames = new Set(desiredDatasets.map((entry) => entry.name));
@@ -256,9 +351,24 @@ const makePlan = (
         provider: "Axiom",
         capability: "correlation",
         environment,
-        desiredFingerprint: fingerprint(JSON.stringify({ service: manifest.service, environment })),
+        desiredFingerprint: fingerprint(
+          JSON.stringify({
+            service: manifest.service,
+            environment,
+            edgeDeployment: axiomEdgeDeployment,
+          }),
+        ),
         kind: "manual",
-        publiclySatisfied: true,
+        publiclySatisfied: desiredDatasets
+          .filter((dataset) => dataset.environment === environment)
+          .every((desired) =>
+            datasets.some(
+              (dataset) =>
+                dataset.name === desired.name &&
+                dataset.kind === desired.kind &&
+                dataset.edgeDeployment === axiomEdgeDeployment,
+            ),
+          ),
       });
       for (const dashboard of validated.dashboards) {
         manualDefinitions.push({
@@ -280,23 +390,6 @@ const makePlan = (
           desiredFingerprint: fingerprint(JSON.stringify(monitor.definition)),
           kind: "manual",
           publiclySatisfied: true,
-        });
-      }
-      if (manifest.sentry.enabled) {
-        manualDefinitions.push({
-          id: `sentry.project.${environment}`,
-          provider: "Sentry",
-          capability: "project-and-client-key",
-          environment,
-          desiredFingerprint: fingerprint(
-            JSON.stringify({ project: `${manifest.service}-${environment}` }),
-          ),
-          kind: "manual",
-          publiclySatisfied:
-            sentryPrerequisites.find((entry) => entry.environment === environment)
-              ?.projectExists === true &&
-            sentryPrerequisites.find((entry) => entry.environment === environment)?.dsnExists ===
-              true,
         });
       }
     }
@@ -373,6 +466,13 @@ const makePlan = (
       manifestFingerprint: fingerprint(JSON.stringify(manifest)),
       contractFingerprint: fingerprint(JSON.stringify(validated.contract)),
       observedFingerprint,
+      credentialsFingerprint,
+      queueMode,
+      bestEffortDataLossAccepted,
+      axiomEdgeDeployment,
+      localAssetsFingerprint,
+      localAssetPaths,
+      localAssetChanges,
       actions,
       pendingManualActions,
     };
@@ -404,12 +504,19 @@ const selectEnvironments = (
 export type PlanRequest = {
   readonly validated: ValidatedOperationsManifest;
   readonly environments: ReadonlyArray<string>;
+  readonly queueMode?: "best-effort" | "durable";
+  readonly bestEffortDataLossAccepted?: boolean;
+  readonly axiomEdgeDeployment?: string;
+  readonly localAssetsFingerprint?: string;
+  readonly localAssetPaths?: ReadonlyArray<string>;
+  readonly localAssetChanges?: ReadonlyArray<string>;
 };
 
 type OperationsServiceError =
   | OperationsError
   | RemoteApiError
   | CredentialsError
+  | import("./RemoteEnvironment.ts").RemoteEnvironmentError
   | OperationsStateError;
 
 export class OperationsPlanner extends Context.Service<
@@ -433,6 +540,7 @@ export class OperationsPlanner extends Context.Service<
       const axiom = yield* AxiomApi;
       const sentry = yield* SentryApi;
       const stateStore = yield* OperationsState;
+      const remote = yield* RemoteEnvironment;
 
       const observe = Effect.fn("OperationsPlanner.observe")(function* (request: PlanRequest) {
         const environments = yield* selectEnvironments(request.validated, request.environments);
@@ -446,6 +554,15 @@ export class OperationsPlanner extends Context.Service<
           });
         }
         const datasets = yield* axiom.datasets(credentials.value.axiom);
+        const tokens = yield* axiom.tokens(credentials.value.axiom);
+        const credentialsFingerprint = fingerprint(
+          JSON.stringify({
+            axiom: credentials.value.axiom,
+            sentry: credentials.value.sentry,
+            environments: credentials.value.environments,
+            pendingAxiomMutations: credentials.value.pendingAxiomMutations ?? [],
+          }),
+        );
         const sentryPrerequisites: Array<SentryPrerequisite> = [];
         if (request.validated.manifest.sentry.enabled) {
           const sentryCredentials = credentials.value.sentry;
@@ -458,7 +575,7 @@ export class OperationsPlanner extends Context.Service<
             });
           }
           for (const environment of environments) {
-            const project = `${request.validated.manifest.service}-${environment}`;
+            const project = request.validated.manifest.service;
             const projectExists = yield* sentry.project(sentryCredentials, project);
             const dsnExists = projectExists
               ? yield* sentry.clientKeyExists(sentryCredentials, project)
@@ -471,6 +588,9 @@ export class OperationsPlanner extends Context.Service<
           environments,
           datasets,
           sentryPrerequisites,
+          tokens,
+          managedEnvironments: credentials.value.environments,
+          credentialsFingerprint,
           state,
           axiomCredentials: credentials.value.axiom,
           credentials: credentials.value,
@@ -479,11 +599,27 @@ export class OperationsPlanner extends Context.Service<
 
       const plan = Effect.fn("OperationsPlanner.plan")(function* (request: PlanRequest) {
         const observed = yield* observe(request);
+        if (request.axiomEdgeDeployment === undefined) {
+          return yield* new OperationsError({
+            code: "OBS_CLI_PLAN_INVALID",
+            message: "Operations plan requires an explicit --axiom-edge-deployment.",
+            cause: "missing-axiom-edge-deployment",
+          });
+        }
         return yield* makePlan(
           request.validated,
           observed.environments,
           observed.datasets,
           observed.sentryPrerequisites,
+          observed.tokens,
+          observed.managedEnvironments,
+          observed.credentialsFingerprint,
+          request.queueMode ?? "durable",
+          request.bestEffortDataLossAccepted ?? false,
+          request.axiomEdgeDeployment,
+          request.localAssetsFingerprint ?? "unbound-local-assets",
+          request.localAssetPaths ?? [],
+          request.localAssetChanges ?? [],
           observed.state,
         );
       });
@@ -523,6 +659,13 @@ export class OperationsPlanner extends Context.Service<
             manifestFingerprint: decoded.manifestFingerprint,
             contractFingerprint: decoded.contractFingerprint,
             observedFingerprint: decoded.observedFingerprint,
+            credentialsFingerprint: decoded.credentialsFingerprint,
+            queueMode: decoded.queueMode,
+            bestEffortDataLossAccepted: decoded.bestEffortDataLossAccepted,
+            axiomEdgeDeployment: decoded.axiomEdgeDeployment,
+            localAssetsFingerprint: decoded.localAssetsFingerprint,
+            localAssetPaths: decoded.localAssetPaths,
+            localAssetChanges: decoded.localAssetChanges,
             actions: decoded.actions,
             pendingManualActions: decoded.pendingManualActions,
           }),
@@ -549,8 +692,33 @@ export class OperationsPlanner extends Context.Service<
           observed.environments,
           observed.datasets,
           observed.sentryPrerequisites,
+          observed.tokens,
+          observed.managedEnvironments,
+          observed.credentialsFingerprint,
+          request.queueMode ?? "durable",
+          request.bestEffortDataLossAccepted ?? false,
+          request.axiomEdgeDeployment ?? "missing-edge-deployment",
+          request.localAssetsFingerprint ?? "unbound-local-assets",
+          request.localAssetPaths ?? [],
+          request.localAssetChanges ?? [],
           observed.state,
         );
+        if (request.axiomEdgeDeployment === undefined) {
+          return yield* new OperationsError({
+            code: "OBS_CLI_PLAN_INVALID",
+            message:
+              "Operations apply requires the exact --axiom-edge-deployment bound to the plan.",
+            cause: "missing-axiom-edge-deployment",
+          });
+        }
+        if (current.queueMode === "best-effort" && !current.bestEffortDataLossAccepted) {
+          return yield* new OperationsError({
+            code: "OBS_CLI_PLAN_INVALID",
+            message:
+              "Best-effort queue mode can lose telemetry during interruption. Replan and apply with explicit data-loss acceptance.",
+            cause: current.queueMode,
+          });
+        }
         if (current.digest !== supplied.digest) {
           return yield* new OperationsError({
             code: "OBS_CLI_PLAN_STALE",
@@ -586,6 +754,19 @@ export class OperationsPlanner extends Context.Service<
             message: `Manual action ${invalidConfirmation} is not contained in plan ${current.digest}.`,
             cause: invalidConfirmation,
           });
+        }
+        for (const environment of current.environments) {
+          if (!confirmedManualActions.includes(`axiom.correlation.${environment}`)) continue;
+          yield* remote.provision(
+            current.service,
+            [environment],
+            ["axiom"],
+            "node",
+            false,
+            current.axiomEdgeDeployment,
+            undefined,
+            true,
+          );
         }
         let stateGeneration = observed.state.generation;
         const activeManualIds = manualDefinitionIds(
@@ -717,6 +898,7 @@ export class OperationsPlanner extends Context.Service<
             stateGeneration = next.generation;
             continue;
           }
+          if (action.capability === "ingestion-token") continue;
           const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
           const pendingState = yield* stateStore.update(
             current.service,
@@ -761,11 +943,81 @@ export class OperationsPlanner extends Context.Service<
                   }),
               )
               .pipe(Effect.asVoid);
+          if (action.provider === "Sentry") {
+            const sentryCredentials = observed.credentials.sentry;
+            if (sentryCredentials === undefined) {
+              return yield* new OperationsError({
+                code: "OBS_CLI_PROVIDER_CAPABILITY_UNAVAILABLE",
+                message: "Sentry credentials are required to apply the planned project creation.",
+                cause: "Sentry",
+              });
+            }
+            const settleSentryFailure = (
+              error: RemoteApiError,
+            ): Effect.Effect<never, OperationsError | RemoteApiError | OperationsStateError> =>
+              Effect.gen(function* () {
+                const outcomeUnknown = error.status === undefined || error.status >= 500;
+                const settled = yield* stateStore.update(
+                  current.service,
+                  stateGeneration,
+                  (state) =>
+                    new OperationsStateDocument({
+                      version: state.version,
+                      generation: state.generation,
+                      service: state.service,
+                      manualActions: state.manualActions,
+                      mutations: state.mutations.map((entry) =>
+                        entry.id === action.id
+                          ? mutationWithStatus(
+                              entry,
+                              outcomeUnknown ? "outcome-unknown" : "resolved",
+                              updatedAt,
+                            )
+                          : entry,
+                      ),
+                    }),
+                );
+                stateGeneration = settled.generation;
+                if (outcomeUnknown) {
+                  return yield* new OperationsError({
+                    code: "OBS_CLI_APPLY_OUTCOME_UNKNOWN",
+                    message: `The outcome of Sentry mutation ${action.id} is unknown. Reconcile it before retrying.`,
+                    cause: error,
+                  });
+                }
+                return yield* error;
+              });
+            const project = yield* sentry
+              .ensureProject(sentryCredentials, current.service, "node")
+              .pipe(Effect.catchTag("RemoteApiError", settleSentryFailure));
+            yield* sentry
+              .dsn(sentryCredentials, project)
+              .pipe(Effect.catchTag("RemoteApiError", settleSentryFailure));
+            const settled = yield* stateStore.update(
+              current.service,
+              stateGeneration,
+              (state) =>
+                new OperationsStateDocument({
+                  version: state.version,
+                  generation: state.generation,
+                  service: state.service,
+                  manualActions: state.manualActions,
+                  mutations: state.mutations.map((entry) =>
+                    entry.id === action.id
+                      ? mutationWithStatus(entry, "resolved", updatedAt)
+                      : entry,
+                  ),
+                }),
+            );
+            stateGeneration = settled.generation;
+            continue;
+          }
           const kind: AxiomDatasetKind = action.resource.endsWith("-metrics")
             ? "otel:metrics:v1"
             : "axiom:events:v1";
           const mutation = axiom.createDataset(observed.axiomCredentials, action.resource, {
             kind,
+            edgeDeployment: current.axiomEdgeDeployment,
           });
           const handleMutationError = (
             error: RemoteApiError,
@@ -904,6 +1156,24 @@ export class OperationsPlanner extends Context.Service<
           );
           stateGeneration = resolvedState.generation;
         }
+        const tokenActions = current.actions.filter(
+          (action) => action.capability === "ingestion-token",
+        );
+        const sentryProvisioned = current.actions.some((action) => action.provider === "Sentry");
+        for (const environment of current.environments) {
+          const tokenAction = tokenActions.find((action) => action.environment === environment);
+          if (tokenAction === undefined && !sentryProvisioned) continue;
+          yield* remote.provision(
+            current.service,
+            [environment],
+            request.validated.manifest.sentry.enabled ? ["axiom", "sentry"] : ["axiom"],
+            "node",
+            tokenAction?.kind === "destructive",
+            current.axiomEdgeDeployment,
+            undefined,
+            false,
+          );
+        }
         return yield* plan(request);
       });
 
@@ -920,6 +1190,13 @@ export class OperationsPlanner extends Context.Service<
             code: "OBS_CLI_MUTATION_UNRESOLVED",
             message: `Mutation ${unresolved.id} is ${unresolved.status}. Reconcile it before verification.`,
             cause: unresolved.id,
+          });
+        }
+        if (current.localAssetChanges.length > 0) {
+          return yield* new OperationsError({
+            code: "OBS_CLI_DRIFT_DETECTED",
+            message: `Local Collector asset drift detected in ${current.localAssetChanges.join(", ")}. Apply an exact operations plan before verification.`,
+            cause: current.digest,
           });
         }
         if (current.actions.length > 0) {

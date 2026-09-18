@@ -7,14 +7,14 @@
 ## Comandos
 
 ```sh
-observability ops plan --dir . --environment staging
-observability ops apply --dir . --environment staging --plan .observability/plan-<digest>.json
-observability ops verify --dir . --environment staging
+observability ops plan --dir . --environment staging --axiom-edge-deployment <edge>
+observability ops apply --dir . --environment staging --axiom-edge-deployment <edge> --plan .observability/plan-<digest>.json
+observability ops verify --dir . --environment staging --axiom-edge-deployment <edge>
 ```
 
-Todos aceitam `--json`. `plan` faz somente leituras remotas e grava um plano com SHA-256. O plano contém fingerprints, precondições observadas e nomes de recursos. Ele não contém queries, tokens, DSNs ou corpos de resposta.
+Todos aceitam `--json`. `plan` faz somente leituras remotas e grava um plano com SHA-256. O plano contém fingerprints, precondições observadas, nomes de recursos, datasets, edge deployment Axiom obrigatório, token de ingestão com capacidade mínima, projeto e client key Sentry, modo da fila e os caminhos e fingerprint dos assets locais do Collector. Mudança local depois do plan torna o apply stale; `ops verify` trata assets divergentes como drift. Credenciais administrativas ou de ingestão alteradas depois do plano tornam o digest stale. O plano não contém queries, tokens, DSNs ou corpos de resposta.
 
-`apply` exige o arquivo exato. A CLI recalcula o manifesto, o contrato e o estado remoto. Mudanças destrutivas exigem `--allow-destructive`, que autoriza somente o digest fornecido. Mudança de tipo de dataset e redução de retenção são destrutivas. A CLI nunca remove drift automaticamente.
+`apply` exige o arquivo exato. A CLI recalcula o manifesto, o contrato, as credenciais locais e o estado remoto. O modo de fila padrão é `durable`. `best-effort` exige `--accept-best-effort-data-loss` em plan e apply para registrar no digest a aceitação explícita de perda durante interrupções. O apply persiste o token de ingestão e a configuração do ambiente em armazenamento local seguro para a sincronização posterior com GitHub. Mudanças destrutivas exigem `--allow-destructive`, que autoriza somente o digest fornecido. Mudança de tipo de dataset, rotação de token e redução de retenção são destrutivas. A CLI nunca remove drift automaticamente.
 
 Cada mutação grava a intenção em `$OBSERVABILITY_HOME/operations/<service>.json` antes da chamada. A CLI mantém `$OBSERVABILITY_HOME/operations` e `.observability` em modo `0700`. Os arquivos usam modo `0600`, escrita atômica, comparação da geração esperada e lock com lease de heartbeat. Operações ativas renovam o heartbeat. A CLI recupera somente leases expirados, sem depender da identidade ou da permissão do PID. O estado de operações pertence ao host local. Um `OBSERVABILITY_HOME` compartilhado entre máquinas não é suportado, pois o lease de heartbeat depende do relógio e do filesystem de uma única máquina.
 
@@ -47,12 +47,14 @@ As queries gerenciadas aplicam estes limites:
 | Axiom    | Monitores           | nenhuma operação pública verificada                                                                  | https://axiom.co/docs/reference/api                              | 2026-08-31    | ação manual                                     |
 | Axiom    | Retenção            | nenhuma atualização pública verificada                                                               | https://axiom.co/docs/reference/api                              | 2026-08-31    | ação manual, redução destrutiva                 |
 | Axiom    | Correlation         | nenhuma operação pública estável verificada                                                          | https://axiom.co/docs/reference/api                              | 2026-08-31    | ação manual                                     |
-| Sentry   | Ler e criar projeto | `GET /api/0/projects/{organization}/{project}/`, `POST /api/0/teams/{organization}/{team}/projects/` | https://docs.sentry.io/api/projects/                             | 2026-08-31    | suportado pelo cliente legado, ciclo ops manual |
+| Sentry   | Ler e criar projeto | `GET /api/0/projects/{organization}/{project}/`, `POST /api/0/teams/{organization}/{team}/projects/` | https://docs.sentry.io/api/projects/                             | 2026-08-31    | leitura ops e provisionamento RemoteEnvironment |
 | Sentry   | Ler client keys     | `GET /api/0/projects/{organization}/{project}/keys/`                                                 | https://docs.sentry.io/api/projects/list-a-projects-client-keys/ | 2026-08-31    | suportado pelo cliente legado, ciclo ops manual |
 | Sentry   | Auth token          | autenticação Bearer da CLI                                                                           | https://docs.sentry.io/api/auth/                                 | 2026-08-31    | credencial da CLI, não recurso de projeto       |
+
+O projeto Sentry canônico usa o slug do serviço, compartilhado entre os ambientes, tanto no provisionamento legado quanto na leitura do fluxo `ops`. O nome antigo `<service>-<environment>` do preflight `ops` não é mais usado. Isso evita que o planejamento consulte um projeto diferente daquele criado por `RemoteEnvironment`.
 
 O token Sentry é uma credencial de organização usada pela CLI. O recurso de projeto consumido por aplicações é a client key que contém a DSN. A CLI não inventa um token de projeto.
 
 ## Ações manuais
 
-Recursos sem ciclo público verificado viram ações manuais persistidas. A conclusão é uma confirmação do operador, nunca uma afirmação de verificação pelo provider. `verify` falha enquanto houver ação pendente ou expirada que ainda exista no manifesto atual. A CLI preserva ações e confirmações de ambientes fora do escopo selecionado. Ela descarta ações de dashboards, monitores e outros recursos somente quando a definição deixa o manifesto completo, na próxima mutação de estado. Retenção, projeto Sentry e client key são reconsultados em todo `plan` e `verify`. Cada nome exato de dataset precisa aparecer uma vez. Duplicatas ou nomes apenas prefixados não satisfazem o pré-requisito. Drift de um pré-requisito legível invalida a confirmação anterior. Ações manuais destrutivas usam `--allow-destructive` e `--confirm-manual` no mesmo digest exato.
+Recursos sem ciclo público verificado viram ações manuais persistidas. A conclusão é uma confirmação do operador, nunca uma afirmação de verificação pelo provider. `verify` falha enquanto houver ação pendente ou expirada que ainda exista no manifesto atual. A CLI preserva ações e confirmações de ambientes fora do escopo selecionado. Ela descarta ações de dashboards, monitores e outros recursos somente quando a definição deixa o manifesto completo, na próxima mutação de estado. Retenção é reconsultada em todo `plan` e `verify`. Projeto Sentry e client key também são reconsultados; quando ausentes, viram uma criação planejada com intenção persistida e read-back, não uma confirmação manual. Cada nome exato de dataset precisa aparecer uma vez. Duplicatas ou nomes apenas prefixados não satisfazem o pré-requisito. Drift de um pré-requisito legível invalida a confirmação anterior. Ações manuais destrutivas usam `--allow-destructive` e `--confirm-manual` no mesmo digest exato.

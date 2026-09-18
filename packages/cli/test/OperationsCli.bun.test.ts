@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,12 +15,35 @@ type CommandResult = {
   readonly stderr: string;
 };
 
+const tokenMetadata = (prefix: string) => [
+  {
+    id: "token-id",
+    name: `${prefix}-collector`,
+    description: "collector",
+    datasetCapabilities: {
+      [`${prefix}-traces`]: { ingest: ["create"] },
+      [`${prefix}-logs`]: { ingest: ["create"] },
+      [`${prefix}-metrics`]: { ingest: ["create"] },
+    },
+    orgCapabilities: {},
+    viewCapabilities: {},
+  },
+];
+
 const runCli = async (
   args: ReadonlyArray<string>,
   home: string,
   baseUrl: string,
+  bindEdge = true,
+  executableDirectory?: string,
 ): Promise<CommandResult> => {
-  const processHandle = Bun.spawn(["bun", "packages/cli/src/main.ts", ...args], {
+  const operationsCommand =
+    args[0] === "ops" && ["plan", "apply", "verify"].includes(args[1] ?? "");
+  const effectiveArgs =
+    operationsCommand && bindEdge && !args.includes("--axiom-edge-deployment")
+      ? [...args, "--axiom-edge-deployment", "edge-test"]
+      : args;
+  const processHandle = Bun.spawn(["bun", "packages/cli/src/main.ts", ...effectiveArgs], {
     cwd: join(import.meta.dir, "../../.."),
     env: {
       ...process.env,
@@ -28,6 +51,10 @@ const runCli = async (
       OBSERVABILITY_HOME: home,
       OBSERVABILITY_CLI_TEST_AXIOM_BASE_URL: baseUrl,
       OBSERVABILITY_CLI_REQUEST_TIMEOUT_MILLISECONDS: "100",
+      PATH:
+        executableDirectory === undefined
+          ? (process.env.PATH ?? "")
+          : `${executableDirectory}:${process.env.PATH ?? ""}`,
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -41,6 +68,482 @@ const runCli = async (
 };
 
 describe("operations CLI", () => {
+  test("plans and creates the canonical shared Sentry project", async () => {
+    const root = await mkdtemp(join(tmpdir(), "observability-operations-sentry-"));
+    roots.push(root);
+    const project = join(root, "project");
+    const home = join(root, "home");
+    await mkdir(join(project, "observability"), { recursive: true });
+    await mkdir(home, { recursive: true });
+    await writeFile(
+      join(project, "observability", "operations.yaml"),
+      "version: 1\ncontractVersion: 1\nservice: checkout\nenvironments: [prod]\nretention:\n  - environment: prod\n    days: 30\ndashboards: []\nmonitors: []\nsentry:\n  enabled: true\n",
+    );
+    await writeFile(
+      join(project, "observability", "contract.json"),
+      '{"index":1,"contractVersion":1,"service":"checkout","events":[],"metrics":[],"aliases":[]}\n',
+    );
+    const datasets = ["traces", "logs", "metrics"].map((signal, index) => ({
+      id: `dataset-${index}`,
+      name: `checkout-prod-${signal}`,
+      description: signal,
+      kind: signal === "metrics" ? "otel:metrics:v1" : "axiom:events:v1",
+      retentionDays: 30,
+      useRetentionPeriod: true,
+      edgeDeployment: "edge-test",
+    }));
+    let axiomTokenCreated = false;
+    const axiom = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const path = new URL(request.url).pathname;
+        if (path === "/v2/tokens" && request.method === "GET") {
+          return Response.json(
+            axiomTokenCreated
+              ? [
+                  {
+                    id: "token-id",
+                    name: "checkout-prod-collector",
+                    description: "collector",
+                    datasetCapabilities: {
+                      "checkout-prod-traces": { ingest: ["create"] },
+                      "checkout-prod-logs": { ingest: ["create"] },
+                      "checkout-prod-metrics": { ingest: ["create"] },
+                    },
+                    orgCapabilities: {},
+                    viewCapabilities: {},
+                  },
+                ]
+              : [],
+          );
+        }
+        if (path === "/v2/tokens" && request.method === "POST") {
+          axiomTokenCreated = true;
+          return Response.json({ id: "token-id", token: "ingest-secret" }, { status: 201 });
+        }
+        return Response.json(datasets);
+      },
+    });
+    let created = false;
+    const requests: Array<string> = [];
+    const sentry = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const path = new URL(request.url).pathname;
+        requests.push(`${request.method} ${path}`);
+        if (path.endsWith("/keys/")) {
+          return created
+            ? Response.json([{ dsn: { public: "https://public@sentry.example/1" } }])
+            : new Response("missing", { status: 404 });
+        }
+        if (request.method === "POST") {
+          created = true;
+          return Response.json({ slug: "checkout", name: "checkout" }, { status: 201 });
+        }
+        return created
+          ? Response.json({ slug: "checkout", name: "checkout" })
+          : new Response("missing", { status: 404 });
+      },
+    });
+    const credentialsPath = join(home, "credentials.json");
+    await writeFile(
+      credentialsPath,
+      `${JSON.stringify({
+        version: 3,
+        axiom: { token: "axiom-admin", organizationId: "org" },
+        sentry: {
+          token: "sentry-admin",
+          organization: "acme",
+          team: "platform",
+          baseUrl: `http://127.0.0.1:${sentry.port}`,
+        },
+        environments: [],
+        pendingAxiomMutations: [],
+      })}\n`,
+      { mode: 0o600 },
+    );
+    await chmod(credentialsPath, 0o600);
+    try {
+      const missingEdge = await runCli(
+        ["ops", "plan", "--dir", project, "--json"],
+        home,
+        `http://127.0.0.1:${axiom.port}`,
+        false,
+      );
+      expect(missingEdge.exitCode).toBe(1);
+      expect(missingEdge.stderr).toContain("--axiom-edge-deployment");
+      const unaccepted = await runCli(
+        ["ops", "plan", "--dir", project, "--queue-mode", "best-effort", "--json"],
+        home,
+        `http://127.0.0.1:${axiom.port}`,
+      );
+      expect(unaccepted.exitCode).toBe(1);
+      expect(unaccepted.stderr).toContain("--accept-best-effort-data-loss");
+      const planned = await runCli(
+        ["ops", "plan", "--dir", project, "--json"],
+        home,
+        `http://127.0.0.1:${axiom.port}`,
+      );
+      expect(planned.exitCode).toBe(0);
+      const plan = JSON.parse(planned.stdout);
+      expect(plan.actions).toContainEqual(
+        expect.objectContaining({
+          id: "sentry.project.checkout",
+          kind: "create",
+          resource: "checkout",
+        }),
+      );
+      expect(plan.localAssetChanges).toContain("observability/collector.yaml");
+      const driftPath = join(project, "observability", "collector.yaml");
+      await writeFile(driftPath, "unplanned\n");
+      const staleAssets = await runCli(
+        [
+          "ops",
+          "apply",
+          "--dir",
+          project,
+          "--plan",
+          join(project, ".observability", `plan-${plan.digest}.json`),
+          "--json",
+        ],
+        home,
+        `http://127.0.0.1:${axiom.port}`,
+      );
+      expect(staleAssets.exitCode).toBe(1);
+      expect(staleAssets.stderr).toContain("OBS_CLI_PLAN_STALE");
+      await rm(driftPath);
+      const applied = await runCli(
+        [
+          "ops",
+          "apply",
+          "--dir",
+          project,
+          "--plan",
+          join(project, ".observability", `plan-${plan.digest}.json`),
+          "--json",
+        ],
+        home,
+        `http://127.0.0.1:${axiom.port}`,
+      );
+      expect(applied.exitCode).toBe(0);
+      expect(created).toBe(true);
+      expect(requests).toContain("POST /api/0/teams/acme/platform/projects/");
+      expect(requests.some((request) => request.includes("checkout-prod"))).toBe(false);
+    } finally {
+      await axiom.stop(true);
+      await sentry.stop(true);
+    }
+  });
+
+  test("rotates only the exact environment with a planned lost token", async () => {
+    const root = await mkdtemp(join(tmpdir(), "observability-operations-scoped-rotation-"));
+    roots.push(root);
+    const project = join(root, "project");
+    const home = join(root, "home");
+    await mkdir(join(project, "observability"), { recursive: true });
+    await mkdir(home, { recursive: true });
+    await writeFile(
+      join(project, "observability", "operations.yaml"),
+      "version: 1\ncontractVersion: 1\nservice: checkout\nenvironments: [production, staging]\nretention:\n  - environment: production\n    days: 30\n  - environment: staging\n    days: 30\ndashboards: []\nmonitors: []\nsentry:\n  enabled: false\n",
+    );
+    await writeFile(
+      join(project, "observability", "contract.json"),
+      '{"index":1,"contractVersion":1,"service":"checkout","events":[],"metrics":[],"aliases":[]}\n',
+    );
+    const dataset = (environment: string, signal: string, index: number) => ({
+      id: `${environment}-${index}`,
+      name: `checkout-${environment}-${signal}`,
+      description: signal,
+      kind: signal === "metrics" ? "otel:metrics:v1" : "axiom:events:v1",
+      retentionDays: 30,
+      useRetentionPeriod: true,
+      edgeDeployment: "edge-test",
+    });
+    const datasets = ["production", "staging"].flatMap((environment) =>
+      ["traces", "logs", "metrics"].map((signal, index) => dataset(environment, signal, index)),
+    );
+    const token = (environment: string, id: string) => ({
+      id,
+      name: `checkout-${environment}-collector`,
+      description: "collector",
+      datasetCapabilities: {
+        [`checkout-${environment}-traces`]: { ingest: ["create"] },
+        [`checkout-${environment}-logs`]: { ingest: ["create"] },
+        [`checkout-${environment}-metrics`]: { ingest: ["create"] },
+      },
+      orgCapabilities: {},
+      viewCapabilities: {},
+    });
+    const tokens = [token("production", "production-token"), token("staging", "staging-token")];
+    const regenerated: Array<string> = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const path = new URL(request.url).pathname;
+        if (path === "/v2/datasets") return Response.json(datasets);
+        if (path === "/v2/tokens" && request.method === "GET") return Response.json(tokens);
+        if (path.endsWith("/regenerate")) {
+          regenerated.push(path);
+          return Response.json({ id: "staging-token", token: "new-staging-secret" });
+        }
+        return new Response("missing", { status: 404 });
+      },
+    });
+    const productionDatasets = Object.fromEntries(
+      ["traces", "logs", "metrics"].map((signal, index) => [
+        signal,
+        dataset("production", signal, index),
+      ]),
+    );
+    await writeFile(
+      join(home, "credentials.json"),
+      `${JSON.stringify({
+        version: 3,
+        axiom: { token: "admin", organizationId: "org" },
+        environments: [
+          {
+            project: "checkout",
+            environment: "production",
+            providers: {
+              type: "axiom",
+              axiom: {
+                tokenId: "production-token",
+                token: "production-secret",
+                tracesDataset: "checkout-production-traces",
+                logsDataset: "checkout-production-logs",
+                metricsDataset: "checkout-production-metrics",
+                datasets: productionDatasets,
+                correlation: {
+                  type: "operator-confirmed",
+                  groupName: "checkout production",
+                  groupSlug: "checkout-production",
+                  tracesDataset: "checkout-production-traces",
+                  logsDataset: "checkout-production-logs",
+                  metricsDataset: "checkout-production-metrics",
+                  confirmedAt: "2026-01-01T00:00:00.000Z",
+                },
+              },
+            },
+          },
+        ],
+        pendingAxiomMutations: [],
+      })}\n`,
+      { mode: 0o600 },
+    );
+    await chmod(join(home, "credentials.json"), 0o600);
+    try {
+      const differingEdge = await runCli(
+        ["ops", "plan", "--dir", project, "--axiom-edge-deployment", "other-edge", "--json"],
+        home,
+        server.url.toString(),
+      );
+      expect(differingEdge.stderr).toBe("");
+      expect(differingEdge.exitCode).toBe(0);
+      expect(
+        JSON.parse(differingEdge.stdout).actions.some(
+          (action: { capability: string }) => action.capability === "dataset-edge-deployment",
+        ),
+      ).toBe(true);
+      const planned = await runCli(
+        ["ops", "plan", "--dir", project, "--json"],
+        home,
+        server.url.toString(),
+      );
+      expect(planned.exitCode).toBe(0);
+      const plan = JSON.parse(planned.stdout);
+      expect(plan.actions).toContainEqual(
+        expect.objectContaining({
+          id: "axiom.token.staging",
+          kind: "destructive",
+          environment: "staging",
+        }),
+      );
+      expect(
+        plan.actions.some((action: { id: string }) => action.id === "axiom.token.production"),
+      ).toBe(false);
+      const applied = await runCli(
+        [
+          "ops",
+          "apply",
+          "--dir",
+          project,
+          "--plan",
+          join(project, ".observability", `plan-${plan.digest}.json`),
+          "--allow-destructive",
+          "--json",
+        ],
+        home,
+        server.url.toString(),
+      );
+      expect(applied.exitCode).toBe(0);
+      expect(regenerated).toEqual(["/v2/tokens/staging-token/regenerate"]);
+      const incompatiblePlanResult = await runCli(
+        ["ops", "plan", "--dir", project, "--axiom-edge-deployment", "other-edge", "--json"],
+        home,
+        server.url.toString(),
+      );
+      const incompatiblePlan = JSON.parse(incompatiblePlanResult.stdout);
+      const incompatible = await runCli(
+        [
+          "ops",
+          "apply",
+          "--dir",
+          project,
+          "--axiom-edge-deployment",
+          "other-edge",
+          "--plan",
+          join(project, ".observability", `plan-${incompatiblePlan.digest}.json`),
+          "--allow-destructive",
+          "--confirm-manual",
+          "axiom.correlation.staging",
+          "--json",
+        ],
+        home,
+        server.url.toString(),
+      );
+      expect(incompatible.exitCode).toBe(1);
+      expect(incompatible.stderr).toContain("OBS_CLI_AXIOM_DATASET_CONFIGURATION_CONFLICT");
+      const state = await readFile(join(home, "operations", "checkout.json"), "utf8");
+      const stagingCorrelation = JSON.parse(state).manualActions.find(
+        (action: { id: string }) => action.id === "axiom.correlation.staging",
+      );
+      expect(stagingCorrelation.status).toBe("pending");
+
+      const confirmationPlanResult = await runCli(
+        ["ops", "plan", "--dir", project, "--json"],
+        home,
+        server.url.toString(),
+      );
+      const confirmationPlan = JSON.parse(confirmationPlanResult.stdout);
+      const confirmed = await runCli(
+        [
+          "ops",
+          "apply",
+          "--dir",
+          project,
+          "--plan",
+          join(project, ".observability", `plan-${confirmationPlan.digest}.json`),
+          "--confirm-manual",
+          "axiom.correlation.staging",
+          "--json",
+        ],
+        home,
+        server.url.toString(),
+      );
+      expect(confirmed.exitCode).toBe(0);
+
+      const bin = join(root, "bin");
+      await mkdir(bin);
+      const variableWrites = join(root, "github-variable-writes");
+      const secretWrites = join(root, "github-secret-writes");
+      await writeFile(
+        join(bin, "gh"),
+        `#!/bin/sh
+set -eu
+case "$*" in
+  "api repos/acme/app/environments/staging")
+    printf '%s\\n' '{"id":7,"name":"staging","protection_rules":[{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"reviewer":{"id":42,"type":"User"}}]}],"deployment_branch_policy":{"protected_branches":true,"custom_branch_policies":false}}'
+    ;;
+  "api --paginate --slurp repos/acme/app/environments/staging/variables?per_page=100")
+    if test -f ${JSON.stringify(variableWrites)}; then
+      printf '%s\\n' '[{"variables":[{"name":"OTEL_SERVICE_NAME","value":"checkout","updated_at":"2026-01-02T00:00:00Z"},{"name":"OTEL_SERVICE_VERSION","value":"0123456789abcdef0123456789abcdef01234567","updated_at":"2026-01-02T00:00:00Z"},{"name":"OTEL_DEPLOYMENT_ENVIRONMENT","value":"staging","updated_at":"2026-01-02T00:00:00Z"},{"name":"OBSERVABILITY_TELEMETRY_ROLLOUT","value":"disabled","updated_at":"2026-01-02T00:00:00Z"},{"name":"OTEL_EXPORTER_OTLP_ENDPOINT","value":"http://checkout-otel-collector:4318","updated_at":"2026-01-02T00:00:00Z"},{"name":"AXIOM_DATASET_TRACES","value":"checkout-staging-traces","updated_at":"2026-01-02T00:00:00Z"},{"name":"AXIOM_DATASET_LOGS","value":"checkout-staging-logs","updated_at":"2026-01-02T00:00:00Z"},{"name":"AXIOM_DATASET_METRICS","value":"checkout-staging-metrics","updated_at":"2026-01-02T00:00:00Z"},{"name":"AXIOM_EDGE_DEPLOYMENT","value":"edge-test","updated_at":"2026-01-02T00:00:00Z"}]}]'
+    else
+      printf '%s\\n' '[{"variables":[]}]'
+    fi
+    ;;
+  "api --paginate --slurp repos/acme/app/environments/staging/secrets?per_page=100")
+    if test -f ${JSON.stringify(secretWrites)}; then
+      printf '%s\\n' '[{"secrets":[{"name":"AXIOM_TOKEN","updated_at":"2026-01-02T00:00:00Z"}]}]'
+    else
+      printf '%s\\n' '[{"secrets":[]}]'
+    fi
+    ;;
+  "api --method POST repos/acme/app/environments/staging/variables --input -")
+    cat >> ${JSON.stringify(variableWrites)}
+    ;;
+  secret\\ set*)
+    cat >> ${JSON.stringify(secretWrites)}
+    ;;
+  *) exit 41 ;;
+esac
+`,
+        { mode: 0o700 },
+      );
+      const githubPlanResult = await runCli(
+        [
+          "env",
+          "github",
+          "plan",
+          "--dir",
+          project,
+          "--repo",
+          "acme/app",
+          "--name",
+          "checkout",
+          "--environment",
+          "staging",
+          "--release",
+          "0123456789abcdef0123456789abcdef01234567",
+        ],
+        home,
+        server.url.toString(),
+        true,
+        bin,
+      );
+      expect(githubPlanResult.exitCode).toBe(0);
+      expect(githubPlanResult.stdout).toContain('"rollout": "disabled"');
+      expect(githubPlanResult.stdout).not.toContain("new-staging-secret");
+      const githubPlanPath = githubPlanResult.stdout.match(/plan-file (.+)\n/)?.[1];
+      if (githubPlanPath === undefined) throw new Error("missing GitHub plan");
+      const githubApplied = await runCli(
+        ["env", "github", "apply", "--plan", githubPlanPath],
+        home,
+        server.url.toString(),
+        true,
+        bin,
+      );
+      expect(githubApplied.exitCode).toBe(0);
+      expect(githubApplied.stdout).not.toContain("new-staging-secret");
+      expect(await readFile(secretWrites, "utf8")).toContain("new-staging-secret");
+      const repeatedPlan = await runCli(
+        [
+          "env",
+          "github",
+          "plan",
+          "--dir",
+          project,
+          "--repo",
+          "acme/app",
+          "--name",
+          "checkout",
+          "--environment",
+          "staging",
+          "--release",
+          "0123456789abcdef0123456789abcdef01234567",
+        ],
+        home,
+        server.url.toString(),
+        true,
+        bin,
+      );
+      const repeatedPath = repeatedPlan.stdout.match(/plan-file (.+)\n/)?.[1];
+      if (repeatedPath === undefined) throw new Error("missing repeated GitHub plan");
+      const repeatedApply = await runCli(
+        ["env", "github", "apply", "--plan", repeatedPath],
+        home,
+        server.url.toString(),
+        true,
+        bin,
+      );
+      expect(repeatedApply.exitCode).toBe(0);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("rejects unsupported YAML before planning or provider calls", async () => {
     const root = await mkdtemp(join(tmpdir(), "observability-operations-yaml-"));
     roots.push(root);
@@ -117,13 +620,21 @@ describe("operations CLI", () => {
       kind: signal === "metrics" ? "otel:metrics:v1" : "axiom:events:v1",
       retentionDays: 90,
       useRetentionPeriod: true,
+      edgeDeployment: "edge-test",
     }));
     let writes = 0;
+    let tokenCreated = false;
     const server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       fetch(request) {
         const url = new URL(request.url);
+        if (url.pathname === "/v2/tokens") {
+          if (request.method === "GET")
+            return Response.json(tokenCreated ? tokenMetadata("checkout-prod") : []);
+          tokenCreated = true;
+          return Response.json({ id: "token-id", token: "ingest-secret" }, { status: 201 });
+        }
         if (url.pathname !== "/v2/datasets") return new Response("missing", { status: 404 });
         if (request.method === "GET") return Response.json(datasets);
         writes += 1;
@@ -169,7 +680,8 @@ describe("operations CLI", () => {
       );
       expect(confirmationPlanResult.exitCode).toBe(0);
       const confirmationPlan = JSON.parse(confirmationPlanResult.stdout);
-      expect(confirmationPlan.digest).toBe(JSON.parse(firstApply.stdout).digest);
+      expect(confirmationPlan.digest).not.toBe(JSON.parse(firstApply.stdout).digest);
+      expect(confirmationPlan.localAssetChanges).toEqual([]);
       expect(confirmationPlan.actions).toEqual([]);
       expect(confirmationPlan.pendingManualActions).toContainEqual(
         expect.objectContaining({ id: "axiom.retention.prod", status: "pending" }),
@@ -258,13 +770,21 @@ describe("operations CLI", () => {
       kind: signal === "metrics" ? "otel:metrics:v1" : "axiom:events:v1",
       retentionDays: 0,
       useRetentionPeriod: false,
+      edgeDeployment: "edge-test",
     }));
     let writes = 0;
+    let tokenCreated = false;
     const server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       fetch(request) {
         const url = new URL(request.url);
+        if (url.pathname === "/v2/tokens") {
+          if (request.method === "GET")
+            return Response.json(tokenCreated ? tokenMetadata("checkout-prod") : []);
+          tokenCreated = true;
+          return Response.json({ id: "token-id", token: "ingest-secret" }, { status: 201 });
+        }
         if (url.pathname !== "/v2/datasets") return new Response("missing", { status: 404 });
         if (request.method === "GET") return Response.json(datasets);
         writes += 1;
@@ -320,7 +840,8 @@ describe("operations CLI", () => {
       );
       expect(confirmationResult.exitCode).toBe(0);
       const confirmationPlan = JSON.parse(confirmationResult.stdout);
-      expect(confirmationPlan.digest).toBe(JSON.parse(stagedResult.stdout).digest);
+      expect(confirmationPlan.digest).not.toBe(JSON.parse(stagedResult.stdout).digest);
+      expect(confirmationPlan.localAssetChanges).toEqual([]);
       expect(confirmationPlan.pendingManualActions).toContainEqual(
         expect.objectContaining({
           id: "axiom.retention.prod",
@@ -470,13 +991,21 @@ describe("operations CLI", () => {
       kind: signal === "metrics" ? "otel:metrics:v1" : "axiom:events:v1",
       retentionDays: 7,
       useRetentionPeriod: true,
+      edgeDeployment: "edge-test",
     }));
     let writes = 0;
+    let tokenCreated = false;
     const server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       fetch(request) {
         const url = new URL(request.url);
+        if (url.pathname === "/v2/tokens") {
+          if (request.method === "GET")
+            return Response.json(tokenCreated ? tokenMetadata("checkout-prod") : []);
+          tokenCreated = true;
+          return Response.json({ id: "token-id", token: "ingest-secret" }, { status: 201 });
+        }
         if (url.pathname !== "/v2/datasets") return new Response("missing", { status: 404 });
         if (request.method === "GET") return Response.json(datasets);
         writes += 1;
@@ -714,6 +1243,7 @@ describe("operations CLI", () => {
       kind: string;
       retentionDays: number;
       useRetentionPeriod: boolean;
+      edgeDeployment: string;
     }> = [
       {
         id: "prod-eu-isolation",
@@ -722,17 +1252,25 @@ describe("operations CLI", () => {
         kind: "axiom:events:v1",
         retentionDays: 90,
         useRetentionPeriod: true,
+        edgeDeployment: "edge-test",
       },
     ];
     let mutations = 0;
     let skipReadBack = false;
     let mutationStatus = 201;
     let readStatus = 200;
+    let tokenCreated = false;
     const server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       async fetch(request) {
         const url = new URL(request.url);
+        if (url.pathname === "/v2/tokens") {
+          if (request.method === "GET")
+            return Response.json(tokenCreated ? tokenMetadata("checkout-prod") : []);
+          tokenCreated = true;
+          return Response.json({ id: "token-id", token: "ingest-secret" }, { status: 201 });
+        }
         if (url.pathname !== "/v2/datasets") return new Response("missing", { status: 404 });
         if (request.method === "GET") {
           return readStatus === 200
@@ -755,6 +1293,7 @@ describe("operations CLI", () => {
           kind,
           retentionDays: 0,
           useRetentionPeriod: false,
+          edgeDeployment: "edge-test",
         };
         if (!skipReadBack) datasets.push(dataset);
         return Response.json(dataset, { status: 201 });

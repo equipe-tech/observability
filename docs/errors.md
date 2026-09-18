@@ -78,6 +78,17 @@ O diagnóstico inclui um identificador de correlação local. A saída não exp�
 - `OBS_SETUP_FORBIDDEN_OUTPUT` indica que uma saída gerada tentou incorporar implementação pertencente à plataforma ou um valor semelhante a segredo. Use somente composição por entrypoints públicos.
 - `OBS_SETUP_RELEASE_PREREQUISITE_MISSING` indica que o uploader exato, o executável local, os artefatos de source map ou o comando de canário declarado não estão prontos. Corrija o pré-requisito local antes de repetir. A verificação local não lê variáveis de provider nem inicia requisições. A falha inclui `request_id` e `retryable`. Pré-requisitos locais bloqueados e entradas ausentes ou inválidas do canário permitem repetir após correção. Falhas após iniciar o comando do canário usam `retryable: false`, pois podem seguir efeitos parciais da aplicação.
 
+## Sincronização com GitHub Environments
+
+- `OBS_CLI_GITHUB_INPUT_INVALID` rejeita entradas fora do schema, ambiente remoto ausente ou Correlation ainda pendente antes de qualquer escrita.
+- `OBS_CLI_GITHUB_ENVIRONMENT_NOT_FOUND` exige que o operador crie e proteja o GitHub Environment antes do plano.
+- `OBS_CLI_GITHUB_RESPONSE_INVALID` e `OBS_CLI_GITHUB_COMMAND_FAILED` classificam respostas e execução do `gh` sem incluir stderr ou secrets.
+- `OBS_CLI_GITHUB_PLAN_INVALID` e `OBS_CLI_GITHUB_PLAN_STALE` impedem apply de conteúdo alterado ou precondições mudadas.
+- `OBS_CLI_GITHUB_ROLLOUT_APPROVAL_REQUIRED` separa a aprovação de rollout da aprovação de deploy.
+- `OBS_CLI_GITHUB_APPLY_OUTCOME_UNKNOWN` preserva incerteza depois de uma mutação sem resposta conclusiva. Faça read-back e replaneje antes de repetir uma sobrescrita idempotente; não trate a falha como prova de ausência.
+- `OBS_CLI_GITHUB_READBACK_FAILED` indica que o valor exato de uma variável ou a presença dos metadados de um secret não apareceu depois da escrita. Não faça deploy enquanto o estado estiver incerto.
+- `OBS_CLI_GITHUB_STATE_FAILED` indica que plano, lock do mesmo repositório e ambiente, ou estado de recuperação não pôde ser tratado com modo seguro.
+
 Os erros de autenticação de entrada e de setup usam `request_id` para identificar a ocorrência no diagnóstico local. Esse identificador não é um trace OpenTelemetry e não promete um trace exportado. `trace_id` é reservado a um contexto real de tracing. Erros de setup sem garantia de idempotência usam `retryable: false`.
 
 ## Contratos públicos

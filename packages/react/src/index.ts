@@ -42,6 +42,7 @@ export type BrowserEventHost = {
 };
 
 export type BrowserObservabilityConfig = {
+  readonly enabled?: boolean;
   readonly service: BrowserServiceIdentity;
   readonly policy: DataPolicyInput;
   readonly events?: Omit<
@@ -289,6 +290,7 @@ type PreparedBrowserSentryConfig = {
 };
 
 type PreparedBrowserObservabilityConfig = {
+  readonly enabled: boolean;
   readonly service: BrowserServiceIdentity;
   readonly identity: ResourceIdentity;
   readonly policy: DataPolicy;
@@ -302,6 +304,7 @@ type PreparedBrowserObservabilityConfig = {
 
 const prepareConfig = (config: BrowserObservabilityConfig): PreparedBrowserObservabilityConfig => {
   try {
+    const enabled = config.enabled ?? true;
     const serviceInput = config.service;
     const service = {
       name: serviceInput.name,
@@ -352,6 +355,7 @@ const prepareConfig = (config: BrowserObservabilityConfig): PreparedBrowserObser
       };
     }
     if (
+      !Predicate.isBoolean(enabled) ||
       !Predicate.isBoolean(metrics) ||
       !validPositiveOption(dedupeWindowMillis) ||
       !validPositiveOption(dedupeCapacity) ||
@@ -380,12 +384,14 @@ const prepareConfig = (config: BrowserObservabilityConfig): PreparedBrowserObser
       Effect.runSync(parseSentryDsn(dsnUrl));
     }
     if (
+      enabled &&
       service.environment === reactWebLifecycle.environmentRequiringDefects &&
       (sentry.dsn === undefined || sentry.disabled === true || dsnUrl?.protocol !== "https:")
     ) {
       return invalidConfig("production browser observability requires an HTTPS Sentry DSN");
     }
     return {
+      enabled,
       service,
       identity,
       policy,
@@ -413,7 +419,7 @@ export const createBrowserObservability = (
     sentry: sentryInput,
     selected,
   } = prepared;
-  if (selected === undefined) return inertHandle(service);
+  if (!prepared.enabled || selected === undefined) return inertHandle(service);
   let dedupe: ReturnType<typeof defectDeduplicator>;
   let hosts: WeakSet<object>;
   try {

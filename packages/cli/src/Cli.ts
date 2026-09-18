@@ -3,12 +3,17 @@ import { Command, Flag, Prompt } from "effect/unstable/cli";
 import { authenticationTokenFromEnvironment } from "./AuthenticationInput.ts";
 import { DockerCompose } from "./DockerCompose.ts";
 import {
+  GitHubEnvironment,
+  persistGitHubEnvironmentPlan,
+  readGitHubEnvironmentPlan,
+} from "./GitHubEnvironment.ts";
+import {
   loadOperationsManifest,
   persistOperationsPlan,
   readOperationsPlan,
 } from "./ManifestSource.ts";
-import { encodeOperationsPlan, OperationsPlanner } from "./OperationsPlan.ts";
-import { parseQueueMode, ProvisionAssets } from "./ProvisionAssets.ts";
+import { encodeOperationsPlan, OperationsError, OperationsPlanner } from "./OperationsPlan.ts";
+import { observeProvisionAssets, parseQueueMode, ProvisionAssets } from "./ProvisionAssets.ts";
 import {
   Authentication,
   environmentAxiom,
@@ -19,7 +24,12 @@ import {
   validateRemoteProvisionRequest,
 } from "./RemoteEnvironment.ts";
 import { StackAssets } from "./StackAssets.ts";
-import { SetupError, SetupGenerator, type SetupInputEncoded } from "./setup/SetupGenerator.ts";
+import {
+  readSetupDeploymentVariables,
+  SetupError,
+  SetupGenerator,
+  type SetupInputEncoded,
+} from "./setup/SetupGenerator.ts";
 
 const composeFile = Flag.string("file").pipe(
   Flag.withAlias("f"),
@@ -379,9 +389,82 @@ const environmentExport = Command.make(
   }),
 ).pipe(Command.withDescription("Imprime variáveis de deploy no formato dotenv"));
 
+const githubRepository = Flag.string("repo").pipe(
+  Flag.withDescription("Explicit GitHub repository in owner/name form"),
+);
+const githubProject = Flag.string("name").pipe(Flag.withDescription("Configured project name"));
+const githubEnvironmentName = Flag.string("environment").pipe(
+  Flag.withDescription("Existing protected GitHub Environment and configured remote environment"),
+);
+const githubRelease = Flag.string("release").pipe(
+  Flag.withDescription("Immutable deployed artifact version"),
+);
+const githubRollout = Flag.string("rollout").pipe(
+  Flag.withDescription("Telemetry rollout state: disabled or enabled"),
+  Flag.withDefault("disabled"),
+);
+const githubDirectory = Flag.string("dir").pipe(
+  Flag.withDescription("Directory used for the secure plan file"),
+  Flag.withDefault("."),
+);
+const githubPlanFile = Flag.string("plan").pipe(
+  Flag.withDescription("Exact file produced by env github plan"),
+);
+const githubApproveRollout = Flag.boolean("approve-rollout").pipe(
+  Flag.withDescription("Approves rollout enablement for the exact supplied plan"),
+  Flag.withDefault(false),
+);
+
+const githubPlan = Command.make(
+  "plan",
+  {
+    repository: githubRepository,
+    project: githubProject,
+    environment: githubEnvironmentName,
+    release: githubRelease,
+    rollout: githubRollout,
+    dir: githubDirectory,
+  },
+  Effect.fn(function* ({ dir, environment, project, release, repository, rollout }) {
+    const github = yield* GitHubEnvironment;
+    const variables = yield* readSetupDeploymentVariables(dir);
+    const plan = yield* github.plan({
+      repository,
+      project,
+      environment,
+      release,
+      rollout,
+      releaseVariable: variables.releaseVariable,
+      sentryDsnVariable: variables.sentryDsnVariable,
+    });
+    const path = yield* persistGitHubEnvironmentPlan(dir, plan);
+    yield* Console.log(JSON.stringify(plan, null, 2));
+    yield* Console.log(`plan-file ${path}`);
+  }),
+).pipe(
+  Command.withDescription("Plans allowlisted GitHub Environment synchronization without mutation"),
+);
+
+const githubApply = Command.make(
+  "apply",
+  { plan: githubPlanFile, approveRollout: githubApproveRollout },
+  Effect.fn(function* ({ approveRollout, plan: path }) {
+    const github = yield* GitHubEnvironment;
+    const paths = yield* Path.Path;
+    const supplied = yield* github.parsePlan(yield* readGitHubEnvironmentPlan(path));
+    const receipt = yield* github.apply(supplied, approveRollout, paths.dirname(path));
+    yield* Console.log(JSON.stringify(receipt, null, 2));
+  }),
+).pipe(Command.withDescription("Applies an exact GitHub Environment plan with bounded writes"));
+
+const github = Command.make("github").pipe(
+  Command.withSubcommands([githubPlan, githubApply]),
+  Command.withDescription("Plans and applies GitHub Environment variables and secrets"),
+);
+
 const environment = Command.make("env").pipe(
-  Command.withSubcommands([environmentList, environmentExport]),
-  Command.withDescription("Inspeciona e exporta ambientes configurados"),
+  Command.withSubcommands([environmentList, environmentExport, github]),
+  Command.withDescription("Inspects and synchronizes configured environments"),
 );
 
 const operationsDirectory = Flag.string("dir").pipe(
@@ -409,6 +492,20 @@ const operationsConfirmedManualActions = Flag.string("confirm-manual").pipe(
   Flag.withDescription("Confirma pelo ID uma ação manual contida no plano exato"),
   Flag.atMost(100),
 );
+const operationsQueueMode = Flag.string("queue-mode").pipe(
+  Flag.withDescription("Collector queue mode covered by the exact plan"),
+  Flag.withDefault("durable"),
+);
+const operationsAxiomEdgeDeployment = Flag.string("axiom-edge-deployment").pipe(
+  Flag.withDescription("Required Axiom edge deployment bound to dataset creation and Correlation"),
+  Flag.optional,
+);
+const operationsAcceptBestEffortDataLoss = Flag.boolean("accept-best-effort-data-loss").pipe(
+  Flag.withDescription(
+    "Explicitly accepts telemetry loss during interruption for best-effort mode",
+  ),
+  Flag.withDefault(false),
+);
 
 const printPlan = Effect.fn("printOperationsPlan")(function* (
   plan: import("./OperationsPlan.ts").OperationsPlanDocument,
@@ -421,18 +518,66 @@ const printPlan = Effect.fn("printOperationsPlan")(function* (
   for (const action of plan.actions) {
     yield* Console.log(`${action.kind}  ${action.capability}  ${action.resource}`);
   }
+  for (const path of plan.localAssetChanges) {
+    yield* Console.log(`write  collector-asset  ${path}`);
+  }
   yield* Console.log(
-    `plan ${plan.digest}  changes=${plan.actions.length}  manual-pending=${plan.pendingManualActions.length}`,
+    `plan ${plan.digest}  changes=${plan.actions.length + plan.localAssetChanges.length}  manual-pending=${plan.pendingManualActions.length}`,
   );
 });
 
 const operationsPlan = Command.make(
   "plan",
-  { dir: operationsDirectory, environments: operationsEnvironments, json: operationsJson },
-  Effect.fn(function* ({ dir, environments, json }) {
+  {
+    dir: operationsDirectory,
+    environments: operationsEnvironments,
+    json: operationsJson,
+    queueMode: operationsQueueMode,
+    acceptBestEffortDataLoss: operationsAcceptBestEffortDataLoss,
+    axiomEdgeDeployment: operationsAxiomEdgeDeployment,
+  },
+  Effect.fn(function* ({
+    acceptBestEffortDataLoss,
+    axiomEdgeDeployment,
+    dir,
+    environments,
+    json,
+    queueMode,
+  }) {
     const validated = yield* loadOperationsManifest(dir);
     const planner = yield* OperationsPlanner;
-    const plan = yield* planner.plan({ validated, environments });
+    const parsedQueueMode = yield* parseQueueMode(queueMode);
+    if (parsedQueueMode === "best-effort" && !acceptBestEffortDataLoss) {
+      return yield* new OperationsError({
+        code: "OBS_CLI_PLAN_INVALID",
+        message:
+          "Best-effort queue mode can lose telemetry during interruption. Pass --accept-best-effort-data-loss to bind that acceptance to the plan.",
+        cause: parsedQueueMode,
+      });
+    }
+    const edgeDeployment = Option.getOrUndefined(axiomEdgeDeployment);
+    if (edgeDeployment === undefined) {
+      return yield* new OperationsError({
+        code: "OBS_CLI_PLAN_INVALID",
+        message: "Operations plan requires --axiom-edge-deployment.",
+        cause: "missing-axiom-edge-deployment",
+      });
+    }
+    const localAssets = yield* observeProvisionAssets(
+      dir,
+      validated.manifest.service,
+      parsedQueueMode,
+    );
+    const plan = yield* planner.plan({
+      validated,
+      environments,
+      queueMode: parsedQueueMode,
+      bestEffortDataLossAccepted: acceptBestEffortDataLoss,
+      axiomEdgeDeployment: edgeDeployment,
+      localAssetsFingerprint: localAssets.fingerprint,
+      localAssetPaths: localAssets.paths,
+      localAssetChanges: localAssets.changes,
+    });
     yield* persistOperationsPlan(dir, plan.digest, encodeOperationsPlan(plan));
     yield* printPlan(plan, json);
   }),
@@ -447,36 +592,95 @@ const operationsApply = Command.make(
     plan: operationsPlanFile,
     allowDestructive: operationsAllowDestructive,
     confirmedManualActions: operationsConfirmedManualActions,
+    queueMode: operationsQueueMode,
+    acceptBestEffortDataLoss: operationsAcceptBestEffortDataLoss,
+    axiomEdgeDeployment: operationsAxiomEdgeDeployment,
   },
   Effect.fn(function* ({
+    acceptBestEffortDataLoss,
     allowDestructive,
+    axiomEdgeDeployment,
     confirmedManualActions,
     dir,
     environments,
     json,
     plan: planPath,
+    queueMode,
   }) {
     const validated = yield* loadOperationsManifest(dir);
     const planner = yield* OperationsPlanner;
     const content = yield* readOperationsPlan(planPath);
     const supplied = yield* planner.parsePlan(content);
+    const parsedQueueMode = yield* parseQueueMode(queueMode);
+    const edgeDeployment = Option.getOrUndefined(axiomEdgeDeployment);
+    if (edgeDeployment === undefined) {
+      return yield* new OperationsError({
+        code: "OBS_CLI_PLAN_INVALID",
+        message: "Operations apply requires --axiom-edge-deployment.",
+        cause: "missing-axiom-edge-deployment",
+      });
+    }
+    const localAssets = yield* observeProvisionAssets(
+      dir,
+      validated.manifest.service,
+      parsedQueueMode,
+    );
     const result = yield* planner.apply(
-      { validated, environments },
+      {
+        validated,
+        environments,
+        queueMode: parsedQueueMode,
+        bestEffortDataLossAccepted: acceptBestEffortDataLoss,
+        axiomEdgeDeployment: edgeDeployment,
+        localAssetsFingerprint: localAssets.fingerprint,
+        localAssetPaths: localAssets.paths,
+        localAssetChanges: localAssets.changes,
+      },
       supplied,
       allowDestructive,
       confirmedManualActions,
     );
+    const assets = yield* ProvisionAssets;
+    yield* assets.provision(dir, Option.some(result.service), parsedQueueMode, false);
     yield* printPlan(result, json);
   }),
-).pipe(Command.withDescription("Aplica somente um plano exato e executa read-back limitado"));
+).pipe(Command.withDescription("Aplica o plano exato de providers, credenciais e fila local"));
 
 const operationsVerify = Command.make(
   "verify",
-  { dir: operationsDirectory, environments: operationsEnvironments, json: operationsJson },
-  Effect.fn(function* ({ dir, environments, json }) {
+  {
+    dir: operationsDirectory,
+    environments: operationsEnvironments,
+    json: operationsJson,
+    queueMode: operationsQueueMode,
+    axiomEdgeDeployment: operationsAxiomEdgeDeployment,
+  },
+  Effect.fn(function* ({ axiomEdgeDeployment, dir, environments, json, queueMode }) {
     const validated = yield* loadOperationsManifest(dir);
     const planner = yield* OperationsPlanner;
-    const plan = yield* planner.verify({ validated, environments });
+    const parsedQueueMode = yield* parseQueueMode(queueMode);
+    const edgeDeployment = Option.getOrUndefined(axiomEdgeDeployment);
+    if (edgeDeployment === undefined) {
+      return yield* new OperationsError({
+        code: "OBS_CLI_PLAN_INVALID",
+        message: "Operations verify requires --axiom-edge-deployment.",
+        cause: "missing-axiom-edge-deployment",
+      });
+    }
+    const localAssets = yield* observeProvisionAssets(
+      dir,
+      validated.manifest.service,
+      parsedQueueMode,
+    );
+    const plan = yield* planner.verify({
+      validated,
+      environments,
+      queueMode: parsedQueueMode,
+      axiomEdgeDeployment: edgeDeployment,
+      localAssetsFingerprint: localAssets.fingerprint,
+      localAssetPaths: localAssets.paths,
+      localAssetChanges: localAssets.changes,
+    });
     yield* printPlan(plan, json);
   }),
 ).pipe(Command.withDescription("Verifica drift, mutações pendentes e ações manuais sem escrever"));
@@ -718,7 +922,14 @@ const setup = Command.make("setup").pipe(
   Command.withDescription("Assembles applications from official observability profiles"),
 );
 
+const deploy = Command.make("deploy").pipe(
+  Command.withSubcommands([githubPlan, githubApply]),
+  Command.withDescription(
+    "Compatibility alias for GitHub synchronization only; run ops plan/apply first for providers",
+  ),
+);
+
 export const observability = Command.make("observability").pipe(
-  Command.withSubcommands([dev, auth, provision, environment, operations, setup]),
+  Command.withSubcommands([dev, auth, provision, environment, deploy, operations, setup]),
   Command.withDescription("Plataforma de observabilidade da Equipe Tech"),
 );

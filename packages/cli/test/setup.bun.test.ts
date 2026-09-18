@@ -146,11 +146,15 @@ const env = Object.freeze({
   OTEL_SERVICE_NAME: ${JSON.stringify(input.serviceName)},
   OTEL_DEPLOYMENT_ENVIRONMENT: "production",
   OTEL_EXPORTER_OTLP_ENDPOINT: server.url.toString(),
+  OBSERVABILITY_TELEMETRY_ROLLOUT: "enabled",
   ${customVariables ? 'OTEL_SERVICE_VERSION: "9.9.9", SENTRY_DSN: "ignored",' : ""}
   ${releaseVariable}: "1.2.3",
   ${sentryDsnVariable}: ${defects ? "dsn" : "undefined"},
 });
 try {
+  const disabledHandle = await start({ ...env, OBSERVABILITY_TELEMETRY_ROLLOUT: undefined });
+  assert.equal(disabledHandle.enabled, false);
+  await disabledHandle.close();
   const handle = await start(env);
   try {
     assert.equal(handle.enabled, true);
@@ -845,19 +849,62 @@ try {
     )?.content;
     expect(workflow).toContain("setup verify --dir . --target local --reconcile --conform");
     expect(workflow).toContain(
-      "setup verify --dir . --target deployed --environment staging --provider-read",
+      'ops verify --dir . --environment "$TARGET_ENVIRONMENT" --axiom-edge-deployment "$AXIOM_EDGE_DEPLOYMENT" --json',
     );
+    expect(workflow).not.toContain("--environment ${{ inputs.environment }}");
+    expect(workflow).toContain("TARGET_ENVIRONMENT: ${{ inputs.environment }}");
+    expect(workflow).toContain('test "${#DEPLOYED_REF}" -eq 40');
+    expect(workflow).toContain('test "$(git rev-parse HEAD)" = "$DEPLOYED_REF"');
+    expect(workflow).toContain("OTEL_SERVICE_VERSION: ${{ vars.OTEL_SERVICE_VERSION }}");
     expect(workflow).toContain("verify-providers:");
     expect(workflow).toContain(
       "OBSERVABILITY_HOME: ${{ runner.temp }}/observability-provider-state",
     );
+    expect(workflow).toContain("OBSERVABILITY_MANAGED_ENVIRONMENT_EVIDENCE");
+    expect(workflow).toContain("OBSERVABILITY_OPERATIONS_EVIDENCE");
+    expect(workflow).toContain("umask 077");
     expect(workflow).toContain("--token-env OBSERVABILITY_AXIOM_AUTH_TOKEN");
     expect(workflow).toContain("--token-env SENTRY_AUTH_TOKEN");
     expect(workflow).toContain('if: always()\n        run: rm -rf -- "$OBSERVABILITY_HOME"');
     expect(workflow).toContain("needs: [verify-local, verify-providers]");
+    const workflowContent = workflow ?? "";
+    const providerCommand = workflowContent.match(
+      /- name: Verify provider resources\n        run: (.+)\n/,
+    )?.[1];
+    expect(providerCommand).toBeDefined();
+    if (providerCommand === undefined) throw new Error("missing provider verification command");
+    const fakeBin = join(target, "fake-bin");
+    const capturedArguments = join(target, "provider-arguments");
+    const injected = join(target, "injected");
+    await mkdir(fakeBin);
+    await writeFile(
+      join(fakeBin, "bun"),
+      `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(capturedArguments)}\n`,
+      { mode: 0o700 },
+    );
+    const command = Bun.spawn(["sh", "-c", providerCommand], {
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+        TARGET_ENVIRONMENT: `production; touch ${injected}`,
+        AXIOM_EDGE_DEPLOYMENT: "edge-test",
+      },
+    });
+    expect(await command.exited).toBe(0);
+    expect(await Bun.file(capturedArguments).text()).toContain(`production; touch ${injected}`);
+    expect(await Bun.file(injected).exists()).toBe(false);
+    expect(workflowContent.match(/environment: \$\{\{ inputs.environment \}\}/g)).toHaveLength(2);
+    expect(workflow).toContain("deployed_ref:");
+    expect(workflow).toContain("It does not deploy the application");
+    expect(workflow).not.toContain("push:\n    tags:");
+    expect(workflow).toContain(
+      "OBSERVABILITY_TELEMETRY_ROLLOUT: ${{ vars.OBSERVABILITY_TELEMETRY_ROLLOUT }}",
+    );
+    expect(workflow).toContain("OTEL_SERVICE_NAME: ${{ vars.OTEL_SERVICE_NAME }}");
+    expect(workflow).toContain("AXIOM_TOKEN: ${{ secrets.AXIOM_TOKEN }}");
+    expect(workflow).toContain("SENTRY_DSN: ${{ secrets.SENTRY_DSN }}");
     expect(workflow).toContain("bun run build");
     expect(workflow).toContain("setup verify-release --dir .");
-    const workflowContent = workflow ?? "";
     expect(workflowContent.indexOf("bun run build")).toBeLessThan(
       workflowContent.indexOf("setup verify-release --dir ."),
     );

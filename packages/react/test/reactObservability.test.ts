@@ -75,6 +75,28 @@ const assertCanaryError = async (
 };
 
 describe("React browser observability", () => {
+  it("emits nothing before rollout approval", async () => {
+    const fixture = recordingHost();
+    const observability = createBrowserObservability({
+      enabled: false,
+      service,
+      policy,
+      host: fixture.host,
+      sentry: { dsn: "https://public@example.test/1" },
+      events: { endpoint: "https://telemetry.example.test/events" },
+      metrics: true,
+    });
+
+    assert.isFalse(observability.installed);
+    assert.strictEqual(fixture.listeners.size, 0);
+    assert.deepEqual(
+      observability.defects.report({ error: new Error("disabled"), origin: "manual" }),
+      { kind: "suppressed", reason: "not-installed" },
+    );
+    assert.strictEqual(observability.events.pending(), 0);
+    await observability.dispose();
+  });
+
   it("keeps the audit API out of the React source entrypoint", () => {
     const auditApiNames = Object.keys(Root).filter((name) => name.toLowerCase().includes("audit"));
     assert.isAbove(auditApiNames.length, 0);

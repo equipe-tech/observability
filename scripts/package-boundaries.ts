@@ -43,6 +43,7 @@ export const defineOwnership = (
 
 const ownership = defineOwnership([
   { kind: "exact", path: "packages/cli/src/CredentialsStore.ts", role: "adapter" },
+  { kind: "exact", path: "packages/cli/src/GitHubEnvironment.ts", role: "adapter" },
   { kind: "exact", path: "packages/cli/src/SourceBoundary.ts", role: "adapter" },
   { kind: "exact", path: "packages/cli/src/ManifestSource.ts", role: "adapter" },
   { kind: "exact", path: "packages/cli/src/OperationsState.ts", role: "adapter" },

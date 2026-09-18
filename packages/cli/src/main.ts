@@ -5,6 +5,7 @@ import { Command } from "effect/unstable/cli";
 import { observability } from "./Cli.ts";
 import { CredentialsStore } from "./CredentialsStore.ts";
 import { DockerCompose } from "./DockerCompose.ts";
+import { GitHubEnvironment } from "./GitHubEnvironment.ts";
 import { packageVersion } from "./PackageVersion.ts";
 import { publicErrorFromCause } from "./ErrorReporter.ts";
 import { ProvisionAssets } from "./ProvisionAssets.ts";
@@ -20,7 +21,10 @@ const RemoteLayer = Layer.mergeAll(Authentication.layer, RemoteEnvironment.layer
   Layer.provide(ProviderLayer),
 );
 const OperationsLayer = OperationsPlanner.layer.pipe(
-  Layer.provide(Layer.mergeAll(ProviderLayer, OperationsState.layer)),
+  Layer.provide(Layer.mergeAll(ProviderLayer, RemoteLayer, OperationsState.layer)),
+);
+const GitHubEnvironmentLayer = GitHubEnvironment.layer.pipe(
+  Layer.provide(Layer.mergeAll(RemoteLayer, CredentialsStore.layer)),
 );
 const MainLayer = Layer.mergeAll(
   DockerCompose.layer,
@@ -29,6 +33,7 @@ const MainLayer = Layer.mergeAll(
   ProviderLayer,
   RemoteLayer,
   OperationsLayer,
+  GitHubEnvironmentLayer,
   SetupGenerator.layer,
 ).pipe(Layer.provideMerge(BunServices.layer));
 
@@ -55,6 +60,8 @@ observability.pipe(
     OperationsError: (error) =>
       Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
     OperationsStateError: (error) =>
+      Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
+    GitHubEnvironmentError: (error) =>
       Console.error(`${error.code}: ${error.message}`).pipe(Effect.andThen(Effect.fail(error))),
     SetupError: (error) =>
       Console.error(
