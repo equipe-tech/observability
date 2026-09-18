@@ -40,6 +40,7 @@ O comando valida cada credencial salva contra o provider. A saída também cont�
 observability provision \
   [--dir <path>] \
   [--name <project>] \
+  [--queue-mode <best-effort|durable>] \
   [--force] \
   [--environment <name>]... \
   [--provider <axiom|sentry>]... \
@@ -51,6 +52,10 @@ observability provision \
 ```
 
 Sem `--environment`, o comando gera somente os assets locais. As flags remotas válidas não fazem chamadas externas nesse modo.
+
+`--queue-mode` seleciona o armazenamento da fila do Collector. O valor padrão é `durable`. O modo `durable` usa `file_storage`, um diretório persistente no accessory e retry sem limite. O modo `best-effort` mantém até 64 requisições por sinal na memória e limita o retry a cinco minutos. Um restart perde o backlog do modo `best-effort`.
+
+A CLI grava a seleção em `observability/provision.json`. Repetir o mesmo comando mantém os três arquivos inalterados. Para trocar o modo, passe `--force`. Sem a flag, a CLI retorna `OBS_CLI_PROVISION_CONFLICT` antes de escrever qualquer arquivo. Um valor desconhecido retorna `OBS_CLI_PROVISION_INVALID_QUEUE_MODE` antes de criar o diretório `observability`.
 
 Repita `--provider` para selecionar os dois providers. Valores duplicados produzem uma seleção única.
 
@@ -160,6 +165,8 @@ O nome do token Axiom segue este formato:
 
 | Código                                         | Significado                                                                 |
 | ---------------------------------------------- | --------------------------------------------------------------------------- |
+| `OBS_CLI_PROVISION_INVALID_QUEUE_MODE`         | `--queue-mode` não contém `best-effort` ou `durable`.                       |
+| `OBS_CLI_PROVISION_ASSET_INCOMPATIBLE`         | Os assets do pacote não contêm os marcadores esperados pelo renderer.       |
 | `OBS_CLI_CREDENTIALS_INVALID`                  | O arquivo ou a configuração de credenciais não passa no parse.              |
 | `OBS_CLI_CREDENTIALS_INSECURE`                 | O arquivo de credenciais permite acesso para outros usuários.               |
 | `OBS_CLI_CREDENTIALS_FAILED`                   | A CLI não consegue acessar o arquivo de credenciais.                        |

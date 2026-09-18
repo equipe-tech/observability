@@ -8,7 +8,7 @@ import {
   readOperationsPlan,
 } from "./ManifestSource.ts";
 import { encodeOperationsPlan, OperationsPlanner } from "./OperationsPlan.ts";
-import { ProvisionAssets } from "./ProvisionAssets.ts";
+import { parseQueueMode, ProvisionAssets } from "./ProvisionAssets.ts";
 import {
   Authentication,
   environmentAxiom,
@@ -172,6 +172,11 @@ const provisionForce = Flag.boolean("force").pipe(
   Flag.withDefault(false),
 );
 
+const provisionQueueMode = Flag.string("queue-mode").pipe(
+  Flag.withDescription("Modo da fila do Collector: best-effort ou durable"),
+  Flag.withDefault("durable"),
+);
+
 const provisionEnvironments = Flag.string("environment").pipe(
   Flag.withAlias("e"),
   Flag.withDescription("Ambiente remoto. Repita a flag para configurar vários ambientes"),
@@ -214,6 +219,7 @@ const provision = Command.make(
     dir: provisionDirectory,
     name: provisionName,
     force: provisionForce,
+    queueMode: provisionQueueMode,
     environments: provisionEnvironments,
     providers: provisionProviders,
     platform: provisionPlatform,
@@ -231,9 +237,11 @@ const provision = Command.make(
     force,
     name,
     platform,
+    queueMode,
     providers,
     rotateToken,
   }) {
+    const parsedQueueMode = yield* parseQueueMode(queueMode);
     const selectedProviders = yield* parseProviderSelection(providers);
     const assets = yield* ProvisionAssets;
     const projectName = yield* assets.resolveName(dir, name);
@@ -241,7 +249,7 @@ const provision = Command.make(
     if (uniqueEnvironments.length > 0) {
       yield* validateRemoteProvisionRequest(projectName, uniqueEnvironments);
     }
-    const files = yield* assets.provision(dir, Option.some(projectName), force);
+    const files = yield* assets.provision(dir, Option.some(projectName), parsedQueueMode, force);
     for (const file of files) {
       yield* Console.log(`${file.action}  ${file.relativePath}`);
     }

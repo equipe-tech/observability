@@ -1,8 +1,18 @@
-# Operar a fila persistente do Collector
+# Operar as filas do Collector
 
-O Collector de produção mantém uma fila independente para traces, logs e métricas. Cada fila aceita no máximo 64 requisições. O batching do exporter limita cada requisição exportada a 8 MiB quando o sinal pode ser dividido. O limite lógico aproximado é 512 MiB por sinal, sem contar o overhead do bbolt.
+O Collector de produção mantém uma fila independente para traces, logs e métricas. Cada fila aceita no máximo 64 requisições. O batching do exporter limita cada requisição exportada a 8 MiB quando o sinal pode ser dividido.
 
-O retry não expira. Capacidade de fila e capacidade do filesystem limitam o uso de recursos. Erros permanentes do destino, incluindo credenciais inválidas, podem descartar telemetria. Nunca exponha uma fila não vazia a uma credencial que ainda não foi verificada.
+## Escolher o modo da fila
+
+O comando `observability provision` usa o modo `durable` quando você omite `--queue-mode`. Esse modo grava o backlog no diretório dedicado e repete falhas temporárias sem limite de tempo. O limite lógico aproximado é 512 MiB por sinal, sem contar o overhead do bbolt.
+
+Use `--queue-mode best-effort` quando a aplicação aceita perder o backlog. Esse modo não cria o diretório persistente. Um restart perde todos os itens pendentes, e o Collector descarta cada item que não conseguir enviar em cinco minutos. A fila continua limitada a 64 requisições por sinal, com um consumidor e `block_on_overflow: false`.
+
+Para trocar o modo de um projeto provisionado, repita o comando com o novo valor e `--force`. A CLI atualiza o Collector, o accessory e `observability/provision.json` como um bundle. Sem `--force`, a mudança falha antes de qualquer escrita.
+
+As operações de filesystem, restart, drain, backup, rotação e recuperação abaixo se aplicam ao modo `durable`. No modo `best-effort`, monitore saúde, profundidade da fila e falhas de envio, mas não espere recuperação do backlog depois de um restart ou depois do limite de cinco minutos.
+
+No modo `durable`, o retry não expira. Capacidade de fila e capacidade do filesystem limitam o uso de recursos. Erros permanentes do destino, incluindo credenciais inválidas, podem descartar telemetria. Nunca exponha uma fila não vazia a uma credencial que ainda não foi verificada.
 
 ## Preparar o host
 
