@@ -45,7 +45,7 @@
     "@equipe-tech/observability": "0.3.x",
     "@nestjs/common": "^10.0.0 || ^11.0.0",
     "@nestjs/core": "^10.0.0 || ^11.0.0",
-    "effect": "4.0.0-rc.111",
+    "effect": "4.0.0-rc.111 || 4.0.0-rc.112",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.2.0"
   }
