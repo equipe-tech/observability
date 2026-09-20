@@ -62,6 +62,6 @@
     "effect": "4.0.0-rc.111"
   },
   "peerDependencies": {
-    "effect": "4.0.0-rc.111 || 4.0.0-rc.112"
+    "effect": ">=4.0.0-rc.111 <4.0.0-rc.117"
   }
 }

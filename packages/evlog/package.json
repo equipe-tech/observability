@@ -40,6 +40,6 @@
   },
   "peerDependencies": {
     "@equipe-tech/observability": "0.3.x",
-    "effect": "4.0.0-rc.111 || 4.0.0-rc.112"
+    "effect": ">=4.0.0-rc.111 <4.0.0-rc.117"
   }
 }

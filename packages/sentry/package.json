@@ -53,7 +53,7 @@
     "@equipe-tech/observability": "0.3.x",
     "@sentry/browser": "10.72.0",
     "@sentry/node-core": "10.72.0",
-    "effect": "4.0.0-rc.111 || 4.0.0-rc.112"
+    "effect": ">=4.0.0-rc.111 <4.0.0-rc.117"
   },
   "peerDependenciesMeta": {
     "@sentry/browser": {
