@@ -20,6 +20,7 @@ import type {
 
 const ProfileNameSchema = Schema.Literals([
   "nestjs-api",
+  "effect-api",
   "worker",
   "react-web",
   "cli",
@@ -91,6 +92,7 @@ const TargetDocument = Schema.Struct({
         "evlog",
         "sentry",
         "nestjs",
+        "effect",
         "react",
         "application",
       ]),

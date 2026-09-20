@@ -4,6 +4,7 @@ import { runAuditWithoutDurableReceiptFixture } from "../../../observability/con
 import { runLocalOtlpNegativeFixture } from "../../../observability/conformance/fixtures/negative/application-local-otlp/kit.ts";
 import { runNonDefectSentryCaptureFixture } from "../../../observability/conformance/fixtures/negative/non-defect-sentry-capture/kit.ts";
 import { runCliFixture } from "../../../observability/conformance/fixtures/positive/cli/kit.ts";
+import { runEffectApiFixture } from "../../../observability/conformance/fixtures/positive/effect-api/kit.ts";
 import { runLibraryFixture } from "../../../observability/conformance/fixtures/positive/library/kit.ts";
 import { runNestjsFixture } from "../../../observability/conformance/fixtures/positive/nestjs-api/kit.ts";
 import { runReactFixture } from "../../../observability/conformance/fixtures/positive/react-web/kit.ts";
@@ -31,6 +32,17 @@ describe("conformance profile fixtures", () => {
   it("passes the nestjs-api fixture", async () => {
     const report = await assertPassing("nestjs-api", runNestjsFixture);
     expect(report.profile).toBe("nestjs-api");
+  }, 60_000);
+
+  it("passes the effect-api fixture", async () => {
+    const report = await assertPassing("effect-api", runEffectApiFixture);
+    expect(report.profile).toBe("effect-api");
+    expect(
+      report.checks.find((check) => check.id === "server-events.evlog-collector")?.status,
+    ).toBe("not-applicable");
+    expect(report.checks.find((check) => check.id === "canary.telemetry-destination")?.status).toBe(
+      "pass",
+    );
   }, 60_000);
 
   it("passes the worker fixture", async () => {

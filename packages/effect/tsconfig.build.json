@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "declaration": true,
+    "noEmit": false,
+    "noEmitOnError": true,
+    "outDir": "dist",
+    "paths": {},
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "src"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["test", "dist"]
+}

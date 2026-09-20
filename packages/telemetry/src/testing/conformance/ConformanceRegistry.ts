@@ -43,9 +43,9 @@ const boundariesRule = rule("docs/coding-standards.md", "Fronteiras do monorepo"
 const canaryRule = rule("docs/testing.md", "Canário do pipeline");
 const browserRule = rule("docs/profiles.md", "Runtime React web");
 
-const manifestProfiles = new Set(["nestjs-api", "worker", "react-web", "cli"]);
+const manifestProfiles = new Set(["nestjs-api", "effect-api", "worker", "react-web", "cli"]);
 const serverEventProfiles = new Set(["nestjs-api", "worker", "cli"]);
-const nodeCanaryProfiles = new Set(["nestjs-api", "worker", "cli"]);
+const nodeCanaryProfiles = new Set(["nestjs-api", "effect-api", "worker", "cli"]);
 
 const capabilitiesSummary = (target: ConformanceTargetContext): string =>
   [
@@ -144,8 +144,10 @@ export const conformanceChecks: ReadonlyArray<ConformanceCheck> = Object.freeze(
     code: "OBS_CONFORMANCE_EVENT_PATH_INVALID",
     rule: nodeConfigRule,
     applies: (target) => serverEventProfiles.has(target.profile.name),
-    notApplicableReason: () =>
-      "the profile owns no Node server event path through evlog and the Collector",
+    notApplicableReason: (target) =>
+      target.profile.name === "effect-api"
+        ? "the effect-api profile delivers server events through the Effect logger and proves the Collector path with the telemetry canary"
+        : "the profile owns no Node server event path through evlog and the Collector",
     run: (target, provider) => provider.verify(target),
   },
   {

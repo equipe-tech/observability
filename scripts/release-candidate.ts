@@ -34,6 +34,7 @@ const packageDirectories = new Map([
   ["observability", "telemetry"],
   ["observability-evlog", "evlog"],
   ["observability-nestjs", "nestjs"],
+  ["observability-effect", "effect"],
   ["observability-sentry", "sentry"],
   ["observability-react", "react"],
   ["observability-cli", "cli"],

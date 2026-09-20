@@ -1,10 +1,11 @@
 # Perfis oficiais de observabilidade
 
-Cada processo seleciona um dos cinco perfis fechados. Combinações livres de flags não formam um perfil válido. A [suíte de conformidade](conformance.md) prova essa seleção e as regras aplicáveis de cada perfil.
+Cada processo seleciona um dos seis perfis fechados. Combinações livres de flags não formam um perfil válido. A [suíte de conformidade](conformance.md) prova essa seleção e as regras aplicáveis de cada perfil.
 
 | Perfil       | Eventos     | Traces      | Métricas    | Defeitos                | Browser ingest | Runtime        | Prazo |
 | ------------ | ----------- | ----------- | ----------- | ----------------------- | -------------- | -------------- | ----- |
 | `nestjs-api` | obrigatório | obrigatório | obrigatório | obrigatório em produção | opcional       | Node global    | 5 s   |
+| `effect-api` | obrigatório | obrigatório | obrigatório | obrigatório em produção | opcional       | Node global    | 5 s   |
 | `worker`     | obrigatório | obrigatório | obrigatório | obrigatório em produção | proibido       | Node global    | 5 s   |
 | `react-web`  | obrigatório | obrigatório | opcional    | obrigatório em produção | obrigatório    | browser global | 2 s   |
 | `cli`        | obrigatório | opcional    | opcional    | opcional                | proibido       | Node global    | 5 s   |
@@ -28,7 +29,15 @@ Um endpoint em `localhost`, `localhost.`, `127.0.0.0/8`, `::1` ou no equivalente
 
 `OTEL_SERVICE_VERSION` é a identidade canônica da release. Um valor não vazio em `SENTRY_RELEASE` ou `OTEL_SERVICE_RELEASE` encerra o bootstrap.
 
-O valor literal `production` torna o adapter de defeitos obrigatório para `nestjs-api`, `worker` e `react-web`.
+O valor literal `production` torna o adapter de defeitos obrigatório para `nestjs-api`, `effect-api`, `worker` e `react-web`.
+
+## Runtime Effect nativo
+
+`effect-api` é o perfil de APIs HTTP escritas com Effect e `effect/unstable/http`. O perfil tem as mesmas exigências de `nestjs-api`. A composição vive em `@equipe-tech/observability-effect` e usa Layers em vez de módulos de framework. Consulte [Semântica HTTP do adapter Effect](effect-http-semantics.md).
+
+`effectEventsAdapter`, no entrypoint `@equipe-tech/observability/effect`, é o adapter oficial de eventos para aplicações Effect. Ele entrega `layerWideEvent` como `TelemetryEventSink`; os eventos viajam pelo logger OTLP do runtime com a política de dados aplicada. O adapter não instala logger global e não fornece publicador de auditoria; um runtime sem adapter de auditoria usa o publicador `unbound`.
+
+`layerObservability` e `layerObservabilityFromConfig` constroem o runtime pela mesma factory de Node, iniciam os adapters na ordem do perfil e expõem no runtime da aplicação o tracer, o logger OTLP, a política de dados, as métricas, `TelemetryEventSink`, `AuditPublisher` e `NodeObservabilityService`. O encerramento do escopo da Layer executa o mesmo `close` com prazos e relatório do perfil. Aplicações `worker` e `cli` escritas em Effect podem usar as mesmas Layers.
 
 ## Ciclo de vida
 

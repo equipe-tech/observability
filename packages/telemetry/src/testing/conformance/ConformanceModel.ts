@@ -33,6 +33,7 @@ export type ConformanceOwner =
   | "evlog"
   | "sentry"
   | "nestjs"
+  | "effect"
   | "react"
   | "application";
 

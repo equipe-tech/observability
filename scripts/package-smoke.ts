@@ -318,6 +318,19 @@ try {
       ],
     },
     {
+      directory: join(root, "packages/effect"),
+      archive: "effect.tgz",
+      required: [
+        "package/LICENSE",
+        "package/README.md",
+        "package/dist/LICENSE",
+        "package/dist/index.js",
+        "package/dist/index.d.ts",
+        "package/dist/testing/index.js",
+        "package/dist/testing/index.d.ts",
+      ],
+    },
+    {
       directory: join(root, "packages/cli"),
       archive: "cli.tgz",
       required: [
@@ -518,6 +531,25 @@ try {
       ],
     },
     {
+      name: "effect-api",
+      packages: [
+        "@equipe-tech/observability",
+        "@equipe-tech/observability-cli",
+        "@equipe-tech/observability-effect",
+        "effect",
+      ],
+      flags: [
+        "--service-name",
+        "minimal-effect",
+        "--environment",
+        "test",
+        "--otlp-endpoint",
+        "http://127.0.0.1:4318",
+        "--axiom-organization-id",
+        "packed-org",
+      ],
+    },
+    {
       name: "worker",
       packages: [
         "@equipe-tech/observability",
@@ -585,6 +617,7 @@ try {
   const packageLocations = new Map([
     ["@equipe-tech/observability", `file:${join(temporaryDirectory, "telemetry.tgz")}`],
     ["@equipe-tech/observability-cli", `file:${join(temporaryDirectory, "cli.tgz")}`],
+    ["@equipe-tech/observability-effect", `file:${join(temporaryDirectory, "effect.tgz")}`],
     ["@equipe-tech/observability-evlog", `file:${join(temporaryDirectory, "evlog.tgz")}`],
     ["@equipe-tech/observability-nestjs", `file:${join(temporaryDirectory, "nestjs.tgz")}`],
     ["@equipe-tech/observability-react", `file:${join(temporaryDirectory, "react.tgz")}`],
@@ -685,6 +718,7 @@ try {
       dependencies: {
         "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
         "@equipe-tech/observability-cli": `file:${join(temporaryDirectory, "cli.tgz")}`,
+        "@equipe-tech/observability-effect": `file:${join(temporaryDirectory, "effect.tgz")}`,
         "@equipe-tech/observability-evlog": `file:${join(temporaryDirectory, "evlog.tgz")}`,
         "@equipe-tech/observability-nestjs": `file:${join(temporaryDirectory, "nestjs.tgz")}`,
         "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
@@ -1142,6 +1176,7 @@ if (report.degraded) throw new Error("Generated React composition degraded durin
       dependencies: {
         "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
         "@equipe-tech/observability-cli": `file:${join(temporaryDirectory, "cli.tgz")}`,
+        "@equipe-tech/observability-effect": `file:${join(temporaryDirectory, "effect.tgz")}`,
         "@equipe-tech/observability-evlog": `file:${join(temporaryDirectory, "evlog.tgz")}`,
         "@equipe-tech/observability-nestjs": `file:${join(temporaryDirectory, "nestjs.tgz")}`,
         "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
@@ -1194,7 +1229,7 @@ if (report.degraded) throw new Error("Generated React composition degraded durin
         "node",
         "--input-type=module",
         "--eval",
-        "const [root, effectEntry, metrics, node, evlog, nestjs, browser, client, testing, policy, sentry, sentryNode] = await Promise.all([import('@equipe-tech/observability'), import('@equipe-tech/observability/effect'), import('@equipe-tech/observability/metrics'), import('@equipe-tech/observability/node'), import('@equipe-tech/observability-evlog'), import('@equipe-tech/observability-nestjs'), import('@equipe-tech/observability/browser'), import('@equipe-tech/observability/browser/client'), import('@equipe-tech/observability/testing'), import('@equipe-tech/observability/policy'), import('@equipe-tech/observability-sentry'), import('@equipe-tech/observability-sentry/node')]); if ('WideEvent' in root || 'layerWideEvent' in root || !effectEntry.WideEvent || !effectEntry.layerWideEvent || !root.Telemetry || !root.parseAuditRecord || !root.commitAuditRecord || !root.drainAuditOutbox || !root.AuditPublisher || Object.keys(root).some((name) => name.toLowerCase().includes('audit') && (name in browser || name in client)) || !root.ServiceName || !root.EnvironmentName || !root.CorrelationContext || root.Correlation || root.registerTestingAdapter || root.profileCapabilityRank || root.profileCapabilityRequirement || root.secondReleaseVariables || root.baseBlockedValuePatterns || !root.registerOfficialAdapter || !root.ObservabilityLifecycleError || node.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.CurrentCorrelation !== root.CurrentCorrelation || nestjs.TelemetryEventSink !== root.TelemetryEventSink || !evlog.evlogAdapter || !nestjs.TelemetryModule || !metrics.createMetrics || !node.runMain || !node.layerNodeAuditDigest || !node.createNodeObservability || !node.makeNodeObservability || !node.layerNodeObservability || !browser.BrowserTelemetry || !client.createBrowserTelemetryClient || !testing.run || !testing.registerTestingAdapter || !policy.sanitizeDefectEnvelope || !sentry.sentrySourceMapUpload || !sentryNode.sentryDefectAdapter) process.exit(1); try { await import('@sentry/browser'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_MODULE_NOT_FOUND') process.exit(1); } try { await import('@equipe-tech/observability/nestjs'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') process.exit(1); }",
+        "const [root, effectEntry, metrics, node, evlog, nestjs, effectIntegration, browser, client, testing, policy, sentry, sentryNode] = await Promise.all([import('@equipe-tech/observability'), import('@equipe-tech/observability/effect'), import('@equipe-tech/observability/metrics'), import('@equipe-tech/observability/node'), import('@equipe-tech/observability-evlog'), import('@equipe-tech/observability-nestjs'), import('@equipe-tech/observability-effect'), import('@equipe-tech/observability/browser'), import('@equipe-tech/observability/browser/client'), import('@equipe-tech/observability/testing'), import('@equipe-tech/observability/policy'), import('@equipe-tech/observability-sentry'), import('@equipe-tech/observability-sentry/node')]); if ('WideEvent' in root || 'layerWideEvent' in root || !effectEntry.WideEvent || !effectEntry.layerWideEvent || !effectEntry.effectEventsAdapter || !effectIntegration.layerObservability || !effectIntegration.httpTelemetry || !effectIntegration.errorBoundary || !effectIntegration.defineErrorCatalog || !effectIntegration.layerBrowserEventsRoute || effectIntegration.CurrentCorrelation !== root.CurrentCorrelation || effectIntegration.TelemetryEventSink !== root.TelemetryEventSink || !root.Telemetry || !root.parseAuditRecord || !root.commitAuditRecord || !root.drainAuditOutbox || !root.AuditPublisher || Object.keys(root).some((name) => name.toLowerCase().includes('audit') && (name in browser || name in client)) || !root.ServiceName || !root.EnvironmentName || !root.CorrelationContext || root.Correlation || root.registerTestingAdapter || root.profileCapabilityRank || root.profileCapabilityRequirement || root.secondReleaseVariables || root.baseBlockedValuePatterns || !root.registerOfficialAdapter || !root.ObservabilityLifecycleError || node.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.ObservabilityLifecycleError !== root.ObservabilityLifecycleError || nestjs.CurrentCorrelation !== root.CurrentCorrelation || nestjs.TelemetryEventSink !== root.TelemetryEventSink || !evlog.evlogAdapter || !nestjs.TelemetryModule || !metrics.createMetrics || !node.runMain || !node.layerNodeAuditDigest || !node.createNodeObservability || !node.makeNodeObservability || !node.layerNodeObservability || !browser.BrowserTelemetry || !client.createBrowserTelemetryClient || !testing.run || !testing.registerTestingAdapter || !policy.sanitizeDefectEnvelope || !sentry.sentrySourceMapUpload || !sentryNode.sentryDefectAdapter) process.exit(1); try { await import('@sentry/browser'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_MODULE_NOT_FOUND') process.exit(1); } try { await import('@equipe-tech/observability/nestjs'); process.exit(1); } catch (error) { if (error?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') process.exit(1); }",
       ],
       nodeConsumer,
     ),
@@ -1256,6 +1291,7 @@ if (report.degraded) throw new Error("Generated React composition degraded durin
   const declarations = new Bun.Glob("**/*.d.ts");
   for (const packageName of [
     "observability",
+    "observability-effect",
     "observability-evlog",
     "observability-nestjs",
     "observability-sentry",

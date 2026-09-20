@@ -1,6 +1,6 @@
 import { reactWebLifecycle } from "./ReactWebProfile.ts";
 
-export type ProfileName = "nestjs-api" | "worker" | "react-web" | "cli" | "library";
+export type ProfileName = "nestjs-api" | "effect-api" | "worker" | "react-web" | "cli" | "library";
 
 export type AdapterCapability = "events" | "traces" | "metrics" | "defects" | "browser-ingest";
 
@@ -94,6 +94,23 @@ export const nestjsApiProfile = nodeProfile({
   shutdownDeadlineMillis: 5_000,
 });
 
+export const effectApiProfile = nodeProfile({
+  name: "effect-api",
+  runtime: "node-global",
+  events: "required",
+  traces: "required",
+  metrics: "required",
+  defects: "required-in-production",
+  browserIngest: "optional",
+  stages: ["server", "metrics"],
+  stageDeadlineMillis: [stageDeadline("server", 5_000), stageDeadline("metrics", 3_000)],
+  capabilityOrder: [
+    stageCapabilities("server", ["browser-ingest", "events", "traces", "defects"]),
+    stageCapabilities("metrics", ["metrics"]),
+  ],
+  shutdownDeadlineMillis: 5_000,
+});
+
 export const workerProfile = nodeProfile({
   name: "worker",
   runtime: "node-global",
@@ -160,6 +177,7 @@ export const libraryProfile = libraryProfileDescriptor({
 
 type ObservabilityProfiles = {
   readonly "nestjs-api": NodeObservabilityProfile;
+  readonly "effect-api": NodeObservabilityProfile;
   readonly worker: NodeObservabilityProfile;
   readonly "react-web": BrowserObservabilityProfile;
   readonly cli: NodeObservabilityProfile;
@@ -168,6 +186,7 @@ type ObservabilityProfiles = {
 
 export const observabilityProfiles: ObservabilityProfiles = Object.freeze({
   "nestjs-api": nestjsApiProfile,
+  "effect-api": effectApiProfile,
   worker: workerProfile,
   "react-web": reactWebProfile,
   cli: cliProfile,

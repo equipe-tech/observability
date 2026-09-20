@@ -41,7 +41,10 @@ const inputs = (profile: string): SetupInputEncoded => ({
   serviceName: profile === "library" ? undefined : `fixture-${profile}`,
   environments: profile === "library" ? [] : ["staging"],
   otlpEndpoint:
-    profile === "worker" || profile === "nestjs-api" || profile === "cli"
+    profile === "worker" ||
+    profile === "nestjs-api" ||
+    profile === "effect-api" ||
+    profile === "cli"
       ? "http://127.0.0.1:4318"
       : undefined,
   publicOrigin: profile === "react-web" ? "https://telemetry.example.com" : undefined,
@@ -57,7 +60,11 @@ const inputs = (profile: string): SetupInputEncoded => ({
   sourceMapPaths: [],
   browserIngest: profile === "react-web",
   defects: false,
-  metrics: profile === "nestjs-api" || profile === "worker" || profile === "react-web",
+  metrics:
+    profile === "nestjs-api" ||
+    profile === "effect-api" ||
+    profile === "worker" ||
+    profile === "react-web",
 });
 
 const run = <Value>(effect: Effect.Effect<Value, unknown, SetupGenerator>): Promise<Value> =>
@@ -96,7 +103,7 @@ const allFiles = async (root: string): Promise<ReadonlyArray<string>> => {
 };
 
 describe("setup generator", () => {
-  for (const profile of ["nestjs-api", "worker", "react-web", "cli", "library"]) {
+  for (const profile of ["nestjs-api", "effect-api", "worker", "react-web", "cli", "library"]) {
     it(`plans and writes the ${profile} profile idempotently`, async () => {
       const target = await directory();
       const proposed = await plan(target, inputs(profile));
@@ -202,6 +209,93 @@ try {
       }, 15_000);
     }
   }
+
+  it("starts the generated effect-api bootstrap as an Effect layer", async () => {
+    const target = await directory();
+    const input = {
+      ...inputs("effect-api"),
+      browserIngest: true,
+      publicOrigin: "https://app.example.test",
+      defects: true,
+      environments: ["production"],
+      sentryOrganization: "fixture-org",
+      sentryTeam: "fixture-team",
+    };
+    const generated = await write(target, input);
+    const bootstrap = generated.files.find(
+      (file) => file.path === "src/observability/bootstrap.ts",
+    );
+    expect(bootstrap?.content).toContain("@equipe-tech/observability-effect");
+    expect(bootstrap?.content).toContain('layerBrowserEventsRoute({ path: "/_telemetry/events" })');
+    expect(bootstrap?.content).not.toMatch(/evlog|@nestjs/);
+    expect(generated.dependencies.map((dependency) => dependency.name)).toContain(
+      "@equipe-tech/observability-effect",
+    );
+    await symlink(resolve("node_modules"), join(target, "node_modules"));
+    await writeFile(
+      join(target, "tsconfig.json"),
+      JSON.stringify({ extends: resolve("tsconfig.json") }),
+    );
+    const runner = join(target, "verify-bootstrap.ts");
+    await writeFile(
+      runner,
+      `import assert from "node:assert/strict";
+import { Effect, Layer } from "effect";
+import { NodeObservabilityService } from "@equipe-tech/observability-effect";
+import { httpTelemetryMiddleware, observabilityLayer } from "./src/observability/bootstrap.ts";
+const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({}) });
+const env = Object.freeze({
+  OTEL_SERVICE_NAME: ${JSON.stringify(input.serviceName)},
+  OTEL_DEPLOYMENT_ENVIRONMENT: "production",
+  OTEL_EXPORTER_OTLP_ENDPOINT: server.url.toString(),
+  OBSERVABILITY_TELEMETRY_ROLLOUT: "enabled",
+  OTEL_SERVICE_VERSION: "1.2.3",
+  SENTRY_DSN: "http://public@127.0.0.1:" + server.port + "/1",
+});
+try {
+  assert.ok(httpTelemetryMiddleware.layer);
+  const disabled = await Effect.runPromise(
+    Effect.scoped(Effect.map(Layer.build(observabilityLayer({ ...env, OBSERVABILITY_TELEMETRY_ROLLOUT: undefined })), (context) => context)),
+  );
+  assert.equal(disabled.mapUnsafe.size > 0, true);
+  const enabled = await Effect.runPromise(
+    Effect.scoped(
+      Effect.flatMap(Layer.build(observabilityLayer(env)), (context) =>
+        Effect.map(NodeObservabilityService, (handle) => ({ enabled: handle.enabled, config: handle.enabled ? handle.config : undefined })).pipe(Effect.provide(context)),
+      ),
+    ),
+  );
+  assert.equal(enabled.enabled, true);
+  assert.equal(enabled.config?.profile.name, "effect-api");
+  assert.equal(enabled.config?.identity.serviceVersion, "1.2.3");
+  assert.equal(enabled.config?.sentry.enabled, true);
+  await assert.rejects(
+    Effect.runPromise(Effect.scoped(Layer.build(observabilityLayer({ ...env, OTEL_SERVICE_VERSION: undefined, OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example.test" })))),
+    { code: "OBS_OBSERVABILITY_CONFIG_INVALID", field: "OTEL_SERVICE_VERSION" },
+  );
+} finally {
+  server.stop(true);
+}
+`,
+    );
+    const child = Bun.spawn([process.execPath, runner], {
+      cwd: target,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const timeout = setTimeout(() => child.kill(), 10_000);
+    try {
+      const [exitCode, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      expect({ exitCode, stdout, stderr }).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+    } finally {
+      clearTimeout(timeout);
+      child.kill();
+    }
+  }, 15_000);
 
   it("preserves user-owned edits even with force", async () => {
     const target = await directory();

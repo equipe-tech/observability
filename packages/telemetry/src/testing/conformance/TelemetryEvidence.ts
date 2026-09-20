@@ -73,7 +73,7 @@ export const profileConformance = (input: {
         if (!officialProfile(input.profile)) {
           return yield* Effect.fail(
             violation(
-              `Profile "${input.profile}" is not one of the five official profiles. Select nestjs-api, worker, react-web, cli, or library.`,
+              `Profile "${input.profile}" is not one of the six official profiles. Select nestjs-api, effect-api, worker, react-web, cli, or library.`,
               input.profile,
             ),
           );
