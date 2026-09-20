@@ -1,6 +1,6 @@
 {
   "name": "@equipe-tech/observability-effect",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Integracao Effect nativa da plataforma de observabilidade da Equipe Tech",
   "homepage": "https://github.com/equipe-tech/observability#readme",
   "bugs": {

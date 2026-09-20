@@ -32,7 +32,7 @@
     },
     "packages/cli": {
       "name": "@equipe-tech/observability-cli",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "bin": {
         "observability": "./dist/main.js",
       },
@@ -52,7 +52,7 @@
     },
     "packages/effect": {
       "name": "@equipe-tech/observability-effect",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "devDependencies": {
         "@effect/platform-node": "4.0.0-rc.111",
         "@equipe-tech/observability": "workspace:*",
@@ -139,7 +139,7 @@
     },
     "packages/telemetry": {
       "name": "@equipe-tech/observability",
-      "version": "0.3.6",
+      "version": "0.3.7",
       "devDependencies": {
         "effect": "4.0.0-rc.111",
       },
