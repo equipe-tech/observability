@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -34,11 +34,64 @@ export type LocalCollectorDestination = OtlpCaptureServer & {
   readonly destinationTelemetry: () => CapturedTelemetry;
   readonly destinationEndpoint: URL;
   readonly collectorInstance: string;
-  readonly awaitDestination: (runId: string, eventRunIdAttribute?: string) => Promise<void>;
+  readonly awaitDestination: (runId: string, options?: AwaitDestinationOptions) => Promise<void>;
   readonly destinationReceipt: (
     runId: string,
     binding: ConformanceTargetBinding,
   ) => TelemetryDestinationReceipt;
+};
+
+export type AwaitDestinationOptions = {
+  readonly eventRunIdAttribute?: string | undefined;
+  readonly metricRunIdAttribute?: string | undefined;
+  readonly traces?: boolean | undefined;
+};
+
+const awaitDestinationAttempts = 100;
+const awaitDestinationIntervalMs = 100;
+
+const hasRunLogs = (telemetry: CapturedTelemetry, runId: string, attribute: string): boolean =>
+  telemetry.logs.some((log) => log.attributes.get(attribute) === runId);
+
+const hasLinkedTrace = (telemetry: CapturedTelemetry, runId: string, attribute: string): boolean =>
+  telemetry.logs.some((log) => {
+    if (log.attributes.get(attribute) !== runId) return false;
+    if (Option.isNone(log.traceId) || Option.isNone(log.spanId)) return false;
+    const traceId = log.traceId.value;
+    const spanId = log.spanId.value;
+    const spans = telemetry.spans.filter((span) => span.traceId === traceId);
+    if (!spans.some((span) => span.spanId === spanId)) return false;
+    const spanIds = new Set(spans.map((span) => span.spanId));
+    return spans.some(
+      (child) =>
+        Option.isSome(child.parentSpanId) &&
+        child.parentSpanId.value !== child.spanId &&
+        spanIds.has(child.parentSpanId.value),
+    );
+  });
+
+const hasRunMetrics = (telemetry: CapturedTelemetry, runId: string, attribute: string): boolean =>
+  telemetry.metrics.some((metric) =>
+    metric.points.some((point) => point.attributes.get(attribute) === runId),
+  );
+
+export const destinationObservedRun = (
+  telemetry: CapturedTelemetry,
+  runId: string,
+  options: AwaitDestinationOptions,
+): boolean => {
+  const eventRunIdAttribute = options.eventRunIdAttribute ?? "run.id";
+  if (!hasRunLogs(telemetry, runId, eventRunIdAttribute)) return false;
+  if (options.traces === true && !hasLinkedTrace(telemetry, runId, eventRunIdAttribute)) {
+    return false;
+  }
+  if (
+    options.metricRunIdAttribute !== undefined &&
+    !hasRunMetrics(telemetry, runId, options.metricRunIdAttribute)
+  ) {
+    return false;
+  }
+  return true;
 };
 
 const DockerPort = Schema.String.check(Schema.isPattern(/127[.]0[.]0[.]1:[0-9]+/));
@@ -200,20 +253,14 @@ export const startLocalCollectorDestination = async (): Promise<LocalCollectorDe
       destinationTelemetry: collectorTelemetry,
       destinationEndpoint: acquiredDestination.endpoint,
       collectorInstance,
-      awaitDestination: async (runId, eventRunIdAttribute = "run.id") => {
-        for (let attempt = 0; attempt < 40; attempt++) {
-          if (
-            collectorTelemetry().logs.some(
-              (log) => log.attributes.get(eventRunIdAttribute) === runId,
-            )
-          ) {
-            return;
-          }
-          await new Promise((resolve) => setTimeout(resolve, 100));
+      awaitDestination: async (runId, options = {}) => {
+        for (let attempt = 0; attempt < awaitDestinationAttempts; attempt++) {
+          if (destinationObservedRun(collectorTelemetry(), runId, options)) return;
+          await new Promise((resolve) => setTimeout(resolve, awaitDestinationIntervalMs));
         }
         const logs = await command(["docker", "logs", collectorInstance]);
         throw collectorError(
-          `Collector destination did not observe run ${runId}. Collector logs: ${logs}`,
+          `Collector destination did not observe the selected signals for run ${runId}. Collector logs: ${logs}`,
           runId,
         );
       },

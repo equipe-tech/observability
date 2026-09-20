@@ -168,7 +168,11 @@ export const buildReactKit = async (): Promise<ReactKit> => {
         }
         await app.close();
         await node.close();
-        await collector.awaitDestination(runId, "fixture.run_id");
+        await collector.awaitDestination(runId, {
+          eventRunIdAttribute: "fixture.run_id",
+          metricRunIdAttribute: "fixture.run_id",
+          traces: true,
+        });
         const correlation = new CorrelationContext({
           requestId: Option.some(await Effect.runPromise(parseRequestId("fixture-request-1"))),
         });

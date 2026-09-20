@@ -171,7 +171,12 @@ export const buildEffectApiKit = async (
     );
     const lifecycleReport = await handle.close();
     if (outcome === undefined) throw fixtureError("The fixture handler did not run.");
-    if ("awaitDestination" in collector) await collector.awaitDestination(runId);
+    if ("awaitDestination" in collector) {
+      await collector.awaitDestination(runId, {
+        traces: true,
+        metricRunIdAttribute: "fixture.run_id",
+      });
+    }
     const binding = conformanceTargetBinding(contract, identityInput);
     return {
       identity,

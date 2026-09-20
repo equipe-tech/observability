@@ -137,7 +137,12 @@ export const buildWorkerTarget = async (
         .counter("WorkerJobs")
         .add(1, { "fixture.run_id": runId });
       const report = await handle[options.lifecycleOperation ?? "close"]();
-      if ("awaitDestination" in collector) await collector.awaitDestination(runId);
+      if ("awaitDestination" in collector) {
+        await collector.awaitDestination(runId, {
+          traces: true,
+          metricRunIdAttribute: "fixture.run_id",
+        });
+      }
       return {
         identity,
         emitReceipt,
