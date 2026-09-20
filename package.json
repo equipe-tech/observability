@@ -29,6 +29,7 @@
   "devDependencies": {
     "@commitlint/cli": "^21.2.2",
     "@commitlint/config-conventional": "^21.2.2",
+    "@effect/platform-node": "4.0.0-rc.111",
     "@effect/vitest": "4.0.0-rc.111",
     "@nestjs/common": "^11.2.1",
     "@nestjs/core": "^11.2.1",

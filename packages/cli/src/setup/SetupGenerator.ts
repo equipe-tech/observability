@@ -20,6 +20,7 @@ import { EnvironmentName, ServiceName } from "../ResourceNamePolicy.ts";
 
 const ProfileNameSchema = Schema.Literals([
   "nestjs-api",
+  "effect-api",
   "worker",
   "react-web",
   "cli",
@@ -234,6 +235,7 @@ const dependenciesFor = (input: SetupInput): ReadonlyArray<SetupDependency> => {
     "@equipe-tech/observability-cli",
   ]);
   if (input.profile === "nestjs-api") packages.add("@equipe-tech/observability-nestjs");
+  if (input.profile === "effect-api") packages.add("@equipe-tech/observability-effect");
   if (input.profile === "worker" || input.profile === "cli" || input.profile === "nestjs-api")
     packages.add("@equipe-tech/observability-evlog");
   if (input.profile === "react-web" || input.browserIngest)
@@ -383,6 +385,43 @@ export const startNestObservability = (env: { readonly [name: string]: string | 
     adapters: [evlogAdapter().registration${sentryRegistration}],
   });
 ${browserComposition}`;
+};
+
+const effectBootstrap = (input: SetupInput): string => {
+  const sentryImport = input.defects
+    ? `import { sentryDefectAdapter } from "@equipe-tech/observability-sentry/node";\n`
+    : "";
+  const sentryRegistration = input.defects ? ", sentryDefectAdapter().registration" : "";
+  const browserImport = input.browserIngest ? "layerBrowserEventsRoute,\n  " : "";
+  const browserRoute = input.browserIngest
+    ? `
+export const browserEventsRoute = layerBrowserEventsRoute({ path: ${JSON.stringify(`/${input.ingestPath.replace(/^\/+/, "")}`)} });
+`
+    : "";
+  return `import {
+  effectEventsAdapter,
+  httpTelemetry,
+  ${browserImport}layerObservability,
+} from "@equipe-tech/observability-effect";
+${sentryImport}import { telemetryContract } from "../../observability/contract.ts";
+import { observabilityPolicy } from "../../observability/policy.ts";
+
+export const observabilityLayer = (env: { readonly [name: string]: string | undefined }) =>
+  layerObservability({
+    enabled: env.OBSERVABILITY_TELEMETRY_ROLLOUT === "enabled",
+    profile: "effect-api",
+    env: {
+      ...env,
+      OTEL_SERVICE_VERSION: env[${JSON.stringify(input.releaseVariable)}],
+      SENTRY_DSN: env[${JSON.stringify(input.sentryDsnVariable)}],
+    },
+    contract: telemetryContract,
+    policy: observabilityPolicy,
+    adapters: [effectEventsAdapter().registration${sentryRegistration}],
+  });
+
+export const httpTelemetryMiddleware = httpTelemetry({ proxyPolicy: ${JSON.stringify(input.proxyPolicy)} });
+${browserRoute}`;
 };
 
 const reactBootstrap = (
@@ -801,9 +840,11 @@ const renderedFiles = (
       content:
         input.profile === "nestjs-api"
           ? nestBootstrap(input)
-          : input.profile === "react-web"
-            ? reactBootstrap(input)
-            : nodeBootstrap(input),
+          : input.profile === "effect-api"
+            ? effectBootstrap(input)
+            : input.profile === "react-web"
+              ? reactBootstrap(input)
+              : nodeBootstrap(input),
       ownership: "user-preserved",
     },
     {
@@ -916,7 +957,7 @@ const validateInput = Effect.fn("validateSetupInput")(function* (encoded: SetupI
   if (!officialProfiles.has(encoded.profile)) {
     return yield* fail(
       "OBS_SETUP_PROFILE_INVALID",
-      `Profile ${encoded.profile} is not official. Select nestjs-api, worker, react-web, cli, or library.`,
+      `Profile ${encoded.profile} is not official. Select nestjs-api, effect-api, worker, react-web, cli, or library.`,
       encoded.profile,
     );
   }
@@ -1006,7 +1047,10 @@ const validateInput = Effect.fn("validateSetupInput")(function* (encoded: SetupI
       "defects",
     );
   if (
-    (input.profile === "worker" || input.profile === "nestjs-api" || input.profile === "cli") &&
+    (input.profile === "worker" ||
+      input.profile === "nestjs-api" ||
+      input.profile === "effect-api" ||
+      input.profile === "cli") &&
     input.otlpEndpoint === undefined
   )
     return yield* fail(

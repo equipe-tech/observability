@@ -35,6 +35,7 @@ export {
 } from "./ObservabilityConfigError.ts";
 export {
   cliProfile,
+  effectApiProfile,
   libraryProfile,
   nestjsApiProfile,
   observabilityProfiles,

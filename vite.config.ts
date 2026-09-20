@@ -82,6 +82,14 @@ export default defineConfig({
         replacement: `${root}packages/telemetry/src/node/index.ts`,
       },
       {
+        find: "@equipe-tech/observability-effect/testing",
+        replacement: `${root}packages/effect/src/testing/index.ts`,
+      },
+      {
+        find: "@equipe-tech/observability-effect",
+        replacement: `${root}packages/effect/src/index.ts`,
+      },
+      {
         find: "@equipe-tech/observability-nestjs/testing",
         replacement: `${root}packages/nestjs/src/testing/index.ts`,
       },

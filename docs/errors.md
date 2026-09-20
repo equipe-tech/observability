@@ -39,6 +39,14 @@ Não sugira repetir quando a operação pode ter completado parcialmente, ou qua
 - `OBS_NESTJS_ERROR_CATALOG_INVALID` indica uma das quatro falhas a seguir: as declarações enumeráveis do catálogo não correspondem à lista `_codes` criada por `defineErrorCatalog`; a declaração nomeada não expõe código, status e mensagem válidos; a declaração nomeada usa mensagem templated em vez de mensagem literal; o objeto passado como catálogo não foi produzido por `defineErrorCatalog`. Reconstrua o catálogo com `defineErrorCatalog` e reinicie o serviço.
 - `OBS_NESTJS_UNEXPECTED_DEFECT` é a projeção pública de um defeito sem código estável. A resposta não expõe o diagnóstico interno e inclui `request_id` e `trace_id` quando disponíveis. Use esses identificadores para localizar o evento de defeito e a captura Sentry.
 
+## Códigos do limite Effect
+
+- `OBS_EFFECT_ERROR_CATALOG_PREFIX_INVALID` indica que `defineErrorCatalog` recebeu um prefixo vazio, fora da gramática ou no namespace reservado `OBS_`. Defina um prefixo de aplicação estável e reinicie o serviço.
+- `OBS_EFFECT_ERROR_CATALOG_INVALID` indica uma declaração sem status inteiro entre 400 e 599, sem mensagem literal, com nome fora da gramática ou um catálogo vazio. O erro identifica o código de catálogo afetado. Corrija a declaração e reinicie o serviço.
+- `OBS_EFFECT_UNEXPECTED_DEFECT` é a projeção pública de uma falha ou defeito sem código estável no catálogo. A resposta 500 não expõe o diagnóstico interno e inclui `request_id` e `trace_id` quando disponíveis.
+- `OBS_EFFECT_ROUTE_POLICY_INVALID` indica `healthRouteTemplates` fora da gramática de rota ou `proxyPolicy` diferente de `direct` e `framework`. A Layer do middleware falha antes de servir requisições. Corrija a opção e reinicie o serviço.
+- `OBS_EFFECT_BROWSER_EVENTS_PATH_INVALID` indica um `path` de ingestão que não é um caminho absoluto sem segmentos vazios. A Layer da rota falha antes de servir requisições.
+
 ## Suíte de conformidade
 
 - `OBS_CONFORMANCE_LOCAL_COLLECTOR_FAILED` indica que o Collector isolado de teste não iniciou, não ficou pronto, não entregou o run esperado ou não concluiu uma aquisição local. Verifique o daemon Docker e a rota local antes de repetir a suíte.

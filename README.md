@@ -64,6 +64,7 @@ packages/
   sentry/             @equipe-tech/observability-sentry: captura sanitizada de defeitos Node e browser
   react/              @equipe-tech/observability-react: runtime React web, listeners e entrega coordenada
   nestjs/             @equipe-tech/observability-nestjs: integração HTTP e lifecycle do NestJS
+  effect/             @equipe-tech/observability-effect: integração HTTP e Layers para aplicações Effect
   cli/                observability dev|provision: CLI, assets da stack local e do Collector de produção
 docs/                 padrões de código, erros, testes e workflow
 tools/oxlint/         plugins de lint do projeto (anti-slop, effect)
@@ -76,7 +77,7 @@ O núcleo `@equipe-tech/observability` publica entrypoints explícitos:
 
 | Entrypoint         | Conteúdo                                                                                          |
 | ------------------ | ------------------------------------------------------------------------------------------------- |
-| `./effect`         | `WideEvent` e `layerWideEvent` para aplicações Effect                                             |
+| `./effect`         | `WideEvent`, `layerWideEvent` e `effectEventsAdapter` para aplicações Effect                      |
 | `./metrics`        | Facade sem dependência de framework para counters, histogramas, gauges observáveis, flush e close |
 | `./node`           | `runMain`, composição Node, digest SHA-256 de auditoria, lifecycle e ingestão do browser          |
 | `./browser`        | `BrowserTelemetry` compatível com Effect, com fila limitada, batch e transporte injetável         |
@@ -84,6 +85,8 @@ O núcleo `@equipe-tech/observability` publica entrypoints explícitos:
 | `./testing`        | Captura em memória dos exports OTLP reais para asserts de spans, logs e métricas                  |
 
 A integração NestJS vive na raiz de `@equipe-tech/observability-nestjs`. Ela publica `TelemetryModule`, `TelemetryInterceptor`, `withRequestSpan`, `createBrowserEventsController` e a política HTTP. O adapter oficial de eventos vive em `@equipe-tech/observability-evlog` e fornece `registration`, `drops()` e `pending()`.
+
+A integração Effect nativa vive em `@equipe-tech/observability-effect`. Ela publica `layerObservability`, o middleware `httpTelemetry`, o limite `errorBoundary` com `defineErrorCatalog` e `layerBrowserEventsRoute` para `effect/unstable/http`. Aplicações Effect usam o perfil `effect-api` e o adapter de eventos `effectEventsAdapter`, sem evlog. Consulte [Semântica HTTP do adapter Effect](docs/effect-http-semantics.md).
 
 Os [adaptadores Sentry](docs/sentry-adapters.md) publicam entrypoints separados para Node e browser, uma política compartilhada e um plano de upload de source maps sem credenciais.
 

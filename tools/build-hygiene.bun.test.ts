@@ -24,7 +24,7 @@ test("the Bun suite discovers nested package and tool tests", async () => {
 });
 
 test("package builds disable emit after type errors", async () => {
-  for (const packageName of ["telemetry", "nestjs", "evlog", "sentry", "react", "cli"]) {
+  for (const packageName of ["telemetry", "nestjs", "effect", "evlog", "sentry", "react", "cli"]) {
     const value: unknown = JSON.parse(
       await readFile(join(projectRoot, "packages", packageName, "tsconfig.build.json"), "utf8"),
     );

@@ -782,7 +782,11 @@ const setupInput = (options: {
   sourceMapPaths: [...options.sourceMapPaths],
   browserIngest: options.browserIngest || options.profile === "react-web",
   defects: options.defects,
-  metrics: options.metrics || options.profile === "nestjs-api" || options.profile === "worker",
+  metrics:
+    options.metrics ||
+    options.profile === "nestjs-api" ||
+    options.profile === "effect-api" ||
+    options.profile === "worker",
 });
 
 const printSetupFiles = Effect.fn("printSetupFiles")(function* (

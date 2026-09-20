@@ -126,7 +126,7 @@ const nodeProfile = (
     return Effect.fail(
       invalid(
         "profile",
-        `Profile "${name}" does not own a Node global runtime. Use nestjs-api, worker, or cli.`,
+        `Profile "${name}" does not own a Node global runtime. Use nestjs-api, effect-api, worker, or cli.`,
         "a profile that owns a Node global runtime",
       ),
     );

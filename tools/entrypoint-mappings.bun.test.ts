@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import cliManifest from "../packages/cli/package.json" with { type: "json" };
+import effectManifest from "../packages/effect/package.json" with { type: "json" };
 import evlogManifest from "../packages/evlog/package.json" with { type: "json" };
 import nestjsManifest from "../packages/nestjs/package.json" with { type: "json" };
 import reactManifest from "../packages/react/package.json" with { type: "json" };
@@ -31,6 +32,8 @@ const expected = new Map([
   ["@equipe-tech/observability/policy", "packages/telemetry/src/policy/entrypoint.ts"],
   ["@equipe-tech/observability/testing", "packages/telemetry/src/testing/index.ts"],
   ["@equipe-tech/observability/node", "packages/telemetry/src/node/index.ts"],
+  ["@equipe-tech/observability-effect/testing", "packages/effect/src/testing/index.ts"],
+  ["@equipe-tech/observability-effect", "packages/effect/src/index.ts"],
   ["@equipe-tech/observability-nestjs/testing", "packages/nestjs/src/testing/index.ts"],
   ["@equipe-tech/observability-nestjs", "packages/nestjs/src/index.ts"],
   ["@equipe-tech/observability-evlog/testing", "packages/evlog/src/testing/index.ts"],
@@ -70,6 +73,10 @@ describe("development entrypoint mappings", () => {
       ...packageEntrypoints(
         "@equipe-tech/observability-nestjs",
         Object.keys(nestjsManifest.exports),
+      ),
+      ...packageEntrypoints(
+        "@equipe-tech/observability-effect",
+        Object.keys(effectManifest.exports),
       ),
       ...packageEntrypoints("@equipe-tech/observability-evlog", Object.keys(evlogManifest.exports)),
       ...packageEntrypoints(

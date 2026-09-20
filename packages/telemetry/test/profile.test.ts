@@ -11,9 +11,10 @@ import {
 } from "../src/profile/ObservabilityProfile.ts";
 
 describe("official observability profiles", () => {
-  it("exports exactly the five immutable descriptors", () => {
+  it("exports exactly the six immutable descriptors", () => {
     expect(Object.keys(observabilityProfiles)).toEqual([
       "nestjs-api",
+      "effect-api",
       "worker",
       "react-web",
       "cli",
@@ -65,6 +66,7 @@ describe("official observability profiles", () => {
     ]);
     expect(cells).toEqual([
       ["nestjs-api", "required", "required", "required", "required-in-production", "optional"],
+      ["effect-api", "required", "required", "required", "required-in-production", "optional"],
       ["worker", "required", "required", "required", "required-in-production", "forbidden"],
       ["react-web", "required", "required", "optional", "required-in-production", "required"],
       ["cli", "required", "optional", "optional", "optional", "forbidden"],

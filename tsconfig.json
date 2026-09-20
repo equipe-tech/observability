@@ -26,6 +26,8 @@
       "@equipe-tech/observability/metrics": ["./packages/telemetry/src/Metrics.ts"],
       "@equipe-tech/observability/node": ["./packages/telemetry/src/node/index.ts"],
       "@equipe-tech/observability/testing": ["./packages/telemetry/src/testing/index.ts"],
+      "@equipe-tech/observability-effect/testing": ["./packages/effect/src/testing/index.ts"],
+      "@equipe-tech/observability-effect": ["./packages/effect/src/index.ts"],
       "@equipe-tech/observability-nestjs/testing": ["./packages/nestjs/src/testing/index.ts"],
       "@equipe-tech/observability-nestjs": ["./packages/nestjs/src/index.ts"],
       "@equipe-tech/observability-evlog/testing": ["./packages/evlog/src/testing/index.ts"],
