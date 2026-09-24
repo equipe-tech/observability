@@ -10,13 +10,19 @@ import { packageVersion } from "./PackageVersion.ts";
 import { publicErrorFromCause } from "./ErrorReporter.ts";
 import { ProvisionAssets } from "./ProvisionAssets.ts";
 import { AxiomApi, SentryApi } from "./ProviderApis.ts";
+import { AxiomOperationsApi } from "./AxiomOperationsApi.ts";
 import { Authentication, RemoteEnvironment } from "./RemoteEnvironment.ts";
 import { OperationsPlanner } from "./OperationsPlan.ts";
 import { OperationsState } from "./OperationsState.ts";
 import { StackAssets } from "./StackAssets.ts";
 import { SetupGenerator } from "./setup/SetupGenerator.ts";
 
-const ProviderLayer = Layer.mergeAll(CredentialsStore.layer, AxiomApi.layer, SentryApi.layer);
+const ProviderLayer = Layer.mergeAll(
+  CredentialsStore.layer,
+  AxiomApi.layer,
+  AxiomOperationsApi.layer,
+  SentryApi.layer,
+);
 const RemoteLayer = Layer.mergeAll(Authentication.layer, RemoteEnvironment.layer).pipe(
   Layer.provide(ProviderLayer),
 );

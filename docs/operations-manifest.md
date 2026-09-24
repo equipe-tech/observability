@@ -37,14 +37,63 @@ As queries gerenciadas aplicam estes limites:
 - 128 caracteres por campo e 32 caracteres por token de quantil ou duração;
 - 255 bytes UTF-8 no nome do dataset e 128 bytes UTF-8 por nome de sinal.
 
+## Dashboards e monitores
+
+Um dashboard declara `id`, `title` e `panels`. Cada painel declara `id`, `title`, `sources` e `query`. A CLI organiza os painéis em duas colunas. Qualquer valor declarado em `filters`, inclusive uma lista vazia, falha com `OBS_CLI_DASHBOARD_FILTER_UNSUPPORTED`, pois a API V2 de dashboards não possui filtros. Filtre dentro da query de cada painel.
+
+Um monitor declara estes campos, todos obrigatórios:
+
+| Campo                 | Tipo                        | Regra                                             |
+| --------------------- | --------------------------- | ------------------------------------------------- |
+| `id`                  | slug                        | Imutável. Identifica o monitor no Axiom.          |
+| `title`               | texto                       | Até 200 caracteres.                               |
+| `source`              | `{ kind, name }`            | Sinal do contrato.                                |
+| `query`               | query gerenciada            | Mesma gramática dos painéis.                      |
+| `severity`            | `critical` ou `warning`     | Registrada na descrição do monitor.               |
+| `owner`               | slug                        | Time responsável.                                 |
+| `window`              | duração `<n>m` ou `<n>h`    | Janela avaliada, até `1440m`.                     |
+| `threshold`           | `{ operator, value, unit }` | `operator` aceita `>`, `>=`, `<` e `<=`.          |
+| `thresholdRationale`  | texto                       | Justificativa do valor.                           |
+| `thresholdReviewDate` | data `AAAA-MM-DD`           | Data de revisão do threshold.                     |
+| `noDataBehavior`      | `ok` ou `alert`             | `alert` dispara quando a janela não tem dados.    |
+| `cooldown`            | duração `<n>m` ou `<n>h`    | Intervalo mínimo entre notificações, até `1440m`. |
+| `notifierRef`         | `env:<VARIAVEL>`            | Nome da variável que contém o ID do notifier.     |
+| `runbookUrl`          | URL `https`                 | Incluída na descrição do monitor.                 |
+| `syntheticTest`       | `{ procedure, expected }`   | Teste sintético do alerta.                        |
+| `recovery`            | `{ procedure }`             | Procedimento de recuperação.                      |
+
+O manifesto nunca contém IDs de notifier ou URLs de webhook. `plan`, `apply` e `verify` leem o ID pela variável de `notifierRef` e falham com `OBS_CLI_NOTIFIER_UNRESOLVED` quando ela falta. O ID entra somente no corpo enviado ao Axiom e em fingerprints SHA-256.
+
+A CLI identifica cada recurso pelo marcador `observability-managed:<service>/<environment>/<id>` na última linha da descrição. Títulos não aceitam caracteres de controle, e unidades aceitam somente letras, dígitos e `%/._-`. Assim, nenhum texto do manifesto forma uma linha de marcador. O uid do dashboard é `<service>-<environment>-<id>` e tem até 128 caracteres. Um dashboard com esse uid e sem o marcador faz o plano falhar com `OBS_CLI_PROVIDER_RESOURCE_UNMANAGED`. A CLI não adota recursos não gerenciados. Dois monitores com o mesmo marcador falham com `OBS_CLI_PROVIDER_RESOURCE_AMBIGUOUS`. Recursos sem marcador permanecem intactos. A CLI nunca apaga dashboards ou monitores.
+
+O monitor usa o tipo `Threshold`, avaliação a cada 5 minutos ou na janela menor e `notifyEveryRun: false`. Assim, o Axiom notifica na mudança de estado e na recuperação. O `cooldown` fica registrado na descrição, pois a API V2 não possui um campo equivalente. `disabled` e `disabledUntil` ficam fora da comparação, para que um silêncio operacional não vire drift.
+
+O plano compara uma projeção normalizada do recurso desejado com a do recurso observado. Nome, descrição, dono, gráficos, queries, layout, janela, operador, threshold, notifiers e parâmetros de disparo entram na projeção. Campos de apresentação adicionados pelo Axiom ficam fora dela. As `queryOptions` de cada gráfico entram na projeção, exceto valores padrão vazios, como `""`, `"{}"`, `"[]"` e `"false"`. Uma edição no console aparece como `update` no plano e como `OBS_CLI_DRIFT_DETECTED` em `verify`. Antes de cada atualização, a CLI relê o recurso e compara sua revisão com a do plano. A revisão do dashboard combina a projeção e a versão do Axiom. A revisão do monitor combina a projeção, o ID e o `updatedAt`. Uma divergência retorna `OBS_CLI_AXIOM_RESOURCE_CONFLICT` sem escrever. Assim, uma edição concorrente em campos fora da projeção também bloqueia o apply. A atualização de dashboard envia a versão observada com `overwrite: false`. A API de monitores não oferece atualização condicional, então resta uma janela curta entre a releitura e o `PUT`. Se o Axiom omitir `updatedAt`, a revisão do monitor cobre somente a projeção e o ID. O `PUT` de monitor substitui o documento e preserva `disabled` e `disabledUntil` observados, para não desfazer um silêncio operacional.
+
+A criação de monitor não é idempotente, e a leitura da lista pode atrasar. Uma criação que terminou como `pending` ou `outcome-unknown` nunca se repete sozinha. A intenção de criação continua aberta até que o monitor apareça ou uma nova tentativa autorizada a substitua, mesmo quando outra ação do mesmo apply falha antes. Se o monitor aparece, o plano o trata como existente e conclui a intenção no apply. Se ele continua ausente, o plano marca a criação como `destructive`. Confira o console do Axiom e use `--allow-destructive` somente depois de confirmar a ausência.
+
+### Compilação para o Axiom
+
+Queries de eventos leem `signal(logs)` no dataset `<service>-<environment>-logs` em APL. Atributos do contrato usam o layout OpenTelemetry do Axiom, como `['attributes.event.name']`. `service.name`, `service.namespace` e `service.version` ficam na raiz. `deployment.environment.name` usa `['resource.deployment.environment.name']`. `bin(timestamp, <duração>)` vira `bin(_time, <duração>)`.
+
+Queries métricas usam MPL no dataset `<service>-<environment>-metrics`. Elas aceitam estágios `where` seguidos de um único `summarize` e leem exatamente uma métrica. `in` vira uma disjunção entre parênteses. `bin` de tempo é omitido, pois o MPL alinha pelo intervalo da consulta. Cada tipo aceita uma agregação:
+
+| Tipo               | Agregação                               | MPL                                                      |
+| ------------------ | --------------------------------------- | -------------------------------------------------------- |
+| `counter`          | `sum(value)`                            | `map increase`, `align using sum`, `group using sum`     |
+| `histogram`        | `quantile(value, q)`                    | `bucket using interpolate_cumulative_histogram(rate, q)` |
+| `observable_gauge` | `sum`, `avg`, `min` ou `max` de `value` | `align using <fn>`, `group using <fn>`                   |
+
+Outras combinações, `signal(traces)`, aliases métricos com mais de um destino e `bin` de campos que não representam tempo falham com `OBS_CLI_QUERY_INVALID`.
+
 ## Evidência de capacidades
 
 | Provider | Capacidade          | Operação HTTP                                                                                        | URL oficial                                                      | Consultado em | Status                                          |
 | -------- | ------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------- | ----------------------------------------------- |
 | Axiom    | Listar datasets     | `GET /v2/datasets`                                                                                   | https://axiom.co/docs/reference/api                              | 2026-08-31    | verificado pelo cliente e testes HTTP locais    |
 | Axiom    | Criar dataset       | `POST /v2/datasets`                                                                                  | https://axiom.co/docs/reference/api                              | 2026-08-31    | verificado pelo cliente e testes HTTP locais    |
-| Axiom    | Dashboards          | nenhuma operação pública verificada                                                                  | https://axiom.co/docs/reference/api                              | 2026-08-31    | ação manual                                     |
-| Axiom    | Monitores           | nenhuma operação pública verificada                                                                  | https://axiom.co/docs/reference/api                              | 2026-08-31    | ação manual                                     |
+| Axiom    | Dashboards          | `GET` e `PUT /v2/dashboards/uid/{uid}`, `POST /v2/dashboards`                                        | https://axiom.co/docs/restapi/endpoints/createDashboard          | 2026-09-24    | verificado pelo cliente e testes HTTP locais    |
+| Axiom    | Monitores           | `GET` e `POST /v2/monitors`, `PUT /v2/monitors/{id}`                                                 | https://axiom.co/docs/restapi/endpoints/createMonitor            | 2026-09-24    | verificado pelo cliente e testes HTTP locais    |
 | Axiom    | Retenção            | nenhuma atualização pública verificada                                                               | https://axiom.co/docs/reference/api                              | 2026-08-31    | ação manual, redução destrutiva                 |
 | Axiom    | Correlation         | nenhuma operação pública estável verificada                                                          | https://axiom.co/docs/reference/api                              | 2026-08-31    | ação manual                                     |
 | Sentry   | Ler e criar projeto | `GET /api/0/projects/{organization}/{project}/`, `POST /api/0/teams/{organization}/{team}/projects/` | https://docs.sentry.io/api/projects/                             | 2026-08-31    | leitura ops e provisionamento RemoteEnvironment |
@@ -57,4 +106,4 @@ O token Sentry é uma credencial de organização usada pela CLI. O recurso de p
 
 ## Ações manuais
 
-Recursos sem ciclo público verificado viram ações manuais persistidas. A conclusão é uma confirmação do operador, nunca uma afirmação de verificação pelo provider. `verify` falha enquanto houver ação pendente ou expirada que ainda exista no manifesto atual. A CLI preserva ações e confirmações de ambientes fora do escopo selecionado. Ela descarta ações de dashboards, monitores e outros recursos somente quando a definição deixa o manifesto completo, na próxima mutação de estado. Retenção é reconsultada em todo `plan` e `verify`. Projeto Sentry e client key também são reconsultados; quando ausentes, viram uma criação planejada com intenção persistida e read-back, não uma confirmação manual. Cada nome exato de dataset precisa aparecer uma vez. Duplicatas ou nomes apenas prefixados não satisfazem o pré-requisito. Drift de um pré-requisito legível invalida a confirmação anterior. Ações manuais destrutivas usam `--allow-destructive` e `--confirm-manual` no mesmo digest exato.
+Retenção e Correlation não têm ciclo público verificado e viram ações manuais persistidas. A conclusão é uma confirmação do operador, nunca uma afirmação de verificação pelo provider. `verify` falha enquanto houver ação pendente ou expirada que ainda exista no manifesto atual. A CLI preserva ações e confirmações de ambientes fora do escopo selecionado. Ela descarta ações de recursos que deixam o manifesto completo, inclusive ações antigas de dashboards e monitores, na próxima mutação de estado. Retenção é reconsultada em todo `plan` e `verify`. Projeto Sentry e client key também são reconsultados; quando ausentes, viram uma criação planejada com intenção persistida e read-back, não uma confirmação manual. Cada nome exato de dataset precisa aparecer uma vez. Duplicatas ou nomes apenas prefixados não satisfazem o pré-requisito. Drift de um pré-requisito legível invalida a confirmação anterior. Ações manuais destrutivas usam `--allow-destructive` e `--confirm-manual` no mesmo digest exato.

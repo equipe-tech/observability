@@ -1,15 +1,35 @@
-import { Clock, Context, Effect, Layer, Option, Schema } from "effect";
+import { Clock, Config, Context, Effect, Layer, Option, Schema } from "effect";
 import { classifyAxiomRetentionChange } from "./AxiomDatasetRetention.ts";
 import { CredentialsStore, type CredentialsError } from "./CredentialsStore.ts";
 import {
   type AxiomDataset,
   type AxiomDatasetKind,
+  ambiguousMutation,
   AxiomApi,
   RemoteApiError,
   SentryApi,
 } from "./ProviderApis.ts";
 import { environmentAxiom, environmentDatasets, RemoteEnvironment } from "./RemoteEnvironment.ts";
-import { type ValidatedOperationsManifest } from "./OperationsManifest.ts";
+import {
+  type OperationsManifestError,
+  type ValidatedOperationsManifest,
+} from "./OperationsManifest.ts";
+import type { ManagedQueryError } from "./ManagedQuery.ts";
+import {
+  AxiomOperationsApi,
+  type ObservedDashboard,
+  type ObservedMonitor,
+} from "./AxiomOperationsApi.ts";
+import {
+  describesMarker,
+  desiredAxiomResources,
+  observedDashboardFingerprint,
+  observedDashboardRevision,
+  observedMonitorFingerprint,
+  observedMonitorRevision,
+  type DesiredAxiomResource,
+} from "./AxiomResources.ts";
+import type { AxiomCredentials } from "./CredentialsStore.ts";
 import {
   ManualAction,
   MutationIntent,
@@ -22,7 +42,7 @@ export class OperationPlanAction extends Schema.Class<OperationPlanAction>(
   "@equipe-tech/observability-cli/OperationPlanAction",
 )({
   id: Schema.NonEmptyString,
-  kind: Schema.Literals(["create", "manual", "destructive"]),
+  kind: Schema.Literals(["create", "update", "manual", "destructive"]),
   provider: Schema.Literals(["Axiom", "Sentry"]),
   capability: Schema.NonEmptyString,
   resource: Schema.NonEmptyString,
@@ -64,6 +84,9 @@ export class OperationsError extends Schema.TaggedError<OperationsError>()("Oper
     "OBS_CLI_DRIFT_DETECTED",
     "OBS_CLI_APPLY_OUTCOME_UNKNOWN",
     "OBS_CLI_MUTATION_UNRESOLVED",
+    "OBS_CLI_NOTIFIER_UNRESOLVED",
+    "OBS_CLI_PROVIDER_RESOURCE_AMBIGUOUS",
+    "OBS_CLI_PROVIDER_RESOURCE_UNMANAGED",
   ]),
   message: Schema.String,
   attempts: Schema.Int.pipe(Schema.optionalKey),
@@ -168,12 +191,6 @@ const manualDefinitionIds = (
       ids.add(`axiom.retention.${environment}`);
     }
     ids.add(`axiom.correlation.${environment}`);
-    for (const dashboard of validated.dashboards) {
-      ids.add(`axiom.dashboard.${environment}.${dashboard.definition.id}`);
-    }
-    for (const monitor of validated.monitors) {
-      ids.add(`axiom.monitor.${environment}.${monitor.definition.id}`);
-    }
   }
   return ids;
 };
@@ -193,6 +210,7 @@ const makePlan = (
   localAssetPaths: ReadonlyArray<string>,
   localAssetChanges: ReadonlyArray<string>,
   state: OperationsStateDocument,
+  axiomResourceActions: ReadonlyArray<OperationPlanAction>,
 ): Effect.Effect<OperationsPlanDocument, never, never> =>
   Effect.gen(function* () {
     const manifest = validated.manifest;
@@ -370,28 +388,6 @@ const makePlan = (
             ),
           ),
       });
-      for (const dashboard of validated.dashboards) {
-        manualDefinitions.push({
-          id: `axiom.dashboard.${environment}.${dashboard.definition.id}`,
-          provider: "Axiom",
-          capability: "dashboard",
-          environment,
-          desiredFingerprint: fingerprint(JSON.stringify(dashboard.definition)),
-          kind: "manual",
-          publiclySatisfied: true,
-        });
-      }
-      for (const monitor of validated.monitors) {
-        manualDefinitions.push({
-          id: `axiom.monitor.${environment}.${monitor.definition.id}`,
-          provider: "Axiom",
-          capability: "monitor",
-          environment,
-          desiredFingerprint: fingerprint(JSON.stringify(monitor.definition)),
-          kind: "manual",
-          publiclySatisfied: true,
-        });
-      }
     }
     for (const manual of manualDefinitions) {
       const persisted = state.manualActions.find(
@@ -417,6 +413,7 @@ const makePlan = (
         );
       }
     }
+    actions.push(...axiomResourceActions);
     actions.sort((left, right) => left.id.localeCompare(right.id));
     const selectedDatasets = datasets
       .filter((dataset) => desiredDatasetNames.has(dataset.name))
@@ -482,6 +479,106 @@ const makePlan = (
     });
   });
 
+const AxiomNotifierId = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,128}$/));
+
+const resolveNotifierIds = Effect.fn("resolveNotifierIds")(function* (
+  validated: ValidatedOperationsManifest,
+) {
+  const notifierIds = new Map<string, string>();
+  for (const monitor of validated.monitors) {
+    const reference = monitor.definition.notifierRef;
+    if (notifierIds.has(reference)) continue;
+    const variable = reference.slice("env:".length);
+    const notifierId = yield* Config.schema(AxiomNotifierId, variable).pipe(
+      Effect.mapError(
+        () =>
+          new OperationsError({
+            code: "OBS_CLI_NOTIFIER_UNRESOLVED",
+            message: `Monitor notifier ${reference} requires ${variable} to contain an Axiom notifier id.`,
+            cause: variable,
+          }),
+      ),
+    );
+    notifierIds.set(reference, notifierId);
+  }
+  return notifierIds;
+});
+
+type AxiomResourceObservation = {
+  readonly dashboards: ReadonlyMap<string, ObservedDashboard>;
+  readonly monitors: ReadonlyArray<ObservedMonitor>;
+};
+
+const managedMonitors = (
+  monitors: ReadonlyArray<ObservedMonitor>,
+  marker: string,
+): ReadonlyArray<ObservedMonitor> =>
+  monitors.filter((monitor) => describesMarker(monitor.description, marker));
+
+const planAxiomResourceActions = Effect.fn("planAxiomResourceActions")(function* (
+  desired: ReadonlyArray<DesiredAxiomResource>,
+  observation: AxiomResourceObservation,
+  ambiguousCreations: ReadonlySet<string>,
+) {
+  const actions: Array<OperationPlanAction> = [];
+  for (const resource of desired) {
+    const action = (
+      kind: OperationPlanAction["kind"],
+      resourceName: string,
+      observedFingerprint: string,
+    ) =>
+      new OperationPlanAction({
+        id: resource.actionId,
+        kind,
+        provider: "Axiom",
+        capability: resource.kind,
+        resource: resourceName,
+        environment: resource.environment,
+        desiredFingerprint: resource.fingerprint,
+        observedFingerprint,
+      });
+    if (resource.kind === "dashboard") {
+      const observed = observation.dashboards.get(resource.uid);
+      if (observed === undefined) {
+        actions.push(action("create", resource.uid, fingerprint("absent")));
+        continue;
+      }
+      if (!describesMarker(observed.dashboard.description, resource.marker)) {
+        return yield* new OperationsError({
+          code: "OBS_CLI_PROVIDER_RESOURCE_UNMANAGED",
+          message: `Axiom dashboard ${resource.uid} exists without the managed marker. Rename or remove it in Axiom, or choose another dashboard id.`,
+          cause: resource.uid,
+        });
+      }
+      if (observedDashboardFingerprint(observed) !== resource.fingerprint) {
+        actions.push(action("update", resource.uid, observedDashboardRevision(observed)));
+      }
+      continue;
+    }
+    const matches = managedMonitors(observation.monitors, resource.marker);
+    if (matches.length > 1) {
+      return yield* new OperationsError({
+        code: "OBS_CLI_PROVIDER_RESOURCE_AMBIGUOUS",
+        message: `Axiom has ${matches.length} monitors managed as ${resource.resource}. Remove the duplicates in Axiom before planning.`,
+        cause: resource.resource,
+      });
+    }
+    const observed = matches[0];
+    if (observed === undefined) {
+      actions.push(
+        ambiguousCreations.has(resource.actionId)
+          ? action("destructive", resource.resource, fingerprint("ambiguous-creation"))
+          : action("create", resource.resource, fingerprint("absent")),
+      );
+      continue;
+    }
+    if (observedMonitorFingerprint(observed) !== resource.fingerprint) {
+      actions.push(action("update", resource.resource, observedMonitorRevision(observed)));
+    }
+  }
+  return actions;
+});
+
 const selectEnvironments = (
   validated: ValidatedOperationsManifest,
   requested: ReadonlyArray<string>,
@@ -514,6 +611,8 @@ export type PlanRequest = {
 
 type OperationsServiceError =
   | OperationsError
+  | ManagedQueryError
+  | OperationsManifestError
   | RemoteApiError
   | CredentialsError
   | import("./RemoteEnvironment.ts").RemoteEnvironmentError
@@ -541,9 +640,32 @@ export class OperationsPlanner extends Context.Service<
       const sentry = yield* SentryApi;
       const stateStore = yield* OperationsState;
       const remote = yield* RemoteEnvironment;
+      const axiomOperations = yield* AxiomOperationsApi;
+
+      const observeAxiomResources = Effect.fn("OperationsPlanner.observeAxiomResources")(function* (
+        credentials: AxiomCredentials,
+        desired: ReadonlyArray<DesiredAxiomResource>,
+      ) {
+        const dashboards = new Map<string, ObservedDashboard>();
+        for (const resource of desired) {
+          if (resource.kind !== "dashboard") continue;
+          const observed = yield* axiomOperations.dashboard(credentials, resource.uid);
+          if (Option.isSome(observed)) dashboards.set(resource.uid, observed.value);
+        }
+        const monitors = desired.some((resource) => resource.kind === "monitor")
+          ? yield* axiomOperations.monitors(credentials)
+          : [];
+        return { dashboards, monitors };
+      });
 
       const observe = Effect.fn("OperationsPlanner.observe")(function* (request: PlanRequest) {
         const environments = yield* selectEnvironments(request.validated, request.environments);
+        const notifierIds = yield* resolveNotifierIds(request.validated);
+        const desiredResources = yield* desiredAxiomResources(
+          request.validated,
+          environments,
+          notifierIds,
+        );
         const credentials = yield* credentialsStore.load();
         if (Option.isNone(credentials) || credentials.value.axiom === undefined) {
           return yield* new OperationsError({
@@ -555,6 +677,10 @@ export class OperationsPlanner extends Context.Service<
         }
         const datasets = yield* axiom.datasets(credentials.value.axiom);
         const tokens = yield* axiom.tokens(credentials.value.axiom);
+        const resourceObservation = yield* observeAxiomResources(
+          credentials.value.axiom,
+          desiredResources,
+        );
         const credentialsFingerprint = fingerprint(
           JSON.stringify({
             axiom: credentials.value.axiom,
@@ -584,6 +710,21 @@ export class OperationsPlanner extends Context.Service<
           }
         }
         const state = yield* stateStore.load(request.validated.manifest.service);
+        const ambiguousCreations = new Set(
+          state.mutations
+            .filter(
+              (mutation) =>
+                environments.includes(mutation.environment) &&
+                mutation.operation === "create" &&
+                (mutation.status === "pending" || mutation.status === "outcome-unknown"),
+            )
+            .map((mutation) => mutation.id),
+        );
+        const axiomResourceActions = yield* planAxiomResourceActions(
+          desiredResources,
+          resourceObservation,
+          ambiguousCreations,
+        );
         return {
           environments,
           datasets,
@@ -594,6 +735,8 @@ export class OperationsPlanner extends Context.Service<
           state,
           axiomCredentials: credentials.value.axiom,
           credentials: credentials.value,
+          desiredResources,
+          axiomResourceActions,
         };
       });
 
@@ -621,6 +764,7 @@ export class OperationsPlanner extends Context.Service<
           request.localAssetPaths ?? [],
           request.localAssetChanges ?? [],
           observed.state,
+          observed.axiomResourceActions,
         );
       });
 
@@ -702,6 +846,7 @@ export class OperationsPlanner extends Context.Service<
           request.localAssetPaths ?? [],
           request.localAssetChanges ?? [],
           observed.state,
+          observed.axiomResourceActions,
         );
         if (request.axiomEdgeDeployment === undefined) {
           return yield* new OperationsError({
@@ -769,6 +914,231 @@ export class OperationsPlanner extends Context.Service<
           );
         }
         let stateGeneration = observed.state.generation;
+        const updateMutations = (
+          change: (mutations: ReadonlyArray<MutationIntent>) => ReadonlyArray<MutationIntent>,
+        ) =>
+          stateStore
+            .update(
+              current.service,
+              stateGeneration,
+              (state) =>
+                new OperationsStateDocument({
+                  version: state.version,
+                  generation: state.generation,
+                  service: state.service,
+                  manualActions: state.manualActions,
+                  mutations: change(state.mutations),
+                }),
+            )
+            .pipe(
+              Effect.map((next) => {
+                stateGeneration = next.generation;
+              }),
+            );
+        const settleMutation = (id: string, status: MutationIntent["status"], updatedAt: string) =>
+          updateMutations((mutations) =>
+            mutations.map((entry) =>
+              entry.id === id ? mutationWithStatus(entry, status, updatedAt) : entry,
+            ),
+          );
+        const observeResourceFingerprint = Effect.fn(
+          "OperationsPlanner.observeResourceFingerprint",
+        )(function* (resource: DesiredAxiomResource) {
+          if (resource.kind === "dashboard") {
+            const dashboard = yield* axiomOperations.dashboard(
+              observed.axiomCredentials,
+              resource.uid,
+            );
+            return Option.isSome(dashboard) &&
+              describesMarker(dashboard.value.dashboard.description, resource.marker)
+              ? Option.some(observedDashboardFingerprint(dashboard.value))
+              : Option.none<string>();
+          }
+          const monitors = managedMonitors(
+            yield* axiomOperations.monitors(observed.axiomCredentials),
+            resource.marker,
+          );
+          const monitor = monitors[0];
+          return monitors.length === 1 && monitor !== undefined
+            ? Option.some(observedMonitorFingerprint(monitor))
+            : Option.none<string>();
+        });
+        const readBackDelay = (attempt: number) => {
+          const delay =
+            operationsPlanEnvironment.NODE_ENV === "test" ? 0 : Math.min(250 * 2 ** attempt, 4_000);
+          return delay > 0 ? Effect.sleep(`${delay} millis`) : Effect.void;
+        };
+        const mutateResource = Effect.fn("OperationsPlanner.mutateResource")(function* (
+          action: OperationPlanAction,
+          resource: DesiredAxiomResource,
+        ) {
+          if (resource.kind === "dashboard") {
+            if (action.kind === "create") {
+              return yield* axiomOperations
+                .createDashboard(observed.axiomCredentials, resource.uid, resource.document)
+                .pipe(
+                  Effect.catchTag("RemoteApiError", (error) =>
+                    error.code === "OBS_CLI_AXIOM_RESOURCE_CONFLICT"
+                      ? observeResourceFingerprint(resource).pipe(
+                          Effect.flatMap((readBack) =>
+                            Option.getOrUndefined(readBack) === resource.fingerprint
+                              ? Effect.void
+                              : Effect.fail(error),
+                          ),
+                        )
+                      : Effect.fail(error),
+                  ),
+                );
+            }
+            const existing = yield* axiomOperations.dashboard(
+              observed.axiomCredentials,
+              resource.uid,
+            );
+            if (
+              Option.isNone(existing) ||
+              observedDashboardRevision(existing.value) !== action.observedFingerprint
+            ) {
+              return yield* new RemoteApiError({
+                code: "OBS_CLI_AXIOM_RESOURCE_CONFLICT",
+                message: `Axiom dashboard ${resource.uid} changed after the plan. Run ops plan again before applying.`,
+                provider: "Axiom",
+                status: 409,
+                cause: resource.uid,
+              });
+            }
+            return yield* axiomOperations.updateDashboard(
+              observed.axiomCredentials,
+              resource.uid,
+              existing.value.version,
+              resource.document,
+            );
+          }
+          if (action.kind !== "update") {
+            return yield* axiomOperations.createMonitor(
+              observed.axiomCredentials,
+              resource.document,
+            );
+          }
+          const monitors = managedMonitors(
+            yield* axiomOperations.monitors(observed.axiomCredentials),
+            resource.marker,
+          );
+          const monitor = monitors[0];
+          if (
+            monitors.length !== 1 ||
+            monitor === undefined ||
+            observedMonitorRevision(monitor) !== action.observedFingerprint
+          ) {
+            return yield* new RemoteApiError({
+              code: "OBS_CLI_AXIOM_RESOURCE_CONFLICT",
+              message: `Axiom monitor ${resource.resource} changed before the update. Run ops plan again before applying.`,
+              provider: "Axiom",
+              status: 409,
+              cause: monitors.length,
+            });
+          }
+          const silence = Option.getOrUndefined(monitor.disabledUntil);
+          return yield* axiomOperations.updateMonitor(
+            observed.axiomCredentials,
+            monitor.id,
+            silence === undefined
+              ? { ...resource.document, disabled: monitor.disabled }
+              : { ...resource.document, disabled: monitor.disabled, disabledUntil: silence },
+          );
+        });
+        const applyAxiomResource = Effect.fn("OperationsPlanner.applyAxiomResource")(function* (
+          action: OperationPlanAction,
+        ) {
+          const resource = observed.desiredResources.find(
+            (candidate) => candidate.actionId === action.id,
+          );
+          if (resource === undefined) {
+            return yield* new OperationsError({
+              code: "OBS_CLI_PLAN_STALE",
+              message: `Plan action ${action.id} has no desired resource. Run ops plan again.`,
+              cause: action.id,
+            });
+          }
+          const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+          const operation =
+            resource.kind === "monitor" && action.kind !== "update" ? "create" : action.kind;
+          yield* updateMutations((mutations) => [
+            ...mutations.filter((mutation) => mutation.id !== action.id),
+            new MutationIntent({
+              id: action.id,
+              operation,
+              resource: action.resource,
+              environment: action.environment,
+              desiredFingerprint: action.desiredFingerprint,
+              status: "pending",
+              updatedAt,
+            }),
+          ]);
+          const persistInterruptedOutcome = () =>
+            settleMutation(action.id, "outcome-unknown", updatedAt).pipe(Effect.ignore);
+          const settleFailure = (
+            error: RemoteApiError,
+          ): Effect.Effect<never, OperationsServiceError> =>
+            Effect.gen(function* () {
+              const outcomeUnknown = ambiguousMutation(error);
+              yield* settleMutation(
+                action.id,
+                outcomeUnknown ? "outcome-unknown" : "resolved",
+                updatedAt,
+              );
+              if (outcomeUnknown) {
+                return yield* new OperationsError({
+                  code: "OBS_CLI_APPLY_OUTCOME_UNKNOWN",
+                  message: `The outcome of Axiom ${resource.kind} mutation ${action.id} is unknown. Run ops plan again to reconcile it.`,
+                  cause: error,
+                });
+              }
+              return yield* error;
+            });
+          yield* mutateResource(action, resource).pipe(
+            Effect.onInterrupt(persistInterruptedOutcome),
+            Effect.catchTag("RemoteApiError", settleFailure),
+          );
+          let attempts = 0;
+          let lastResponse = "status=pending";
+          while (attempts < 6) {
+            attempts += 1;
+            const readBack = yield* observeResourceFingerprint(resource).pipe(
+              Effect.onInterrupt(persistInterruptedOutcome),
+              Effect.catchTag("RemoteApiError", (error) =>
+                settleFailure(
+                  new RemoteApiError({
+                    code: "OBS_CLI_REMOTE_FAILED",
+                    message: `Read-back of Axiom ${resource.kind} ${action.resource} failed.`,
+                    provider: "Axiom",
+                    status: 0,
+                    cause: error,
+                  }),
+                ),
+              ),
+            );
+            const matched = Option.getOrUndefined(readBack) === resource.fingerprint;
+            lastResponse = `status=200 matched=${matched} resource=${action.resource}`.slice(
+              0,
+              512,
+            );
+            if (matched) {
+              yield* settleMutation(action.id, "resolved", updatedAt);
+              return;
+            }
+            if (attempts < 6) {
+              yield* readBackDelay(attempts).pipe(Effect.onInterrupt(persistInterruptedOutcome));
+            }
+          }
+          yield* settleMutation(action.id, "outcome-unknown", updatedAt);
+          return yield* new OperationsError({
+            code: "OBS_CLI_READ_BACK_TIMEOUT",
+            message: `Read-back for ${action.resource} did not converge after ${attempts} attempts.`,
+            attempts,
+            lastResponse,
+            cause: action.id,
+          });
+        });
         const activeManualIds = manualDefinitionIds(
           request.validated,
           request.validated.manifest.environments,
@@ -795,6 +1165,15 @@ export class OperationsPlanner extends Context.Service<
             current.environments.includes(mutation.environment) &&
             (mutation.status === "pending" || mutation.status === "outcome-unknown"),
         )) {
+          const creationStillAbsent =
+            unresolved.operation === "create" &&
+            current.actions.some(
+              (action) =>
+                action.id === unresolved.id &&
+                action.capability === "monitor" &&
+                action.kind !== "update",
+            );
+          if (creationStillAbsent) continue;
           const next = yield* stateStore.update(
             current.service,
             stateGeneration,
@@ -843,6 +1222,10 @@ export class OperationsPlanner extends Context.Service<
           stateGeneration = next.generation;
         }
         for (const action of current.actions) {
+          if (action.capability === "dashboard" || action.capability === "monitor") {
+            yield* applyAxiomResource(action);
+            continue;
+          }
           if (action.kind === "manual" || action.kind === "destructive") {
             const legacyEnvironment = observed.credentials.environments.find(
               (environment) =>
