@@ -899,8 +899,10 @@ describe("provider HTTP boundary", () => {
     });
     try {
       const error = await identityError(`http://127.0.0.1:${origin.port}`);
-      expect(error.code).toBe("OBS_CLI_REMOTE_FAILED");
-      expect(error.status).toBe(0);
+      expect(error.code).toBe("OBS_CLI_REMOTE_REDIRECTED");
+      expect(error.status).toBe(302);
+      expect(error.message).toContain("to /v2/user");
+      expect(error.message).not.toContain(`127.0.0.1:${destination.port}`);
       expect(redirectedRequests).toBe(0);
     } finally {
       await origin.stop(true);

@@ -727,7 +727,7 @@ export const parseManagedQuery = Effect.fn("parseManagedQuery")(function* (
 });
 
 const controlOrFormatPattern = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
-const quote = (value: string): string => {
+export const quoteAplString = (value: string): string => {
   let escaped = "";
   for (const character of value) {
     if (character === "\\") escaped += "\\\\";
@@ -746,12 +746,12 @@ const quote = (value: string): string => {
   return `'${escaped}'`;
 };
 const renderLiteral = (literal: ManagedQueryLiteral): string => {
-  if (literal.kind === "string") return quote(literal.value);
+  if (literal.kind === "string") return quoteAplString(literal.value);
   if (literal.kind === "boolean") return literal.value ? "true" : "false";
   return String(literal.value);
 };
 
-const renderIdentifier = (identifier: string): string => `[${quote(identifier)}]`;
+const renderIdentifier = (identifier: string): string => `[${quoteAplString(identifier)}]`;
 
 const quotedLength = (value: string): number => {
   let length = 2;
@@ -940,8 +940,8 @@ export const compileManagedQuery = Effect.fn("compileManagedQuery")(
       const comparisons = stage.comparisons.map((comparison) => {
         if (comparison.field === input.query.binding.field) {
           return input.target.signals.length === 1
-            ? `${renderIdentifier(comparison.field)} == ${quote(input.target.signals[0] ?? "")}`
-            : `${renderIdentifier(comparison.field)} in (${input.target.signals.map(quote).join(", ")})`;
+            ? `${renderIdentifier(comparison.field)} == ${quoteAplString(input.target.signals[0] ?? "")}`
+            : `${renderIdentifier(comparison.field)} in (${input.target.signals.map(quoteAplString).join(", ")})`;
         }
         if (comparison.operator === "in") {
           return `${renderIdentifier(comparison.field)} in (${comparison.values.map(renderLiteral).join(", ")})`;

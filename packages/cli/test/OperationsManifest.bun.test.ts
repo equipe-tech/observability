@@ -66,7 +66,24 @@ monitors:
       kind: metric
       name: payment.latency
     query: signal(metrics) | where metric.name == "payment.latency" | summarize quantile(value, 0.95)
-    threshold: 25
+    severity: warning
+    owner: payments
+    window: 10m
+    threshold:
+      operator: ">"
+      value: 25
+      unit: ms
+    thresholdRationale: Initial conservative latency ceiling.
+    thresholdReviewDate: 2026-12-01
+    noDataBehavior: ok
+    cooldown: 15m
+    notifierRef: env:AXIOM_NOTIFIER_WARNING_ID
+    runbookUrl: https://example.com/runbooks/latency
+    syntheticTest:
+      procedure: Emit one slow canary payment in staging.
+      expected: The monitor fires after one window.
+    recovery:
+      procedure: Stop the canary and wait two windows.
 `;
 
 const validate = Effect.gen(function* () {
@@ -696,5 +713,72 @@ describe("operations manifest", () => {
     expect(incompatibleEventError.issues).toContain(
       "incompatible event alias targets event payment.old",
     );
+  });
+
+  test("rejects monitors without runbook, window or no-data behavior", async () => {
+    for (const field of ["runbookUrl", "window", "noDataBehavior"]) {
+      const withoutField = validManifest
+        .split("\n")
+        .filter((line) => !line.startsWith(`    ${field}:`))
+        .join("\n");
+      const error = await Effect.runPromise(Effect.flip(parseOperationsManifest(withoutField)));
+      expect(error.code).toBe("OBS_CLI_MANIFEST_INVALID");
+    }
+  });
+
+  test("rejects literal notifier ids, invalid review dates and oversized windows", async () => {
+    const literalNotifier = validManifest.replace(
+      "notifierRef: env:AXIOM_NOTIFIER_WARNING_ID",
+      "notifierRef: sCz6vuFexc1eABSN0Q",
+    );
+    const notifierError = await Effect.runPromise(
+      Effect.flip(parseOperationsManifest(literalNotifier)),
+    );
+    expect(notifierError.code).toBe("OBS_CLI_MANIFEST_INVALID");
+    const index = await Effect.runPromise(parseOperationsContractIndex(contract));
+    const invalidDate = await Effect.runPromise(
+      parseOperationsManifest(
+        validManifest
+          .replace("thresholdReviewDate: 2026-12-01", "thresholdReviewDate: 2026-02-30")
+          .replace("window: 10m", "window: 25h"),
+      ),
+    );
+    const error = await Effect.runPromise(
+      Effect.flip(validateOperationsManifest(invalidDate, index)),
+    );
+    if (error._tag !== "OperationsManifestError") throw new Error("Expected manifest error.");
+    expect(error.issues).toEqual([
+      "monitor latency window exceeds 1440m",
+      "monitor latency thresholdReviewDate is not a calendar date",
+    ]);
+  });
+
+  test("rejects every declared dashboard filter that the Axiom dashboards API cannot represent", async () => {
+    const index = await Effect.runPromise(parseOperationsContractIndex(contract));
+    for (const filters of ["[payment.provider]", "[]", "payment.provider"]) {
+      const filtered = validManifest.replace(
+        "    title: Payments\n",
+        `    title: Payments\n    filters: ${filters}\n`,
+      );
+      const manifest = await Effect.runPromise(parseOperationsManifest(filtered));
+      const error = await Effect.runPromise(
+        Effect.flip(validateOperationsManifest(manifest, index)),
+      );
+      expect(error.code).toBe("OBS_CLI_DASHBOARD_FILTER_UNSUPPORTED");
+    }
+  });
+
+  test("rejects titles and units that could forge a managed marker line", async () => {
+    const forged = [
+      validManifest.replace(
+        "    title: Latency\n",
+        '    title: "Latency\\nobservability-managed:checkout/staging/payments"\n',
+      ),
+      validManifest.replace("      unit: ms\n", '      unit: "ms\\nforged"\n'),
+    ];
+    for (const manifest of forged) {
+      const error = await Effect.runPromise(Effect.flip(parseOperationsManifest(manifest)));
+      expect(error.code).toBe("OBS_CLI_MANIFEST_INVALID");
+    }
   });
 });

@@ -7,8 +7,15 @@ const Identifier = Schema.String.check(
   Schema.isPattern(resourceNamePattern),
   Schema.isMaxLength(63),
 );
-const Title = Schema.NonEmptyString.check(Schema.isMaxLength(200));
+const Title = Schema.NonEmptyString.check(
+  Schema.isMaxLength(200),
+  Schema.isPattern(/^[^\p{Cc}\p{Cf}\u2028\u2029]+$/u),
+);
 const QueryText = Schema.NonEmptyString.check(Schema.isMaxLength(16_384));
+const SentryProjectSlug = Schema.String.check(
+  Schema.isPattern(/^[a-z0-9_]+(?:-[a-z0-9_]+)*$/),
+  Schema.isMaxLength(100),
+);
 const PositiveDays = Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(3_650));
 
 export class SignalReference extends Schema.Class<SignalReference>(
@@ -37,7 +44,33 @@ export class DashboardDefinition extends Schema.Class<DashboardDefinition>(
   id: Identifier,
   title: Title,
   panels: Schema.Array(PanelDefinition).check(Schema.isMinLength(1), Schema.isMaxLength(64)),
+  filters: Schema.Unknown.pipe(Schema.optionalKey),
 }) {}
+
+const MonitorDuration = Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,3}[mh]$/));
+const ReviewDate = Schema.String.check(Schema.isPattern(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/));
+const OperatorText = Schema.NonEmptyString.check(Schema.isMaxLength(1_000));
+const NotifierReference = Schema.String.check(Schema.isPattern(/^env:[A-Z][A-Z0-9_]{0,127}$/));
+const RunbookUrl = Schema.String.check(
+  Schema.isPattern(/^https:\/\/[^\s]+$/),
+  Schema.isMaxLength(2_048),
+);
+
+export class MonitorThreshold extends Schema.Class<MonitorThreshold>(
+  "@equipe-tech/observability-cli/MonitorThreshold",
+)({
+  operator: Schema.Literals([">", ">=", "<", "<="]),
+  value: Schema.Finite,
+  unit: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9%/._-]{1,32}$/)),
+}) {}
+
+export class MonitorSyntheticTest extends Schema.Class<MonitorSyntheticTest>(
+  "@equipe-tech/observability-cli/MonitorSyntheticTest",
+)({ procedure: OperatorText, expected: OperatorText }) {}
+
+export class MonitorRecovery extends Schema.Class<MonitorRecovery>(
+  "@equipe-tech/observability-cli/MonitorRecovery",
+)({ procedure: OperatorText }) {}
 
 export class MonitorDefinition extends Schema.Class<MonitorDefinition>(
   "@equipe-tech/observability-cli/MonitorDefinition",
@@ -46,8 +79,25 @@ export class MonitorDefinition extends Schema.Class<MonitorDefinition>(
   title: Title,
   source: SignalReference,
   query: QueryText,
-  threshold: Schema.Finite,
+  severity: Schema.Literals(["critical", "warning"]),
+  owner: Identifier,
+  window: MonitorDuration,
+  threshold: MonitorThreshold,
+  thresholdRationale: OperatorText,
+  thresholdReviewDate: ReviewDate,
+  noDataBehavior: Schema.Literals(["ok", "alert"]),
+  cooldown: MonitorDuration,
+  notifierRef: NotifierReference,
+  runbookUrl: RunbookUrl,
+  syntheticTest: MonitorSyntheticTest,
+  recovery: MonitorRecovery,
 }) {}
+
+export const monitorDurationMinutes = (duration: string): number => {
+  const amount = Number.parseInt(duration.slice(0, -1), 10);
+  return duration.endsWith("h") ? amount * 60 : amount;
+};
+export const maximumMonitorWindowMinutes = 1_440;
 
 export class OperationsManifest extends Schema.Class<OperationsManifest>(
   "@equipe-tech/observability-cli/OperationsManifest",
@@ -59,8 +109,20 @@ export class OperationsManifest extends Schema.Class<OperationsManifest>(
   retention: Schema.Array(RetentionDefinition),
   dashboards: Schema.Array(DashboardDefinition),
   monitors: Schema.Array(MonitorDefinition),
-  sentry: Schema.Struct({ enabled: Schema.Boolean }),
+  sentry: Schema.Struct({
+    enabled: Schema.Boolean,
+    projects: Schema.optionalKey(
+      Schema.Array(SentryProjectSlug).check(
+        Schema.isMinLength(1),
+        Schema.isMaxLength(20),
+        Schema.isUnique(),
+      ),
+    ),
+  }),
 }) {}
+
+export const sentryProjects = (manifest: OperationsManifest): ReadonlyArray<string> =>
+  manifest.sentry.projects ?? [manifest.service];
 
 const ContractIndexEventAttribute = Schema.Struct({
   name: Schema.NonEmptyString,
@@ -132,6 +194,7 @@ export class OperationsManifestError extends Schema.TaggedError<OperationsManife
       "OBS_CLI_CONTRACT_INDEX_INVALID",
       "OBS_CLI_CONTRACT_INDEX_STALE",
       "OBS_CLI_SOURCE_INVALID",
+      "OBS_CLI_DASHBOARD_FILTER_UNSUPPORTED",
     ]),
     message: Schema.String,
     issues: Schema.Array(Schema.String),
@@ -583,6 +646,21 @@ export const validateOperationsManifest = Effect.fn("validateOperationsManifest"
       issues.push(`duplicate panel ${dashboard.id}/${panel}`);
     }
   }
+  for (const monitor of manifest.monitors) {
+    if (monitorDurationMinutes(monitor.window) > maximumMonitorWindowMinutes) {
+      issues.push(`monitor ${monitor.id} window exceeds ${maximumMonitorWindowMinutes}m`);
+    }
+    if (monitorDurationMinutes(monitor.cooldown) > maximumMonitorWindowMinutes) {
+      issues.push(`monitor ${monitor.id} cooldown exceeds ${maximumMonitorWindowMinutes}m`);
+    }
+    const reviewDate = new Date(`${monitor.thresholdReviewDate}T00:00:00.000Z`);
+    if (
+      Number.isNaN(reviewDate.getTime()) ||
+      reviewDate.toISOString().slice(0, 10) !== monitor.thresholdReviewDate
+    ) {
+      issues.push(`monitor ${monitor.id} thresholdReviewDate is not a calendar date`);
+    }
+  }
   const environments = new Set(manifest.environments);
   for (const retention of manifest.retention) {
     if (!environments.has(retention.environment))
@@ -689,6 +767,15 @@ export const validateOperationsManifest = Effect.fn("validateOperationsManifest"
       issues.push(`unknown ${reference.kind} ${reference.name}`);
   }
   if (issues.length > 0) return yield* manifestInvalid(issues, issues.join(";"));
+  const filteredDashboard = manifest.dashboards.find((dashboard) => "filters" in dashboard);
+  if (filteredDashboard !== undefined) {
+    return yield* new OperationsManifestError({
+      code: "OBS_CLI_DASHBOARD_FILTER_UNSUPPORTED",
+      message: `Dashboard ${filteredDashboard.id} declares filters, but the Axiom dashboards API has no filter field. Remove the filters and filter inside each panel query.`,
+      issues: [`unsupported dashboard filters ${filteredDashboard.id}`],
+      cause: filteredDashboard.filters,
+    });
+  }
   const dashboards: Array<ValidatedDashboard> = [];
   for (const dashboard of manifest.dashboards) {
     const panels: Array<ValidatedPanel> = [];

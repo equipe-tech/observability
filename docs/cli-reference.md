@@ -85,6 +85,8 @@ observability ops verify [--dir <path>] [--environment <name>]... --axiom-edge-d
 
 `apply` exige esse arquivo exato. A CLI recalcula as precondições e rejeita manifesto, contrato, credenciais ou provider alterado. O plano inclui datasets, edge deployment Axiom obrigatório, token de ingestão, projeto e client key Sentry, modo da fila e fingerprint e caminhos dos assets locais do Collector. O apply rejeita mudanças locais posteriores ao plan; verify reporta drift local. O padrão é `durable`; `best-effort` exige `--accept-best-effort-data-loss` em plan e apply. `--allow-destructive` vale somente para o digest fornecido. `--confirm-manual` registra confirmação do operador somente para um ID contido no mesmo plano. Cada mutação grava intenção antes da chamada e executa read-back limitado. Após uma interrupção ou resposta ambígua, a próxima execução lê o dataset. O estado desejado conclui a intenção e a ausência permite repetir a criação idempotente.
 
+Dashboards e monitores declarados no manifesto viram criações e atualizações planejadas. O plano contém somente IDs, nomes de recurso e fingerprints. Queries, IDs de notifier e respostas do provider ficam fora do plano. Um dashboard existente sem o marcador gerenciado no uid desejado faz o plano falhar, e a CLI não o adota. A CLI nunca apaga dashboards ou monitores.
+
 `verify` faz somente leituras. Drift, mutação sem resultado conhecido e ação manual pendente causam falha. Consulte [Manifesto de operações](operations-manifest.md) para o schema, a gramática de queries e a tabela de capacidades.
 
 As queries gerenciadas têm estes limites:
@@ -199,6 +201,7 @@ O nome do token Axiom segue este formato:
 | `OBS_CLI_REMOTE_UNAUTHORIZED`                  | O provider recusa a credencial ou o acesso à organização.                   |
 | `OBS_CLI_REMOTE_FAILED`                        | A requisição falha ou o provider retorna um status inesperado.              |
 | `OBS_CLI_REMOTE_INVALID_RESPONSE`              | A resposta do provider não passa no parse.                                  |
+| `OBS_CLI_REMOTE_REDIRECTED`                    | O provider responde com redirect 3xx, que a CLI não segue.                  |
 | `OBS_CLI_GITHUB_INPUT_INVALID`                 | Repositório, ambiente, release, rollout ou ambiente local é inválido.       |
 | `OBS_CLI_GITHUB_ENVIRONMENT_NOT_FOUND`         | O GitHub Environment explícito não existe ou não está acessível.            |
 | `OBS_CLI_GITHUB_RESPONSE_INVALID`              | A resposta de metadados do GitHub não passa no schema.                      |
@@ -238,7 +241,7 @@ O nome do token Axiom segue este formato:
 | `OBS_CLI_CONTRACT_INDEX_INVALID`               | O índice de contrato não passa no parse.                                    |
 | `OBS_CLI_PLAN_REQUIRED`                        | `apply` não recebeu um plano legível.                                       |
 | `OBS_CLI_PLAN_INVALID`                         | O plano, digest, ambiente ou confirmação é inválido.                        |
-| `OBS_CLI_PROVIDER_CAPABILITY_UNAVAILABLE`      | Uma credencial necessária para observar o provider não existe.              |
+| `OBS_CLI_PROVIDER_CAPABILITY_UNAVAILABLE`      | Falta credencial ou projeto Sentry declarado para observar o provider.      |
 | `OBS_CLI_DRIFT_DETECTED`                       | O estado observado diverge do manifesto.                                    |
 | `OBS_CLI_QUERY_INVALID`                        | A query gerenciada não passa na gramática limitada.                         |
 | `OBS_CLI_QUERY_SIGNAL_UNBOUND`                 | A query não vincula o nome do sinal.                                        |
@@ -249,3 +252,8 @@ O nome do token Axiom segue este formato:
 | `OBS_CLI_OPERATIONS_STATE_BUSY`                | O lock está ocupado ou a geração esperada mudou.                            |
 | `OBS_CLI_AXIOM_DATASET_CONFLICT`               | O dataset observado diverge da criação solicitada.                          |
 | `OBS_CLI_AXIOM_DATASET_OUTCOME_UNKNOWN`        | O resultado da criação do dataset não pôde ser provado.                     |
+| `OBS_CLI_AXIOM_RESOURCE_CONFLICT`              | O dashboard ou monitor mudou no Axiom durante o apply.                      |
+| `OBS_CLI_NOTIFIER_UNRESOLVED`                  | A variável do notifier de um monitor está ausente ou inválida.              |
+| `OBS_CLI_PROVIDER_RESOURCE_AMBIGUOUS`          | Mais de um monitor no Axiom usa o mesmo marcador gerenciado.                |
+| `OBS_CLI_PROVIDER_RESOURCE_UNMANAGED`          | Um dashboard sem marcador gerenciado ocupa o uid desejado.                  |
+| `OBS_CLI_DASHBOARD_FILTER_UNSUPPORTED`         | O dashboard declara filtros que a API de dashboards não representa.         |
