@@ -102,8 +102,20 @@ Outras combinações, `signal(traces)`, aliases métricos com mais de um destino
 
 O projeto Sentry canônico usa o slug do serviço, compartilhado entre os ambientes, tanto no provisionamento legado quanto na leitura do fluxo `ops`. O nome antigo `<service>-<environment>` do preflight `ops` não é mais usado. Isso evita que o planejamento consulte um projeto diferente daquele criado por `RemoteEnvironment`.
 
+Um serviço com projetos Sentry próprios declara seus slugs em `sentry.projects`:
+
+```yaml
+sentry:
+  enabled: true
+  projects: [checkout-api, checkout-web]
+```
+
+A lista aceita de 1 a 20 slugs únicos com letras minúsculas, dígitos, `_` e `-`. Sem `projects`, a CLI usa `[<service>]` e mantém a criação planejada do projeto canônico. Com `projects`, a CLI apenas lê cada projeto e sua client key. O provisionamento do ambiente no apply usa somente Axiom e não cria nem troca o projeto Sentry do ambiente. A DSN exportada continua a do projeto registrado pelo provisionamento do ambiente. Esse projeto precisa constar em `sentry.projects`, ou o plano falha com `OBS_CLI_DRIFT_DETECTED`. Um projeto declarado ausente ou sem client key falha com `OBS_CLI_PROVIDER_CAPABILITY_UNAVAILABLE`, sem criação. Crie esse projeto no Sentry com a plataforma correta.
+
+As requisições aos providers não seguem redirecionamentos. Um status 3xx falha com `OBS_CLI_REMOTE_REDIRECTED` e informa somente o caminho de destino. Em uma mutação, o redirect torna o resultado desconhecido, e a CLI reconcilia a intenção antes de uma nova tentativa. O Sentry redireciona um slug renomeado para o slug atual. Nesse caso, a mensagem nomeia o projeto e pede a correção de `sentry.projects`.
+
 O token Sentry é uma credencial de organização usada pela CLI. O recurso de projeto consumido por aplicações é a client key que contém a DSN. A CLI não inventa um token de projeto.
 
 ## Ações manuais
 
-Retenção e Correlation não têm ciclo público verificado e viram ações manuais persistidas. A conclusão é uma confirmação do operador, nunca uma afirmação de verificação pelo provider. `verify` falha enquanto houver ação pendente ou expirada que ainda exista no manifesto atual. A CLI preserva ações e confirmações de ambientes fora do escopo selecionado. Ela descarta ações de recursos que deixam o manifesto completo, inclusive ações antigas de dashboards e monitores, na próxima mutação de estado. Retenção é reconsultada em todo `plan` e `verify`. Projeto Sentry e client key também são reconsultados; quando ausentes, viram uma criação planejada com intenção persistida e read-back, não uma confirmação manual. Cada nome exato de dataset precisa aparecer uma vez. Duplicatas ou nomes apenas prefixados não satisfazem o pré-requisito. Drift de um pré-requisito legível invalida a confirmação anterior. Ações manuais destrutivas usam `--allow-destructive` e `--confirm-manual` no mesmo digest exato.
+Retenção e Correlation não têm ciclo público verificado e viram ações manuais persistidas. A conclusão é uma confirmação do operador, nunca uma afirmação de verificação pelo provider. `verify` falha enquanto houver ação pendente ou expirada que ainda exista no manifesto atual. A CLI preserva ações e confirmações de ambientes fora do escopo selecionado. Ela descarta ações de recursos que deixam o manifesto completo, inclusive ações antigas de dashboards e monitores, na próxima mutação de estado. Retenção é reconsultada em todo `plan` e `verify`. Projeto Sentry e client key também são reconsultados. Sem `sentry.projects`, a ausência vira uma criação planejada com intenção persistida e read-back, não uma confirmação manual. Com `sentry.projects`, a ausência falha o plano. Cada nome exato de dataset precisa aparecer uma vez. Duplicatas ou nomes apenas prefixados não satisfazem o pré-requisito. Drift de um pré-requisito legível invalida a confirmação anterior. Ações manuais destrutivas usam `--allow-destructive` e `--confirm-manual` no mesmo digest exato.

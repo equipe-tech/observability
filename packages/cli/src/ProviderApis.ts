@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Schema } from "effect";
+import { Context, Effect, Layer, Option, Schema } from "effect";
 import {
   AxiomDatasetRetentionDays,
   AxiomDatasetRetentionInvariant,
@@ -115,6 +115,7 @@ export class RemoteApiError extends Schema.TaggedError<RemoteApiError>()("Remote
     "OBS_CLI_REMOTE_UNAUTHORIZED",
     "OBS_CLI_REMOTE_FAILED",
     "OBS_CLI_REMOTE_INVALID_RESPONSE",
+    "OBS_CLI_REMOTE_REDIRECTED",
     "OBS_CLI_AXIOM_DATASET_CONFLICT",
     "OBS_CLI_AXIOM_DATASET_OUTCOME_UNKNOWN",
     "OBS_CLI_AXIOM_RESOURCE_CONFLICT",
@@ -190,6 +191,25 @@ export const resolveAxiomBaseUrl = Effect.fn("resolveAxiomBaseUrl")(function* ()
 export const axiomUrl = (baseUrl: URL, remotePath: string): string =>
   new URL(remotePath, `${baseUrl.toString().replace(/\/$/, "")}/`).toString();
 
+export class ProviderRedirect extends Schema.Class<ProviderRedirect>(
+  "@equipe-tech/observability-cli/ProviderRedirect",
+)({
+  status: Schema.Int,
+  path: Schema.Option(Schema.String),
+}) {}
+
+const providerRedirect = (requestUrl: string, response: Response): ProviderRedirect => {
+  const location = response.headers.get("location");
+  const target = location === null ? null : URL.parse(location, requestUrl);
+  return new ProviderRedirect({
+    status: response.status,
+    path: target === null ? Option.none() : Option.some(target.pathname),
+  });
+};
+
+const redirectTarget = (redirect: ProviderRedirect): string =>
+  Option.match(redirect.path, { onNone: () => "", onSome: (path) => ` to ${path}` });
+
 export type RemoteResponse = {
   readonly status: number;
   readonly content: string;
@@ -220,8 +240,28 @@ export const remoteRequestWithTimeout = (timeoutMilliseconds: number) =>
           ),
         );
       }, timeoutMilliseconds);
-      fetch(url, { ...init, redirect: "error", signal: controller.signal }).then(
+      fetch(url, { ...init, redirect: "manual", signal: controller.signal }).then(
         (response) => {
+          if (response.status >= 300 && response.status < 400) {
+            const redirect = providerRedirect(url, response);
+            const redirected = Effect.fail(
+              new RemoteApiError({
+                code: "OBS_CLI_REMOTE_REDIRECTED",
+                message: `${provider} redirected the request with HTTP ${response.status}${redirectTarget(redirect)}. The requested resource was renamed or moved.`,
+                provider,
+                status: response.status,
+                cause: redirect,
+              }),
+            );
+            const settleRedirected = () => finish(redirected);
+            const body = response.body;
+            if (body === null) {
+              settleRedirected();
+            } else {
+              body.cancel().then(settleRedirected, settleRedirected);
+            }
+            return;
+          }
           if (response.status === 401 || response.status === 403) {
             const unauthorized = Effect.fail(
               new RemoteApiError({
@@ -338,6 +378,7 @@ const desiredDatasetKind = (options: AxiomDatasetCreateOptions): AxiomDatasetKin
 export const ambiguousMutation = (error: RemoteApiError): boolean =>
   error.status === 0 ||
   error.status >= 500 ||
+  error.code === "OBS_CLI_REMOTE_REDIRECTED" ||
   error.code === "OBS_CLI_REMOTE_INVALID_RESPONSE" ||
   (error.status >= 200 && error.status < 300);
 
@@ -626,7 +667,19 @@ export class SentryApi extends Context.Service<
           const projectPath = `/api/0/projects/${encodeURIComponent(credentials.organization)}/${encodeURIComponent(slug)}/`;
           const response = yield* remoteRequest("Sentry", sentryUrl(credentials, projectPath), {
             headers: sentryHeaders(credentials),
-          });
+          }).pipe(
+            Effect.mapError((error) =>
+              error.code === "OBS_CLI_REMOTE_REDIRECTED"
+                ? new RemoteApiError({
+                    code: error.code,
+                    message: `Sentry project ${slug} was renamed or moved${error.cause instanceof ProviderRedirect ? redirectTarget(error.cause) : ""}. Declare its current slug in sentry.projects of the operations manifest.`,
+                    provider: "Sentry",
+                    status: error.status,
+                    cause: error.cause,
+                  })
+                : error,
+            ),
+          );
           if (response.status === 404) return false;
           yield* expectStatus("Sentry", response, [200]);
           const value = yield* parseRemoteJson("Sentry", response);

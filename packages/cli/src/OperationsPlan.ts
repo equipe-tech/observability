@@ -9,9 +9,15 @@ import {
   RemoteApiError,
   SentryApi,
 } from "./ProviderApis.ts";
-import { environmentAxiom, environmentDatasets, RemoteEnvironment } from "./RemoteEnvironment.ts";
+import {
+  environmentAxiom,
+  environmentDatasets,
+  environmentSentry,
+  RemoteEnvironment,
+} from "./RemoteEnvironment.ts";
 import {
   type OperationsManifestError,
+  sentryProjects,
   type ValidatedOperationsManifest,
 } from "./OperationsManifest.ts";
 import type { ManagedQueryError } from "./ManagedQuery.ts";
@@ -700,13 +706,41 @@ export class OperationsPlanner extends Context.Service<
               cause: "Sentry",
             });
           }
-          for (const environment of environments) {
-            const project = request.validated.manifest.service;
+          const declaredProjects = request.validated.manifest.sentry.projects;
+          if (declaredProjects !== undefined) {
+            for (const environment of environments) {
+              const managed = credentials.value.environments.find(
+                (candidate) =>
+                  candidate.project === request.validated.manifest.service &&
+                  candidate.environment === environment,
+              );
+              const stored = managed === undefined ? Option.none() : environmentSentry(managed);
+              if (Option.isSome(stored) && !declaredProjects.includes(stored.value.project)) {
+                return yield* new OperationsError({
+                  code: "OBS_CLI_DRIFT_DETECTED",
+                  message: `Environment ${environment} stores the DSN of Sentry project ${stored.value.project}, which sentry.projects does not declare. Declare it or provision the environment with a declared project.`,
+                  cause: stored.value.project,
+                });
+              }
+            }
+          }
+          for (const project of sentryProjects(request.validated.manifest)) {
             const projectExists = yield* sentry.project(sentryCredentials, project);
             const dsnExists = projectExists
               ? yield* sentry.clientKeyExists(sentryCredentials, project)
               : false;
-            sentryPrerequisites.push({ environment, projectExists, dsnExists });
+            if (declaredProjects !== undefined && !(projectExists && dsnExists)) {
+              return yield* new OperationsError({
+                code: "OBS_CLI_PROVIDER_CAPABILITY_UNAVAILABLE",
+                message: projectExists
+                  ? `Sentry project ${project} declared in sentry.projects has no client key. Create a client key in Sentry and retry.`
+                  : `Sentry project ${project} declared in sentry.projects does not exist. Create it in Sentry or correct sentry.projects.`,
+                cause: project,
+              });
+            }
+            for (const environment of environments) {
+              sentryPrerequisites.push({ environment, projectExists, dsnExists });
+            }
           }
         }
         const state = yield* stateStore.load(request.validated.manifest.service);
@@ -1339,7 +1373,7 @@ export class OperationsPlanner extends Context.Service<
               error: RemoteApiError,
             ): Effect.Effect<never, OperationsError | RemoteApiError | OperationsStateError> =>
               Effect.gen(function* () {
-                const outcomeUnknown = error.status === undefined || error.status >= 500;
+                const outcomeUnknown = ambiguousMutation(error);
                 const settled = yield* stateStore.update(
                   current.service,
                   stateGeneration,
@@ -1549,7 +1583,10 @@ export class OperationsPlanner extends Context.Service<
           yield* remote.provision(
             current.service,
             [environment],
-            request.validated.manifest.sentry.enabled ? ["axiom", "sentry"] : ["axiom"],
+            request.validated.manifest.sentry.enabled &&
+              request.validated.manifest.sentry.projects === undefined
+              ? ["axiom", "sentry"]
+              : ["axiom"],
             "node",
             tokenAction?.kind === "destructive",
             current.axiomEdgeDeployment,

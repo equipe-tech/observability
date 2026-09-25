@@ -12,6 +12,10 @@ const Title = Schema.NonEmptyString.check(
   Schema.isPattern(/^[^\p{Cc}\p{Cf}\u2028\u2029]+$/u),
 );
 const QueryText = Schema.NonEmptyString.check(Schema.isMaxLength(16_384));
+const SentryProjectSlug = Schema.String.check(
+  Schema.isPattern(/^[a-z0-9_]+(?:-[a-z0-9_]+)*$/),
+  Schema.isMaxLength(100),
+);
 const PositiveDays = Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(3_650));
 
 export class SignalReference extends Schema.Class<SignalReference>(
@@ -105,8 +109,20 @@ export class OperationsManifest extends Schema.Class<OperationsManifest>(
   retention: Schema.Array(RetentionDefinition),
   dashboards: Schema.Array(DashboardDefinition),
   monitors: Schema.Array(MonitorDefinition),
-  sentry: Schema.Struct({ enabled: Schema.Boolean }),
+  sentry: Schema.Struct({
+    enabled: Schema.Boolean,
+    projects: Schema.optionalKey(
+      Schema.Array(SentryProjectSlug).check(
+        Schema.isMinLength(1),
+        Schema.isMaxLength(20),
+        Schema.isUnique(),
+      ),
+    ),
+  }),
 }) {}
+
+export const sentryProjects = (manifest: OperationsManifest): ReadonlyArray<string> =>
+  manifest.sentry.projects ?? [manifest.service];
 
 const ContractIndexEventAttribute = Schema.Struct({
   name: Schema.NonEmptyString,

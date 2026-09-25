@@ -201,6 +201,7 @@ O nome do token Axiom segue este formato:
 | `OBS_CLI_REMOTE_UNAUTHORIZED`                  | O provider recusa a credencial ou o acesso à organização.                   |
 | `OBS_CLI_REMOTE_FAILED`                        | A requisição falha ou o provider retorna um status inesperado.              |
 | `OBS_CLI_REMOTE_INVALID_RESPONSE`              | A resposta do provider não passa no parse.                                  |
+| `OBS_CLI_REMOTE_REDIRECTED`                    | O provider responde com redirect 3xx, que a CLI não segue.                  |
 | `OBS_CLI_GITHUB_INPUT_INVALID`                 | Repositório, ambiente, release, rollout ou ambiente local é inválido.       |
 | `OBS_CLI_GITHUB_ENVIRONMENT_NOT_FOUND`         | O GitHub Environment explícito não existe ou não está acessível.            |
 | `OBS_CLI_GITHUB_RESPONSE_INVALID`              | A resposta de metadados do GitHub não passa no schema.                      |
@@ -240,7 +241,7 @@ O nome do token Axiom segue este formato:
 | `OBS_CLI_CONTRACT_INDEX_INVALID`               | O índice de contrato não passa no parse.                                    |
 | `OBS_CLI_PLAN_REQUIRED`                        | `apply` não recebeu um plano legível.                                       |
 | `OBS_CLI_PLAN_INVALID`                         | O plano, digest, ambiente ou confirmação é inválido.                        |
-| `OBS_CLI_PROVIDER_CAPABILITY_UNAVAILABLE`      | Uma credencial necessária para observar o provider não existe.              |
+| `OBS_CLI_PROVIDER_CAPABILITY_UNAVAILABLE`      | Falta credencial ou projeto Sentry declarado para observar o provider.      |
 | `OBS_CLI_DRIFT_DETECTED`                       | O estado observado diverge do manifesto.                                    |
 | `OBS_CLI_QUERY_INVALID`                        | A query gerenciada não passa na gramática limitada.                         |
 | `OBS_CLI_QUERY_SIGNAL_UNBOUND`                 | A query não vincula o nome do sinal.                                        |
