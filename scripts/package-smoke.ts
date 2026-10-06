@@ -726,7 +726,7 @@ try {
         "@sentry/browser": "10.72.0",
         "@sentry/cli": "3.7.0",
         "@sentry/node-core": "10.72.0",
-        "@types/bun": "1.4.0",
+        "@types/bun": "1.4.2",
         "@nestjs/common": "^11.0.0",
         "@nestjs/core": "^11.0.0",
         "@nestjs/platform-express": "^11.0.0",
@@ -1652,7 +1652,7 @@ if (report.degraded) throw new Error("Generated React composition degraded durin
   const reactBytes = await Bun.file(reactBundle).bytes();
   const reactGzip = Bun.gzipSync(reactBytes, { level: 9 });
   const reactGzipDeltaBytes = reactGzip.byteLength - emptyGzip.byteLength;
-  const reactGzipRegressionCeilingBytes = 137_372;
+  const reactGzipRegressionCeilingBytes = 75_500;
   const reactEvidence = join(root, ".verification/observability/obs-54-react-bundle");
   await rm(reactEvidence, { recursive: true, force: true });
   await mkdir(reactEvidence, { recursive: true });

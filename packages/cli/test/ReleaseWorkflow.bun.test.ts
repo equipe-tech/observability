@@ -197,7 +197,7 @@ describe("release workflow publication gate", () => {
             .slice(0, firstBunStepIndex)
             .some(
               (step) =>
-                step.uses === "oven-sh/setup-bun@v2" && step.with?.["bun-version"] === "1.4.0",
+                step.uses === "oven-sh/setup-bun@v2" && step.with?.["bun-version"] === "1.4.2",
             ),
         ).toBe(true);
       }

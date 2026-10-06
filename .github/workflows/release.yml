@@ -37,7 +37,7 @@ jobs:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.0
+          bun-version: 1.4.2
       - run: bun install --frozen-lockfile
       - name: Validate the scoped package tag
         id: meta
@@ -76,7 +76,7 @@ jobs:
           ref: ${{ needs.tag-check.outputs.tag }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.0
+          bun-version: 1.4.2
       - run: bun install --frozen-lockfile
       - name: Resolve release canary identity
         env:
@@ -169,7 +169,7 @@ jobs:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.0
+          bun-version: 1.4.2
       - run: bun install --frozen-lockfile
       - run: bun run build
       - name: Build the isolated release candidate
@@ -223,7 +223,7 @@ jobs:
           ref: ${{ needs.tag-check.outputs.tag }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.0
+          bun-version: 1.4.2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
