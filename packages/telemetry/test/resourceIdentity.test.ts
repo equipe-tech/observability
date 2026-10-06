@@ -92,12 +92,12 @@ describe("ResourceIdentity", () => {
     );
   }
 
-  it("requires alias removal before package version 0.4.0", () => {
+  it("requires alias removal before package version 0.5.0", () => {
     const [major = Number.POSITIVE_INFINITY, minor = Number.POSITIVE_INFINITY] = packageVersion
       .split(".")
       .map(Number);
     assert.strictEqual(Schema.decodeUnknownSync(EnvironmentAliasPolicy)("emitted"), "emitted");
-    assert.isTrue(major === 0 && minor < 4);
+    assert.isTrue(major === 0 && minor < 5);
   });
 
   it.effect("emits the environment alias only under the compatibility policy", () =>

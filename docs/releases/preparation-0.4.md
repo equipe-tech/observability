@@ -25,12 +25,9 @@ A feature não altera versões nem peers entre pacotes do workspace. O commit de
 
 O smoke de pacotes instala os archives com npm. O npm rejeita peers `0.4.x` enquanto o núcleo ainda declara `0.3.x`. Por isso os passos 1 e 2 pertencem ao mesmo commit.
 
-## Decidir a política de alias de ambiente
+## Política de alias de ambiente
 
-[O gerenciamento de ambientes](../environment-management.md) limita a opção `EnvironmentAliasPolicy` à linha `0.4.0`. Antes de publicar o núcleo, registre uma destas decisões:
-
-- Remova a opção com uma quebra declarada e um passo no guia de migração.
-- Revise o prazo na documentação e justifique a retenção.
+A linha `0.4.0` mantém `EnvironmentAliasPolicy`. A remoção exige que nenhuma consulta, painel ou alerta use `deployment.environment` durante um período completo de retenção. A preparação da release não comprovou essa condição. [O gerenciamento de ambientes](../environment-management.md) passa a limitar a opção à linha `0.5.0`.
 
 ## Publicação
 
