@@ -1,6 +1,6 @@
 # Migrar o SDK e a CLI para 0.4
 
-A linha 0.4 exige `effect@4.0.1`, a primeira versão estável do Effect 4. A linha 0.3 aceita somente `effect@4.0.0-rc.111` e `effect@4.0.0-rc.112`. O Effect 4.0 move módulos e renomeia APIs, por isso as duas linhas não compartilham o mesmo runtime. Faça estas mudanças antes de atualizar os pacotes.
+A linha 0.4 exige `effect@4.0.1`, uma versão estável do Effect 4. A linha 0.3 aceita somente `effect@4.0.0-rc.111` e `effect@4.0.0-rc.112`. O Effect 4.0 move módulos e renomeia APIs, por isso as duas linhas não compartilham o mesmo runtime. Faça estas mudanças antes de atualizar os pacotes.
 
 ## Atualizar o Effect
 
@@ -47,7 +47,7 @@ import { HttpRouter } from "effect/http";
 import { layerObservability } from "@equipe-tech/observability-effect";
 ```
 
-O check de conformidade `pipeline.no-application-otlp` rejeita imports de `effect/observability` no código da aplicação. Ele continua a rejeitar o caminho antigo `effect/unstable/observability`. Imports de `effect/http` e dos seus submódulos continuam permitidos.
+O check de conformidade `pipeline.no-application-otlp` rejeita imports de `effect/observability` no código da aplicação. Ele continua a rejeitar o caminho antigo `effect/unstable/observability`. Imports de `effect/http`, `effect/http-api` e dos seus submódulos são permitidos.
 
 ## Revisar APIs renomeadas no Effect 4.0
 
@@ -68,4 +68,4 @@ Consulte o changelog do pacote `effect` para a lista completa.
 
 ## Gerar setups novos
 
-`observability setup write --install` instala a versão mais recente de `effect`. Se a versão instalada for `4.1.0` ou posterior, instale `effect@4.0.1` com `bun add --exact effect@4.0.1`.
+`observability setup write --install` instala `effect@~4.0.1` com `bun add --exact`. A versão instalada satisfaz o peer dos pacotes 0.4.

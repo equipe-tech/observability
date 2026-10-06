@@ -26,7 +26,12 @@ const otlpSpecifierPrefixes = [
   "effect/unstable/http",
 ];
 
-const effectHttpModules = ["effect/http", "effect/unstable/http"];
+const effectHttpModules = [
+  "effect/http",
+  "effect/http-api",
+  "effect/unstable/http",
+  "effect/unstable/httpapi",
+];
 
 const isEffectHttpModule = (specifier: string): boolean =>
   effectHttpModules.some((module) => specifier === module || specifier.startsWith(`${module}/`));

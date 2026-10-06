@@ -69,7 +69,7 @@ test("allows ordinary Effect HTTP clients while rejecting OTLP imports", async (
     await mkdir(join(root, "src"));
     await writeFile(
       join(root, "src", "client.ts"),
-      'import { HttpClient } from "effect/http"; import { Headers } from "effect/http/Headers"; export const client = HttpClient.HttpClient;',
+      'import { HttpClient } from "effect/http"; import { Headers } from "effect/http/Headers"; import { HttpApi } from "effect/http-api"; import { HttpApiBuilder } from "effect/http-api/HttpApiBuilder"; export const client = HttpClient.HttpClient;',
     );
     expect(await findApplicationOtlpImports(root, ["src"])).toEqual([]);
     await writeFile(
@@ -93,7 +93,7 @@ test("keeps rejecting OTLP imports from pre-4.0 Effect module paths", async () =
     await mkdir(join(root, "src"));
     await writeFile(
       join(root, "src", "client.ts"),
-      'import { HttpClient } from "effect/unstable/http"; import { Headers } from "effect/unstable/http/Headers"; export const client = HttpClient.HttpClient;',
+      'import { HttpClient } from "effect/unstable/http"; import { Headers } from "effect/unstable/http/Headers"; import { HttpApi } from "effect/unstable/httpapi"; export const client = HttpClient.HttpClient;',
     );
     expect(await findApplicationOtlpImports(root, ["src"])).toEqual([]);
     await writeFile(
