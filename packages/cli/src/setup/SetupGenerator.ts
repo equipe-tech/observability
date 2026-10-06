@@ -229,6 +229,15 @@ export const sentryCliDependency = {
   installSpec: "@sentry/cli@3.7.0",
 } satisfies SetupDependency;
 
+export const effectDependency = {
+  name: "effect",
+  installSpec: "effect@~4.0.1",
+} satisfies SetupDependency;
+
+const pinnedDependencies = new Map(
+  [sentryCliDependency, effectDependency].map((dependency) => [dependency.name, dependency]),
+);
+
 const dependenciesFor = (input: SetupInput): ReadonlyArray<SetupDependency> => {
   const packages = new Set<string>([
     "@equipe-tech/observability",
@@ -249,12 +258,10 @@ const dependenciesFor = (input: SetupInput): ReadonlyArray<SetupDependency> => {
     packages.add(input.profile === "react-web" ? "@sentry/browser" : "@sentry/node-core");
   }
   if (input.profile === "react-web" && input.defects) packages.add(sentryCliDependency.name);
-  if (input.profile !== "library") packages.add("effect");
+  if (input.profile !== "library") packages.add(effectDependency.name);
   return [...packages]
     .toSorted()
-    .map((name) =>
-      name === sentryCliDependency.name ? sentryCliDependency : { name, installSpec: name },
-    );
+    .map((name) => pinnedDependencies.get(name) ?? { name, installSpec: name });
 };
 
 const contractSource = (

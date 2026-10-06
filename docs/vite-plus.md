@@ -31,4 +31,4 @@ Scripts de pacote não usam cache. Tasks configuradas usam cache por padrão. To
 
 Com Bun 1.4, o `vp` encaminha comandos de package manager direto ao `bun`: `vp add`, `vp remove`, `vp update` (com `--filter`), `vp dedupe`, `vp pm prune` e `vp pm audit --fix`.
 
-Pins exatos para o toolchain: `vite-plus`, `oxfmt`, `@oxlint/plugins`, `oxlint` e `effect` não usam ranges. As versões de `vite-plus` e `oxfmt` avançam juntas para manter o formatter programático idêntico ao formatter do workspace.
+Pins exatos para o toolchain: `vite-plus`, `oxfmt`, `oxlint` e `effect` não usam ranges. Os plugins de lint em `tools/oxlint/` importam a API de plugins por `vite-plus/lint/plugins`, e o Vite+ fixa a versão de `@oxlint/plugins`. As versões de `vite-plus` e `oxfmt` avançam juntas para manter o formatter programático idêntico ao formatter do workspace.

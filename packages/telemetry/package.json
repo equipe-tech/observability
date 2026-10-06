@@ -59,9 +59,9 @@
     "prepack": "bun run build"
   },
   "devDependencies": {
-    "effect": "4.0.0-rc.111"
+    "effect": "4.0.1"
   },
   "peerDependencies": {
-    "effect": "4.0.0-rc.111 || 4.0.0-rc.112"
+    "effect": "~4.0.1"
   }
 }

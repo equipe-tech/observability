@@ -88,7 +88,7 @@ describe("conformance profile fixtures", () => {
     );
     const failed = report.checks.find((check) => check.id === "pipeline.no-application-otlp");
     if (failed?.status !== "fail") throw new Error("Expected the OTLP boundary check to fail.");
-    expect(failed.failure.offendingValue).toContain("effect/unstable/observability");
+    expect(failed.failure.offendingValue).toContain("effect/observability");
   }, 60_000);
 
   it("rejects a non-defect Sentry capture", async () => {

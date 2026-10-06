@@ -8,7 +8,7 @@ Núcleo neutro de observabilidade da Equipe Tech para OpenTelemetry, contratos, 
 npm install @equipe-tech/observability effect
 ```
 
-`effect@4.0.0-rc.111` é um peer obrigatório. O consumidor e os adapters compartilham a mesma cópia do runtime.
+`effect@~4.0.1` é um peer obrigatório. O consumidor e os adapters compartilham a mesma cópia do runtime.
 
 ## Entrypoints
 

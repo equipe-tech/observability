@@ -1,12 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import { Effect, Layer, Option, Schema } from "effect";
-import {
-  HttpClient,
-  HttpClientRequest,
-  HttpRouter,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { HttpClient, HttpClientRequest, HttpRouter, HttpServerResponse } from "effect/http";
 import {
   CurrentCorrelation,
   defineTelemetryContract,

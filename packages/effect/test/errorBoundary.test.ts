@@ -1,13 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import { Context, Effect, Layer, Option, Schema } from "effect";
-import {
-  HttpClient,
-  HttpRouter,
-  HttpServerRespondable,
-  HttpServerResponse,
-} from "effect/unstable/http";
-import { HttpApiError } from "effect/unstable/httpapi";
+import { HttpClient, HttpRouter, HttpServerRespondable, HttpServerResponse } from "effect/http";
+import { HttpApiError } from "effect/http-api";
 import {
   CorrelationContext,
   observabilityProfiles,

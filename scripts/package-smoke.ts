@@ -404,7 +404,7 @@ try {
           "@nestjs/core": `^${nestMajor}.0.0`,
           "@nestjs/platform-express": `^${nestMajor}.0.0`,
           "@types/node": "^22.0.0",
-          effect: "4.0.0-rc.111",
+          effect: "4.0.1",
           "reflect-metadata": "^0.2.2",
           rxjs: "^7.8.2",
         },
@@ -491,7 +491,7 @@ try {
         "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
         "@nestjs/common": "^11.0.0",
         "@nestjs/core": "^11.0.0",
-        effect: "4.0.0-rc.111",
+        effect: "4.0.1",
         "reflect-metadata": "^0.2.2",
         rxjs: "^7.2.0",
       },
@@ -623,7 +623,7 @@ try {
     ["@equipe-tech/observability-react", `file:${join(temporaryDirectory, "react.tgz")}`],
     ["@equipe-tech/observability-sentry", `file:${join(temporaryDirectory, "sentry.tgz")}`],
     ["@sentry/browser", "10.72.0"],
-    ["effect", "4.0.0-rc.111"],
+    ["effect", "4.0.1"],
   ]);
   for (const profile of minimalProfiles) {
     const profileRoot = join(temporaryDirectory, `minimal-${profile.name}`);
@@ -726,11 +726,11 @@ try {
         "@sentry/browser": "10.72.0",
         "@sentry/cli": "3.7.0",
         "@sentry/node-core": "10.72.0",
-        "@types/bun": "1.4.0",
+        "@types/bun": "1.4.2",
         "@nestjs/common": "^11.0.0",
         "@nestjs/core": "^11.0.0",
         "@nestjs/platform-express": "^11.0.0",
-        effect: "4.0.0-rc.111",
+        effect: "4.0.1",
         "reflect-metadata": "^0.2.2",
         rxjs: "^7.8.2",
       },
@@ -785,7 +785,7 @@ try {
         "@equipe-tech/observability-cli": `file:${join(temporaryDirectory, "cli.tgz")}`,
         "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
         "@sentry/cli": "3.7.0",
-        effect: "4.0.0-rc.111",
+        effect: "4.0.1",
       },
       overrides: {
         "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
@@ -1098,7 +1098,7 @@ if (report.degraded) throw new Error("Generated React composition degraded durin
   );
   await writeFile(
     join(consumer, "conformance-source", "negative", "telemetry.ts"),
-    'import { OtlpTracer } from "effect/unstable/observability";\nexport const exporter = OtlpTracer.layer({ url: "http://127.0.0.1:4318/v1/traces" });\n',
+    'import { OtlpTracer } from "effect/observability";\nexport const exporter = OtlpTracer.layer({ url: "http://127.0.0.1:4318/v1/traces" });\n',
   );
   await writeFile(
     join(consumer, "conformance.mjs"),
@@ -1183,7 +1183,7 @@ if (report.degraded) throw new Error("Generated React composition degraded durin
         "@sentry/node-core": "10.72.0",
         "@nestjs/common": "^11.0.0",
         "@nestjs/core": "^11.0.0",
-        effect: "4.0.0-rc.111",
+        effect: "4.0.1",
         "reflect-metadata": "^0.2.2",
         rxjs: "^7.2.0",
       },
@@ -1203,7 +1203,7 @@ if (report.degraded) throw new Error("Generated React composition degraded durin
       type: "module",
       dependencies: {
         "@equipe-tech/observability": `file:${join(temporaryDirectory, "telemetry.tgz")}`,
-        effect: "4.0.0-rc.111",
+        effect: "4.0.1",
       },
     }),
   );
@@ -1264,7 +1264,7 @@ if (report.degraded) throw new Error("Generated React composition degraded durin
         "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
         "@equipe-tech/observability-react": `file:${join(temporaryDirectory, "react.tgz")}`,
         "@sentry/browser": "10.72.0",
-        effect: "4.0.0-rc.111",
+        effect: "4.0.1",
       },
       overrides: {
         "@equipe-tech/observability-sentry": `file:${join(temporaryDirectory, "sentry.tgz")}`,
@@ -1652,7 +1652,7 @@ if (report.degraded) throw new Error("Generated React composition degraded durin
   const reactBytes = await Bun.file(reactBundle).bytes();
   const reactGzip = Bun.gzipSync(reactBytes, { level: 9 });
   const reactGzipDeltaBytes = reactGzip.byteLength - emptyGzip.byteLength;
-  const reactGzipRegressionCeilingBytes = 137_372;
+  const reactGzipRegressionCeilingBytes = 75_500;
   const reactEvidence = join(root, ".verification/observability/obs-54-react-bundle");
   await rm(reactEvidence, { recursive: true, force: true });
   await mkdir(reactEvidence, { recursive: true });

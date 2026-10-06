@@ -1,5 +1,5 @@
 import { Cause, Option, Predicate } from "effect";
-import { CliError } from "effect/unstable/cli";
+import { CliError } from "effect/cli";
 
 const unexpectedErrorMessage =
   "OBS_CLI_UNEXPECTED: The command failed unexpectedly. Retry the command. If the failure continues, contact support.";

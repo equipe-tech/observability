@@ -14,8 +14,8 @@ import type {
 import { Module } from "@nestjs/common";
 import { APP_INTERCEPTOR, HttpAdapterHost } from "@nestjs/core";
 import { Duration, Effect, Layer, ManagedRuntime, Option, Result, Schema } from "effect";
-import type { OtlpExporter } from "effect/unstable/observability";
-import { OtlpExporter as Otlp } from "effect/unstable/observability";
+import type { OtlpExporter } from "effect/observability";
+import { OtlpExporter as Otlp } from "effect/observability";
 import type { Observable } from "rxjs";
 import {
   EnvironmentAliasPolicy,

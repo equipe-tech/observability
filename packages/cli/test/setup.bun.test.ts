@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { Effect, Fiber } from "effect";
+import { Effect, Fiber, Schema } from "effect";
 import {
   chmod,
   link,
@@ -102,7 +102,28 @@ const allFiles = async (root: string): Promise<ReadonlyArray<string>> => {
   return files.toSorted();
 };
 
+const EffectPeerManifest = Schema.Struct({
+  peerDependencies: Schema.Struct({ effect: Schema.String }),
+});
+const decodeEffectPeerManifest = Schema.decodeUnknownSync(EffectPeerManifest);
+
 describe("setup generator", () => {
+  it("installs the Effect range accepted by every SDK peer", async () => {
+    const ranges = new Set<string>();
+    for (const workspace of ["telemetry", "effect", "evlog", "nestjs", "react", "sentry"]) {
+      const manifest = decodeEffectPeerManifest(
+        JSON.parse(await readFile(join("packages", workspace, "package.json"), "utf8")),
+      );
+      ranges.add(manifest.peerDependencies.effect);
+    }
+    expect([...ranges]).toHaveLength(1);
+    const proposed = await plan(await directory(), inputs("effect-api"));
+    expect(proposed.dependencies).toContainEqual({
+      name: "effect",
+      installSpec: `effect@${[...ranges][0]}`,
+    });
+  });
+
   for (const profile of ["nestjs-api", "effect-api", "worker", "react-web", "cli", "library"]) {
     it(`plans and writes the ${profile} profile idempotently`, async () => {
       const target = await directory();

@@ -12,7 +12,7 @@ import {
 import { NestFactory } from "@nestjs/core";
 import { ExpressAdapter } from "@nestjs/platform-express";
 import { Context, Effect, Exit, Layer, ManagedRuntime, Option, Schema, Tracer } from "effect";
-import { OtlpExporter } from "effect/unstable/observability";
+import { OtlpExporter } from "effect/observability";
 import type { AddressInfo } from "node:net";
 import { Observable } from "rxjs";
 import { assert, describe, it } from "vite-plus/test";

@@ -50,13 +50,15 @@ const decodeStartup = Schema.decodeUnknownOption(
 );
 const decodeCommand = Schema.decodeUnknownSync(TransportCommand);
 const decodeEvent = Schema.decodeUnknownSync(
-  Schema.Struct({
-    timestamp: Schema.String,
-    level: Schema.Literals(["debug", "info", "warn", "error"]),
-    service: Schema.String,
-    environment: Schema.String,
-  }),
-  { onExcessProperty: "preserve" },
+  Schema.StructWithRest(
+    Schema.Struct({
+      timestamp: Schema.String,
+      level: Schema.Literals(["debug", "info", "warn", "error"]),
+      service: Schema.String,
+      environment: Schema.String,
+    }),
+    [Schema.Record(Schema.String, Schema.Unknown)],
+  ),
 );
 
 type BufferedEvent = { readonly id: number; readonly event: ReturnType<typeof decodeEvent> };

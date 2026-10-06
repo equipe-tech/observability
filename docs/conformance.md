@@ -88,7 +88,7 @@ Checks seguem a ordem estável do catálogo. `not-applicable` continua visível 
       },
       "failure": {
         "code": "OBS_CONFORMANCE_LOCAL_OTLP_PIPELINE",
-        "offendingValue": "src/telemetry.ts imports effect/unstable/observability"
+        "offendingValue": "src/telemetry.ts imports effect/observability"
       }
     }
   ]

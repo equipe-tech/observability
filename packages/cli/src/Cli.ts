@@ -1,5 +1,5 @@
 import { Console, Effect, Option, Path, Redacted } from "effect";
-import { Command, Flag, Prompt } from "effect/unstable/cli";
+import { Command, Flag, Prompt } from "effect/cli";
 import { authenticationTokenFromEnvironment } from "./AuthenticationInput.ts";
 import { DockerCompose } from "./DockerCompose.ts";
 import {
@@ -31,7 +31,7 @@ import {
   type SetupInputEncoded,
 } from "./setup/SetupGenerator.ts";
 
-const composeFile = Flag.string("file").pipe(
+const composeFile = Flag.String("file").pipe(
   Flag.withAlias("f"),
   Flag.withDescription("Caminho alternativo do docker-compose.yml da stack local"),
   Flag.optional,
@@ -81,10 +81,10 @@ const dev = Command.make("dev").pipe(
   Command.withDescription("Ciclo de vida da stack local de observabilidade"),
 );
 
-const axiomOrganization = Flag.string("organization-id").pipe(
+const axiomOrganization = Flag.String("organization-id").pipe(
   Flag.withDescription("Identificador da organização Axiom"),
 );
-const authenticationTokenEnvironment = Flag.string("token-env").pipe(
+const authenticationTokenEnvironment = Flag.String("token-env").pipe(
   Flag.withDescription("Environment variable containing the provider token"),
   Flag.optional,
 );
@@ -95,7 +95,7 @@ const authenticationToken = Effect.fn("authenticationToken")(function* (
 ) {
   if (Option.isSome(environment))
     return yield* authenticationTokenFromEnvironment(environment.value);
-  return yield* Prompt.run(Prompt.password({ message: prompt }));
+  return yield* Prompt.run(Prompt.Password({ message: prompt }));
 });
 
 const authLoginAxiom = Command.make(
@@ -109,11 +109,11 @@ const authLoginAxiom = Command.make(
   }),
 ).pipe(Command.withDescription("Autentica com Axiom e salva as credenciais locais"));
 
-const sentryOrganization = Flag.string("organization").pipe(
+const sentryOrganization = Flag.String("organization").pipe(
   Flag.withDescription("Slug da organização Sentry"),
 );
-const sentryTeam = Flag.string("team").pipe(Flag.withDescription("Slug do time Sentry"));
-const sentryUrl = Flag.string("url").pipe(
+const sentryTeam = Flag.String("team").pipe(Flag.withDescription("Slug do time Sentry"));
+const sentryUrl = Flag.String("url").pipe(
   Flag.withDescription("URL base do Sentry"),
   Flag.withDefault("https://sentry.io"),
   Flag.mapTryCatch(
@@ -165,60 +165,60 @@ const auth = Command.make("auth").pipe(
   Command.withDescription("Gerencia autenticação com os providers"),
 );
 
-const provisionDirectory = Flag.string("dir").pipe(
+const provisionDirectory = Flag.String("dir").pipe(
   Flag.withAlias("d"),
   Flag.withDescription("Diretório do projeto alvo (padrão: diretório atual)"),
   Flag.withDefault("."),
 );
 
-const provisionName = Flag.string("name").pipe(
+const provisionName = Flag.String("name").pipe(
   Flag.withAlias("n"),
   Flag.withDescription("Nome do projeto usado nos datasets (padrão: nome do diretório alvo)"),
   Flag.optional,
 );
 
-const provisionForce = Flag.boolean("force").pipe(
+const provisionForce = Flag.Boolean("force").pipe(
   Flag.withDescription("Sobrescreve arquivos provisionados que foram modificados"),
   Flag.withDefault(false),
 );
 
-const provisionQueueMode = Flag.string("queue-mode").pipe(
+const provisionQueueMode = Flag.String("queue-mode").pipe(
   Flag.withDescription("Modo da fila do Collector: best-effort ou durable"),
   Flag.withDefault("durable"),
 );
 
-const provisionEnvironments = Flag.string("environment").pipe(
+const provisionEnvironments = Flag.String("environment").pipe(
   Flag.withAlias("e"),
   Flag.withDescription("Ambiente remoto. Repita a flag para configurar vários ambientes"),
   Flag.atMost(10),
 );
 
-const provisionProviders = Flag.string("provider").pipe(
+const provisionProviders = Flag.String("provider").pipe(
   Flag.withDescription("Provider remoto. Use axiom ou sentry e repita para selecionar ambos"),
   Flag.atMost(10),
 );
 
-const provisionPlatform = Flag.string("sentry-platform").pipe(
+const provisionPlatform = Flag.String("sentry-platform").pipe(
   Flag.withDescription("Plataforma do projeto Sentry"),
   Flag.withDefault("node"),
 );
 
-const provisionRotateToken = Flag.boolean("rotate-token").pipe(
+const provisionRotateToken = Flag.Boolean("rotate-token").pipe(
   Flag.withDescription("Regenera o token de ingestão Axiom de cada ambiente"),
   Flag.withDefault(false),
 );
 
-const provisionAxiomEdgeDeployment = Flag.string("axiom-edge-deployment").pipe(
+const provisionAxiomEdgeDeployment = Flag.String("axiom-edge-deployment").pipe(
   Flag.withDescription("Identificador do edge deployment Axiom para os datasets"),
   Flag.optional,
 );
 
-const provisionAxiomRetentionDays = Flag.integer("axiom-retention-days").pipe(
+const provisionAxiomRetentionDays = Flag.Int("axiom-retention-days").pipe(
   Flag.withDescription("Retenção Axiom explícita em dias positivos"),
   Flag.optional,
 );
 
-const provisionCorrelationConfirmed = Flag.boolean("correlation-confirmed").pipe(
+const provisionCorrelationConfirmed = Flag.Boolean("correlation-confirmed").pipe(
   Flag.withDescription("Confirma que o grupo de correlação salvo foi criado no Console Axiom"),
   Flag.withDefault(false),
 );
@@ -330,7 +330,7 @@ const provision = Command.make(
   ),
 );
 
-const environmentProject = Flag.string("name").pipe(
+const environmentProject = Flag.String("name").pipe(
   Flag.withAlias("n"),
   Flag.withDescription("Nome do projeto"),
   Flag.optional,
@@ -363,15 +363,15 @@ const environmentList = Command.make(
   }),
 ).pipe(Command.withDescription("Lista os ambientes configurados por esta CLI"));
 
-const environmentExportName = Flag.string("name").pipe(
+const environmentExportName = Flag.String("name").pipe(
   Flag.withAlias("n"),
   Flag.withDescription("Nome do projeto"),
 );
-const environmentExportEnvironment = Flag.string("environment").pipe(
+const environmentExportEnvironment = Flag.String("environment").pipe(
   Flag.withAlias("e"),
   Flag.withDescription("Nome do ambiente"),
 );
-const environmentExportRelease = Flag.string("release").pipe(
+const environmentExportRelease = Flag.String("release").pipe(
   Flag.withAlias("r"),
   Flag.withDescription("Versão SemVer ou identificador imutável da release"),
 );
@@ -389,28 +389,28 @@ const environmentExport = Command.make(
   }),
 ).pipe(Command.withDescription("Imprime variáveis de deploy no formato dotenv"));
 
-const githubRepository = Flag.string("repo").pipe(
+const githubRepository = Flag.String("repo").pipe(
   Flag.withDescription("Explicit GitHub repository in owner/name form"),
 );
-const githubProject = Flag.string("name").pipe(Flag.withDescription("Configured project name"));
-const githubEnvironmentName = Flag.string("environment").pipe(
+const githubProject = Flag.String("name").pipe(Flag.withDescription("Configured project name"));
+const githubEnvironmentName = Flag.String("environment").pipe(
   Flag.withDescription("Existing protected GitHub Environment and configured remote environment"),
 );
-const githubRelease = Flag.string("release").pipe(
+const githubRelease = Flag.String("release").pipe(
   Flag.withDescription("Immutable deployed artifact version"),
 );
-const githubRollout = Flag.string("rollout").pipe(
+const githubRollout = Flag.String("rollout").pipe(
   Flag.withDescription("Telemetry rollout state: disabled or enabled"),
   Flag.withDefault("disabled"),
 );
-const githubDirectory = Flag.string("dir").pipe(
+const githubDirectory = Flag.String("dir").pipe(
   Flag.withDescription("Directory used for the secure plan file"),
   Flag.withDefault("."),
 );
-const githubPlanFile = Flag.string("plan").pipe(
+const githubPlanFile = Flag.String("plan").pipe(
   Flag.withDescription("Exact file produced by env github plan"),
 );
-const githubApproveRollout = Flag.boolean("approve-rollout").pipe(
+const githubApproveRollout = Flag.Boolean("approve-rollout").pipe(
   Flag.withDescription("Approves rollout enablement for the exact supplied plan"),
   Flag.withDefault(false),
 );
@@ -467,40 +467,40 @@ const environment = Command.make("env").pipe(
   Command.withDescription("Inspects and synchronizes configured environments"),
 );
 
-const operationsDirectory = Flag.string("dir").pipe(
+const operationsDirectory = Flag.String("dir").pipe(
   Flag.withAlias("d"),
   Flag.withDescription("Diretório do projeto que contém observability/operations.yaml"),
   Flag.withDefault("."),
 );
-const operationsEnvironments = Flag.string("environment").pipe(
+const operationsEnvironments = Flag.String("environment").pipe(
   Flag.withAlias("e"),
   Flag.withDescription("Ambiente declarado no manifesto. Repita para selecionar vários"),
   Flag.atMost(20),
 );
-const operationsJson = Flag.boolean("json").pipe(
+const operationsJson = Flag.Boolean("json").pipe(
   Flag.withDescription("Emite o resultado como JSON sem queries ou credenciais"),
   Flag.withDefault(false),
 );
-const operationsPlanFile = Flag.string("plan").pipe(
+const operationsPlanFile = Flag.String("plan").pipe(
   Flag.withDescription("Arquivo exato produzido por ops plan"),
 );
-const operationsAllowDestructive = Flag.boolean("allow-destructive").pipe(
+const operationsAllowDestructive = Flag.Boolean("allow-destructive").pipe(
   Flag.withDescription("Autoriza somente as mudanças destrutivas do digest do plano fornecido"),
   Flag.withDefault(false),
 );
-const operationsConfirmedManualActions = Flag.string("confirm-manual").pipe(
+const operationsConfirmedManualActions = Flag.String("confirm-manual").pipe(
   Flag.withDescription("Confirma pelo ID uma ação manual contida no plano exato"),
   Flag.atMost(100),
 );
-const operationsQueueMode = Flag.string("queue-mode").pipe(
+const operationsQueueMode = Flag.String("queue-mode").pipe(
   Flag.withDescription("Collector queue mode covered by the exact plan"),
   Flag.withDefault("durable"),
 );
-const operationsAxiomEdgeDeployment = Flag.string("axiom-edge-deployment").pipe(
+const operationsAxiomEdgeDeployment = Flag.String("axiom-edge-deployment").pipe(
   Flag.withDescription("Required Axiom edge deployment bound to dataset creation and Correlation"),
   Flag.optional,
 );
-const operationsAcceptBestEffortDataLoss = Flag.boolean("accept-best-effort-data-loss").pipe(
+const operationsAcceptBestEffortDataLoss = Flag.Boolean("accept-best-effort-data-loss").pipe(
   Flag.withDescription(
     "Explicitly accepts telemetry loss during interruption for best-effort mode",
   ),
@@ -690,35 +690,35 @@ const operations = Command.make("ops").pipe(
   Command.withDescription("Reconcilia o manifesto versionado de operações"),
 );
 
-const setupDirectory = Flag.string("dir").pipe(
+const setupDirectory = Flag.String("dir").pipe(
   Flag.withAlias("d"),
   Flag.withDescription("Application directory"),
   Flag.withDefault("."),
 );
-const setupProfile = Flag.string("profile").pipe(Flag.withDescription("Official profile"));
-const setupServiceName = Flag.string("service-name").pipe(Flag.optional);
-const setupEnvironments = Flag.string("environment").pipe(Flag.atMost(20));
-const setupOtlpEndpoint = Flag.string("otlp-endpoint").pipe(Flag.optional);
-const setupPublicOrigin = Flag.string("public-origin").pipe(Flag.optional);
-const setupIngestPath = Flag.string("ingest-path").pipe(Flag.withDefault("_telemetry/events"));
-const setupProxyPolicy = Flag.string("proxy-policy").pipe(Flag.withDefault("direct"));
-const setupSentryDsnVariable = Flag.string("sentry-dsn-variable").pipe(
+const setupProfile = Flag.String("profile").pipe(Flag.withDescription("Official profile"));
+const setupServiceName = Flag.String("service-name").pipe(Flag.optional);
+const setupEnvironments = Flag.String("environment").pipe(Flag.atMost(20));
+const setupOtlpEndpoint = Flag.String("otlp-endpoint").pipe(Flag.optional);
+const setupPublicOrigin = Flag.String("public-origin").pipe(Flag.optional);
+const setupIngestPath = Flag.String("ingest-path").pipe(Flag.withDefault("_telemetry/events"));
+const setupProxyPolicy = Flag.String("proxy-policy").pipe(Flag.withDefault("direct"));
+const setupSentryDsnVariable = Flag.String("sentry-dsn-variable").pipe(
   Flag.withDefault("SENTRY_DSN"),
 );
-const setupReleaseVariable = Flag.string("release-variable").pipe(
+const setupReleaseVariable = Flag.String("release-variable").pipe(
   Flag.withDefault("OTEL_SERVICE_VERSION"),
 );
-const setupAxiomOrganization = Flag.string("axiom-organization-id").pipe(Flag.optional);
-const setupSentryOrganization = Flag.string("sentry-org").pipe(Flag.optional);
-const setupSentryTeam = Flag.string("sentry-team").pipe(Flag.optional);
-const setupSentryProject = Flag.string("sentry-project").pipe(Flag.optional);
-const setupSourceMapBuildScript = Flag.string("source-map-build-script").pipe(Flag.optional);
-const setupSourceMapPaths = Flag.string("source-map-path").pipe(Flag.atMost(20));
-const setupBrowserIngest = Flag.boolean("with-browser-ingest").pipe(Flag.withDefault(false));
-const setupDefects = Flag.boolean("with-defects").pipe(Flag.withDefault(false));
-const setupMetrics = Flag.boolean("with-metrics").pipe(Flag.withDefault(false));
-const setupForce = Flag.boolean("force").pipe(Flag.withDefault(false));
-const setupInstall = Flag.boolean("install").pipe(
+const setupAxiomOrganization = Flag.String("axiom-organization-id").pipe(Flag.optional);
+const setupSentryOrganization = Flag.String("sentry-org").pipe(Flag.optional);
+const setupSentryTeam = Flag.String("sentry-team").pipe(Flag.optional);
+const setupSentryProject = Flag.String("sentry-project").pipe(Flag.optional);
+const setupSourceMapBuildScript = Flag.String("source-map-build-script").pipe(Flag.optional);
+const setupSourceMapPaths = Flag.String("source-map-path").pipe(Flag.atMost(20));
+const setupBrowserIngest = Flag.Boolean("with-browser-ingest").pipe(Flag.withDefault(false));
+const setupDefects = Flag.Boolean("with-defects").pipe(Flag.withDefault(false));
+const setupMetrics = Flag.Boolean("with-metrics").pipe(Flag.withDefault(false));
+const setupForce = Flag.Boolean("force").pipe(Flag.withDefault(false));
+const setupInstall = Flag.Boolean("install").pipe(
   Flag.withDescription("Installs exactly the selected profile packages with Bun"),
   Flag.withDefault(false),
 );
@@ -847,7 +847,7 @@ const setupWrite = Command.make(
 
 const setupVerifyRelease = Command.make(
   "verify-release",
-  { dir: setupDirectory, json: Flag.boolean("json").pipe(Flag.withDefault(false)) },
+  { dir: setupDirectory, json: Flag.Boolean("json").pipe(Flag.withDefault(false)) },
   Effect.fn(function* ({ dir, json }) {
     const generator = yield* SetupGenerator;
     const report = yield* generator.verifyRelease(dir);
@@ -868,15 +868,15 @@ const setupVerifyRelease = Command.make(
   }),
 ).pipe(Command.withDescription("Verifies local release uploader and source-map artifacts"));
 
-const setupVerifyEnvironment = Flag.string("environment").pipe(Flag.optional);
-const setupReconcile = Flag.boolean("reconcile").pipe(Flag.withDefault(false));
-const setupConform = Flag.boolean("conform").pipe(Flag.withDefault(false));
-const setupJson = Flag.boolean("json").pipe(Flag.withDefault(false));
-const setupProviderRead = Flag.boolean("provider-read").pipe(
+const setupVerifyEnvironment = Flag.String("environment").pipe(Flag.optional);
+const setupReconcile = Flag.Boolean("reconcile").pipe(Flag.withDefault(false));
+const setupConform = Flag.Boolean("conform").pipe(Flag.withDefault(false));
+const setupJson = Flag.Boolean("json").pipe(Flag.withDefault(false));
+const setupProviderRead = Flag.Boolean("provider-read").pipe(
   Flag.withDescription("Runs read-only provider reconciliation with application credentials"),
   Flag.withDefault(false),
 );
-const setupVerifyTarget = Flag.string("target").pipe(Flag.withDefault("local"));
+const setupVerifyTarget = Flag.String("target").pipe(Flag.withDefault("local"));
 const setupVerify = Command.make(
   "verify",
   {

@@ -138,12 +138,10 @@ const ReleasePreflightWorkflow = Schema.Struct({
 });
 
 const parsedCiWorkflow = Schema.decodeUnknownSync(CiWorkflow)(Bun.YAML.parse(ciWorkflow));
-const parsedReleaseWorkflow = Schema.decodeUnknownSync(ReleaseWorkflow, {
-  onExcessProperty: "preserve",
-})(Bun.YAML.parse(workflow));
-const parsedReleasePreflightWorkflow = Schema.decodeUnknownSync(ReleasePreflightWorkflow, {
-  onExcessProperty: "preserve",
-})(Bun.YAML.parse(releasePreflightWorkflow));
+const parsedReleaseWorkflow = Schema.decodeUnknownSync(ReleaseWorkflow)(Bun.YAML.parse(workflow));
+const parsedReleasePreflightWorkflow = Schema.decodeUnknownSync(ReleasePreflightWorkflow)(
+  Bun.YAML.parse(releasePreflightWorkflow),
+);
 const workflowDocuments = await Array.fromAsync(
   new Bun.Glob(".github/workflows/*.yml").scan({
     cwd: fileURLToPath(new URL("../../..", import.meta.url)),
@@ -199,7 +197,7 @@ describe("release workflow publication gate", () => {
             .slice(0, firstBunStepIndex)
             .some(
               (step) =>
-                step.uses === "oven-sh/setup-bun@v2" && step.with?.["bun-version"] === "1.4.0",
+                step.uses === "oven-sh/setup-bun@v2" && step.with?.["bun-version"] === "1.4.2",
             ),
         ).toBe(true);
       }

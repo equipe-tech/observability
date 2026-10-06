@@ -1,5 +1,5 @@
 import { Cause, Clock, Effect, Option, Schema } from "effect";
-import type { OtlpExporter } from "effect/unstable/observability";
+import type { OtlpExporter } from "effect/observability";
 import {
   AdapterFailure,
   AdapterName,

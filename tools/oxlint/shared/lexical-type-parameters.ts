@@ -1,4 +1,4 @@
-import type { ESTree } from "@oxlint/plugins";
+import type { ESTree } from "vite-plus/lint/plugins";
 
 function addTypeParameters(node: ESTree.Node, names: Set<string>): void {
   if (!("typeParameters" in node)) {

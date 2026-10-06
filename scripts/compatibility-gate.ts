@@ -104,7 +104,7 @@ const DeclaredBreaksDocument = Schema.Struct({
     }),
   ),
 });
-const decodePackage = Schema.decodeUnknownSync(PackageDocument, { onExcessProperty: "preserve" });
+const decodePackage = Schema.decodeUnknownSync(PackageDocument);
 const decodeBaseline = Schema.decodeUnknownSync(BaselineDocument, { onExcessProperty: "error" });
 const decodeVersions = Schema.decodeUnknownSync(CandidateVersionsDocument, {
   onExcessProperty: "error",

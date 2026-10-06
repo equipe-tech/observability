@@ -1,6 +1,6 @@
 import { Context, Effect, Layer, Metric, Option, Predicate, Result, Schema } from "effect";
-import { HttpBody, HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { OtlpExporter } from "effect/unstable/observability";
+import { HttpBody, HttpClient, HttpClientRequest } from "effect/http";
+import { OtlpExporter } from "effect/observability";
 import type {
   Counter,
   CounterDefinition,

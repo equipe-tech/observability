@@ -1,6 +1,6 @@
 import { Console, Context, Effect, Layer, Schema, Stream } from "effect";
 import type { Scope } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 export class DockerComposeError extends Schema.TaggedError<DockerComposeError>()(
   "DockerComposeError",

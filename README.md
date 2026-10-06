@@ -86,7 +86,7 @@ O núcleo `@equipe-tech/observability` publica entrypoints explícitos:
 
 A integração NestJS vive na raiz de `@equipe-tech/observability-nestjs`. Ela publica `TelemetryModule`, `TelemetryInterceptor`, `withRequestSpan`, `createBrowserEventsController` e a política HTTP. O adapter oficial de eventos vive em `@equipe-tech/observability-evlog` e fornece `registration`, `drops()` e `pending()`.
 
-A integração Effect nativa vive em `@equipe-tech/observability-effect`. Ela publica `layerObservability`, o middleware `httpTelemetry`, o limite `errorBoundary` com `defineErrorCatalog` e `layerBrowserEventsRoute` para `effect/unstable/http`. Aplicações Effect usam o perfil `effect-api` e o adapter de eventos `effectEventsAdapter`, sem evlog. Consulte [Semântica HTTP do adapter Effect](docs/effect-http-semantics.md).
+A integração Effect nativa vive em `@equipe-tech/observability-effect`. Ela publica `layerObservability`, o middleware `httpTelemetry`, o limite `errorBoundary` com `defineErrorCatalog` e `layerBrowserEventsRoute` para `effect/http`. Aplicações Effect usam o perfil `effect-api` e o adapter de eventos `effectEventsAdapter`, sem evlog. Consulte [Semântica HTTP do adapter Effect](docs/effect-http-semantics.md).
 
 Os [adaptadores Sentry](docs/sentry-adapters.md) publicam entrypoints separados para Node e browser, uma política compartilhada e um plano de upload de source maps sem credenciais.
 
