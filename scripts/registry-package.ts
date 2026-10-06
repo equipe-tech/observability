@@ -42,9 +42,7 @@ const PackumentVersionDocument = Schema.Struct({
   }),
 });
 
-const decodePackumentVersion = Schema.decodeUnknownSync(PackumentVersionDocument, {
-  onExcessProperty: "preserve",
-});
+const decodePackumentVersion = Schema.decodeUnknownSync(PackumentVersionDocument);
 
 const maximumTarballBytes = 50 * 1024 * 1024;
 const maximumExpandedBytes = 250 * 1024 * 1024;

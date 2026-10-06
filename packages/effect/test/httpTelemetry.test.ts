@@ -7,7 +7,7 @@ import {
   HttpRouter,
   HttpServer,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import { CurrentCorrelation } from "@equipe-tech/observability";
 import { WideEvent } from "@equipe-tech/observability/effect";
 import * as Testing from "@equipe-tech/observability/testing";
@@ -41,7 +41,7 @@ const loopback = /^(?:::ffff:)?127\.0\.0\.1$/;
 
 const serverAddress = Effect.map(HttpServer.HttpServer, (server) => {
   const address = server.address;
-  if (address._tag !== "TcpAddress") throw new Error("Expected a TCP address.");
+  if (address._tag === "UnixPathAddress") throw new Error("Expected an internet address.");
   return `http://127.0.0.1:${address.port}`;
 });
 

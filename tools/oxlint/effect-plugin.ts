@@ -1,4 +1,4 @@
-import { eslintCompatPlugin } from "@oxlint/plugins";
+import { eslintCompatPlugin } from "vite-plus/lint/plugins";
 import { noAmbientEnvReadRule } from "./rules/no-ambient-env-read.ts";
 import { noBareErrorRule } from "./rules/no-bare-error.ts";
 import { noServiceConstructorImportsRule } from "./rules/no-service-constructor-imports.ts";

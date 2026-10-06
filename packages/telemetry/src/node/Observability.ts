@@ -1,5 +1,5 @@
 import { Cause, Context, Duration, Effect, Layer, ManagedRuntime, Option } from "effect";
-import { OtlpExporter } from "effect/unstable/observability";
+import { OtlpExporter } from "effect/observability";
 import { AuditPublisher, unboundAuditPublisher } from "../audit/AuditPublisher.ts";
 import { TelemetryEventSink } from "../contract/EventProducer.ts";
 import * as Telemetry from "../Telemetry.ts";

@@ -1,5 +1,5 @@
 import { Effect, Layer, ManagedRuntime, Option, Predicate, Schema } from "effect";
-import type { OtlpExporter } from "effect/unstable/observability";
+import type { OtlpExporter } from "effect/observability";
 import type {
   CompiledAuditActionDefinition,
   CompiledEventDefinition,

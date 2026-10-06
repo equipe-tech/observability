@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect";
-import type { Headers, HttpServerRequest } from "effect/unstable/http";
+import type { Headers, HttpServerRequest } from "effect/http";
 import { isIP } from "node:net";
 
 const maxRouteLength = 256;

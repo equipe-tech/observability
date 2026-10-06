@@ -112,6 +112,7 @@ export default defineConfig({
     ],
   },
   lint: {
+    ignorePatterns: ["tools/boundaries/fixtures/**"],
     jsPlugins: [
       { name: "vite-plus", specifier: "vite-plus/oxlint-plugin" },
       { name: "anti-slop", specifier: "./tools/oxlint/anti-slop-plugin.ts" },

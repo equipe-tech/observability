@@ -1,6 +1,6 @@
 import { NodeHttpServer } from "@effect/platform-node";
 import { Effect, Layer, Option } from "effect";
-import { HttpClient, HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import { HttpClient, HttpRouter, HttpServerResponse } from "effect/http";
 import {
   CorrelationContext,
   Contract,

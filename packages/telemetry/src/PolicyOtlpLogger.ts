@@ -13,8 +13,8 @@ import {
   Schema,
 } from "effect";
 import type * as LogLevel from "effect/LogLevel";
-import type { HttpClient } from "effect/unstable/http";
-import { OtlpExporter, OtlpResource, OtlpSerialization } from "effect/unstable/observability";
+import type { HttpClient } from "effect/http";
+import { OtlpExporter, OtlpResource, OtlpSerialization } from "effect/observability";
 import { CurrentDataPolicy } from "./policy/DataPolicy.ts";
 import { sanitizeText, transformSignalFields } from "./policy/PolicyTransform.ts";
 import { effectDroppedAttributesKey } from "./policy/PolicyVocabulary.ts";
@@ -181,9 +181,10 @@ export const makePolicyOtlpLogger = Effect.fn("makePolicyOtlpLogger")(function* 
       body: OtlpResource.unknownToAttributeValue(messages.length === 1 ? messages[0] : messages),
       droppedAttributesCount: decision.dropped + unsupportedDropped,
     };
-    if (entry.fiber.currentSpan) {
-      record.traceId = entry.fiber.currentSpan.traceId;
-      record.spanId = entry.fiber.currentSpan.spanId;
+    const span = entry.fiber.cache.span;
+    if (span) {
+      record.traceId = span.traceId;
+      record.spanId = span.spanId;
     }
     exporter.push(record);
   });

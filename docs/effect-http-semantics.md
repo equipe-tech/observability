@@ -1,12 +1,12 @@
 # Semântica HTTP do adapter Effect
 
-O pacote `@equipe-tech/observability-effect` integra a plataforma a aplicações escritas com Effect e `effect/unstable/http`. O adapter segue OpenTelemetry HTTP Semantic Conventions v1.44.0 para spans de servidor e mantém a semântica pública do [adapter NestJS](nestjs-http-semantics.md), com as diferenças declaradas neste documento.
+O pacote `@equipe-tech/observability-effect` integra a plataforma a aplicações escritas com Effect e `effect/http`. O adapter segue OpenTelemetry HTTP Semantic Conventions v1.44.0 para spans de servidor e mantém a semântica pública do [adapter NestJS](nestjs-http-semantics.md), com as diferenças declaradas neste documento.
 
 ## Composição
 
 ```ts
 import { Effect, Layer } from "effect";
-import { HttpRouter } from "effect/unstable/http";
+import { HttpRouter } from "effect/http";
 import { NodeHttpServer } from "@effect/platform-node";
 import { createServer } from "node:http";
 import {

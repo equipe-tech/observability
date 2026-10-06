@@ -1,4 +1,4 @@
-import { RuleTester } from "oxlint/plugins-dev";
+import { RuleTester } from "vite-plus/lint/plugins-dev";
 import { test } from "vite-plus/test";
 import { noUnknownParametersRule } from "./no-unknown-parameters.ts";
 

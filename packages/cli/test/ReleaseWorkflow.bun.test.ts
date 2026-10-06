@@ -138,12 +138,10 @@ const ReleasePreflightWorkflow = Schema.Struct({
 });
 
 const parsedCiWorkflow = Schema.decodeUnknownSync(CiWorkflow)(Bun.YAML.parse(ciWorkflow));
-const parsedReleaseWorkflow = Schema.decodeUnknownSync(ReleaseWorkflow, {
-  onExcessProperty: "preserve",
-})(Bun.YAML.parse(workflow));
-const parsedReleasePreflightWorkflow = Schema.decodeUnknownSync(ReleasePreflightWorkflow, {
-  onExcessProperty: "preserve",
-})(Bun.YAML.parse(releasePreflightWorkflow));
+const parsedReleaseWorkflow = Schema.decodeUnknownSync(ReleaseWorkflow)(Bun.YAML.parse(workflow));
+const parsedReleasePreflightWorkflow = Schema.decodeUnknownSync(ReleasePreflightWorkflow)(
+  Bun.YAML.parse(releasePreflightWorkflow),
+);
 const workflowDocuments = await Array.fromAsync(
   new Bun.Glob(".github/workflows/*.yml").scan({
     cwd: fileURLToPath(new URL("../../..", import.meta.url)),

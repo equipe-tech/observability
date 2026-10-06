@@ -19,6 +19,18 @@ export const packageNameForSpecifier = (specifier: string): string => {
   return parts[0] ?? specifier;
 };
 
+const otlpSpecifierPrefixes = [
+  "effect/observability",
+  "effect/http",
+  "effect/unstable/observability",
+  "effect/unstable/http",
+];
+
+const effectHttpModules = ["effect/http", "effect/unstable/http"];
+
+const isEffectHttpModule = (specifier: string): boolean =>
+  effectHttpModules.some((module) => specifier === module || specifier.startsWith(`${module}/`));
+
 export const classifyDependency = (specifier: string): DependencyKind | undefined => {
   const dependency = packageNameForSpecifier(specifier);
   if (
@@ -43,8 +55,7 @@ export const classifyDependency = (specifier: string): DependencyKind | undefine
     return "metric-api";
   }
   if (
-    specifier.startsWith("effect/unstable/observability") ||
-    specifier.startsWith("effect/unstable/http") ||
+    otlpSpecifierPrefixes.some((prefix) => specifier.startsWith(prefix)) ||
     dependency.startsWith("@opentelemetry/")
   ) {
     return "otlp";
@@ -346,11 +357,7 @@ export const findApplicationOtlpImports = async (
       const file = `${sourceRoot}/${relative(absoluteRoot, absolute).split("\\").join("/")}`;
       const source = await readFile(absolute, "utf8");
       for (const specifier of scanImportSpecifiers(source)) {
-        if (
-          classifyDependency(specifier) === "otlp" &&
-          specifier !== "effect/unstable/http" &&
-          !specifier.startsWith("effect/unstable/http/")
-        ) {
+        if (classifyDependency(specifier) === "otlp" && !isEffectHttpModule(specifier)) {
           violations.push({ rule: "boundary/application-otlp", file, specifier });
           continue;
         }

@@ -1,4 +1,4 @@
-import { defineRule } from "@oxlint/plugins";
+import { defineRule } from "vite-plus/lint/plugins";
 
 const disablePattern = /\b(?:eslint|oxlint)-disable(?:-next-line|-line)?\b/u;
 const directivePattern = /\b(?:eslint|oxlint)-(?:disable(?:-next-line|-line)?|enable)\b/u;

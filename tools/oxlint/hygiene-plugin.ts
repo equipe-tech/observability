@@ -1,4 +1,4 @@
-import { eslintCompatPlugin } from "@oxlint/plugins";
+import { eslintCompatPlugin } from "vite-plus/lint/plugins";
 import { noAsyncContextEnterWithRule } from "./rules/no-async-context-enter-with.ts";
 import { noForeignDirectiveRule } from "./rules/no-foreign-directive.ts";
 import { noVacuousThrowAssertionRule } from "./rules/no-vacuous-throw-assertion.ts";

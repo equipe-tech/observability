@@ -1,6 +1,6 @@
 import { Effect, Fiber, Layer, ManagedRuntime, Option } from "effect";
 import { TestClock } from "effect/testing";
-import { OtlpExporter } from "effect/unstable/observability";
+import { OtlpExporter } from "effect/observability";
 import { describe, expect, it } from "vite-plus/test";
 import type { EventName } from "../src/contract/EventName.ts";
 import type {

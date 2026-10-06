@@ -36,10 +36,10 @@
   "devDependencies": {
     "@equipe-tech/observability": "workspace:*",
     "@equipe-tech/observability-cli": "workspace:*",
-    "effect": "4.0.0-rc.111"
+    "effect": "4.0.1"
   },
   "peerDependencies": {
     "@equipe-tech/observability": "0.3.x",
-    "effect": "4.0.0-rc.111 || 4.0.0-rc.112"
+    "effect": "~4.0.1"
   }
 }

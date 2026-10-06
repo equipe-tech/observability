@@ -28,7 +28,7 @@ npx @equipe-tech/observability-cli --help
 
 A stack local usa um diretório por versão em `OBSERVABILITY_HOME`, cujo padrão é `~/.local/state/observability`. A CLI 0.2.1 usa o diretório ativo `0.2.1`. Derrube uma stack iniciada por versão anterior antes de atualizar; a CLI atual não reutiliza nem remove automaticamente o diretório anterior.
 
-A dependência direta `@effect/platform-node-shared@4.0.0-rc.111` impede que instaladores npm selecionem uma release candidate posterior incompatível com `@effect/platform-bun@4.0.0-rc.111`. Remova o pin somente quando todo o conjunto Effect for atualizado e validado em conjunto.
+A dependência direta `@effect/platform-node-shared@4.0.1` mantém o conjunto Effect da CLI em uma única versão, como o Effect exige. Sem o pin, instaladores npm poderiam combinar `@effect/platform-bun@4.0.1` com uma versão posterior de `@effect/platform-node-shared`. Atualize `effect`, `@effect/platform-bun` e `@effect/platform-node-shared` juntos.
 
 Consulte a [referência completa da CLI](https://github.com/equipe-tech/observability/blob/master/docs/cli-reference.md) e o [guia operacional do Collector](https://github.com/equipe-tech/observability/blob/master/docs/collector-production-operations.md).
 

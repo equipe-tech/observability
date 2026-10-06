@@ -1,6 +1,6 @@
 import { ConfigProvider, Duration, Effect, Layer } from "effect";
-import { FetchHttpClient, type HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { OtlpExporter, OtlpSerialization } from "effect/unstable/observability";
+import { FetchHttpClient, type HttpClient, HttpClientRequest } from "effect/http";
+import { OtlpExporter, OtlpSerialization } from "effect/observability";
 import type { InvalidResourceIdentity } from "./ResourceIdentity.ts";
 import type { DuplicateReleaseVariable } from "./profile/ObservabilityConfigError.ts";
 import { layerPolicyOtlpLogger } from "./PolicyOtlpLogger.ts";

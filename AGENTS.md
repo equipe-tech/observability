@@ -29,7 +29,7 @@ Este projeto vendora repositórios externos em `repos/` como material de referê
 
 Repositórios disponíveis:
 
-- `repos/effect/` - https://github.com/Effect-TS/effect.git (`effect@4.0.0-rc.111`)
+- `repos/effect/` - https://github.com/Effect-TS/effect.git (`effect@4.0.1`)
 
 Ao trabalhar com uma biblioteca vendorada, inspecione o repositório correspondente para uso idiomático, testes, estrutura de módulos e design de API. Se o repositório contém orientação para agentes como `LLMS.md`, `AGENTS.md` ou `AGENT.md`, leia essa orientação antes de fazer mudanças. Antes de escrever código Effect, leia `repos/effect/LLMS.md` quando existir.
 <!-- agent-repos:end -->

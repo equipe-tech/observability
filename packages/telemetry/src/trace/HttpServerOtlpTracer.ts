@@ -1,7 +1,7 @@
 import { Cause, Context, Duration, Effect, Layer, Option, Predicate, Schema, Tracer } from "effect";
 import type { Exit } from "effect";
-import type { HttpClient } from "effect/unstable/http";
-import { OtlpExporter, OtlpResource, OtlpSerialization } from "effect/unstable/observability";
+import type { HttpClient } from "effect/http";
+import { OtlpExporter, OtlpResource, OtlpSerialization } from "effect/observability";
 import type { BrowserTraceSpan } from "../BrowserEvents.ts";
 import type { ResourceAttributes } from "../ResourceIdentity.ts";
 import type { DataPolicy } from "../policy/DataPolicy.ts";

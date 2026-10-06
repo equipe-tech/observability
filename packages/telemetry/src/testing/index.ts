@@ -1,6 +1,6 @@
 import { Effect, Layer, Option, Ref, Schema, type Exit } from "effect";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
-import { OtlpExporter } from "effect/unstable/observability";
+import { HttpClient, HttpClientResponse } from "effect/http";
+import { OtlpExporter } from "effect/observability";
 import { parseResourceIdentity } from "../ResourceIdentity.ts";
 import { layerOtlp } from "../Telemetry.ts";
 import { TelemetryConfig } from "../TelemetryConfig.ts";

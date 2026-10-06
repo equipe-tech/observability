@@ -33,7 +33,7 @@ O valor literal `production` torna o adapter de defeitos obrigatório para `nest
 
 ## Runtime Effect nativo
 
-`effect-api` é o perfil de APIs HTTP escritas com Effect e `effect/unstable/http`. O perfil tem as mesmas exigências de `nestjs-api`. A composição vive em `@equipe-tech/observability-effect` e usa Layers em vez de módulos de framework. Consulte [Semântica HTTP do adapter Effect](effect-http-semantics.md).
+`effect-api` é o perfil de APIs HTTP escritas com Effect e `effect/http`. O perfil tem as mesmas exigências de `nestjs-api`. A composição vive em `@equipe-tech/observability-effect` e usa Layers em vez de módulos de framework. Consulte [Semântica HTTP do adapter Effect](effect-http-semantics.md).
 
 `effectEventsAdapter`, no entrypoint `@equipe-tech/observability/effect`, é o adapter oficial de eventos para aplicações Effect. Ele entrega `layerWideEvent` como `TelemetryEventSink`; os eventos viajam pelo logger OTLP do runtime com a política de dados aplicada. O adapter não instala logger global e não fornece publicador de auditoria; um runtime sem adapter de auditoria usa o publicador `unbound`.
 

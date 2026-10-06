@@ -21,4 +21,4 @@ import {
 } from "@equipe-tech/observability-effect";
 ```
 
-O pacote usa o perfil `effect-api` e compõe com `effect/unstable/http`. Consulte `docs/effect-http-semantics.md` no repositório para a semântica completa.
+O pacote usa o perfil `effect-api` e compõe com `effect/http`. Consulte `docs/effect-http-semantics.md` no repositório para a semântica completa.

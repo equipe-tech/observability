@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { Contract, TelemetryEventSink } from "@equipe-tech/observability";
 import { ingestBrowserEvents, InvalidBrowserEventBatch } from "@equipe-tech/observability/node";
 
