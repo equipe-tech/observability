@@ -45,14 +45,14 @@
   },
   "devDependencies": {
     "@equipe-tech/observability": "workspace:*",
-    "@sentry/browser": "10.72.0",
-    "@sentry/node-core": "10.72.0",
+    "@sentry/browser": "10.76.2",
+    "@sentry/node-core": "10.76.2",
     "effect": "4.0.1"
   },
   "peerDependencies": {
     "@equipe-tech/observability": "0.4.x",
-    "@sentry/browser": "10.72.0",
-    "@sentry/node-core": "10.72.0",
+    "@sentry/browser": "^10.72.0",
+    "@sentry/node-core": "^10.72.0",
     "effect": "~4.0.1"
   },
   "peerDependenciesMeta": {

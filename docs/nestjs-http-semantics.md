@@ -10,7 +10,7 @@ A opção `enabled: false` não exige identidade ou endpoint e não cria runtime
 
 Uma falha depois da configuração válida, durante a construção ou aquisição do runtime, rejeita o bootstrap com `TelemetryStartupError` e código `OBS_TELEMETRY_STARTUP_FAILED`. O módulo descarta recursos parcialmente adquiridos antes de propagar essa falha. Uma rejeição da factory do chamador é propagada sem conversão.
 
-No encerramento, o módulo fecha a admissão de spans, aguarda ou interrompe requisições ativas e faz flush do exporter compartilhado dentro de um único prazo. O prazo padrão é 5 segundos. O descarte começa depois desse prazo operacional e sempre é aguardado, portanto o tempo total de `app.close()` pode exceder o prazo para garantir a liberação dos recursos. Falhas de drain, interrupção, flush ou descarte são reportadas como `TelemetryShutdownError` com código `OBS_TELEMETRY_SHUTDOWN_FAILED` depois da tentativa de descarte.
+No encerramento, o módulo fecha a admissão de spans, aguarda ou interrompe requisições ativas e faz flush do exporter compartilhado dentro de um único prazo. O prazo padrão é 5 segundos. O descarte começa depois desse prazo operacional e sempre é aguardado, portanto o tempo total de `app.close()` pode exceder o prazo para garantir a liberação dos recursos. Falhas de drain, interrupção, flush ou descarte são reportadas como `TelemetryShutdownError` com código `OBS_TELEMETRY_SHUTDOWN_FAILED` depois da tentativa de descarte. No NestJS 10 e 11, `app.close()` rejeita com esse erro. No NestJS 12, o framework conclui o encerramento e registra o erro com `Logger.error` no logger da aplicação.
 
 O suporte usa NestJS com Express. O adapter não declara suporte ao Fastify.
 
