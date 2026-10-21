@@ -39,7 +39,7 @@ O dry run não altera manifest, lockfile, commit ou tag. Uma release real altera
 
 ## Verificar os archives
 
-`bun run test:package` compila e empacota os seis pacotes. O smoke instala os archives em consumidores Node e Bun, testa NestJS 10 e 11, percorre as declarações, rejeita imports não declarados e confirma os entrypoints públicos.
+`bun run test:package` compila e empacota os seis pacotes. O smoke instala os archives em consumidores Node e Bun, testa NestJS 10, 11 e 12, percorre as declarações, rejeita imports não declarados e confirma os entrypoints públicos.
 
 Use o prefixo `./` ao passar o archive relativo para `npm publish`, como `./dist-release/$ARCHIVE`. Sem esse prefixo, o npm interpreta `dist-release/arquivo.tgz` como uma referência Git. O teste do workflow executa o comando real em dry run offline com transporte Git bloqueado.
 

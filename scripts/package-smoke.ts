@@ -389,7 +389,7 @@ try {
     }
   }
 
-  for (const nestMajor of [10, 11]) {
+  for (const nestMajor of [10, 11, 12]) {
     const nestConsumer = join(temporaryDirectory, `nestjs-${nestMajor}-consumer`);
     await mkdir(nestConsumer, { recursive: true });
     await writeFile(

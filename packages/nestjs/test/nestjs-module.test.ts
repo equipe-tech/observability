@@ -1,6 +1,6 @@
 import "reflect-metadata";
 import { Catch, Controller, Get, Module, NotFoundException, UseFilters } from "@nestjs/common";
-import type { ArgumentsHost, ExceptionFilter } from "@nestjs/common";
+import type { ArgumentsHost, ExceptionFilter, LoggerService } from "@nestjs/common";
 import { APP_FILTER, APP_INTERCEPTOR, NestFactory } from "@nestjs/core";
 import { createServer, IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -127,6 +127,18 @@ const enabledOptions = (endpoint: string): TelemetryModuleOptions => ({
   healthRouteTemplates: ["/ready/"],
   shutdownTimeoutMilliseconds: 2_000,
 });
+
+const recordLoggedErrors = () => {
+  const errors: Array<unknown> = [];
+  const logger: LoggerService = {
+    log: () => undefined,
+    warn: () => undefined,
+    error: (message) => {
+      errors.push(message);
+    },
+  };
+  return { errors, logger };
+};
 
 describe("TelemetryModule", () => {
   it("maps catalog errors and records a shared defect once per request", async () => {
@@ -881,13 +893,12 @@ describe("TelemetryModule", () => {
       ],
     })(AppModule);
 
-    const app = await NestFactory.create(AppModule, { logger: false });
+    const shutdownLog = recordLoggedErrors();
+    const app = await NestFactory.create(AppModule, { logger: shutdownLog.logger });
     await app.init();
     try {
-      const failure = await app.close().then(
-        () => undefined,
-        (cause) => cause,
-      );
+      await app.close();
+      const failure = shutdownLog.errors.find((error) => error instanceof TelemetryShutdownError);
       assert.instanceOf(failure, TelemetryShutdownError);
       assert.strictEqual(failure?.code, "OBS_TELEMETRY_SHUTDOWN_FAILED");
       assert.strictEqual(disposals, 1);
@@ -916,13 +927,12 @@ describe("TelemetryModule", () => {
       ],
     })(AppModule);
 
-    const app = await NestFactory.create(AppModule, { logger: false });
+    const shutdownLog = recordLoggedErrors();
+    const app = await NestFactory.create(AppModule, { logger: shutdownLog.logger });
     await app.init();
     try {
-      const failure = await app.close().then(
-        () => undefined,
-        (cause) => cause,
-      );
+      await app.close();
+      const failure = shutdownLog.errors.find((error) => error instanceof TelemetryShutdownError);
       assert.instanceOf(failure, TelemetryShutdownError);
       assert.strictEqual(failure?.code, "OBS_TELEMETRY_SHUTDOWN_FAILED");
       assert.strictEqual(disposals, 1);
@@ -953,15 +963,14 @@ describe("TelemetryModule", () => {
       controllers: [ModuleController],
     })(AppModule);
 
-    const app = await NestFactory.create(AppModule, { logger: false });
+    const shutdownLog = recordLoggedErrors();
+    const app = await NestFactory.create(AppModule, { logger: shutdownLog.logger });
     await app.listen(0, "127.0.0.1");
     try {
       const response = await fetch(`${applicationBaseUrl(app.getHttpServer().address())}/ping`);
       assert.strictEqual(response.status, 200);
-      const failure = await app.close().then(
-        () => undefined,
-        (cause) => cause,
-      );
+      await app.close();
+      const failure = shutdownLog.errors.find((error) => error instanceof TelemetryShutdownError);
       assert.instanceOf(failure, TelemetryShutdownError);
       assert.strictEqual(failure?.code, "OBS_TELEMETRY_SHUTDOWN_FAILED");
       assert.strictEqual(disposals, 1);

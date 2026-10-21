@@ -31,7 +31,7 @@ A deduplicação combina identidade do envelope e fingerprint normalizado. A mes
 
 No browser, DSN ausente ou inválido é erro, exceto com `disabled: true`. O modo desabilitado retorna supressão `disabled` e não cria cliente. `flush` pode ser repetido antes do fechamento. `close` e `dispose` são idempotentes. A instância entra no estado fechado antes de aguardar o SDK. Capturas feitas durante o hook de fechamento do adapter retornam supressão `closed` e não enviam eventos. No runtime Node, estágios ordenados anteriores podem executar antes do início desse hook.
 
-As definições compiladas não referenciam tipos de provider. Instale somente o peer do entrypoint usado. Node requer `@sentry/node-core@10.72.0`. Browser requer `@sentry/browser@10.72.0`.
+As definições compiladas não referenciam tipos de provider. Instale somente o peer do entrypoint usado. Node requer `@sentry/node-core@^10.72.0`. Browser requer `@sentry/browser@^10.72.0`. A suíte roda contra a versão 10 mais recente.
 
 ## Source maps
 
