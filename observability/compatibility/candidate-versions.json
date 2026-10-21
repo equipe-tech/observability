@@ -5,8 +5,8 @@
     { "name": "@equipe-tech/observability-cli", "version": "0.4.0" },
     { "name": "@equipe-tech/observability-effect", "version": "0.4.0" },
     { "name": "@equipe-tech/observability-evlog", "version": "0.4.0" },
-    { "name": "@equipe-tech/observability-nestjs", "version": "0.4.0" },
+    { "name": "@equipe-tech/observability-nestjs", "version": "0.4.1" },
     { "name": "@equipe-tech/observability-react", "version": "0.4.0" },
-    { "name": "@equipe-tech/observability-sentry", "version": "0.4.0" }
+    { "name": "@equipe-tech/observability-sentry", "version": "0.4.1" }
   ]
 }
